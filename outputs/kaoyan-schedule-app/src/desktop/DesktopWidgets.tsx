@@ -13,6 +13,7 @@ import {
   STORAGE_KEY,
 } from '../utils/schedule';
 import { fileToDataUrl } from '../utils/notes';
+import { openNoteCaptureWindow } from '../utils/openWindows';
 import type { WidgetType } from './types';
 
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
@@ -292,7 +293,7 @@ function QuickLinksWidget() {
     <div className="study-widget-content quick-links-widget">
       <button type="button" onClick={openManagement}><ExternalLink size={14} /> 完整课表</button>
       <button type="button" onClick={openConsole}><ExternalLink size={14} /> 桌面控制台</button>
-      <button type="button" onClick={() => window.open(`${window.location.origin}/?notes=1`, '_blank', 'noopener,noreferrer')}><ExternalLink size={14} /> 笔记台</button>
+      <button type="button" onClick={openNoteCaptureWindow}><ExternalLink size={14} /> 笔记台</button>
       <button type="button" onClick={() => window.open('http://127.0.0.1:5174/health', '_blank', 'noopener,noreferrer')}><ExternalLink size={14} /> 笔记服务</button>
     </div>
   );
