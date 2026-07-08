@@ -1,27 +1,23 @@
 import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
 
-const VERTEX_SHADER = `
-attribute vec2 a_position;
-varying vec2 v_uv;
+const BACKGROUND_VERTEX = `
+varying vec2 vUv;
 
 void main() {
-  v_uv = a_position * 0.5 + 0.5;
-  gl_Position = vec4(a_position, 0.0, 1.0);
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
 
-const FRAGMENT_SHADER = `
+const BACKGROUND_FRAGMENT = `
 precision highp float;
 
-uniform sampler2D u_texture;
-uniform vec2 u_resolution;
-uniform vec2 u_imageResolution;
-uniform vec2 u_mouse;
-uniform vec2 u_wind;
-uniform float u_time;
-uniform float u_imageReady;
-
-varying vec2 v_uv;
+uniform sampler2D uTexture;
+uniform vec2 uMouse;
+uniform float uTime;
+uniform float uTextureReady;
+varying vec2 vUv;
 
 float hash(vec2 p) {
   p = fract(p * vec2(123.34, 456.21));
@@ -33,11 +29,7 @@ float noise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
   vec2 u = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
-    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
-    u.y
-  );
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
 }
 
 float fbm(vec2 p) {
@@ -45,280 +37,363 @@ float fbm(vec2 p) {
   float amp = 0.5;
   for (int i = 0; i < 5; i++) {
     value += amp * noise(p);
-    p *= 2.03;
-    amp *= 0.5;
+    p *= 2.02;
+    amp *= 0.52;
   }
   return value;
 }
 
-vec2 coverUv(vec2 uv) {
-  vec2 safeImage = max(u_imageResolution, vec2(1.0));
-  float screenRatio = u_resolution.x / max(u_resolution.y, 1.0);
-  float imageRatio = safeImage.x / safeImage.y;
-  vec2 nextUv = uv;
-  if (screenRatio > imageRatio) {
-    float scale = imageRatio / screenRatio;
-    nextUv.y = uv.y * scale + (1.0 - scale) * 0.5;
-  } else {
-    float scale = screenRatio / imageRatio;
-    nextUv.x = uv.x * scale + (1.0 - scale) * 0.5;
-  }
-  return nextUv;
-}
-
-float ribbonMask(vec2 uv, float offset, float width, float speed, float phase) {
-  float curve = offset
-    + sin(uv.x * 5.2 + u_time * speed + phase) * 0.035
-    + sin(uv.x * 11.0 - u_time * speed * 0.72 + phase) * 0.012;
-  float dist = abs(uv.y - curve);
-  float body = smoothstep(width, 0.0, dist);
-  float edge = smoothstep(width * 0.36, 0.0, dist) * 0.72;
-  float weave = 0.55 + 0.45 * sin((uv.x + uv.y) * 68.0 + u_time * 0.85 + phase);
-  return body * (0.38 + edge * 0.62) * (0.74 + weave * 0.18);
-}
-
-float sandGrain(vec2 uv) {
-  vec2 grid = uv * vec2(190.0, 110.0);
-  vec2 id = floor(grid);
-  vec2 f = fract(grid) - 0.5;
-  float rnd = hash(id);
-  float sparkle = step(0.965, rnd);
-  float d = length(f + vec2(sin(u_time * 0.18 + rnd * 6.283) * 0.12, cos(u_time * 0.12 + rnd * 8.0) * 0.06));
-  return sparkle * smoothstep(0.18, 0.0, d) * (0.35 + rnd * 0.65);
-}
-
-float windSand(vec2 uv) {
-  vec2 mouse = u_mouse;
-  vec2 wind = u_wind;
-  float windPower = clamp(length(wind) * 18.0, 0.0, 1.0);
-  vec2 plumeUv = uv - mouse;
-  plumeUv.x -= wind.x * 0.55;
-  plumeUv.y += wind.y * 0.35;
-  float plumeShape = exp(-dot(plumeUv * vec2(3.0, 5.4), plumeUv * vec2(3.0, 5.4)));
-  float dust = fbm(uv * 24.0 - u_time * vec2(0.55, 0.10) - wind * 4.0);
-  return plumeShape * windPower * smoothstep(0.46, 0.93, dust);
-}
-
 void main() {
-  vec2 uv = v_uv;
-  vec2 centered = uv - 0.5;
-  vec2 mouse = u_mouse - 0.5;
-  vec2 wind = u_wind;
+  vec2 uv = vUv;
+  vec2 mouse = uMouse - 0.5;
+  float flow = fbm(uv * 2.4 + vec2(uTime * 0.018, -uTime * 0.012));
+  vec2 offset = mouse * 0.010 + (flow - 0.5) * 0.004;
+  vec3 tex = texture2D(uTexture, clamp(uv + offset, 0.0, 1.0)).rgb;
+  vec3 fallback = mix(vec3(0.90, 0.84, 0.74), vec3(0.54, 0.50, 0.46), smoothstep(0.25, 1.15, uv.x + uv.y * 0.35));
+  vec3 color = mix(fallback, tex, uTextureReady);
 
-  float slowNoise = fbm(uv * 2.2 + vec2(u_time * 0.018, -u_time * 0.012));
-  vec2 silkFlow = vec2(
-    sin(uv.y * 7.0 + u_time * 0.12) * 0.0022,
-    cos(uv.x * 8.0 - u_time * 0.09) * 0.0018
-  );
-  vec2 mousePull = mouse * 0.010;
-  vec2 windRipple = wind * (0.018 * smoothstep(0.0, 0.65, 1.0 - length(uv - u_mouse)));
-  vec2 sampleUv = coverUv(uv + silkFlow + mousePull + windRipple + (slowNoise - 0.5) * 0.0035);
+  float grain = hash(floor(uv * vec2(720.0, 420.0)) + uTime * 0.02);
+  color += (grain - 0.5) * 0.018;
 
-  vec3 base = texture2D(u_texture, clamp(sampleUv, 0.0, 1.0)).rgb;
-  vec3 fallback = mix(vec3(0.92, 0.86, 0.76), vec3(0.60, 0.55, 0.50), smoothstep(0.45, 1.0, uv.x + uv.y * 0.25));
-  base = mix(fallback, base, u_imageReady);
+  float light = smoothstep(0.82, 0.0, length((uv - vec2(0.17, 0.18)) * vec2(0.9, 1.15)));
+  color += vec3(1.0, 0.83, 0.55) * light * (0.035 + sin(uTime * 0.25) * 0.01);
 
-  float r1 = ribbonMask(uv + wind * 0.04, 0.43, 0.115, 0.20, 0.0);
-  float r2 = ribbonMask(uv - wind * 0.03, 0.66, 0.075, -0.16, 2.1);
-  float r3 = ribbonMask(uv + vec2(0.0, sin(u_time * 0.08) * 0.018), 0.28, 0.055, 0.13, 4.3);
-  float silk = r1 * 0.36 + r2 * 0.22 + r3 * 0.16;
-  float silkHighlight = pow(max(0.0, silk), 1.55);
-  vec3 silkColor = vec3(1.0, 0.88, 0.62);
-  base += silkColor * silkHighlight * 0.16;
-  base = mix(base, base * vec3(1.04, 0.99, 0.92), silk * 0.12);
-
-  float sand = sandGrain(uv + vec2(u_time * 0.006, -u_time * 0.002));
-  float plume = windSand(uv);
-  vec3 sandColor = vec3(1.0, 0.78, 0.45);
-  base += sandColor * sand * 0.20;
-  base += sandColor * plume * 0.34;
-
-  float breath = 0.5 + 0.5 * sin(u_time * 0.22);
-  float light = smoothstep(0.92, 0.0, length((uv - vec2(0.17, 0.18)) * vec2(0.92, 1.25)));
-  base += vec3(1.0, 0.86, 0.62) * light * (0.035 + breath * 0.022);
-
-  float vignette = smoothstep(0.94, 0.28, length(centered * vec2(0.95, 1.12)));
-  base *= 0.78 + vignette * 0.26;
-  base = pow(max(base, vec3(0.0)), vec3(0.96));
-
-  gl_FragColor = vec4(base, 1.0);
+  float vignette = smoothstep(0.92, 0.32, length((uv - 0.5) * vec2(0.92, 1.12)));
+  color *= 0.78 + vignette * 0.26;
+  gl_FragColor = vec4(color, 1.0);
 }
 `;
 
-const compileShader = (gl: WebGLRenderingContext, type: number, source: string) => {
-  const shader = gl.createShader(type);
-  if (!shader) {
-    throw new Error('Unable to create WebGL shader');
-  }
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    const message = gl.getShaderInfoLog(shader) ?? 'Unknown shader compile error';
-    gl.deleteShader(shader);
-    throw new Error(message);
-  }
-  return shader;
+const SILK_VERTEX = `
+uniform float uTime;
+uniform vec2 uMouse;
+uniform vec2 uWind;
+uniform float uPhase;
+uniform float uWaveStrength;
+varying vec2 vUv;
+varying float vFold;
+
+void main() {
+  vUv = uv;
+  vec3 nextPosition = position;
+  float waveA = sin(position.x * 2.4 + uTime * 0.62 + uPhase);
+  float waveB = sin(position.x * 5.7 - uTime * 0.38 + uPhase * 1.7);
+  float waveC = sin((position.x + position.y) * 3.1 + uTime * 0.48 + uPhase * 0.5);
+  float mouseInfluence = smoothstep(1.3, 0.0, length(vec2(position.x * 0.28, position.y * 0.55) - (uMouse - 0.5) * vec2(6.0, 3.0)));
+  float windPower = clamp(length(uWind) * 18.0, 0.0, 1.0);
+  float fold = waveA * 0.55 + waveB * 0.28 + waveC * 0.18;
+  nextPosition.z += fold * uWaveStrength;
+  nextPosition.y += waveB * 0.065 * uWaveStrength + mouseInfluence * windPower * 0.18;
+  nextPosition.x += uWind.x * mouseInfluence * 0.55;
+  vFold = fold * 0.5 + 0.5;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(nextPosition, 1.0);
+}
+`;
+
+const SILK_FRAGMENT = `
+precision highp float;
+uniform vec3 uColorA;
+uniform vec3 uColorB;
+uniform float uOpacity;
+uniform float uTime;
+varying vec2 vUv;
+varying float vFold;
+
+float band(float center, float width) {
+  return smoothstep(width, 0.0, abs(vUv.y - center));
+}
+
+void main() {
+  float edgeFade = smoothstep(0.0, 0.18, vUv.x) * smoothstep(1.0, 0.82, vUv.x) * smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.12, 1.0 - vUv.y);
+  float fiber = 0.5 + 0.5 * sin((vUv.x + vUv.y) * 94.0 + uTime * 0.42);
+  float ribbon = band(0.50 + sin(vUv.x * 7.0 + uTime * 0.18) * 0.08, 0.44);
+  float shine = pow(max(vFold, 0.0), 2.2) * 0.72 + fiber * 0.12;
+  vec3 color = mix(uColorA, uColorB, vUv.x * 0.65 + shine * 0.35);
+  color += vec3(1.0, 0.91, 0.72) * shine * 0.18;
+  float alpha = uOpacity * edgeFade * ribbon * (0.55 + shine * 0.45);
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+const PARTICLE_VERTEX = `
+attribute float aSize;
+attribute float aSeed;
+uniform float uTime;
+uniform float uPixelRatio;
+varying float vSeed;
+
+void main() {
+  vSeed = aSeed;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_PointSize = aSize * uPixelRatio * (220.0 / -mvPosition.z);
+  gl_Position = projectionMatrix * mvPosition;
+}
+`;
+
+const PARTICLE_FRAGMENT = `
+precision highp float;
+varying float vSeed;
+
+void main() {
+  vec2 point = gl_PointCoord - 0.5;
+  float d = length(point);
+  float alpha = smoothstep(0.5, 0.0, d) * (0.38 + vSeed * 0.48);
+  vec3 color = mix(vec3(0.92, 0.72, 0.42), vec3(1.0, 0.92, 0.72), vSeed);
+  gl_FragColor = vec4(color, alpha);
+}
+`;
+
+type ParticleState = {
+  positions: Float32Array;
+  velocities: Float32Array;
+  seeds: Float32Array;
+  count: number;
 };
 
-const createProgram = (gl: WebGLRenderingContext) => {
-  const vertexShader = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
-  const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
-  const program = gl.createProgram();
-  if (!program) {
-    throw new Error('Unable to create WebGL program');
+const createFallbackTexture = () => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    const gradient = ctx.createLinearGradient(0, 0, 64, 64);
+    gradient.addColorStop(0, '#f3ead8');
+    gradient.addColorStop(0.52, '#c9b493');
+    gradient.addColorStop(1, '#58524b');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 64, 64);
   }
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
-  gl.linkProgram(program);
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    const message = gl.getProgramInfoLog(program) ?? 'Unknown WebGL link error';
-    gl.deleteProgram(program);
-    throw new Error(message);
-  }
-  return program;
-};
-
-const createTexture = (gl: WebGLRenderingContext) => {
-  const texture = gl.createTexture();
-  if (!texture) {
-    throw new Error('Unable to create WebGL texture');
-  }
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([234, 221, 201, 255]));
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 };
 
+const createParticleState = (count: number): ParticleState => {
+  const positions = new Float32Array(count * 3);
+  const velocities = new Float32Array(count * 3);
+  const seeds = new Float32Array(count);
+  for (let index = 0; index < count; index += 1) {
+    const i = index * 3;
+    positions[i] = THREE.MathUtils.randFloatSpread(9.5);
+    positions[i + 1] = THREE.MathUtils.randFloatSpread(5.2) - 0.3;
+    positions[i + 2] = THREE.MathUtils.randFloat(-2.2, 1.8);
+    velocities[i] = THREE.MathUtils.randFloat(0.018, 0.052);
+    velocities[i + 1] = THREE.MathUtils.randFloat(-0.003, 0.018);
+    velocities[i + 2] = THREE.MathUtils.randFloat(-0.004, 0.004);
+    seeds[index] = Math.random();
+  }
+  return { positions, velocities, seeds, count };
+};
+
+const resetParticle = (state: ParticleState, index: number, leftSide = true) => {
+  const i = index * 3;
+  state.positions[i] = leftSide ? THREE.MathUtils.randFloat(-5.2, -4.7) : THREE.MathUtils.randFloat(-5.0, 5.0);
+  state.positions[i + 1] = THREE.MathUtils.randFloat(-2.8, 2.5);
+  state.positions[i + 2] = THREE.MathUtils.randFloat(-2.2, 1.8);
+  state.velocities[i] = THREE.MathUtils.randFloat(0.018, 0.052);
+  state.velocities[i + 1] = THREE.MathUtils.randFloat(-0.003, 0.018);
+  state.velocities[i + 2] = THREE.MathUtils.randFloat(-0.004, 0.004);
+};
+
 export function DunhuangBackdrop() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const mountRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
+    const mount = mountRef.current;
+    if (!mount) {
       return;
     }
 
-    const gl = canvas.getContext('webgl', {
-      alpha: false,
-      antialias: true,
-      depth: false,
-      stencil: false,
-      preserveDrawingBuffer: false,
-      powerPreference: 'high-performance',
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    renderer.setClearColor(0xe8ddcb, 1);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    mount.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 80);
+    camera.position.set(0, 0, 8.2);
+
+    const pointer = new THREE.Vector2(0, 0);
+    const smoothPointer = new THREE.Vector2(0, 0);
+    const previousPointer = new THREE.Vector2(0, 0);
+    const wind = new THREE.Vector2(0, 0);
+    const clock = new THREE.Clock();
+
+    const fallbackTexture = createFallbackTexture();
+    const backgroundUniforms = {
+      uTexture: { value: fallbackTexture },
+      uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+      uTime: { value: 0 },
+      uTextureReady: { value: 0 },
+    };
+
+    const loader = new THREE.TextureLoader();
+    loader.load(
+      `/dunhuang-wallpaper.png?ts=${Date.now()}`,
+      (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.wrapS = THREE.ClampToEdgeWrapping;
+        texture.wrapT = THREE.ClampToEdgeWrapping;
+        texture.minFilter = THREE.LinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        backgroundUniforms.uTexture.value = texture;
+        backgroundUniforms.uTextureReady.value = 1;
+      },
+      undefined,
+      () => {
+        backgroundUniforms.uTextureReady.value = 0;
+      },
+    );
+
+    const backgroundMaterial = new THREE.ShaderMaterial({
+      vertexShader: BACKGROUND_VERTEX,
+      fragmentShader: BACKGROUND_FRAGMENT,
+      uniforms: backgroundUniforms,
+      depthWrite: false,
+      depthTest: false,
     });
+    const background = new THREE.Mesh(new THREE.PlaneGeometry(13.8, 7.8, 1, 1), backgroundMaterial);
+    background.position.z = -5.2;
+    scene.add(background);
 
-    if (!gl) {
-      canvas.classList.add('webgl-unavailable');
-      return;
+    const silkUniformsA = {
+      uTime: { value: 0 },
+      uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+      uWind: { value: new THREE.Vector2(0, 0) },
+      uPhase: { value: 0.3 },
+      uWaveStrength: { value: 0.34 },
+      uColorA: { value: new THREE.Color('#f7dfaa') },
+      uColorB: { value: new THREE.Color('#fff4d8') },
+      uOpacity: { value: 0.30 },
+    };
+    const silkUniformsB = {
+      uTime: { value: 0 },
+      uMouse: { value: new THREE.Vector2(0.5, 0.5) },
+      uWind: { value: new THREE.Vector2(0, 0) },
+      uPhase: { value: 2.9 },
+      uWaveStrength: { value: 0.24 },
+      uColorA: { value: new THREE.Color('#dcc196') },
+      uColorB: { value: new THREE.Color('#fff8e8') },
+      uOpacity: { value: 0.18 },
+    };
+
+    const createSilk = (uniforms: typeof silkUniformsA, width: number, height: number, x: number, y: number, z: number, rotation: number) => {
+      const geometry = new THREE.PlaneGeometry(width, height, 96, 18);
+      const material = new THREE.ShaderMaterial({
+        vertexShader: SILK_VERTEX,
+        fragmentShader: SILK_FRAGMENT,
+        uniforms,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: THREE.NormalBlending,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.set(x, y, z);
+      mesh.rotation.z = rotation;
+      scene.add(mesh);
+      return mesh;
+    };
+
+    const silkA = createSilk(silkUniformsA, 9.7, 1.35, -1.08, -0.18, -2.8, -0.18);
+    const silkB = createSilk(silkUniformsB, 6.6, 1.02, 1.72, 1.10, -2.2, 0.42);
+
+    const particleState = createParticleState(560);
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particleState.positions, 3));
+    particleGeometry.setAttribute('aSeed', new THREE.BufferAttribute(particleState.seeds, 1));
+    const sizes = new Float32Array(particleState.count);
+    for (let index = 0; index < particleState.count; index += 1) {
+      sizes[index] = THREE.MathUtils.randFloat(4.0, 11.5);
     }
+    particleGeometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
 
-    let animationId = 0;
-    let width = 1;
-    let height = 1;
-    let imageReady = 0;
-    let imageWidth = 1920;
-    let imageHeight = 1080;
-    const targetMouse = { x: 0.5, y: 0.5 };
-    const smoothMouse = { x: 0.5, y: 0.5 };
-    const previousMouse = { x: 0.5, y: 0.5 };
-    const wind = { x: 0, y: 0 };
-
-    let program: WebGLProgram;
-    let texture: WebGLTexture;
-
-    try {
-      program = createProgram(gl);
-      texture = createTexture(gl);
-    } catch (error) {
-      console.error('[DunhuangBackdrop] WebGL init failed:', error);
-      canvas.classList.add('webgl-unavailable');
-      return;
-    }
-
-    const positionLocation = gl.getAttribLocation(program, 'a_position');
-    const resolutionLocation = gl.getUniformLocation(program, 'u_resolution');
-    const imageResolutionLocation = gl.getUniformLocation(program, 'u_imageResolution');
-    const mouseLocation = gl.getUniformLocation(program, 'u_mouse');
-    const windLocation = gl.getUniformLocation(program, 'u_wind');
-    const timeLocation = gl.getUniformLocation(program, 'u_time');
-    const textureLocation = gl.getUniformLocation(program, 'u_texture');
-    const imageReadyLocation = gl.getUniformLocation(program, 'u_imageReady');
-
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
+    const particleMaterial = new THREE.ShaderMaterial({
+      vertexShader: PARTICLE_VERTEX,
+      fragmentShader: PARTICLE_FRAGMENT,
+      uniforms: {
+        uTime: { value: 0 },
+        uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 1.75) },
+      },
+      transparent: true,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const particles = new THREE.Points(particleGeometry, particleMaterial);
+    particles.position.z = -1.25;
+    scene.add(particles);
 
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-      width = Math.max(1, window.innerWidth);
-      height = Math.max(1, window.innerHeight);
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      gl.viewport(0, 0, canvas.width, canvas.height);
+      const width = Math.max(1, window.innerWidth);
+      const height = Math.max(1, window.innerHeight);
+      renderer.setSize(width, height, false);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      particleMaterial.uniforms.uPixelRatio.value = Math.min(window.devicePixelRatio || 1, 1.75);
     };
 
     const onPointerMove = (event: PointerEvent) => {
-      const nextX = event.clientX / Math.max(1, width);
-      const nextY = 1 - event.clientY / Math.max(1, height);
-      targetMouse.x = Math.min(1, Math.max(0, nextX));
-      targetMouse.y = Math.min(1, Math.max(0, nextY));
-      document.documentElement.style.setProperty('--dh-x', `${(targetMouse.x - 0.5) * 22}px`);
-      document.documentElement.style.setProperty('--dh-y', `${(0.5 - targetMouse.y) * 16}px`);
+      const width = Math.max(1, window.innerWidth);
+      const height = Math.max(1, window.innerHeight);
+      pointer.x = event.clientX / width;
+      pointer.y = 1 - event.clientY / height;
+      document.documentElement.style.setProperty('--dh-x', `${(pointer.x - 0.5) * 18}px`);
+      document.documentElement.style.setProperty('--dh-y', `${(0.5 - pointer.y) * 14}px`);
     };
 
-    const image = new Image();
-    image.onload = () => {
-      imageWidth = image.naturalWidth || 1920;
-      imageHeight = image.naturalHeight || 1080;
-      imageReady = 1;
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-    };
-    image.onerror = () => {
-      imageReady = 0;
-      console.warn('[DunhuangBackdrop] public/dunhuang-wallpaper.png not found, using shader fallback.');
-    };
-    image.src = `/dunhuang-wallpaper.png?ts=${Date.now()}`;
+    let animationId = 0;
+    const animate = () => {
+      const elapsed = clock.getElapsedTime();
+      previousPointer.copy(smoothPointer);
+      smoothPointer.lerp(pointer, 0.075);
+      wind.multiplyScalar(0.90).add(smoothPointer.clone().sub(previousPointer).multiplyScalar(3.2));
 
-    const startedAt = performance.now();
-    const render = () => {
-      const time = (performance.now() - startedAt) / 1000;
-      previousMouse.x = smoothMouse.x;
-      previousMouse.y = smoothMouse.y;
-      smoothMouse.x += (targetMouse.x - smoothMouse.x) * 0.075;
-      smoothMouse.y += (targetMouse.y - smoothMouse.y) * 0.075;
-      wind.x = wind.x * 0.90 + (smoothMouse.x - previousMouse.x) * 2.8;
-      wind.y = wind.y * 0.90 + (smoothMouse.y - previousMouse.y) * 2.8;
+      backgroundUniforms.uTime.value = elapsed;
+      backgroundUniforms.uMouse.value.set(smoothPointer.x, smoothPointer.y);
+      silkUniformsA.uTime.value = elapsed;
+      silkUniformsB.uTime.value = elapsed * 0.84;
+      silkUniformsA.uMouse.value.set(smoothPointer.x, smoothPointer.y);
+      silkUniformsB.uMouse.value.set(smoothPointer.x, smoothPointer.y);
+      silkUniformsA.uWind.value.set(wind.x, wind.y);
+      silkUniformsB.uWind.value.set(wind.x * 0.7, wind.y * 0.7);
+      particleMaterial.uniforms.uTime.value = elapsed;
 
-      gl.useProgram(program);
-      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-      gl.enableVertexAttribArray(positionLocation);
-      gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+      silkA.position.x = -1.08 + (smoothPointer.x - 0.5) * 0.12;
+      silkA.position.y = -0.18 + (smoothPointer.y - 0.5) * 0.08;
+      silkB.position.x = 1.72 - (smoothPointer.x - 0.5) * 0.10;
+      silkB.position.y = 1.10 + (smoothPointer.y - 0.5) * 0.06;
 
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      gl.uniform1i(textureLocation, 0);
-      gl.uniform2f(resolutionLocation, width, height);
-      gl.uniform2f(imageResolutionLocation, imageWidth, imageHeight);
-      gl.uniform2f(mouseLocation, smoothMouse.x, smoothMouse.y);
-      gl.uniform2f(windLocation, wind.x, wind.y);
-      gl.uniform1f(timeLocation, time);
-      gl.uniform1f(imageReadyLocation, imageReady);
+      const mouseWorldX = (smoothPointer.x - 0.5) * 9.5;
+      const mouseWorldY = (smoothPointer.y - 0.5) * 5.3;
+      const windPower = Math.min(1.0, wind.length() * 20.0);
+      for (let index = 0; index < particleState.count; index += 1) {
+        const i = index * 3;
+        const dx = particleState.positions[i] - mouseWorldX;
+        const dy = particleState.positions[i + 1] - mouseWorldY;
+        const influence = Math.exp(-(dx * dx * 0.24 + dy * dy * 0.72)) * windPower;
+        particleState.velocities[i] += wind.x * influence * 0.055 + 0.0009;
+        particleState.velocities[i + 1] += wind.y * influence * 0.050 + Math.sin(elapsed * 0.8 + particleState.seeds[index] * 8.0) * 0.0008;
+        particleState.velocities[i] *= 0.992;
+        particleState.velocities[i + 1] *= 0.988;
+        particleState.positions[i] += particleState.velocities[i];
+        particleState.positions[i + 1] += particleState.velocities[i + 1];
+        particleState.positions[i + 2] += Math.sin(elapsed * 0.25 + particleState.seeds[index] * 9.0) * 0.0012;
+        if (particleState.positions[i] > 5.3 || particleState.positions[i + 1] > 3.1 || particleState.positions[i + 1] < -3.1) {
+          resetParticle(particleState, index, true);
+        }
+      }
+      particleGeometry.attributes.position.needsUpdate = true;
 
-      gl.drawArrays(gl.TRIANGLES, 0, 6);
-      animationId = window.requestAnimationFrame(render);
+      renderer.render(scene, camera);
+      animationId = window.requestAnimationFrame(animate);
     };
 
     resize();
-    render();
+    animate();
     window.addEventListener('resize', resize);
     window.addEventListener('pointermove', onPointerMove, { passive: true });
 
@@ -326,16 +401,24 @@ export function DunhuangBackdrop() {
       window.cancelAnimationFrame(animationId);
       window.removeEventListener('resize', resize);
       window.removeEventListener('pointermove', onPointerMove);
-      if (buffer) gl.deleteBuffer(buffer);
-      gl.deleteTexture(texture);
-      gl.deleteProgram(program);
+      background.geometry.dispose();
+      backgroundMaterial.dispose();
+      silkA.geometry.dispose();
+      (silkA.material as THREE.Material).dispose();
+      silkB.geometry.dispose();
+      (silkB.material as THREE.Material).dispose();
+      particleGeometry.dispose();
+      particleMaterial.dispose();
+      fallbackTexture.dispose();
+      renderer.dispose();
+      mount.removeChild(renderer.domElement);
     };
   }, []);
 
   return (
     <div className="dh-backdrop" aria-hidden="true">
       <div className="dh-sandscape" />
-      <canvas ref={canvasRef} className="dh-webgl-canvas" />
+      <div ref={mountRef} className="dh-three-mount" />
       <div className="dh-vignette" />
     </div>
   );
