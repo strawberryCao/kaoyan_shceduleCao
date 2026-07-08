@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, CalendarDays, Dumbbell, Moon, Target, TimerReset } from 'lucide-react';
+import { BookOpen, CalendarDays, Dumbbell, ExternalLink, Moon, Target, TimerReset } from 'lucide-react';
 import type { DayRecord, RecordsByDate, ScheduleDay, ScheduleTask } from '../types';
 import {
   calculateStats,
@@ -39,9 +39,14 @@ const getTaskHint = (task: ScheduleTask): string => {
   }
 };
 
+const isCoreWallpaperTask = (task: ScheduleTask): boolean => {
+  return ['math', 'linearProbability', 'professional', 'memory', 'evening', 'networkOs'].includes(task.category);
+};
+
 export function WallpaperView() {
   const days = useMemo(() => generateSchedule(), []);
   const todayDay = useMemo(() => getCurrentScheduleDay(days), [days]);
+  const [showMore, setShowMore] = useState(false);
   const [records, setRecords] = useState<RecordsByDate>(() => {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) {
@@ -62,6 +67,7 @@ export function WallpaperView() {
   const todayRecord = recordFor(records, todayDay);
   const progress = getDayProgress(todayDay, todayRecord);
   const stats = useMemo(() => calculateStats(days, records), [days, records]);
+  const visibleTasks = showMore ? todayDay.tasks : todayDay.tasks.filter(isCoreWallpaperTask);
 
   const toggleTask = (task: ScheduleTask) => {
     if (!task.trackable) {
@@ -85,9 +91,13 @@ export function WallpaperView() {
     });
   };
 
+  const openManagementPage = () => {
+    window.open(`${window.location.origin}/`, '_blank', 'noopener,noreferrer');
+  };
+
   return (
     <main className="lively-wallpaper-page" aria-label="考研课表壁纸模式">
-      <section className="lively-wallpaper-card">
+      <section className={`lively-wallpaper-card ${showMore ? 'expanded' : 'compact'}`}>
         <header className="lively-header">
           <div>
             <p>今日课表</p>
@@ -113,6 +123,16 @@ export function WallpaperView() {
           )}
         </section>
 
+        <section className="lively-actions" aria-label="壁纸操作">
+          <button type="button" onClick={() => setShowMore((value) => !value)}>
+            {showMore ? '收起' : '更多'}
+          </button>
+          <button type="button" onClick={openManagementPage}>
+            <ExternalLink size={14} aria-hidden="true" />
+            打开完整课表
+          </button>
+        </section>
+
         <section className="lively-overview" aria-label="整体进度">
           <div>
             <CalendarDays size={16} aria-hidden="true" />
@@ -132,7 +152,7 @@ export function WallpaperView() {
         </section>
 
         <section className="lively-timeline" aria-label="今日时间线">
-          {todayDay.tasks.map((task) => {
+          {visibleTasks.map((task) => {
             const completed = todayRecord.completedTaskIds.includes(task.id);
             const isBasketball = task.title === '打球';
 
@@ -165,7 +185,7 @@ export function WallpaperView() {
         </section>
 
         <footer className="lively-footer">
-          <span>壁纸模式由 Lively Wallpaper 加载</span>
+          <span>{showMore ? '完整今日列表' : '精简壁纸视图'}</span>
           <strong>24:00 睡觉，别拖</strong>
         </footer>
       </section>
