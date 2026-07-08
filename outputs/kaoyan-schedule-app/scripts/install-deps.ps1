@@ -5,7 +5,8 @@ $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $ProjectRoot
 
 function Write-Step($Message) {
-  Write-Host "`n==> $Message" -ForegroundColor Cyan
+  Write-Host ""
+  Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
 function Write-Ok($Message) {
@@ -22,16 +23,16 @@ function Test-Command($Name) {
 
 function Install-WithWinget($Id, $Name) {
   if (-not (Test-Command 'winget')) {
-    Write-Warn "未检测到 winget，无法自动安装 $Name。请手动安装后重新运行本脚本。"
+    Write-Warn "winget not found. Cannot auto-install $Name. Please install it manually, then run this script again."
     return $false
   }
 
-  Write-Step "尝试通过 winget 安装 $Name"
+  Write-Step "Installing $Name with winget"
   try {
     winget install --id $Id --exact --source winget --accept-source-agreements --accept-package-agreements
     return $LASTEXITCODE -eq 0
   } catch {
-    Write-Warn "$Name 自动安装失败：$($_.Exception.Message)"
+    Write-Warn "$Name install failed: $($_.Exception.Message)"
     return $false
   }
 }
@@ -40,64 +41,65 @@ function Ensure-Node() {
   if ((Test-Command 'node') -and (Test-Command 'npm')) {
     $nodeVersion = node --version
     $npmVersion = npm --version
-    Write-Ok "已检测到 Node.js $nodeVersion / npm $npmVersion"
+    Write-Ok "Node.js $nodeVersion / npm $npmVersion detected"
     return
   }
 
   $installed = Install-WithWinget 'OpenJS.NodeJS.LTS' 'Node.js LTS'
   if (-not $installed) {
-    throw 'Node.js / npm 未安装。请先安装 Node.js LTS，然后重新运行本脚本。'
+    throw 'Node.js / npm is not installed. Please install Node.js LTS manually, then run this script again.'
   }
 
-  Write-Warn 'Node.js 安装完成后，可能需要关闭并重新打开终端，再重新运行本脚本。'
+  Write-Warn 'Node.js was installed. You may need to close and reopen the terminal, then run this script again.'
 }
 
 function Ensure-Lively() {
   if (-not (Test-Command 'winget')) {
-    Write-Warn '未检测到 winget，跳过 Lively Wallpaper 自动安装。你可以手动安装 Lively Wallpaper。'
+    Write-Warn 'winget not found. Skipping Lively Wallpaper auto-install. Please install Lively Wallpaper manually.'
     return
   }
 
-  Write-Step '检查 Lively Wallpaper'
+  Write-Step 'Checking Lively Wallpaper'
   winget list --id rocksdanister.LivelyWallpaper --exact | Out-Null
   if ($LASTEXITCODE -eq 0) {
-    Write-Ok '已检测到 Lively Wallpaper'
+    Write-Ok 'Lively Wallpaper detected'
     return
   }
 
   $installed = Install-WithWinget 'rocksdanister.LivelyWallpaper' 'Lively Wallpaper'
   if (-not $installed) {
-    Write-Warn 'Lively Wallpaper 自动安装失败。请手动安装后，在 Lively 中添加 http://127.0.0.1:5173/?wallpaper=1'
+    Write-Warn 'Lively Wallpaper install failed. Please install it manually and add this URL in Lively: http://127.0.0.1:5173/?wallpaper=1'
   }
 }
 
 function Install-NpmPackages() {
-  Write-Step '安装项目 npm 依赖'
+  Write-Step 'Installing npm packages'
   npm install
   if ($LASTEXITCODE -ne 0) {
-    throw 'npm install 失败。请检查网络、npm 源或 Node.js 安装。'
+    throw 'npm install failed. Please check your network, npm registry, or Node.js installation.'
   }
-  Write-Ok 'npm 依赖安装完成'
+  Write-Ok 'npm packages installed'
 }
 
 function Build-Project() {
-  Write-Step '验证项目能否构建'
+  Write-Step 'Building project'
   npm run build
   if ($LASTEXITCODE -ne 0) {
-    throw 'npm run build 失败。请把报错发给我继续修。'
+    throw 'npm run build failed. Send the error output to ChatGPT for a fix.'
   }
-  Write-Ok '构建成功'
+  Write-Ok 'Build succeeded'
 }
 
-Write-Host '考研课表 App 依赖安装脚本' -ForegroundColor White
-Write-Host "项目目录：$ProjectRoot" -ForegroundColor DarkGray
+Write-Host 'Kaoyan Schedule App dependency installer' -ForegroundColor White
+Write-Host "Project root: $ProjectRoot" -ForegroundColor DarkGray
 
 Ensure-Node
 Ensure-Lively
 Install-NpmPackages
 Build-Project
 
-Write-Host "`n全部完成。下一步：" -ForegroundColor Green
-Write-Host '1. 双击 启动壁纸模式.cmd，或运行：npm run dev -- --host 127.0.0.1 --port 5173 --strictPort'
-Write-Host '2. 在 Lively Wallpaper 中添加 URL：http://127.0.0.1:5173/?wallpaper=1'
-Write-Host '3. 普通管理模式打开：http://127.0.0.1:5173/'
+Write-Host "" -ForegroundColor Green
+Write-Host 'All done. Next steps:' -ForegroundColor Green
+Write-Host '1. Run: start-wallpaper-mode.cmd, or run: npm run dev -- --host 127.0.0.1 --port 5173 --strictPort'
+Write-Host '2. Add this URL in Lively Wallpaper: http://127.0.0.1:5173/?wallpaper=1'
+Write-Host '3. Management mode URL: http://127.0.0.1:5173/'
