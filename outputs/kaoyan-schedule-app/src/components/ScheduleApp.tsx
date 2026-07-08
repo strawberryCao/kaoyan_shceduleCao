@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EyeOff, LocateFixed, Minus, MoreHorizontal, Pin, X } from 'lucide-react';
 import { DataPanel } from './DataPanel';
 import { DayCard } from './DayCard';
 import { NotesPanel } from './NotesPanel';
@@ -37,11 +36,8 @@ const panelButtons: Array<{ value: ActivePanel; label: string }> = [
 export function ScheduleApp() {
   const days = useMemo(() => generateSchedule(), []);
   const todayDay = useMemo(() => getCurrentScheduleDay(days), [days]);
-  const wallpaperMode = useMemo(() => new URLSearchParams(window.location.search).get('wallpaper') === '1', []);
-  const desktopMode = Boolean(window.kaoyanDesktop?.isElectron);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('schedule');
-  const [detailOpen, setDetailOpen] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   const [selectedDate, setSelectedDate] = useState(todayDay.date);
   const [records, setRecords] = useState<RecordsByDate>(() => {
@@ -60,12 +56,6 @@ export function ScheduleApp() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(makeStoragePayload(records)));
   }, [records]);
-
-  useEffect(() => {
-    if (wallpaperMode && activePanel === 'data') {
-      setActivePanel('schedule');
-    }
-  }, [activePanel, wallpaperMode]);
 
   const selectedDay = days.find((day) => day.date === selectedDate) ?? todayDay;
   const stats = useMemo(() => calculateStats(days, records), [days, records]);
@@ -168,7 +158,7 @@ export function ScheduleApp() {
       );
     }
 
-    if (activePanel === 'data' && !wallpaperMode) {
+    if (activePanel === 'data') {
       return <DataPanel onClear={clearRecords} onExport={exportRecords} onImportClick={() => fileInputRef.current?.click()} />;
     }
 
@@ -182,231 +172,55 @@ export function ScheduleApp() {
     );
   };
 
-  const shellClassName = [
-    'app-shell',
-    wallpaperMode ? 'wallpaper-shell' : '',
-    desktopMode ? 'desktop-shell' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  if (desktopMode) {
-    return (
-      <main className={`${shellClassName} wallpaper-desktop-shell`}>
-        <section className="wallpaper-widget">
-          <header className="widget-toolbar">
-            <div>
-              <p>今日课表</p>
-              <strong>{selectedDay.date}</strong>
-            </div>
-
-            <div className="widget-actions" aria-label="桌面组件操作">
-              <button type="button" title="恢复到红框位置" onClick={() => void window.kaoyanDesktop?.restoreDefaultPosition()}>
-                <LocateFixed aria-hidden="true" size={15} />
-              </button>
-              <button type="button" title="保存当前位置" onClick={() => void window.kaoyanDesktop?.savePosition()}>
-                <Pin aria-hidden="true" size={15} />
-              </button>
-              <button type="button" title="重新贴到桌面" onClick={() => void window.kaoyanDesktop?.attachToDesktop()}>
-                贴
-              </button>
-              <button type="button" title="隐藏到托盘" onClick={() => window.kaoyanDesktop?.hide()}>
-                <EyeOff aria-hidden="true" size={15} />
-              </button>
-              <button
-                className={detailOpen ? 'active' : ''}
-                type="button"
-                title="更多"
-                onClick={() => setDetailOpen((open) => !open)}
-              >
-                <MoreHorizontal aria-hidden="true" size={16} />
-              </button>
-            </div>
-          </header>
-
-          <section className="widget-core">
-            <DayCard
-              day={selectedDay}
-              isToday={selectedDay.date === todayDay.date}
-              onToggleTask={toggleTask}
-              record={getRecord(selectedDay)}
-            />
-          </section>
-
-          {detailOpen && (
-            <aside className="widget-detail-drawer" aria-label="详细功能">
-              <div className="drawer-head">
-                <span>详细功能</span>
-                <button type="button" onClick={() => setDetailOpen(false)}>
-                  <X aria-hidden="true" size={15} />
-                  收起
-                </button>
-              </div>
-
-              <nav className="drawer-tabs" aria-label="详情切换">
-                {panelButtons.map((panel) => (
-                  <button
-                    className={activePanel === panel.value ? 'active' : ''}
-                    key={panel.value}
-                    type="button"
-                    onClick={() => setActivePanel(panel.value)}
-                  >
-                    {panel.label}
-                  </button>
-                ))}
-              </nav>
-
-              {activePanel === 'schedule' && (
-                <section className="drawer-section">
-                  <div className="drawer-quick-row">
-                    <button type="button" onClick={() => setSelectedDate(todayDay.date)}>
-                      今日
-                    </button>
-                    <button type="button" onClick={() => stepDay(-1)}>
-                      前一天
-                    </button>
-                    <button type="button" onClick={() => stepDay(1)}>
-                      后一天
-                    </button>
-                  </div>
-
-                  <div className="drawer-filter-row">
-                    {(['all', 'A', 'B', 'basketball'] as FilterType[]).map((item) => (
-                      <button
-                        className={filter === item ? 'active' : ''}
-                        key={item}
-                        type="button"
-                        onClick={() => changeFilter(item)}
-                      >
-                        {item === 'all' ? '全部' : item === 'basketball' ? '打球' : `${item}日`}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="drawer-date-strip">
-                    {filteredDays.map((day) => (
-                      <button
-                        className={selectedDay.date === day.date ? 'active' : ''}
-                        key={day.date}
-                        type="button"
-                        onClick={() => setSelectedDate(day.date)}
-                      >
-                        <span>{day.date.slice(5)}</span>
-                        <small>{day.type}日</small>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {activePanel === 'notes' && (
-                <NotesPanel day={selectedDay} onUpdateField={updateField} record={getRecord(selectedDay)} />
-              )}
-
-              {activePanel === 'stats' && (
-                <section className="content-panel stats-view" aria-label="学习统计">
-                  <div className="panel-heading">
-                    <p>整体进度</p>
-                    <h2>30 天统计</h2>
-                  </div>
-                  <StatsPanel stats={stats} />
-                </section>
-              )}
-
-              {activePanel === 'data' && (
-                <DataPanel onClear={clearRecords} onExport={exportRecords} onImportClick={() => fileInputRef.current?.click()} />
-              )}
-            </aside>
-          )}
-
-          <input
-            accept="application/json,.json"
-            className="visually-hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void importRecords(file);
-              }
-              event.currentTarget.value = '';
-            }}
-            ref={fileInputRef}
-            type="file"
-          />
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <main className={shellClassName}>
-      <section className={desktopMode ? 'desktop-frame electron-frame' : 'desktop-frame'}>
+    <main className="app-shell">
+      <section className="desktop-frame">
         <header className="desktop-commandbar">
           <div className="command-title">
             <span className="soft-mark">研</span>
             <div>
-              <p>{desktopMode ? '桌面学习组件' : '30 天考研计划'}</p>
+              <p>30 天考研计划</p>
               <h1>考研学习课表</h1>
             </div>
           </div>
 
           <div className="command-meta">
             <span>{getScheduleRangeText()}</span>
-            {desktopMode && (
-              <div className="window-actions" aria-label="窗口操作">
-                <button type="button" title="恢复到红框位置" onClick={() => void window.kaoyanDesktop?.restoreDefaultPosition()}>
-                  <LocateFixed aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="保存当前位置" onClick={() => void window.kaoyanDesktop?.savePosition()}>
-                  <Pin aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="最小化" onClick={() => window.kaoyanDesktop?.minimize()}>
-                  <Minus aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="隐藏到托盘" onClick={() => window.kaoyanDesktop?.hide()}>
-                  <EyeOff aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="退出" onClick={() => window.kaoyanDesktop?.close()}>
-                  <X aria-hidden="true" size={16} />
-                </button>
-              </div>
-            )}
           </div>
         </header>
 
         <div className="workspace">
-        <Sidebar
-          activePanel={activePanel}
-          days={days}
-          filter={filter}
-          onDateChange={(date) => {
-            setSelectedDate(date);
-            setActivePanel('schedule');
-          }}
-          onFilterChange={changeFilter}
-          onPanelChange={setActivePanel}
-          onStepDay={stepDay}
-          selectedDay={selectedDay}
-          todayDay={todayDay}
-          wallpaperMode={wallpaperMode}
-        />
+          <Sidebar
+            activePanel={activePanel}
+            days={days}
+            filter={filter}
+            onDateChange={(date) => {
+              setSelectedDate(date);
+              setActivePanel('schedule');
+            }}
+            onFilterChange={changeFilter}
+            onPanelChange={setActivePanel}
+            onStepDay={stepDay}
+            selectedDay={selectedDay}
+            todayDay={todayDay}
+            wallpaperMode={false}
+          />
 
-        <section className="main-stage">{renderPanel()}</section>
-      </div>
+          <section className="main-stage">{renderPanel()}</section>
+        </div>
 
-        {desktopMode && (
-          <nav className="bottom-panel-tabs" aria-label="功能切换">
-            {panelButtons.map((panel) => (
-              <button
-                className={activePanel === panel.value ? 'active' : ''}
-                key={panel.value}
-                type="button"
-                onClick={() => setActivePanel(panel.value)}
-              >
-                {panel.label}
-              </button>
-            ))}
-          </nav>
-        )}
+        <nav className="bottom-panel-tabs" aria-label="功能切换">
+          {panelButtons.map((panel) => (
+            <button
+              className={activePanel === panel.value ? 'active' : ''}
+              key={panel.value}
+              type="button"
+              onClick={() => setActivePanel(panel.value)}
+            >
+              {panel.label}
+            </button>
+          ))}
+        </nav>
       </section>
 
       <input
