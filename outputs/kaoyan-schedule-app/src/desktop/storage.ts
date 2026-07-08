@@ -2,6 +2,7 @@ import { DESKTOP_LAYOUT_KEY, getDefaultLayout } from './registry';
 import type { WidgetLayout } from './types';
 
 const CHANNEL_NAME = 'kaoyan-desktop-layout';
+const LAYOUT_SERVER_URL = 'http://127.0.0.1:5174/layout';
 
 export const loadDesktopLayout = (): WidgetLayout[] => {
   const saved = window.localStorage.getItem(DESKTOP_LAYOUT_KEY);
@@ -17,6 +18,37 @@ export const loadDesktopLayout = (): WidgetLayout[] => {
     return parsed.filter((item) => item && item.id && item.type);
   } catch {
     return getDefaultLayout();
+  }
+};
+
+export const fetchDesktopLayoutFromServer = async (): Promise<WidgetLayout[] | null> => {
+  try {
+    const response = await fetch(`${LAYOUT_SERVER_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json() as { layout?: WidgetLayout[] | null };
+    if (Array.isArray(payload.layout)) {
+      window.localStorage.setItem(DESKTOP_LAYOUT_KEY, JSON.stringify(payload.layout));
+      return payload.layout;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
+export const saveDesktopLayoutToServer = async (layout: WidgetLayout[]) => {
+  try {
+    await fetch(LAYOUT_SERVER_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ layout }),
+    });
+  } catch {
+    // LocalStorage and BroadcastChannel still work as fallback.
   }
 };
 
@@ -64,6 +96,7 @@ export const subscribeDesktopLayoutChanged = (callback: (layout: WidgetLayout[])
 export const saveDesktopLayout = (layout: WidgetLayout[]) => {
   window.localStorage.setItem(DESKTOP_LAYOUT_KEY, JSON.stringify(layout));
   notifyDesktopLayoutChanged(layout);
+  void saveDesktopLayoutToServer(layout);
 };
 
 export const resetDesktopLayout = (): WidgetLayout[] => {
