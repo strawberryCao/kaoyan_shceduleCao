@@ -4,16 +4,16 @@ setlocal
 
 cd /d "%~dp0"
 
-echo 正在启动依赖安装脚本...
+echo Starting dependency installer...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-deps.ps1"
 
 if errorlevel 1 (
   echo.
-  echo 依赖安装失败。请把上面的报错截图或复制给 ChatGPT。
+  echo Dependency installation failed. Please send the error output to ChatGPT.
   pause
   exit /b 1
 )
 
 echo.
-echo 依赖安装完成。
+echo Dependency installation completed.
 pause
