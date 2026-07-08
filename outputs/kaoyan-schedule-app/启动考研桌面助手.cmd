@@ -31,22 +31,18 @@ if not exist node_modules (
   )
 )
 
-netstat -ano | findstr /R /C:":5174 .*LISTENING" >nul 2>nul
-if errorlevel 1 (
-  echo Starting note save server on 5174...
-  start "Kaoyan Note Server" /min node "%~dp0scripts\note-server.cjs"
-) else (
-  echo Note save server is already running on 5174.
-)
+echo Restarting local servers so the latest code is used...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":5173 .*LISTENING"') do taskkill /PID %%a /F >nul 2>nul
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":5174 .*LISTENING"') do taskkill /PID %%a /F >nul 2>nul
+timeout /t 1 >nul
 
-netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
-if errorlevel 1 (
-  echo Starting web server on 5173...
-  start "Kaoyan Web Server" /min npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
-  timeout /t 3 >nul
-) else (
-  echo Web server is already running on 5173.
-)
+echo Starting note save/layout server on 5174...
+start "Kaoyan Note Server" /min node "%~dp0scripts\note-server.cjs"
+
+echo Starting web server on 5173...
+start "Kaoyan Web Server" /min npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
+
+timeout /t 4 >nul
 
 echo.
 echo Opening unified hub...
@@ -59,5 +55,6 @@ echo Console:   http://127.0.0.1:5173/?console=1
 echo Notes:     http://127.0.0.1:5173/?notes=1
 echo Health:    http://127.0.0.1:5174/health
 echo.
+echo This launcher restarts ports 5173 and 5174 to avoid running stale code.
 echo You can close this window. The servers were started in minimized windows.
 pause
