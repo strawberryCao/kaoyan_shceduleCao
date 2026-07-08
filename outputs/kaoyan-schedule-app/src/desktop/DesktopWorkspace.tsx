@@ -40,6 +40,9 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
   };
 
   const bringToFront = (id: string) => {
+    if (!editable) {
+      return;
+    }
     const maxZ = Math.max(...layout.map((widget) => widget.zIndex), 1);
     updateLayout((current) => current.map((widget) => widget.id === id ? { ...widget, zIndex: maxZ + 1 } : widget));
   };
