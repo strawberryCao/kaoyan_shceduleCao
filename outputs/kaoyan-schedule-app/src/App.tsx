@@ -1,11 +1,23 @@
 import { ScheduleApp } from './components/ScheduleApp';
-import { WallpaperView } from './components/WallpaperView';
+import { DesktopConsole } from './desktop/DesktopConsole';
+import { DesktopWorkspace } from './desktop/DesktopWorkspace';
 import './wallpaper.css';
 import './notes.css';
 import './theme-fifth.css';
+import './desktop/desktop.css';
 
 export default function App() {
-  const isWallpaperMode = new URLSearchParams(window.location.search).get('wallpaper') === '1';
+  const params = new URLSearchParams(window.location.search);
+  const isWallpaperMode = params.get('wallpaper') === '1';
+  const isConsoleMode = params.get('console') === '1';
 
-  return isWallpaperMode ? <WallpaperView /> : <ScheduleApp />;
+  if (isConsoleMode) {
+    return <DesktopConsole />;
+  }
+
+  if (isWallpaperMode) {
+    return <DesktopWorkspace editable={false} />;
+  }
+
+  return <ScheduleApp />;
 }
