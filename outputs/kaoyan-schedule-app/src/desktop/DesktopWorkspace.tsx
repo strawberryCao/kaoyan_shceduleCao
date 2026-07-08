@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { GripHorizontal, Trash2 } from 'lucide-react';
 import { getDefaultLayout } from './registry';
-import { loadDesktopLayout, saveDesktopLayout, subscribeDesktopLayoutChanged } from './storage';
+import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout, subscribeDesktopLayoutChanged } from './storage';
 import type { WidgetLayout } from './types';
 import { renderDesktopWidget } from './DesktopWidgets';
 
@@ -15,6 +15,8 @@ interface DesktopWorkspaceProps {
 type DragState =
   | { mode: 'move'; id: string; startX: number; startY: number; originX: number; originY: number }
   | { mode: 'resize'; id: string; startX: number; startY: number; originWidth: number; originHeight: number };
+
+const sameLayout = (a: WidgetLayout[], b: WidgetLayout[]) => JSON.stringify(a) === JSON.stringify(b);
 
 export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutChange }: DesktopWorkspaceProps) {
   const [internalLayout, setInternalLayout] = useState<WidgetLayout[]>(() => loadDesktopLayout());
@@ -35,6 +37,27 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
     return subscribeDesktopLayoutChanged((nextLayout) => {
       setInternalLayout(nextLayout);
     });
+  }, [controlledLayout, editable]);
+
+  useEffect(() => {
+    if (controlledLayout || editable) {
+      return;
+    }
+
+    let cancelled = false;
+    const sync = async () => {
+      const serverLayout = await fetchDesktopLayoutFromServer();
+      if (!cancelled && serverLayout) {
+        setInternalLayout((current) => sameLayout(current, serverLayout) ? current : serverLayout);
+      }
+    };
+
+    void sync();
+    const timer = window.setInterval(sync, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [controlledLayout, editable]);
 
   const visibleLayout = useMemo(() => layout.filter((widget) => widget.visible), [layout]);
