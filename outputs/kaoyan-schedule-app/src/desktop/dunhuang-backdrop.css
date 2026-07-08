@@ -9,23 +9,22 @@
   z-index: 0;
   overflow: hidden;
   pointer-events: none;
-  background:
-    radial-gradient(ellipse at 18% 8%, rgba(255, 250, 235, 0.95) 0%, rgba(247, 235, 212, 0.72) 24%, transparent 48%),
-    radial-gradient(ellipse at 70% 18%, rgba(199, 177, 144, 0.26) 0%, transparent 42%),
-    radial-gradient(ellipse at 93% 67%, rgba(71, 66, 60, 0.48) 0%, rgba(73, 63, 55, 0.32) 30%, transparent 58%),
-    linear-gradient(135deg, #f1eadb 0%, #dfd0b8 42%, #b99b78 67%, #5e5348 100%);
+  background: #e8ddcb;
 }
 
 .dh-sandscape {
   position: absolute;
-  inset: -8vh -8vw;
-  opacity: 0.92;
-  background:
-    radial-gradient(ellipse at 14% 16%, rgba(255, 253, 240, 0.86), transparent 34%),
-    radial-gradient(ellipse at 58% 42%, rgba(222, 203, 175, 0.28), transparent 45%),
-    linear-gradient(145deg, rgba(249, 241, 224, 0.78), rgba(211, 190, 160, 0.38) 48%, rgba(91, 82, 75, 0.34));
-  transform: translate3d(calc(var(--dh-x) * -0.16), calc(var(--dh-y) * -0.12), 0) scale(1.025);
+  inset: -2.5vh -2.5vw;
+  background-image:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02), rgba(34, 29, 27, 0.08)),
+    url('/dunhuang-wallpaper.png'),
+    radial-gradient(ellipse at 18% 8%, rgba(255, 250, 235, 0.95) 0%, rgba(247, 235, 212, 0.72) 24%, transparent 48%),
+    linear-gradient(135deg, #f1eadb 0%, #dfd0b8 42%, #b99b78 67%, #5e5348 100%);
+  background-size: cover, cover, cover, cover;
+  background-position: center, center, center, center;
+  transform: translate3d(calc(var(--dh-x) * -0.08), calc(var(--dh-y) * -0.06), 0) scale(1.025);
   transition: transform 0.45s ease-out;
+  filter: saturate(0.98) contrast(1.02);
 }
 
 .dh-sandscape::before,
@@ -33,36 +32,34 @@
   position: absolute;
   content: '';
   inset: 0;
-  opacity: 0.46;
-  mix-blend-mode: multiply;
+  pointer-events: none;
 }
 
 .dh-sandscape::before {
+  opacity: 0.13;
+  mix-blend-mode: multiply;
   background:
-    radial-gradient(ellipse at 22% 72%, rgba(143, 118, 87, 0.20) 0%, transparent 34%),
-    radial-gradient(ellipse at 80% 64%, rgba(71, 67, 63, 0.22) 0%, transparent 38%),
-    linear-gradient(168deg, transparent 0 48%, rgba(255, 255, 255, 0.22) 49%, transparent 52%),
-    linear-gradient(171deg, transparent 0 61%, rgba(138, 111, 81, 0.16) 62%, transparent 65%);
-  filter: blur(0.7px);
+    repeating-linear-gradient(168deg, transparent 0 18px, rgba(92, 73, 55, 0.05) 19px, transparent 22px),
+    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.035) 8px, transparent 11px);
 }
 
 .dh-sandscape::after {
-  opacity: 0.32;
+  opacity: 0.18;
+  mix-blend-mode: soft-light;
   background:
-    repeating-linear-gradient(164deg, transparent 0 18px, rgba(92, 73, 55, 0.055) 19px, transparent 22px),
-    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.04) 8px, transparent 11px);
-  mask-image: linear-gradient(90deg, transparent 0%, black 16%, black 86%, transparent 100%);
+    radial-gradient(ellipse at 14% 16%, rgba(255, 255, 246, 0.34), transparent 34%),
+    radial-gradient(ellipse at 86% 78%, rgba(48, 43, 39, 0.22), transparent 44%);
 }
 
 .dh-paper-grain {
   position: absolute;
   inset: 0;
-  opacity: 0.46;
+  opacity: 0.18;
   mix-blend-mode: multiply;
   background-image:
-    radial-gradient(circle at 20% 30%, rgba(92, 72, 50, 0.105) 0 0.75px, transparent 0.9px),
-    radial-gradient(circle at 70% 18%, rgba(255, 255, 255, 0.20) 0 0.7px, transparent 0.95px),
-    repeating-linear-gradient(96deg, rgba(70, 52, 38, 0.018) 0 1px, transparent 1px 6px);
+    radial-gradient(circle at 20% 30%, rgba(92, 72, 50, 0.09) 0 0.65px, transparent 0.9px),
+    radial-gradient(circle at 70% 18%, rgba(255, 255, 255, 0.16) 0 0.6px, transparent 0.95px),
+    repeating-linear-gradient(96deg, rgba(70, 52, 38, 0.014) 0 1px, transparent 1px 6px);
   background-size: 31px 31px, 43px 43px, 13px 13px;
 }
 
@@ -70,7 +67,7 @@
   position: absolute;
   pointer-events: none;
   transform-origin: center;
-  mix-blend-mode: soft-light;
+  mix-blend-mode: screen;
   will-change: transform, opacity;
 }
 
@@ -88,15 +85,14 @@
   top: 41vh;
   width: 118vw;
   height: 18vh;
-  opacity: 0.42;
+  opacity: 0.18;
   background:
-    linear-gradient(100deg, transparent 0%, rgba(255, 255, 246, 0.10) 13%, rgba(255, 246, 225, 0.25) 42%, rgba(181, 146, 112, 0.10) 68%, transparent 100%);
-  border-top: 1px solid rgba(255, 255, 245, 0.30);
-  border-bottom: 1px solid rgba(130, 104, 78, 0.08);
+    linear-gradient(100deg, transparent 0%, rgba(255, 255, 246, 0.08) 13%, rgba(255, 246, 225, 0.18) 42%, rgba(181, 146, 112, 0.06) 68%, transparent 100%);
+  border-top: 1px solid rgba(255, 255, 245, 0.18);
   clip-path: polygon(0 54%, 13% 47%, 27% 52%, 43% 41%, 58% 46%, 74% 36%, 100% 40%, 100% 54%, 76% 50%, 59% 62%, 44% 55%, 27% 65%, 12% 58%, 0 66%);
   filter: blur(0.6px);
-  animation: dhSilkOne 36s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * 0.32), calc(var(--dh-y) * 0.22), 0) rotate(-2.4deg);
+  animation: dhSilkOne 46s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * 0.22), calc(var(--dh-y) * 0.14), 0) rotate(-2.4deg);
 }
 
 .dh-silk-two {
@@ -104,14 +100,14 @@
   top: 4vh;
   width: 66vw;
   height: 72vh;
-  opacity: 0.28;
-  border: 1px solid rgba(255, 255, 243, 0.18);
+  opacity: 0.12;
+  border: 1px solid rgba(255, 255, 243, 0.12);
   background:
-    radial-gradient(ellipse at 46% 45%, rgba(255, 252, 237, 0.20), rgba(190, 168, 138, 0.08) 38%, transparent 70%);
+    radial-gradient(ellipse at 46% 45%, rgba(255, 252, 237, 0.16), rgba(190, 168, 138, 0.05) 38%, transparent 70%);
   border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%;
   filter: blur(0.2px);
-  animation: dhSilkTwo 48s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.30), calc(var(--dh-y) * 0.20), 0) rotate(8deg);
+  animation: dhSilkTwo 58s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * 0.13), 0) rotate(8deg);
 }
 
 .dh-silk-three {
@@ -119,14 +115,14 @@
   bottom: 11vh;
   width: 86vw;
   height: 15vh;
-  opacity: 0.24;
+  opacity: 0.11;
   background:
-    linear-gradient(103deg, transparent, rgba(255, 249, 231, 0.18), rgba(128, 113, 99, 0.08), transparent);
-  border-top: 1px solid rgba(255, 255, 244, 0.22);
+    linear-gradient(103deg, transparent, rgba(255, 249, 231, 0.14), rgba(128, 113, 99, 0.04), transparent);
+  border-top: 1px solid rgba(255, 255, 244, 0.14);
   clip-path: polygon(0 66%, 18% 56%, 36% 63%, 55% 47%, 73% 58%, 100% 44%, 100% 55%, 76% 67%, 56% 58%, 37% 75%, 18% 66%, 0 77%);
   filter: blur(0.55px);
-  animation: dhSilkThree 42s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.36), calc(var(--dh-y) * -0.18), 0) rotate(-1.2deg);
+  animation: dhSilkThree 52s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.22), calc(var(--dh-y) * -0.1), 0) rotate(-1.2deg);
 }
 
 .dh-light-orb {
@@ -136,10 +132,10 @@
   width: 56vw;
   height: 56vw;
   border-radius: 999px;
-  opacity: 0.52;
-  background: radial-gradient(circle, rgba(255, 252, 239, 0.46), rgba(241, 218, 177, 0.16) 42%, transparent 70%);
-  animation: dhBreath 24s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0);
+  opacity: 0.14;
+  background: radial-gradient(circle, rgba(255, 252, 239, 0.34), rgba(241, 218, 177, 0.08) 42%, transparent 70%);
+  animation: dhBreath 32s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0);
 }
 
 .dh-particle-canvas {
@@ -147,7 +143,7 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0.34;
+  opacity: 0.18;
   mix-blend-mode: screen;
 }
 
@@ -155,8 +151,8 @@
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 58%, rgba(32, 28, 27, 0.22) 100%),
-    linear-gradient(90deg, rgba(255, 252, 240, 0.04), transparent 24%, rgba(33, 30, 30, 0.26) 100%);
+    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 60%, rgba(32, 28, 27, 0.16) 100%),
+    linear-gradient(90deg, rgba(255, 252, 240, 0.02), transparent 24%, rgba(33, 30, 30, 0.16) 100%);
 }
 
 .desktop-workspace-page .desktop-wallpaper-ribbon {
@@ -174,17 +170,17 @@
 }
 
 .desktop-widget {
-  border-color: rgba(255, 247, 226, 0.16);
+  border-color: rgba(255, 247, 226, 0.18);
   background:
-    linear-gradient(145deg, rgba(255, 249, 232, 0.10), rgba(26, 23, 23, 0.12)),
-    rgba(42, 36, 34, 0.30);
-  box-shadow: 0 28px 84px rgba(47, 34, 26, 0.24), inset 0 1px 0 rgba(255, 255, 245, 0.12);
-  backdrop-filter: blur(22px) saturate(0.92);
+    linear-gradient(145deg, rgba(255, 249, 232, 0.08), rgba(20, 18, 18, 0.10)),
+    rgba(38, 33, 31, 0.28);
+  box-shadow: 0 28px 84px rgba(47, 34, 26, 0.22), inset 0 1px 0 rgba(255, 255, 245, 0.12);
+  backdrop-filter: blur(20px) saturate(0.94);
 }
 
 .desktop-widget-header {
   border-bottom-color: rgba(255, 245, 222, 0.10);
-  color: rgba(255, 244, 222, 0.70);
+  color: rgba(255, 244, 222, 0.72);
 }
 
 .desktop-widget-header button,
@@ -206,23 +202,23 @@
 }
 
 @keyframes dhSilkOne {
-  0%, 100% { opacity: 0.32; transform: translate3d(calc(var(--dh-x) * 0.32), calc(var(--dh-y) * 0.22), 0) rotate(-2.4deg) scaleX(1); }
-  50% { opacity: 0.47; transform: translate3d(calc(var(--dh-x) * 0.32 + 18px), calc(var(--dh-y) * 0.22 - 8px), 0) rotate(-1deg) scaleX(1.035); }
+  0%, 100% { opacity: 0.12; transform: translate3d(calc(var(--dh-x) * 0.22), calc(var(--dh-y) * 0.14), 0) rotate(-2.4deg) scaleX(1); }
+  50% { opacity: 0.20; transform: translate3d(calc(var(--dh-x) * 0.22 + 12px), calc(var(--dh-y) * 0.14 - 5px), 0) rotate(-1deg) scaleX(1.02); }
 }
 
 @keyframes dhSilkTwo {
-  0%, 100% { opacity: 0.22; border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%; }
-  50% { opacity: 0.34; border-radius: 52% 48% 49% 51% / 44% 55% 45% 56%; }
+  0%, 100% { opacity: 0.08; border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%; }
+  50% { opacity: 0.14; border-radius: 52% 48% 49% 51% / 44% 55% 45% 56%; }
 }
 
 @keyframes dhSilkThree {
-  0%, 100% { opacity: 0.16; transform: translate3d(calc(var(--dh-x) * -0.36), calc(var(--dh-y) * -0.18), 0) rotate(-1.2deg); }
-  50% { opacity: 0.28; transform: translate3d(calc(var(--dh-x) * -0.36 - 16px), calc(var(--dh-y) * -0.18 + 6px), 0) rotate(-2.2deg); }
+  0%, 100% { opacity: 0.07; transform: translate3d(calc(var(--dh-x) * -0.22), calc(var(--dh-y) * -0.1), 0) rotate(-1.2deg); }
+  50% { opacity: 0.13; transform: translate3d(calc(var(--dh-x) * -0.22 - 10px), calc(var(--dh-y) * -0.1 + 4px), 0) rotate(-2.2deg); }
 }
 
 @keyframes dhBreath {
-  0%, 100% { opacity: 0.42; transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0) scale(1); }
-  50% { opacity: 0.58; transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0) scale(1.035); }
+  0%, 100% { opacity: 0.10; transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0) scale(1); }
+  50% { opacity: 0.18; transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0) scale(1.025); }
 }
 
 @media (prefers-reduced-motion: reduce) {
