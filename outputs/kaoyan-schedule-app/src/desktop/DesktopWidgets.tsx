@@ -13,7 +13,6 @@ import {
   STORAGE_KEY,
 } from '../utils/schedule';
 import { fileToDataUrl } from '../utils/notes';
-import { openNoteCaptureWindow } from '../utils/openWindows';
 import type { WidgetType } from './types';
 
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
@@ -33,6 +32,15 @@ const getFirstImageFile = (files: FileList | null): File | null => {
     return null;
   }
   return Array.from(files).find((file) => file.type.startsWith('image/')) ?? null;
+};
+
+const openNoteCaptureWindow = () => {
+  const opened = window.open(
+    `${window.location.origin}/?notes=1`,
+    'kaoyan_note_capture',
+    'width=1280,height=860,left=80,top=60',
+  );
+  opened?.focus();
 };
 
 function ScheduleWidget() {
