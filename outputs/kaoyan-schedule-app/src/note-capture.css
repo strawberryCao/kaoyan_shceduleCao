@@ -6,7 +6,7 @@
     radial-gradient(circle at 78% 18%, rgba(226, 128, 202, 0.18), transparent 34%),
     linear-gradient(135deg, #15131c 0%, #241d2b 48%, #15131c 100%);
   color: rgba(255, 255, 255, 0.92);
-  padding: 24px;
+  padding: 20px;
 }
 
 .note-capture-header {
@@ -14,8 +14,8 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
-  margin: 0 auto 18px;
-  max-width: 1480px;
+  margin: 0 auto 14px;
+  max-width: 1760px;
 }
 
 .note-capture-header p,
@@ -69,11 +69,19 @@
   padding: 0 14px;
 }
 
+.note-capture-header-actions button:hover,
+.note-capture-tabs button:hover,
+.note-primary-button:hover,
+.canvas-toolbar button:hover,
+.canvas-toolbar button.active {
+  background: rgba(242, 202, 151, 0.22);
+}
+
 .note-capture-tabs {
   display: flex;
   gap: 10px;
-  margin: 0 auto 18px;
-  max-width: 1480px;
+  margin: 0 auto 14px;
+  max-width: 1760px;
 }
 
 .note-capture-tabs button.active {
@@ -83,9 +91,9 @@
 
 .note-capture-layout {
   display: grid;
-  grid-template-columns: minmax(330px, 0.8fr) minmax(560px, 1.4fr);
-  gap: 18px;
-  max-width: 1480px;
+  grid-template-columns: minmax(320px, 390px) minmax(900px, 1fr);
+  gap: 16px;
+  max-width: 1760px;
   margin: 0 auto;
 }
 
@@ -93,7 +101,7 @@
   display: grid;
   grid-template-rows: auto minmax(260px, 1fr) auto auto;
   gap: 12px;
-  min-height: 680px;
+  min-height: calc(100vh - 142px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 24px;
   background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035)), rgba(32, 27, 38, 0.68);
@@ -102,8 +110,12 @@
   padding: 16px;
 }
 
+.single-panel {
+  min-height: 620px;
+}
+
 .canvas-panel {
-  grid-template-rows: auto auto minmax(420px, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(680px, 1fr) auto auto;
 }
 
 .note-capture-panel > header {
@@ -155,7 +167,7 @@
 }
 
 .note-capture-panel textarea {
-  min-height: 88px;
+  min-height: 82px;
   resize: vertical;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 16px;
@@ -179,12 +191,17 @@
 
 .capture-board {
   position: relative;
-  min-height: 440px;
+  min-height: 680px;
   overflow: hidden;
   border-radius: 20px;
   background-color: #f7f4ee;
   background-image: linear-gradient(rgba(36, 48, 57, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(36, 48, 57, 0.08) 1px, transparent 1px);
   background-size: 32px 32px;
+  cursor: default;
+  touch-action: none;
+}
+
+.capture-board.tool-brush {
   cursor: crosshair;
 }
 
@@ -192,7 +209,7 @@
   position: absolute;
   left: 16px;
   top: 14px;
-  z-index: 1;
+  z-index: 4;
   border-radius: 999px;
   background: rgba(36, 48, 57, 0.72);
   color: rgba(255, 255, 255, 0.82);
@@ -204,6 +221,7 @@
 
 .capture-board-image {
   position: absolute;
+  z-index: 2;
   overflow: hidden;
   border: 2px solid rgba(49, 93, 114, 0.36);
   border-radius: 10px;
@@ -212,12 +230,36 @@
   cursor: move;
 }
 
+.capture-board-image.selected,
+.capture-board-text.selected {
+  outline: 3px solid rgba(242, 202, 151, 0.78);
+  outline-offset: 2px;
+}
+
 .capture-board-image img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: fill;
   user-select: none;
+}
+
+.capture-item-delete,
+.capture-board-text button {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(36, 48, 57, 0.82);
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
 }
 
 .capture-board-resize {
@@ -231,21 +273,53 @@
   cursor: nwse-resize;
 }
 
+.capture-stroke-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.capture-stroke-layer path {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.capture-stroke-layer path.selected {
+  filter: drop-shadow(0 0 4px rgba(242, 202, 151, 0.95));
+  stroke: #b35c2e;
+}
+
 .capture-board-text {
   position: absolute;
+  z-index: 5;
   color: #243039;
   cursor: move;
   font-size: 22px;
   font-weight: 850;
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
   user-select: none;
+  padding: 2px 30px 2px 2px;
 }
 
-@media (max-width: 980px) {
+.capture-board-text button {
+  right: 0;
+  top: -10px;
+}
+
+@media (max-width: 1280px) {
   .note-capture-layout {
     grid-template-columns: 1fr;
   }
 
+  .canvas-panel {
+    min-height: 820px;
+  }
+}
+
+@media (max-width: 980px) {
   .note-capture-header {
     display: grid;
   }
