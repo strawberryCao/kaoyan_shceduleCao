@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Plus, RotateCcw, Save } from 'lucide-react';
 import { getDefaultLayout, getWidgetDefinition, WIDGET_DEFINITIONS } from './registry';
-import { loadDesktopLayout, saveDesktopLayout } from './storage';
+import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout } from './storage';
 import type { WidgetLayout, WidgetType } from './types';
 import { DesktopWorkspace } from './DesktopWorkspace';
 
@@ -23,6 +23,21 @@ const createWidget = (type: WidgetType, index: number): WidgetLayout => {
 export function DesktopConsole() {
   const [layout, setLayout] = useState<WidgetLayout[]>(() => loadDesktopLayout());
   const [savedText, setSavedText] = useState('布局已从本机读取，拖动后会实时同步');
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadServerLayout = async () => {
+      const serverLayout = await fetchDesktopLayoutFromServer();
+      if (!cancelled && serverLayout) {
+        setLayout(serverLayout);
+        setSavedText('已读取本地服务保存的布局');
+      }
+    };
+    void loadServerLayout();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const commitLayout = (nextLayout: WidgetLayout[], text = '已实时同步到壁纸') => {
     setLayout(nextLayout);
