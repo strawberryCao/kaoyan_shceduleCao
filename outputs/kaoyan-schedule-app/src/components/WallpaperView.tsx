@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpen, CalendarDays, Dumbbell, ExternalLink, Moon, Target, TimerReset } from 'lucide-react';
+import { NoteDock } from './NoteDock';
 import type { DayRecord, RecordsByDate, ScheduleDay, ScheduleTask } from '../types';
 import {
   calculateStats,
@@ -189,6 +190,8 @@ export function WallpaperView() {
           <strong>24:00 睡觉，别拖</strong>
         </footer>
       </section>
+
+      <NoteDock />
     </main>
   );
 }
