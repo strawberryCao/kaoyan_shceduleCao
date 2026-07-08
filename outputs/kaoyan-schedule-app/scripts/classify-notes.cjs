@@ -9,9 +9,27 @@ const DEFAULT_SUBJECT = '默认文件夹';
 const DEFAULT_DIR = path.join(NOTES_ROOT, DEFAULT_SUBJECT);
 const LOG_PATH = path.join(ASSISTANT_ROOT, 'classify-notes.log');
 
+function normalizeQwenModel(input) {
+  const raw = String(input || '').trim();
+  if (!raw) {
+    return 'qwen-vl-plus';
+  }
+  const compact = raw.toLowerCase().replace(/\s+/g, '');
+  const aliases = new Map([
+    ['qwen-v1-plus', 'qwen-vl-plus'],
+    ['qwen-vlplus', 'qwen-vl-plus'],
+    ['qwen-vl_plus', 'qwen-vl-plus'],
+    ['qwenvlplus', 'qwen-vl-plus'],
+    ['qwen3.5-plus-vl', 'qwen-vl-plus'],
+    ['qwen3-plus-vl', 'qwen-vl-plus'],
+    ['qwen3-plus', 'qwen-vl-plus'],
+  ]);
+  return aliases.get(compact) || raw;
+}
+
 const QWEN_TOKEN = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
 const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-vl-plus';
+const QWEN_MODEL = normalizeQwenModel(process.env.QWEN_MODEL || 'qwen-vl-plus');
 
 const SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
 const SUBJECT_ALIASES = new Map([
