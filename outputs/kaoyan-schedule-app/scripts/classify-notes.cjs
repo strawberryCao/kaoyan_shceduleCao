@@ -61,6 +61,24 @@ function fileToDataUrl(filePath) {
   return `data:${getMimeByExt(ext)};base64,${fs.readFileSync(filePath).toString('base64')}`;
 }
 
+function metadataDir(dir) {
+  return path.join(dir, '.metadata');
+}
+
+function metadataIndexPath(dir) {
+  return path.join(metadataDir(dir), 'metadata.json');
+}
+
+function sidecarPathForImage(imagePath) {
+  const parsed = path.parse(imagePath);
+  return path.join(metadataDir(parsed.dir), `${parsed.name}.note.json`);
+}
+
+function legacySidecarPathForImage(imagePath) {
+  const parsed = path.parse(imagePath);
+  return path.join(parsed.dir, `${parsed.name}.note.json`);
+}
+
 function readJson(filePath, fallback) {
   if (!fs.existsSync(filePath)) return fallback;
   try {
@@ -71,17 +89,19 @@ function readJson(filePath, fallback) {
 }
 
 function writeJson(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
 }
 
 function loadMetadataList(dir) {
-  const data = readJson(path.join(dir, 'metadata.json'), []);
-  return Array.isArray(data) ? data : [];
+  const newData = readJson(metadataIndexPath(dir), null);
+  if (Array.isArray(newData)) return newData;
+  const legacyData = readJson(path.join(dir, 'metadata.json'), []);
+  return Array.isArray(legacyData) ? legacyData : [];
 }
 
 function writeMetadataList(dir, list) {
-  fs.mkdirSync(dir, { recursive: true });
-  writeJson(path.join(dir, 'metadata.json'), list);
+  writeJson(metadataIndexPath(dir), list);
 }
 
 function removeFromMetadata(dir, metadata) {
@@ -225,16 +245,17 @@ function getCandidates() {
 }
 
 function readSidecar(imagePath) {
-  const parsed = path.parse(imagePath);
-  const sidecarPath = path.join(parsed.dir, `${parsed.name}.note.json`);
-  return { sidecarPath, metadata: readJson(sidecarPath, null) };
+  const currentSidecarPath = sidecarPathForImage(imagePath);
+  const legacySidecarPath = legacySidecarPathForImage(imagePath);
+  const metadata = readJson(currentSidecarPath, readJson(legacySidecarPath, null));
+  return { sidecarPath: currentSidecarPath, legacySidecarPath, metadata };
 }
 
 async function classifyOne(imagePath) {
   const ext = path.extname(imagePath).toLowerCase();
   const originalName = path.basename(imagePath);
   const stat = fs.statSync(imagePath);
-  const { sidecarPath, metadata: sidecarMetadata } = readSidecar(imagePath);
+  const { sidecarPath, legacySidecarPath, metadata: sidecarMetadata } = readSidecar(imagePath);
   const baseMetadata = sidecarMetadata && typeof sidecarMetadata === 'object'
     ? sidecarMetadata
     : {
@@ -259,10 +280,11 @@ async function classifyOne(imagePath) {
   const baseName = sanitizeSegment(`${result.subject}_${result.title}_${stamp}`, `${result.subject}_未命名内容_${stamp}`, 120);
   const { fileName: newFileName, filePath: newImagePath } = ensureUniqueFilePath(destDir, baseName, ext);
   const newId = path.parse(newFileName).name;
-  const newSidecarPath = path.join(destDir, `${newId}.note.json`);
+  const newSidecarPath = path.join(metadataDir(destDir), `${newId}.note.json`);
 
   fs.renameSync(imagePath, newImagePath);
   if (fs.existsSync(sidecarPath)) fs.rmSync(sidecarPath, { force: true });
+  if (legacySidecarPath !== sidecarPath && fs.existsSync(legacySidecarPath)) fs.rmSync(legacySidecarPath, { force: true });
 
   const nextMetadata = {
     ...baseMetadata,
@@ -295,6 +317,7 @@ async function main() {
   log('---- classify default notes start ----');
   log(`notesRoot=${NOTES_ROOT}`);
   log(`defaultDir=${DEFAULT_DIR}`);
+  log(`metadataPlacement=subject/.metadata`);
   log(`configPath=${qwen.configPath}`);
   log(`configSource=${qwen.source}`);
   log(`model=${qwen.model}`);
