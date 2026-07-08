@@ -31,6 +31,16 @@ if not exist node_modules (
   )
 )
 
+if not exist node_modules\three (
+  echo Three.js dependency is missing. Installing dependencies, please wait...
+  call npm.cmd install
+  if errorlevel 1 (
+    echo Dependency installation failed.
+    pause
+    exit /b 1
+  )
+)
+
 echo Registering note organizer schedule: every 2 days at 09:00...
 schtasks /Create /F /TN "KaoyanNotesAutoClassify" /TR "\"%~dp0scripts\run-classify-notes.cmd\"" /SC DAILY /MO 2 /ST 09:00 >nul 2>nul
 if errorlevel 1 (
