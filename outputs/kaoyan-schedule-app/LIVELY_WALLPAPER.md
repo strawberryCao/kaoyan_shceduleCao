@@ -5,6 +5,24 @@
 - 普通地址 `/`：完整管理模式，可以看 30 天课表、勾选、写备注、导入导出、看统计。
 - 壁纸地址 `/?wallpaper=1`：Lively Wallpaper 专用，只显示今日课表和进度，不再依赖 Electron 贴桌面。
 
+## 先安装依赖
+
+如果你是第一次运行，先双击项目目录里的：
+
+```text
+安装依赖.cmd
+```
+
+这个脚本会做几件事：
+
+1. 检查 Node.js / npm。
+2. 如果可以使用 winget，会尝试安装 Node.js LTS。
+3. 如果可以使用 winget，会尝试安装 Lively Wallpaper。
+4. 执行 `npm install` 安装项目依赖。
+5. 执行 `npm run build` 验证项目能否正常构建。
+
+如果脚本提示 winget 不可用，就手动安装 Node.js LTS 和 Lively Wallpaper，然后重新运行脚本。
+
 ## 为什么不用 Electron 贴桌面
 
 之前的 Electron 方案会尝试使用 Windows 的 `WorkerW / Progman / SetParent` 把窗口强行挂到桌面层。这个方案容易出现窗口坐标错乱、固定位置跳动、层级异常等问题。
@@ -13,7 +31,7 @@
 
 ## 推荐方式：使用启动脚本
 
-1. 安装 Lively Wallpaper。
+1. 先运行 `安装依赖.cmd`。
 2. 双击项目目录里的：
 
 ```text
