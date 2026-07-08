@@ -22,7 +22,7 @@
     linear-gradient(135deg, #f1eadb 0%, #dfd0b8 42%, #b99b78 67%, #5e5348 100%);
   background-size: cover, cover, cover, cover;
   background-position: center, center, center, center;
-  transform: translate3d(calc(var(--dh-x) * -0.08), calc(var(--dh-y) * -0.06), 0) scale(1.025);
+  transform: translate3d(calc(var(--dh-x) * -0.05), calc(var(--dh-y) * -0.04), 0) scale(1.02);
   transition: transform 0.45s ease-out;
   filter: saturate(0.98) contrast(1.02);
 }
@@ -36,122 +36,41 @@
 }
 
 .dh-sandscape::before {
-  opacity: 0.13;
+  opacity: 0.10;
   mix-blend-mode: multiply;
   background:
-    repeating-linear-gradient(168deg, transparent 0 18px, rgba(92, 73, 55, 0.05) 19px, transparent 22px),
-    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.035) 8px, transparent 11px);
+    repeating-linear-gradient(168deg, transparent 0 18px, rgba(92, 73, 55, 0.045) 19px, transparent 22px),
+    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.03) 8px, transparent 11px);
 }
 
 .dh-sandscape::after {
-  opacity: 0.18;
+  opacity: 0.16;
   mix-blend-mode: soft-light;
   background:
-    radial-gradient(ellipse at 14% 16%, rgba(255, 255, 246, 0.34), transparent 34%),
-    radial-gradient(ellipse at 86% 78%, rgba(48, 43, 39, 0.22), transparent 44%);
+    radial-gradient(ellipse at 14% 16%, rgba(255, 255, 246, 0.30), transparent 34%),
+    radial-gradient(ellipse at 86% 78%, rgba(48, 43, 39, 0.20), transparent 44%);
 }
 
-.dh-paper-grain {
-  position: absolute;
-  inset: 0;
-  opacity: 0.18;
-  mix-blend-mode: multiply;
-  background-image:
-    radial-gradient(circle at 20% 30%, rgba(92, 72, 50, 0.09) 0 0.65px, transparent 0.9px),
-    radial-gradient(circle at 70% 18%, rgba(255, 255, 255, 0.16) 0 0.6px, transparent 0.95px),
-    repeating-linear-gradient(96deg, rgba(70, 52, 38, 0.014) 0 1px, transparent 1px 6px);
-  background-size: 31px 31px, 43px 43px, 13px 13px;
-}
-
-.dh-silk {
-  position: absolute;
-  pointer-events: none;
-  transform-origin: center;
-  mix-blend-mode: screen;
-  will-change: transform, opacity;
-}
-
-.dh-silk::before,
-.dh-silk::after {
-  position: absolute;
-  content: '';
-  inset: 0;
-  border-radius: inherit;
-  background: inherit;
-}
-
-.dh-silk-one {
-  left: -10vw;
-  top: 41vh;
-  width: 118vw;
-  height: 18vh;
-  opacity: 0.18;
-  background:
-    linear-gradient(100deg, transparent 0%, rgba(255, 255, 246, 0.08) 13%, rgba(255, 246, 225, 0.18) 42%, rgba(181, 146, 112, 0.06) 68%, transparent 100%);
-  border-top: 1px solid rgba(255, 255, 245, 0.18);
-  clip-path: polygon(0 54%, 13% 47%, 27% 52%, 43% 41%, 58% 46%, 74% 36%, 100% 40%, 100% 54%, 76% 50%, 59% 62%, 44% 55%, 27% 65%, 12% 58%, 0 66%);
-  filter: blur(0.6px);
-  animation: dhSilkOne 46s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * 0.22), calc(var(--dh-y) * 0.14), 0) rotate(-2.4deg);
-}
-
-.dh-silk-two {
-  right: -14vw;
-  top: 4vh;
-  width: 66vw;
-  height: 72vh;
-  opacity: 0.12;
-  border: 1px solid rgba(255, 255, 243, 0.12);
-  background:
-    radial-gradient(ellipse at 46% 45%, rgba(255, 252, 237, 0.16), rgba(190, 168, 138, 0.05) 38%, transparent 70%);
-  border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%;
-  filter: blur(0.2px);
-  animation: dhSilkTwo 58s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * 0.13), 0) rotate(8deg);
-}
-
-.dh-silk-three {
-  right: -12vw;
-  bottom: 11vh;
-  width: 86vw;
-  height: 15vh;
-  opacity: 0.11;
-  background:
-    linear-gradient(103deg, transparent, rgba(255, 249, 231, 0.14), rgba(128, 113, 99, 0.04), transparent);
-  border-top: 1px solid rgba(255, 255, 244, 0.14);
-  clip-path: polygon(0 66%, 18% 56%, 36% 63%, 55% 47%, 73% 58%, 100% 44%, 100% 55%, 76% 67%, 56% 58%, 37% 75%, 18% 66%, 0 77%);
-  filter: blur(0.55px);
-  animation: dhSilkThree 52s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.22), calc(var(--dh-y) * -0.1), 0) rotate(-1.2deg);
-}
-
-.dh-light-orb {
-  position: absolute;
-  left: -4vw;
-  top: -8vh;
-  width: 56vw;
-  height: 56vw;
-  border-radius: 999px;
-  opacity: 0.14;
-  background: radial-gradient(circle, rgba(255, 252, 239, 0.34), rgba(241, 218, 177, 0.08) 42%, transparent 70%);
-  animation: dhBreath 32s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0);
-}
-
-.dh-particle-canvas {
+.dh-webgl-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0.18;
-  mix-blend-mode: screen;
+  display: block;
+  opacity: 1;
+  filter: saturate(1.02) contrast(1.01);
+}
+
+.dh-webgl-canvas.webgl-unavailable {
+  display: none;
 }
 
 .dh-vignette {
   position: absolute;
   inset: 0;
+  z-index: 2;
   background:
-    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 60%, rgba(32, 28, 27, 0.16) 100%),
+    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 62%, rgba(32, 28, 27, 0.16) 100%),
     linear-gradient(90deg, rgba(255, 252, 240, 0.02), transparent 24%, rgba(33, 30, 30, 0.16) 100%);
 }
 
@@ -201,29 +120,8 @@
   border-color: rgba(198, 151, 92, 0.44);
 }
 
-@keyframes dhSilkOne {
-  0%, 100% { opacity: 0.12; transform: translate3d(calc(var(--dh-x) * 0.22), calc(var(--dh-y) * 0.14), 0) rotate(-2.4deg) scaleX(1); }
-  50% { opacity: 0.20; transform: translate3d(calc(var(--dh-x) * 0.22 + 12px), calc(var(--dh-y) * 0.14 - 5px), 0) rotate(-1deg) scaleX(1.02); }
-}
-
-@keyframes dhSilkTwo {
-  0%, 100% { opacity: 0.08; border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%; }
-  50% { opacity: 0.14; border-radius: 52% 48% 49% 51% / 44% 55% 45% 56%; }
-}
-
-@keyframes dhSilkThree {
-  0%, 100% { opacity: 0.07; transform: translate3d(calc(var(--dh-x) * -0.22), calc(var(--dh-y) * -0.1), 0) rotate(-1.2deg); }
-  50% { opacity: 0.13; transform: translate3d(calc(var(--dh-x) * -0.22 - 10px), calc(var(--dh-y) * -0.1 + 4px), 0) rotate(-2.2deg); }
-}
-
-@keyframes dhBreath {
-  0%, 100% { opacity: 0.10; transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0) scale(1); }
-  50% { opacity: 0.18; transform: translate3d(calc(var(--dh-x) * -0.1), calc(var(--dh-y) * -0.08), 0) scale(1.025); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .dh-silk,
-  .dh-light-orb {
-    animation: none;
+  .dh-webgl-canvas {
+    opacity: 0.84;
   }
 }
