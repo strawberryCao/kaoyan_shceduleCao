@@ -3,18 +3,14 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Resolve-Path (Join-Path $PSScriptRoot '..')
 Set-Location $ProjectRoot
 
-function Test-Port5173 {
+function Test-Port($Port) {
   try {
-    $connection = Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction Stop | Select-Object -First 1
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Stop | Select-Object -First 1
     return $null -ne $connection
   } catch {
-    $netstat = cmd.exe /c "netstat -ano | findstr :5173"
+    $netstat = cmd.exe /c "netstat -ano | findstr :$Port"
     return -not [string]::IsNullOrWhiteSpace($netstat)
   }
-}
-
-if (Test-Port5173) {
-  exit 0
 }
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
@@ -27,6 +23,14 @@ if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
 
 if (-not (Test-Path (Join-Path $ProjectRoot 'node_modules'))) {
   npm.cmd install
+}
+
+if (-not (Test-Port 5174)) {
+  Start-Process -FilePath 'node' -ArgumentList @((Join-Path $ProjectRoot 'scripts\note-server.cjs')) -WindowStyle Hidden -WorkingDirectory $ProjectRoot
+}
+
+if (Test-Port 5173) {
+  exit 0
 }
 
 npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
