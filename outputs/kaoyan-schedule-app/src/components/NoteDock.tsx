@@ -1,5 +1,13 @@
 import { Clipboard, ExternalLink } from 'lucide-react';
-import { openNoteCaptureWindow } from '../utils/openWindows';
+
+const openNoteCaptureWindow = () => {
+  const opened = window.open(
+    `${window.location.origin}/?notes=1`,
+    'kaoyan_note_capture',
+    'width=1280,height=860,left=80,top=60',
+  );
+  opened?.focus();
+};
 
 export function NoteDock() {
   return (
