@@ -1,0 +1,89 @@
+.app-hub-page {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(242, 202, 151, 0.22), transparent 34%),
+    radial-gradient(circle at 76% 16%, rgba(226, 128, 202, 0.2), transparent 35%),
+    linear-gradient(135deg, #15131c 0%, #241d2b 48%, #15131c 100%);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 28px;
+}
+
+.app-hub-card {
+  width: min(1080px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 30px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035)), rgba(32, 27, 38, 0.68);
+  box-shadow: 0 28px 86px rgba(6, 5, 9, 0.36);
+  backdrop-filter: blur(20px) saturate(1.08);
+  padding: 28px;
+}
+
+.app-hub-card header p,
+.app-hub-card header h1,
+.app-hub-card header span {
+  margin: 0;
+}
+
+.app-hub-card header p {
+  color: #f2ca97;
+  font-size: 13px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+}
+
+.app-hub-card header h1 {
+  margin-top: 8px;
+  font-size: 38px;
+  line-height: 1.1;
+}
+
+.app-hub-card header span {
+  display: block;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.app-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.app-hub-grid button {
+  display: grid;
+  min-height: 158px;
+  align-content: start;
+  gap: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  padding: 18px;
+  text-align: left;
+}
+
+.app-hub-grid button:hover {
+  border-color: rgba(242, 202, 151, 0.34);
+  background: rgba(242, 202, 151, 0.1);
+}
+
+.app-hub-grid svg {
+  color: #f2ca97;
+}
+
+.app-hub-grid strong {
+  font-size: 18px;
+}
+
+.app-hub-grid span {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.45;
+}
