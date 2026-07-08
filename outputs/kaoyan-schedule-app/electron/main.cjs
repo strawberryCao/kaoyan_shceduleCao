@@ -1,20 +1,17 @@
 const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell, screen } = require('electron');
-const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
 const windowStateFile = 'window-state.json';
-const windowStateProfile = 'right-widget-v3';
+const windowStateProfile = 'normal-desktop-v1';
 const startupShortcutName = '考研学习课表.lnk';
 
 let mainWindow = null;
 let tray = null;
 let quitting = false;
 let saveBoundsTimer = null;
-let attachedToDesktop = false;
-let suppressBoundsSave = false;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -50,14 +47,12 @@ function getStartupShortcutPath() {
 function getDefaultBounds() {
   const display = screen.getPrimaryDisplay();
   const workArea = display.workArea;
-  const marginRight = 10;
-  const marginBottom = 8;
-  const width = clamp(Math.round(workArea.width * 0.295), 340, 620);
-  const height = Math.max(560, workArea.height - marginBottom);
+  const width = clamp(Math.round(workArea.width * 0.72), 980, Math.max(980, workArea.width));
+  const height = clamp(Math.round(workArea.height * 0.86), 720, Math.max(720, workArea.height));
 
   return {
-    x: workArea.x + workArea.width - width - marginRight,
-    y: workArea.y,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
     width,
     height,
   };
@@ -66,7 +61,7 @@ function getDefaultBounds() {
 function normalizeBounds(bounds) {
   const display = screen.getDisplayMatching(bounds);
   const workArea = display.workArea;
-  const width = clamp(Math.round(bounds.width), 340, Math.max(340, workArea.width));
+  const width = clamp(Math.round(bounds.width), 720, Math.max(720, workArea.width));
   const height = clamp(Math.round(bounds.height), 540, Math.max(540, workArea.height));
 
   return {
@@ -100,18 +95,12 @@ function saveCurrentBounds() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  if (attachedToDesktop || suppressBoundsSave) {
-    return;
-  }
   const bounds = mainWindow.getBounds();
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   fs.writeFileSync(getWindowStatePath(), JSON.stringify({ profile: windowStateProfile, ...bounds }, null, 2), 'utf8');
 }
 
 function queueSaveCurrentBounds() {
-  if (attachedToDesktop || suppressBoundsSave) {
-    return;
-  }
   clearTimeout(saveBoundsTimer);
   saveBoundsTimer = setTimeout(saveCurrentBounds, 500);
 }
@@ -120,163 +109,9 @@ function restoreDefaultPosition() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
-  const bounds = getDefaultBounds();
-  mainWindow.setBounds(bounds);
+  mainWindow.setBounds(getDefaultBounds());
   saveCurrentBounds();
   showWindow();
-}
-
-function runPowerShell(script) {
-  return new Promise((resolve) => {
-    execFile(
-      'powershell.exe',
-      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script],
-      { windowsHide: true, timeout: 6000 },
-      (error, stdout, stderr) => {
-        resolve({
-          ok: !error,
-          stdout: String(stdout || '').trim(),
-          stderr: String(stderr || '').trim(),
-        });
-      },
-    );
-  });
-}
-
-function getWindowHandleDecimal() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return null;
-  }
-  const handle = mainWindow.getNativeWindowHandle();
-  if (handle.length >= 8) {
-    return handle.readBigUInt64LE(0).toString();
-  }
-  return BigInt(handle.readUInt32LE(0)).toString();
-}
-
-async function attachToDesktopLayer() {
-  if (process.platform !== 'win32' || !mainWindow || mainWindow.isDestroyed()) {
-    return false;
-  }
-
-  const hwnd = getWindowHandleDecimal();
-  if (!hwnd) {
-    return false;
-  }
-
-  const bounds = mainWindow.getBounds();
-  const script = `
-$ErrorActionPreference = 'Stop'
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public class Win32DesktopLayer {
-  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string lpszWindow);
-  [DllImport("user32.dll", SetLastError=true)] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam, UInt32 fuFlags, UInt32 uTimeout, out IntPtr lpdwResult);
-  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, UInt32 uFlags);
-  [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
-  [DllImport("user32.dll", EntryPoint="GetWindowLongPtr", SetLastError=true)] private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
-  [DllImport("user32.dll", EntryPoint="SetWindowLongPtr", SetLastError=true)] private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-  [DllImport("user32.dll", EntryPoint="GetWindowLong", SetLastError=true)] private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
-  [DllImport("user32.dll", EntryPoint="SetWindowLong", SetLastError=true)] private static extern IntPtr SetWindowLong32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
-
-  public static string ClassName(IntPtr hWnd) {
-    if (hWnd == IntPtr.Zero) return "";
-    var className = new StringBuilder(256);
-    GetClassName(hWnd, className, className.Capacity);
-    return className.ToString();
-  }
-
-  public static IntPtr GetWindowStyle(IntPtr hWnd) {
-    return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, -16) : GetWindowLong32(hWnd, -16);
-  }
-
-  public static void MakeDesktopChild(IntPtr hWnd) {
-    const long WS_POPUP = unchecked((long)0x80000000);
-    const long WS_CHILD = 0x40000000;
-    long style = GetWindowStyle(hWnd).ToInt64();
-    long nextStyle = (style & ~WS_POPUP) | WS_CHILD;
-    if (IntPtr.Size == 8) {
-      SetWindowLongPtr64(hWnd, -16, new IntPtr(nextStyle));
-    } else {
-      SetWindowLong32(hWnd, -16, new IntPtr(nextStyle));
-    }
-  }
-}
-"@
-$target = [IntPtr]::new([Int64]${hwnd})
-$script:progman = [IntPtr]::Zero
-$script:firstWorkerW = [IntPtr]::Zero
-$script:defViewHost = [IntPtr]::Zero
-$desktopScan = [Win32DesktopLayer+EnumWindowsProc]{
-  param([IntPtr]$topHandle, [IntPtr]$lParam)
-  $className = [Win32DesktopLayer]::ClassName($topHandle)
-  if ($className -eq "Progman") {
-    $script:progman = $topHandle
-  }
-  if ($className -eq "WorkerW" -and $script:firstWorkerW -eq [IntPtr]::Zero) {
-    $script:firstWorkerW = $topHandle
-  }
-  $defView = [Win32DesktopLayer]::FindWindowEx($topHandle, [IntPtr]::Zero, "SHELLDLL_DefView", $null)
-  if ($defView -ne [IntPtr]::Zero) {
-    $script:defViewHost = $topHandle
-  }
-  return $true
-}
-[void][Win32DesktopLayer]::EnumWindows($desktopScan, [IntPtr]::Zero)
-
-$result = [IntPtr]::Zero
-[void][Win32DesktopLayer]::SendMessageTimeout($script:progman, 0x052C, [IntPtr]::Zero, [IntPtr]::Zero, 0, 1000, [ref]$result)
-$script:workerw = [IntPtr]::Zero
-$script:seenDefViewHost = $false
-$workerScan = [Win32DesktopLayer+EnumWindowsProc]{
-  param([IntPtr]$topHandle, [IntPtr]$lParam)
-  if ($topHandle -eq $script:defViewHost) {
-    $script:seenDefViewHost = $true
-    return $true
-  }
-  if ($script:seenDefViewHost -and [Win32DesktopLayer]::ClassName($topHandle) -eq "WorkerW" -and $script:workerw -eq [IntPtr]::Zero) {
-    $script:workerw = $topHandle
-  }
-  return $true
-}
-[void][Win32DesktopLayer]::EnumWindows($workerScan, [IntPtr]::Zero)
-
-$script:desktopHost = $script:workerw
-if ($script:desktopHost -eq [IntPtr]::Zero) {
-  $script:desktopHost = $script:defViewHost
-}
-if ($script:desktopHost -eq [IntPtr]::Zero) {
-  $script:desktopHost = $script:progman
-}
-if ($script:desktopHost -eq [IntPtr]::Zero) {
-  $script:desktopHost = $script:firstWorkerW
-}
-if ($script:desktopHost -eq [IntPtr]::Zero) {
-  throw "Desktop WorkerW/Progman not found"
-}
-$hostRect = New-Object Win32DesktopLayer+RECT
-[void][Win32DesktopLayer]::GetWindowRect($script:desktopHost, [ref]$hostRect)
-$relativeX = ${bounds.x} - $hostRect.Left
-$relativeY = ${bounds.y} - $hostRect.Top
-[Win32DesktopLayer]::MakeDesktopChild($target)
-[void][Win32DesktopLayer]::SetParent($target, $script:desktopHost)
-[void][Win32DesktopLayer]::SetWindowPos($target, [IntPtr]::Zero, $relativeX, $relativeY, ${bounds.width}, ${bounds.height}, 0x0064)
-Write-Output "attached=$($script:desktopHost);class=$([Win32DesktopLayer]::ClassName($script:desktopHost));offset=$relativeX,$relativeY"
-`;
-
-  suppressBoundsSave = true;
-  const result = await runPowerShell(script);
-  attachedToDesktop = result.ok && result.stdout.includes('attached=');
-  suppressBoundsSave = false;
-  refreshTrayMenu();
-  return attachedToDesktop;
 }
 
 function setAutoLaunch(enabled) {
@@ -313,7 +148,7 @@ function syncStartupShortcut(enabled) {
     shell.writeShortcutLink(shortcutPath, {
       target: process.execPath,
       cwd: path.dirname(process.execPath),
-      description: '启动考研学习课表桌面组件',
+      description: '启动考研学习课表桌面应用',
       icon: process.execPath,
       iconIndex: 0,
     });
@@ -333,18 +168,11 @@ function buildTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: '恢复到红框位置',
+      label: '恢复默认窗口位置',
       click: () => restoreDefaultPosition(),
     },
     {
-      label: attachedToDesktop ? '已贴到桌面' : '重新贴到桌面',
-      enabled: !attachedToDesktop,
-      click: () => {
-        void attachToDesktopLayer();
-      },
-    },
-    {
-      label: '保存当前位置',
+      label: '保存当前窗口位置',
       click: () => saveCurrentBounds(),
     },
     { type: 'separator' },
@@ -383,7 +211,8 @@ function showWindow() {
   if (mainWindow.isMinimized()) {
     mainWindow.restore();
   }
-  mainWindow.showInactive();
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function createWindow() {
@@ -391,18 +220,18 @@ function createWindow() {
 
   mainWindow = new BrowserWindow({
     ...bounds,
-    minWidth: 340,
+    minWidth: 720,
     minHeight: 540,
-    frame: false,
+    frame: true,
     show: false,
-    skipTaskbar: true,
+    skipTaskbar: false,
     alwaysOnTop: false,
-    transparent: true,
-    hasShadow: false,
+    transparent: false,
+    hasShadow: true,
     resizable: true,
     movable: true,
     title: '考研学习课表',
-    backgroundColor: '#00000000',
+    backgroundColor: '#f2ede4',
     icon: createTrayIcon(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -420,9 +249,6 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     showWindow();
-    setTimeout(() => {
-      void attachToDesktopLayer();
-    }, 700);
   });
 
   mainWindow.on('move', queueSaveCurrentBounds);
@@ -438,7 +264,7 @@ function createWindow() {
 
 app.whenReady().then(() => {
   app.setAppUserModelId('com.local.kaoyan.schedule');
-  setAutoLaunch(true);
+  setAutoLaunch(false);
 
   createWindow();
   tray = new Tray(createTrayIcon());
@@ -460,7 +286,6 @@ app.whenReady().then(() => {
     saveCurrentBounds();
     return mainWindow?.getBounds();
   });
-  ipcMain.handle('window:attach-desktop', () => attachToDesktopLayer());
   ipcMain.on('window:minimize', () => mainWindow?.minimize());
   ipcMain.on('window:hide', () => mainWindow?.hide());
   ipcMain.on('window:close', () => {
