@@ -3,34 +3,14 @@ const https = require('https');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { loadQwenConfig } = require('./qwen-config.cjs');
 
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
 const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
 const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
 const DEFAULT_SUBJECT = '默认文件夹';
-
-function normalizeQwenModel(input) {
-  const raw = String(input || '').trim();
-  if (!raw) {
-    return 'qwen-vl-plus';
-  }
-  const compact = raw.toLowerCase().replace(/\s+/g, '');
-  const aliases = new Map([
-    ['qwen-v1-plus', 'qwen-vl-plus'],
-    ['qwen-vlplus', 'qwen-vl-plus'],
-    ['qwen-vl_plus', 'qwen-vl-plus'],
-    ['qwenvlplus', 'qwen-vl-plus'],
-    ['qwen3.5-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus', 'qwen-vl-plus'],
-  ]);
-  return aliases.get(compact) || raw;
-}
-
-const QWEN_API_KEY = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
-const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-const QWEN_MODEL = normalizeQwenModel(process.env.QWEN_MODEL || 'qwen-vl-plus');
+const qwen = loadQwenConfig();
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -90,19 +70,36 @@ function decodeDataUrl(dataUrl) {
   };
 }
 
-function appendMetadata(subjectDir, metadata) {
-  const indexPath = path.join(subjectDir, 'metadata.json');
-  let list = [];
-  if (fs.existsSync(indexPath)) {
-    try {
-      list = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-      if (!Array.isArray(list)) {
-        list = [];
-      }
-    } catch {
-      list = [];
-    }
+function metadataDir(subjectDir) {
+  return path.join(subjectDir, '.metadata');
+}
+
+function metadataIndexPath(subjectDir) {
+  return path.join(metadataDir(subjectDir), 'metadata.json');
+}
+
+function sidecarPathForId(subjectDir, id) {
+  return path.join(metadataDir(subjectDir), `${id}.note.json`);
+}
+
+function readJson(filePath, fallback) {
+  if (!fs.existsSync(filePath)) {
+    return fallback;
   }
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function appendMetadata(subjectDir, metadata) {
+  const metaDir = metadataDir(subjectDir);
+  fs.mkdirSync(metaDir, { recursive: true });
+  const indexPath = metadataIndexPath(subjectDir);
+  const legacyIndexPath = path.join(subjectDir, 'metadata.json');
+  const existing = readJson(indexPath, readJson(legacyIndexPath, []));
+  const list = Array.isArray(existing) ? existing.filter((item) => item?.id !== metadata.id && item?.fileName !== metadata.fileName) : [];
   list.push(metadata);
   fs.writeFileSync(indexPath, JSON.stringify(list, null, 2), 'utf8');
 }
@@ -172,13 +169,13 @@ function extractJsonObject(text) {
 function guessSubjectFromText(text) {
   const content = String(text || '');
   const rules = [
-    ['高数', ['高数', '极限', '导数', '积分', '微分', '级数', '中值定理', '曲线积分', '多元函数']],
-    ['线代', ['线代', '矩阵', '行列式', '特征值', '特征向量', '线性方程组', '秩']],
-    ['概率论', ['概率', '随机变量', '分布', '期望', '方差', '大数定律', '中心极限定理']],
+    ['高等数学', ['高等数学', '高数', '极限', '导数', '积分', '微分', '级数', '中值定理', '曲线积分', '多元函数']],
+    ['线性代数', ['线性代数', '线代', '矩阵', '行列式', '特征值', '特征向量', '线性方程组', '秩']],
+    ['概率论', ['概率论', '概率', '随机变量', '分布', '期望', '方差', '大数定律', '中心极限定理']],
     ['数据结构', ['数据结构', '链表', '栈', '队列', '树', '图', '排序', '查找', '堆', '哈希']],
-    ['组成原理', ['组成原理', 'CPU', 'Cache', '存储器', '指令', '流水线', '总线']],
+    ['计算机组成', ['计算机组成', '组成原理', '计组', 'CPU', 'Cache', '存储器', '指令', '流水线', '总线']],
     ['操作系统', ['操作系统', '进程', '线程', '死锁', '分页', '段页', '文件系统', '调度']],
-    ['计算机网络', ['计网', '网络', 'TCP', 'UDP', 'IP', 'HTTP', 'DNS', '路由', '拥塞', '流量控制']],
+    ['计算机网络', ['计算机网络', '计网', '网络', 'TCP', 'UDP', 'IP', 'HTTP', 'DNS', '路由', '拥塞', '流量控制']],
     ['英语', ['英语', '单词', '阅读', '翻译', '作文', '长难句']],
   ];
   for (const [subject, keywords] of rules) {
@@ -201,18 +198,18 @@ function makeFallbackName({ kind, remark, subject }) {
 }
 
 async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
-  if (!QWEN_API_KEY) {
+  if (!qwen.apiKey) {
     return {
       ...makeFallbackName({ kind, remark }),
       modelUsed: null,
-      error: 'QWEN_API_KEY or DASHSCOPE_API_KEY is not set',
+      error: `Qwen API key is not set. configPath=${qwen.configPath}`,
     };
   }
 
   const prompt = [
     '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
     '要求：',
-    '1. 识别所属科目，只能从：高数、线代、概率论、数据结构、组成原理、操作系统、计算机网络、英语、默认文件夹 中选择。',
+    '1. 识别所属科目，只能从：高等数学、线性代数、概率论、数据结构、计算机组成、操作系统、计算机网络、英语、默认文件夹 中选择。',
     '2. title 用 8 到 22 个中文字符概括图片核心内容，不要出现“截图”“图片”“笔记”这类空泛词。',
     '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
     '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
@@ -223,10 +220,10 @@ async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
 
   try {
     const response = await postJson(
-      QWEN_BASE_URL,
-      { Authorization: `Bearer ${QWEN_API_KEY}` },
+      qwen.baseUrl,
+      { Authorization: `Bearer ${qwen.apiKey}` },
       {
-        model: QWEN_MODEL,
+        model: qwen.model,
         messages: [
           {
             role: 'user',
@@ -247,20 +244,20 @@ async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
     }
 
     const subject = sanitizeSegment(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${remark || ''}`), DEFAULT_SUBJECT, 24);
-    const allowedSubjects = ['高数', '线代', '概率论', '数据结构', '组成原理', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
+    const allowedSubjects = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
     const title = sanitizeSegment(parsed.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
 
     return {
       subject: allowedSubjects.includes(subject) ? subject : guessSubjectFromText(`${subject} ${title} ${remark || ''}`),
       title,
       reason: String(parsed.reason || '').slice(0, 120),
-      modelUsed: QWEN_MODEL,
+      modelUsed: qwen.model,
       error: null,
     };
   } catch (error) {
     return {
       ...makeFallbackName({ kind, remark }),
-      modelUsed: QWEN_MODEL,
+      modelUsed: qwen.model,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -330,7 +327,7 @@ async function handleSave(req, res) {
   const baseName = sanitizeSegment(`${subject}_${safeTitle}_${createdStamp}`, `${subject}_图片笔记_${createdStamp}`, 110);
   const { filename, filePath } = ensureUniquePath(subjectDir, baseName, image.ext);
   const id = path.basename(filename, path.extname(filename));
-  const sidecarPath = path.join(subjectDir, `${id}.note.json`);
+  const sidecarPath = sidecarPathForId(subjectDir, id);
 
   fs.writeFileSync(filePath, image.buffer);
 
@@ -348,6 +345,8 @@ async function handleSave(req, res) {
     naming: {
       provider: 'qwen',
       model: naming.modelUsed,
+      baseUrl: qwen.baseUrl,
+      source: qwen.source,
       reason: naming.reason,
       error: naming.error,
     },
@@ -358,6 +357,7 @@ async function handleSave(req, res) {
     },
   };
 
+  fs.mkdirSync(metadataDir(subjectDir), { recursive: true });
   fs.writeFileSync(sidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
   appendMetadata(subjectDir, metadata);
 
@@ -389,10 +389,13 @@ const server = http.createServer(async (req, res) => {
         assistantRoot: ASSISTANT_ROOT,
         layoutPath: LAYOUT_PATH,
         defaultSubject: DEFAULT_SUBJECT,
+        metadataPlacement: 'subject/.metadata',
         qwen: {
-          enabled: Boolean(QWEN_API_KEY),
-          model: QWEN_MODEL,
-          baseUrl: QWEN_BASE_URL,
+          enabled: Boolean(qwen.apiKey),
+          model: qwen.model,
+          baseUrl: qwen.baseUrl,
+          configPath: qwen.configPath,
+          source: qwen.source,
         },
       });
       return;
@@ -428,5 +431,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Notes root: ${NOTES_ROOT}`);
   console.log(`Assistant root: ${ASSISTANT_ROOT}`);
   console.log(`Layout file: ${LAYOUT_PATH}`);
-  console.log(`Qwen naming: ${QWEN_API_KEY ? `enabled (${QWEN_MODEL})` : 'disabled, set QWEN_API_KEY or DASHSCOPE_API_KEY'}`);
+  console.log(`Metadata placement: subject/.metadata`);
+  console.log(`Qwen naming: ${qwen.apiKey ? `enabled (${qwen.model})` : `disabled, configPath=${qwen.configPath}`}`);
 });
