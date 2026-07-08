@@ -1,0 +1,491 @@
+.desktop-workspace-page {
+  position: relative;
+  width: 100vw;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.desktop-workspace-page.viewing .desktop-widget-header {
+  cursor: default;
+}
+
+.desktop-workspace-page.editing {
+  outline: 1px solid rgba(242, 202, 151, 0.18);
+}
+
+.desktop-wallpaper-ribbon {
+  position: absolute;
+  pointer-events: none;
+}
+
+.desktop-wallpaper-ribbon.one {
+  left: -12vw;
+  top: 8vh;
+  width: 75vw;
+  height: 42vh;
+  border-radius: 48% 52% 61% 39% / 46% 39% 61% 54%;
+  background: linear-gradient(115deg, rgba(255, 255, 255, 0.05), rgba(226, 128, 202, 0.22), rgba(242, 202, 151, 0.15), transparent 76%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 34px 100px rgba(208, 109, 188, 0.12);
+  transform: rotate(-8deg);
+}
+
+.desktop-wallpaper-ribbon.two {
+  left: 6vw;
+  bottom: -14vh;
+  width: 82vw;
+  height: 45vh;
+  border-radius: 58% 42% 49% 51% / 46% 55% 45% 54%;
+  background: linear-gradient(126deg, rgba(255, 147, 211, 0.26), rgba(255, 214, 156, 0.22), rgba(80, 65, 96, 0.1));
+  transform: rotate(7deg);
+}
+
+.desktop-wallpaper-ribbon.three {
+  left: 34vw;
+  top: 10vh;
+  width: 36vw;
+  height: 22vh;
+  border-radius: 999px;
+  background: radial-gradient(circle at 48% 48%, rgba(255, 255, 255, 0.12), rgba(221, 163, 206, 0.12), transparent 70%);
+  filter: blur(2px);
+}
+
+.desktop-widget {
+  position: absolute;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035)), rgba(32, 27, 38, 0.58);
+  box-shadow: 0 22px 64px rgba(6, 5, 9, 0.28);
+  backdrop-filter: blur(18px) saturate(1.08);
+  color: rgba(255, 255, 255, 0.92);
+  pointer-events: auto;
+}
+
+.desktop-widget-header {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.62);
+  cursor: move;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 0 10px;
+  user-select: none;
+}
+
+.desktop-widget-header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-widget-header button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.58);
+  cursor: pointer;
+}
+
+.desktop-widget-header button:hover {
+  color: #f2ca97;
+  border-color: rgba(242, 202, 151, 0.34);
+}
+
+.desktop-widget-body {
+  min-height: 0;
+  overflow: hidden;
+  padding: 10px;
+}
+
+.desktop-widget-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  border-top-left-radius: 10px;
+  background: rgba(242, 202, 151, 0.38);
+  cursor: nwse-resize;
+}
+
+.study-widget-content {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.schedule-widget-content {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.schedule-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.schedule-topline span,
+.schedule-topline small,
+.desktop-metrics span,
+.countdown-widget span,
+.pomodoro-widget span {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.schedule-topline strong {
+  display: block;
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 25px;
+  line-height: 1;
+}
+
+.schedule-topline small {
+  display: block;
+  margin-top: 5px;
+}
+
+.desktop-progress-ring {
+  display: grid;
+  width: 62px;
+  height: 62px;
+  place-items: center;
+  border: 7px solid rgba(206, 144, 220, 0.42);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.desktop-progress-ring b,
+.desktop-progress-ring small {
+  grid-area: 1 / 1;
+}
+
+.desktop-progress-ring b {
+  transform: translateY(-5px);
+  font-size: 17px;
+}
+
+.desktop-progress-ring small {
+  transform: translateY(12px);
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+}
+
+.desktop-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.desktop-metrics div {
+  display: grid;
+  min-height: 62px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  padding: 8px;
+}
+
+.desktop-metrics b {
+  align-self: end;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 17px;
+}
+
+.desktop-task-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.desktop-task-list button {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) 24px;
+  gap: 8px;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.052);
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.desktop-task-list span {
+  color: #f2ca97;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.desktop-task-list strong {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-task-list i {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: #f2ca97;
+  font-style: normal;
+}
+
+.desktop-task-list button.done {
+  opacity: 0.55;
+}
+
+.pomodoro-widget,
+.countdown-widget {
+  display: grid;
+  align-content: center;
+  gap: 8px;
+}
+
+.pomodoro-widget strong,
+.countdown-widget strong {
+  color: rgba(255, 255, 255, 0.96);
+  font-size: 48px;
+  line-height: 1;
+}
+
+.countdown-widget p {
+  margin: 4px 0 0;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.widget-button-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.widget-button-row button,
+.quick-links-widget button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(242, 202, 151, 0.24);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  font-weight: 850;
+  padding: 0 12px;
+}
+
+.text-widget textarea,
+.memory-widget textarea {
+  width: 100%;
+  height: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.88);
+  font: 800 14px/1.65 "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.memory-widget textarea {
+  color: #f2ca97;
+}
+
+.quick-links-widget {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.quick-links-widget button {
+  width: 100%;
+}
+
+.desktop-widget-noteDock .desktop-widget-body {
+  padding: 0;
+}
+
+.desktop-widget .note-dock {
+  position: static;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.desktop-empty-state {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 22px;
+  background: rgba(32, 27, 38, 0.62);
+  color: rgba(255, 255, 255, 0.9);
+  padding: 24px;
+  pointer-events: auto;
+  text-align: center;
+}
+
+.desktop-empty-state h2,
+.desktop-empty-state p {
+  margin: 0;
+}
+
+.desktop-empty-state p {
+  margin: 8px 0 16px;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.desktop-empty-state button {
+  border: 1px solid rgba(242, 202, 151, 0.28);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.12);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 850;
+  padding: 9px 16px;
+}
+
+.desktop-console-shell {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  min-height: 100vh;
+  background: #15131c;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.desktop-console-sidebar {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 16px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(14, 12, 18, 0.94);
+  padding: 18px;
+}
+
+.desktop-console-sidebar header p,
+.desktop-console-sidebar header h1,
+.desktop-console-sidebar header span {
+  margin: 0;
+}
+
+.desktop-console-sidebar header p {
+  color: #f2ca97;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.desktop-console-sidebar header h1 {
+  margin-top: 5px;
+  font-size: 28px;
+}
+
+.desktop-console-sidebar header span {
+  display: block;
+  margin-top: 8px;
+  color: rgba(255, 255, 255, 0.54);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.console-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.console-actions button,
+.widget-library button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+  font-weight: 850;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.console-actions button:hover,
+.widget-library button:hover {
+  border-color: rgba(242, 202, 151, 0.28);
+  background: rgba(242, 202, 151, 0.1);
+}
+
+.widget-library {
+  min-height: 0;
+  overflow: auto;
+}
+
+.widget-library h2 {
+  margin: 0 0 10px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+
+.widget-library button {
+  width: 100%;
+  margin-bottom: 9px;
+}
+
+.widget-library strong,
+.widget-library small {
+  display: block;
+}
+
+.widget-library small {
+  margin-top: 4px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.desktop-console-preview {
+  position: relative;
+  min-width: 0;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.desktop-console-preview .desktop-workspace-page {
+  width: 100%;
+  height: 100vh;
+}
