@@ -1,20 +1,17 @@
 import { Clipboard, ExternalLink } from 'lucide-react';
+import { openNoteCaptureWindow } from '../utils/openWindows';
 
 export function NoteDock() {
-  const openNoteCapture = () => {
-    window.open(`${window.location.origin}/?notes=1`, '_blank', 'noopener,noreferrer');
-  };
-
   return (
     <section
       className="note-dock note-dock-launcher"
-      onClick={openNoteCapture}
+      onClick={openNoteCaptureWindow}
       tabIndex={0}
       aria-label="打开笔记台"
       onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          openNoteCapture();
+          openNoteCaptureWindow();
         }
       }}
     >
@@ -22,7 +19,7 @@ export function NoteDock() {
         <span className="note-dock-icon"><Clipboard size={16} aria-hidden="true" /></span>
         <div>
           <p>笔记台</p>
-          <span>Lively 内拖拽不稳定，点击到网页保存</span>
+          <span>点击打开已有笔记台；没有则新建</span>
         </div>
       </div>
       <button
@@ -30,7 +27,7 @@ export function NoteDock() {
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          openNoteCapture();
+          openNoteCaptureWindow();
         }}
         title="打开笔记台"
       >
