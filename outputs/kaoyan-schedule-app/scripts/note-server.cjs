@@ -6,6 +6,8 @@ const path = require('path');
 
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
+const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
+const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
 const DEFAULT_SUBJECT = '默认文件夹';
 const QWEN_API_KEY = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
 const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
@@ -257,6 +259,40 @@ function ensureUniquePath(dir, baseName, ext) {
   return { filename, filePath };
 }
 
+function readLayoutFile() {
+  if (!fs.existsSync(LAYOUT_PATH)) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(fs.readFileSync(LAYOUT_PATH, 'utf8'));
+    if (Array.isArray(payload?.layout)) {
+      return payload;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function handleLayoutSave(req, res) {
+  const raw = await readBody(req);
+  const payload = JSON.parse(raw || '{}');
+  if (!Array.isArray(payload.layout)) {
+    throw new Error('Invalid desktop layout payload');
+  }
+  fs.mkdirSync(ASSISTANT_ROOT, { recursive: true });
+  const nextPayload = {
+    ok: true,
+    updatedAt: new Date().toISOString(),
+    layout: payload.layout,
+  };
+  fs.writeFileSync(LAYOUT_PATH, JSON.stringify(nextPayload, null, 2), 'utf8');
+  sendJson(res, 200, {
+    ...nextPayload,
+    layoutPath: LAYOUT_PATH,
+  });
+}
+
 async function handleSave(req, res) {
   const raw = await readBody(req);
   const payload = JSON.parse(raw || '{}');
@@ -331,6 +367,8 @@ const server = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         ok: true,
         notesRoot: NOTES_ROOT,
+        assistantRoot: ASSISTANT_ROOT,
+        layoutPath: LAYOUT_PATH,
         defaultSubject: DEFAULT_SUBJECT,
         qwen: {
           enabled: Boolean(QWEN_API_KEY),
@@ -338,6 +376,17 @@ const server = http.createServer(async (req, res) => {
           baseUrl: QWEN_BASE_URL,
         },
       });
+      return;
+    }
+
+    if (req.method === 'GET' && req.url === '/layout') {
+      const layoutPayload = readLayoutFile();
+      sendJson(res, 200, layoutPayload ?? { ok: true, updatedAt: null, layout: null, layoutPath: LAYOUT_PATH });
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/layout') {
+      await handleLayoutSave(req, res);
       return;
     }
 
@@ -358,5 +407,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);
   console.log(`Notes root: ${NOTES_ROOT}`);
+  console.log(`Assistant root: ${ASSISTANT_ROOT}`);
+  console.log(`Layout file: ${LAYOUT_PATH}`);
   console.log(`Qwen naming: ${QWEN_API_KEY ? `enabled (${QWEN_MODEL})` : 'disabled, set QWEN_API_KEY or DASHSCOPE_API_KEY'}`);
 });
