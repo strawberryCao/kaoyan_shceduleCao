@@ -1,5 +1,6 @@
 import { ScheduleApp } from './components/ScheduleApp';
 import { WallpaperView } from './components/WallpaperView';
+import './wallpaper.css';
 
 export default function App() {
   const isWallpaperMode = new URLSearchParams(window.location.search).get('wallpaper') === '1';
