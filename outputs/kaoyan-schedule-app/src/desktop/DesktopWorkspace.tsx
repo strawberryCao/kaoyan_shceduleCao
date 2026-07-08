@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { GripHorizontal, Trash2 } from 'lucide-react';
 import { getDefaultLayout } from './registry';
-import { loadDesktopLayout, saveDesktopLayout } from './storage';
+import { loadDesktopLayout, saveDesktopLayout, subscribeDesktopLayoutChanged } from './storage';
 import type { WidgetLayout } from './types';
 import { renderDesktopWidget } from './DesktopWidgets';
 
@@ -27,6 +27,15 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
     }
     saveDesktopLayout(internalLayout);
   }, [controlledLayout, internalLayout]);
+
+  useEffect(() => {
+    if (controlledLayout || editable) {
+      return;
+    }
+    return subscribeDesktopLayoutChanged((nextLayout) => {
+      setInternalLayout(nextLayout);
+    });
+  }, [controlledLayout, editable]);
 
   const visibleLayout = useMemo(() => layout.filter((widget) => widget.visible), [layout]);
 
