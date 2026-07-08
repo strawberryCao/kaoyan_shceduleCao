@@ -166,40 +166,96 @@ using System.Text;
 using System.Runtime.InteropServices;
 public class Win32DesktopLayer {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-  [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string lpszWindow);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam, UInt32 fuFlags, UInt32 uTimeout, out IntPtr lpdwResult);
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, UInt32 uFlags);
+  [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
+  [DllImport("user32.dll", EntryPoint="GetWindowLongPtr", SetLastError=true)] private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", EntryPoint="SetWindowLongPtr", SetLastError=true)] private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+  [DllImport("user32.dll", EntryPoint="GetWindowLong", SetLastError=true)] private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
+  [DllImport("user32.dll", EntryPoint="SetWindowLong", SetLastError=true)] private static extern IntPtr SetWindowLong32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+  public static string ClassName(IntPtr hWnd) {
+    if (hWnd == IntPtr.Zero) return "";
+    var className = new StringBuilder(256);
+    GetClassName(hWnd, className, className.Capacity);
+    return className.ToString();
+  }
+
+  public static IntPtr GetWindowStyle(IntPtr hWnd) {
+    return IntPtr.Size == 8 ? GetWindowLongPtr64(hWnd, -16) : GetWindowLong32(hWnd, -16);
+  }
+
+  public static void MakeDesktopChild(IntPtr hWnd) {
+    const long WS_POPUP = unchecked((long)0x80000000);
+    const long WS_CHILD = 0x40000000;
+    long style = GetWindowStyle(hWnd).ToInt64();
+    long nextStyle = (style & ~WS_POPUP) | WS_CHILD;
+    if (IntPtr.Size == 8) {
+      SetWindowLongPtr64(hWnd, -16, new IntPtr(nextStyle));
+    } else {
+      SetWindowLong32(hWnd, -16, new IntPtr(nextStyle));
+    }
+  }
 }
 "@
 $target = [IntPtr]::new([Int64]${hwnd})
-$progman = [Win32DesktopLayer]::FindWindow("Progman", $null)
-$result = [IntPtr]::Zero
-[void][Win32DesktopLayer]::SendMessageTimeout($progman, 0x052C, [IntPtr]::Zero, [IntPtr]::Zero, 0, 1000, [ref]$result)
-$script:workerw = [IntPtr]::Zero
-$callback = [Win32DesktopLayer+EnumWindowsProc]{
+$script:progman = [IntPtr]::Zero
+$script:firstWorkerW = [IntPtr]::Zero
+$script:defViewHost = [IntPtr]::Zero
+$desktopScan = [Win32DesktopLayer+EnumWindowsProc]{
   param([IntPtr]$topHandle, [IntPtr]$lParam)
+  $className = [Win32DesktopLayer]::ClassName($topHandle)
+  if ($className -eq "Progman") {
+    $script:progman = $topHandle
+  }
+  if ($className -eq "WorkerW" -and $script:firstWorkerW -eq [IntPtr]::Zero) {
+    $script:firstWorkerW = $topHandle
+  }
   $defView = [Win32DesktopLayer]::FindWindowEx($topHandle, [IntPtr]::Zero, "SHELLDLL_DefView", $null)
   if ($defView -ne [IntPtr]::Zero) {
-    $candidate = [Win32DesktopLayer]::FindWindowEx([IntPtr]::Zero, $topHandle, "WorkerW", $null)
-    if ($candidate -ne [IntPtr]::Zero) {
-      $script:workerw = $candidate
-    }
+    $script:defViewHost = $topHandle
   }
   return $true
 }
-[void][Win32DesktopLayer]::EnumWindows($callback, [IntPtr]::Zero)
-if ($script:workerw -eq [IntPtr]::Zero) {
-  $script:workerw = $progman
+[void][Win32DesktopLayer]::EnumWindows($desktopScan, [IntPtr]::Zero)
+
+$result = [IntPtr]::Zero
+[void][Win32DesktopLayer]::SendMessageTimeout($script:progman, 0x052C, [IntPtr]::Zero, [IntPtr]::Zero, 0, 1000, [ref]$result)
+$script:workerw = [IntPtr]::Zero
+$script:seenDefViewHost = $false
+$workerScan = [Win32DesktopLayer+EnumWindowsProc]{
+  param([IntPtr]$topHandle, [IntPtr]$lParam)
+  if ($topHandle -eq $script:defViewHost) {
+    $script:seenDefViewHost = $true
+    return $true
+  }
+  if ($script:seenDefViewHost -and [Win32DesktopLayer]::ClassName($topHandle) -eq "WorkerW" -and $script:workerw -eq [IntPtr]::Zero) {
+    $script:workerw = $topHandle
+  }
+  return $true
 }
-if ($script:workerw -eq [IntPtr]::Zero) {
+[void][Win32DesktopLayer]::EnumWindows($workerScan, [IntPtr]::Zero)
+
+$script:desktopHost = $script:workerw
+if ($script:desktopHost -eq [IntPtr]::Zero) {
+  $script:desktopHost = $script:defViewHost
+}
+if ($script:desktopHost -eq [IntPtr]::Zero) {
+  $script:desktopHost = $script:progman
+}
+if ($script:desktopHost -eq [IntPtr]::Zero) {
+  $script:desktopHost = $script:firstWorkerW
+}
+if ($script:desktopHost -eq [IntPtr]::Zero) {
   throw "Desktop WorkerW/Progman not found"
 }
-[void][Win32DesktopLayer]::SetParent($target, $script:workerw)
-[void][Win32DesktopLayer]::SetWindowPos($target, [IntPtr]::Zero, ${bounds.x}, ${bounds.y}, ${bounds.width}, ${bounds.height}, 0x0040)
-Write-Output "attached=$($script:workerw)"
+[Win32DesktopLayer]::MakeDesktopChild($target)
+[void][Win32DesktopLayer]::SetParent($target, $script:desktopHost)
+[void][Win32DesktopLayer]::SetWindowPos($target, [IntPtr]::Zero, ${bounds.x}, ${bounds.y}, ${bounds.width}, ${bounds.height}, 0x0064)
+Write-Output "attached=$($script:desktopHost);class=$([Win32DesktopLayer]::ClassName($script:desktopHost))"
 `;
 
   const result = await runPowerShell(script);
