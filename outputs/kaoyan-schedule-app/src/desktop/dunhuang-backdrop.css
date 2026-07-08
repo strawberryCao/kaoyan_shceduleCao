@@ -10,126 +10,136 @@
   overflow: hidden;
   pointer-events: none;
   background:
-    radial-gradient(circle at 18% 10%, rgba(255, 245, 220, 0.88), transparent 30%),
-    radial-gradient(circle at 76% 28%, rgba(222, 156, 92, 0.32), transparent 33%),
-    linear-gradient(132deg, #f4ead8 0%, #dfc8a8 44%, #b87845 68%, #3f2e2a 100%);
+    radial-gradient(ellipse at 18% 8%, rgba(255, 250, 235, 0.95) 0%, rgba(247, 235, 212, 0.72) 24%, transparent 48%),
+    radial-gradient(ellipse at 70% 18%, rgba(199, 177, 144, 0.26) 0%, transparent 42%),
+    radial-gradient(ellipse at 93% 67%, rgba(71, 66, 60, 0.48) 0%, rgba(73, 63, 55, 0.32) 30%, transparent 58%),
+    linear-gradient(135deg, #f1eadb 0%, #dfd0b8 42%, #b99b78 67%, #5e5348 100%);
 }
 
 .dh-sandscape {
   position: absolute;
-  inset: -6vh -7vw;
+  inset: -8vh -8vw;
+  opacity: 0.92;
   background:
-    radial-gradient(ellipse at 22% 16%, rgba(255, 247, 224, 0.86), transparent 29%),
-    radial-gradient(ellipse at 76% 42%, rgba(229, 172, 101, 0.34), transparent 30%),
-    linear-gradient(155deg, rgba(255, 249, 231, 0.82) 0%, rgba(236, 214, 179, 0.72) 34%, rgba(183, 128, 75, 0.42) 66%, rgba(59, 38, 33, 0.6) 100%);
-  transform: translate3d(calc(var(--dh-x) * -0.2), calc(var(--dh-y) * -0.15), 0) scale(1.04);
-  transition: transform 0.4s ease-out;
+    radial-gradient(ellipse at 14% 16%, rgba(255, 253, 240, 0.86), transparent 34%),
+    radial-gradient(ellipse at 58% 42%, rgba(222, 203, 175, 0.28), transparent 45%),
+    linear-gradient(145deg, rgba(249, 241, 224, 0.78), rgba(211, 190, 160, 0.38) 48%, rgba(91, 82, 75, 0.34));
+  transform: translate3d(calc(var(--dh-x) * -0.16), calc(var(--dh-y) * -0.12), 0) scale(1.025);
+  transition: transform 0.45s ease-out;
 }
 
 .dh-sandscape::before,
 .dh-sandscape::after {
   position: absolute;
   content: '';
-  left: -12vw;
-  right: -12vw;
-  bottom: -13vh;
-  height: 48vh;
-  border-radius: 50% 50% 0 0 / 65% 62% 0 0;
+  inset: 0;
+  opacity: 0.46;
+  mix-blend-mode: multiply;
+}
+
+.dh-sandscape::before {
   background:
-    linear-gradient(172deg, rgba(255, 245, 217, 0.72), rgba(214, 174, 120, 0.58) 48%, rgba(159, 100, 61, 0.58)),
-    repeating-linear-gradient(168deg, rgba(255, 255, 255, 0.12) 0 1px, transparent 1px 13px);
-  filter: blur(0.2px);
-  transform: rotate(-2.5deg);
+    radial-gradient(ellipse at 22% 72%, rgba(143, 118, 87, 0.20) 0%, transparent 34%),
+    radial-gradient(ellipse at 80% 64%, rgba(71, 67, 63, 0.22) 0%, transparent 38%),
+    linear-gradient(168deg, transparent 0 48%, rgba(255, 255, 255, 0.22) 49%, transparent 52%),
+    linear-gradient(171deg, transparent 0 61%, rgba(138, 111, 81, 0.16) 62%, transparent 65%);
+  filter: blur(0.7px);
 }
 
 .dh-sandscape::after {
-  left: 21vw;
-  right: -20vw;
-  bottom: -18vh;
-  height: 62vh;
+  opacity: 0.32;
   background:
-    linear-gradient(152deg, rgba(238, 185, 117, 0.4), rgba(185, 111, 66, 0.62) 50%, rgba(49, 34, 36, 0.62)),
-    repeating-linear-gradient(154deg, rgba(255, 241, 202, 0.1) 0 1px, transparent 1px 15px);
-  transform: rotate(3.8deg);
+    repeating-linear-gradient(164deg, transparent 0 18px, rgba(92, 73, 55, 0.055) 19px, transparent 22px),
+    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.04) 8px, transparent 11px);
+  mask-image: linear-gradient(90deg, transparent 0%, black 16%, black 86%, transparent 100%);
 }
 
 .dh-paper-grain {
   position: absolute;
   inset: 0;
-  opacity: 0.28;
+  opacity: 0.46;
   mix-blend-mode: multiply;
   background-image:
-    radial-gradient(circle at 20% 30%, rgba(115, 75, 42, 0.10) 0 1px, transparent 1px),
-    radial-gradient(circle at 75% 18%, rgba(255, 255, 255, 0.18) 0 1px, transparent 1px),
-    repeating-linear-gradient(96deg, rgba(75, 51, 34, 0.025) 0 1px, transparent 1px 5px);
-  background-size: 34px 34px, 47px 47px, 11px 11px;
+    radial-gradient(circle at 20% 30%, rgba(92, 72, 50, 0.105) 0 0.75px, transparent 0.9px),
+    radial-gradient(circle at 70% 18%, rgba(255, 255, 255, 0.20) 0 0.7px, transparent 0.95px),
+    repeating-linear-gradient(96deg, rgba(70, 52, 38, 0.018) 0 1px, transparent 1px 6px);
+  background-size: 31px 31px, 43px 43px, 13px 13px;
 }
 
 .dh-silk {
   position: absolute;
-  border-radius: 999px;
+  pointer-events: none;
   transform-origin: center;
-  mix-blend-mode: screen;
-  filter: blur(0.35px);
-  opacity: 0.72;
-  will-change: transform;
+  mix-blend-mode: soft-light;
+  will-change: transform, opacity;
 }
 
 .dh-silk::before,
 .dh-silk::after {
   position: absolute;
-  inset: 0;
   content: '';
+  inset: 0;
   border-radius: inherit;
   background: inherit;
-  filter: blur(11px);
-  opacity: 0.56;
 }
 
 .dh-silk-one {
-  left: -14vw;
-  top: 43vh;
-  width: 88vw;
-  height: 24vh;
-  background: linear-gradient(98deg, transparent 0%, rgba(255, 246, 213, 0.24) 15%, rgba(255, 204, 137, 0.46) 48%, rgba(255, 255, 245, 0.20) 72%, transparent 100%);
-  clip-path: polygon(0 54%, 12% 27%, 26% 45%, 42% 24%, 61% 38%, 76% 18%, 100% 40%, 100% 66%, 78% 47%, 61% 72%, 43% 54%, 28% 80%, 11% 60%, 0 78%);
-  animation: dhSilkOne 24s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * 0.62), calc(var(--dh-y) * 0.42), 0) rotate(-6deg);
+  left: -10vw;
+  top: 41vh;
+  width: 118vw;
+  height: 18vh;
+  opacity: 0.42;
+  background:
+    linear-gradient(100deg, transparent 0%, rgba(255, 255, 246, 0.10) 13%, rgba(255, 246, 225, 0.25) 42%, rgba(181, 146, 112, 0.10) 68%, transparent 100%);
+  border-top: 1px solid rgba(255, 255, 245, 0.30);
+  border-bottom: 1px solid rgba(130, 104, 78, 0.08);
+  clip-path: polygon(0 54%, 13% 47%, 27% 52%, 43% 41%, 58% 46%, 74% 36%, 100% 40%, 100% 54%, 76% 50%, 59% 62%, 44% 55%, 27% 65%, 12% 58%, 0 66%);
+  filter: blur(0.6px);
+  animation: dhSilkOne 36s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * 0.32), calc(var(--dh-y) * 0.22), 0) rotate(-2.4deg);
 }
 
 .dh-silk-two {
-  right: -22vw;
-  top: 11vh;
-  width: 78vw;
-  height: 58vh;
-  border: 1px solid rgba(255, 242, 207, 0.25);
-  background: radial-gradient(ellipse at 48% 45%, rgba(255, 241, 205, 0.30), rgba(231, 172, 102, 0.16) 36%, transparent 67%);
-  clip-path: polygon(18% 3%, 53% 0, 83% 18%, 91% 52%, 75% 83%, 43% 100%, 16% 82%, 0 48%);
-  animation: dhSilkTwo 32s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.44), calc(var(--dh-y) * 0.35), 0) rotate(12deg);
+  right: -14vw;
+  top: 4vh;
+  width: 66vw;
+  height: 72vh;
+  opacity: 0.28;
+  border: 1px solid rgba(255, 255, 243, 0.18);
+  background:
+    radial-gradient(ellipse at 46% 45%, rgba(255, 252, 237, 0.20), rgba(190, 168, 138, 0.08) 38%, transparent 70%);
+  border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%;
+  filter: blur(0.2px);
+  animation: dhSilkTwo 48s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.30), calc(var(--dh-y) * 0.20), 0) rotate(8deg);
 }
 
 .dh-silk-three {
-  right: -10vw;
-  bottom: 4vh;
-  width: 72vw;
-  height: 20vh;
-  background: linear-gradient(105deg, transparent, rgba(255, 178, 100, 0.22), rgba(255, 244, 212, 0.16), transparent);
-  clip-path: polygon(0 64%, 19% 35%, 38% 54%, 57% 26%, 77% 44%, 100% 28%, 100% 52%, 80% 62%, 61% 48%, 40% 78%, 20% 58%, 0 84%);
-  animation: dhSilkThree 27s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.58), calc(var(--dh-y) * -0.28), 0) rotate(-2deg);
+  right: -12vw;
+  bottom: 11vh;
+  width: 86vw;
+  height: 15vh;
+  opacity: 0.24;
+  background:
+    linear-gradient(103deg, transparent, rgba(255, 249, 231, 0.18), rgba(128, 113, 99, 0.08), transparent);
+  border-top: 1px solid rgba(255, 255, 244, 0.22);
+  clip-path: polygon(0 66%, 18% 56%, 36% 63%, 55% 47%, 73% 58%, 100% 44%, 100% 55%, 76% 67%, 56% 58%, 37% 75%, 18% 66%, 0 77%);
+  filter: blur(0.55px);
+  animation: dhSilkThree 42s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.36), calc(var(--dh-y) * -0.18), 0) rotate(-1.2deg);
 }
 
 .dh-light-orb {
   position: absolute;
-  left: 8vw;
-  top: 5vh;
-  width: 45vw;
-  height: 45vw;
+  left: -4vw;
+  top: -8vh;
+  width: 56vw;
+  height: 56vw;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(255, 250, 224, 0.56), rgba(255, 218, 150, 0.18) 38%, transparent 68%);
-  animation: dhBreath 18s ease-in-out infinite;
-  transform: translate3d(calc(var(--dh-x) * -0.28), calc(var(--dh-y) * -0.2), 0);
+  opacity: 0.52;
+  background: radial-gradient(circle, rgba(255, 252, 239, 0.46), rgba(241, 218, 177, 0.16) 42%, transparent 70%);
+  animation: dhBreath 24s ease-in-out infinite;
+  transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0);
 }
 
 .dh-particle-canvas {
@@ -137,15 +147,16 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: 0.9;
+  opacity: 0.34;
+  mix-blend-mode: screen;
 }
 
 .dh-vignette {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(ellipse at 48% 42%, transparent 0%, transparent 54%, rgba(37, 27, 31, 0.34) 100%),
-    linear-gradient(90deg, rgba(255, 248, 230, 0.05), transparent 24%, rgba(32, 23, 28, 0.46) 100%);
+    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 58%, rgba(32, 28, 27, 0.22) 100%),
+    linear-gradient(90deg, rgba(255, 252, 240, 0.04), transparent 24%, rgba(33, 30, 30, 0.26) 100%);
 }
 
 .desktop-workspace-page .desktop-wallpaper-ribbon {
@@ -163,55 +174,55 @@
 }
 
 .desktop-widget {
-  border-color: rgba(255, 239, 205, 0.22);
+  border-color: rgba(255, 247, 226, 0.16);
   background:
-    linear-gradient(145deg, rgba(255, 245, 222, 0.15), rgba(76, 46, 39, 0.18)),
-    rgba(34, 24, 26, 0.36);
-  box-shadow: 0 24px 74px rgba(66, 40, 26, 0.32), inset 0 1px 0 rgba(255, 249, 231, 0.16);
-  backdrop-filter: blur(18px) saturate(1.08);
+    linear-gradient(145deg, rgba(255, 249, 232, 0.10), rgba(26, 23, 23, 0.12)),
+    rgba(42, 36, 34, 0.30);
+  box-shadow: 0 28px 84px rgba(47, 34, 26, 0.24), inset 0 1px 0 rgba(255, 255, 245, 0.12);
+  backdrop-filter: blur(22px) saturate(0.92);
 }
 
 .desktop-widget-header {
-  border-bottom-color: rgba(255, 234, 196, 0.10);
-  color: rgba(255, 234, 196, 0.72);
+  border-bottom-color: rgba(255, 245, 222, 0.10);
+  color: rgba(255, 244, 222, 0.70);
 }
 
 .desktop-widget-header button,
 .desktop-task-list button,
 .desktop-metrics div {
-  border-color: rgba(255, 235, 198, 0.14);
-  background: rgba(255, 245, 224, 0.058);
+  border-color: rgba(255, 243, 218, 0.12);
+  background: rgba(255, 248, 232, 0.045);
 }
 
 .desktop-task-list span,
 .memory-widget textarea,
 .desktop-widget-header button:hover,
 .desktop-task-list i {
-  color: #f0c888;
+  color: #e6c38e;
 }
 
 .desktop-progress-ring {
-  border-color: rgba(221, 156, 82, 0.46);
+  border-color: rgba(198, 151, 92, 0.44);
 }
 
 @keyframes dhSilkOne {
-  0%, 100% { clip-path: polygon(0 54%, 12% 27%, 26% 45%, 42% 24%, 61% 38%, 76% 18%, 100% 40%, 100% 66%, 78% 47%, 61% 72%, 43% 54%, 28% 80%, 11% 60%, 0 78%); opacity: 0.62; }
-  50% { clip-path: polygon(0 62%, 13% 38%, 29% 50%, 45% 30%, 62% 47%, 78% 25%, 100% 45%, 100% 74%, 79% 55%, 61% 79%, 43% 60%, 28% 72%, 10% 66%, 0 84%); opacity: 0.82; }
+  0%, 100% { opacity: 0.32; transform: translate3d(calc(var(--dh-x) * 0.32), calc(var(--dh-y) * 0.22), 0) rotate(-2.4deg) scaleX(1); }
+  50% { opacity: 0.47; transform: translate3d(calc(var(--dh-x) * 0.32 + 18px), calc(var(--dh-y) * 0.22 - 8px), 0) rotate(-1deg) scaleX(1.035); }
 }
 
 @keyframes dhSilkTwo {
-  0%, 100% { border-radius: 52% 48% 58% 42% / 48% 50% 50% 52%; opacity: 0.52; }
-  50% { border-radius: 41% 59% 48% 52% / 57% 41% 59% 43%; opacity: 0.7; }
+  0%, 100% { opacity: 0.22; border-radius: 47% 53% 57% 43% / 51% 43% 57% 49%; }
+  50% { opacity: 0.34; border-radius: 52% 48% 49% 51% / 44% 55% 45% 56%; }
 }
 
 @keyframes dhSilkThree {
-  0%, 100% { opacity: 0.42; filter: blur(0.2px); }
-  50% { opacity: 0.68; filter: blur(0.8px); }
+  0%, 100% { opacity: 0.16; transform: translate3d(calc(var(--dh-x) * -0.36), calc(var(--dh-y) * -0.18), 0) rotate(-1.2deg); }
+  50% { opacity: 0.28; transform: translate3d(calc(var(--dh-x) * -0.36 - 16px), calc(var(--dh-y) * -0.18 + 6px), 0) rotate(-2.2deg); }
 }
 
 @keyframes dhBreath {
-  0%, 100% { opacity: 0.62; transform: translate3d(calc(var(--dh-x) * -0.28), calc(var(--dh-y) * -0.2), 0) scale(1); }
-  50% { opacity: 0.9; transform: translate3d(calc(var(--dh-x) * -0.28), calc(var(--dh-y) * -0.2), 0) scale(1.06); }
+  0%, 100% { opacity: 0.42; transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0) scale(1); }
+  50% { opacity: 0.58; transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.16), 0) scale(1.035); }
 }
 
 @media (prefers-reduced-motion: reduce) {
