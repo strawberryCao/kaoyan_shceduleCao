@@ -24,11 +24,11 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
   const layout = controlledLayout ?? internalLayout;
 
   useEffect(() => {
-    if (controlledLayout) {
+    if (controlledLayout || !editable) {
       return;
     }
     saveDesktopLayout(internalLayout);
-  }, [controlledLayout, internalLayout]);
+  }, [controlledLayout, editable, internalLayout]);
 
   useEffect(() => {
     if (controlledLayout || editable) {
