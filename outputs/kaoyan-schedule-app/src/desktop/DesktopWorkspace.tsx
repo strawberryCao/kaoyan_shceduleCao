@@ -5,6 +5,7 @@ import { getDefaultLayout } from './registry';
 import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout, subscribeDesktopLayoutChanged } from './storage';
 import type { WidgetLayout } from './types';
 import { renderDesktopWidget } from './DesktopWidgets';
+import { DunhuangBackdrop } from './DunhuangBackdrop';
 
 interface DesktopWorkspaceProps {
   editable: boolean;
@@ -110,9 +111,7 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
       onMouseUp={() => setDragState(null)}
       onMouseLeave={() => setDragState(null)}
     >
-      <div className="desktop-wallpaper-ribbon one" />
-      <div className="desktop-wallpaper-ribbon two" />
-      <div className="desktop-wallpaper-ribbon three" />
+      <DunhuangBackdrop />
 
       {visibleLayout.map((widget) => (
         <section
