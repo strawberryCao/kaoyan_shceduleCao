@@ -28,16 +28,26 @@ if not exist node_modules (
   )
 )
 
-echo Starting Kaoyan Schedule App in wallpaper mode...
-echo URL: http://127.0.0.1:5173/?wallpaper=1
+echo Starting local server for Lively Wallpaper...
+echo.
+echo Wallpaper URL for Lively:
+echo http://127.0.0.1:5173/?wallpaper=1
+echo.
+echo Management URL for browser:
+echo http://127.0.0.1:5173/
+echo.
+echo Keep this window open while using the wallpaper.
+echo Do NOT use this URL as a normal browser wallpaper window.
+echo Add the wallpaper URL inside Lively Wallpaper instead.
+echo.
 
 netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
 if not errorlevel 1 (
-  start "" "http://127.0.0.1:5173/?wallpaper=1"
+  echo Port 5173 is already running. Add the wallpaper URL in Lively Wallpaper.
+  pause
   exit /b 0
 )
 
-start "" cmd /c "timeout /t 3 /nobreak >nul & start "" http://127.0.0.1:5173/?wallpaper=1"
 call npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
 
 pause
