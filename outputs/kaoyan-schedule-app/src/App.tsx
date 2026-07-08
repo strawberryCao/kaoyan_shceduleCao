@@ -8,6 +8,7 @@ import './notes.css';
 import './theme-fifth.css';
 import './desktop/desktop.css';
 import './desktop/desktop-fixes.css';
+import './desktop/dunhuang-backdrop.css';
 import './note-capture.css';
 import './app-hub.css';
 
