@@ -1,6 +1,8 @@
 import { DESKTOP_LAYOUT_KEY, getDefaultLayout } from './registry';
 import type { WidgetLayout } from './types';
 
+const CHANNEL_NAME = 'kaoyan-desktop-layout';
+
 export const loadDesktopLayout = (): WidgetLayout[] => {
   const saved = window.localStorage.getItem(DESKTOP_LAYOUT_KEY);
   if (!saved) {
@@ -18,8 +20,50 @@ export const loadDesktopLayout = (): WidgetLayout[] => {
   }
 };
 
+export const notifyDesktopLayoutChanged = (layout: WidgetLayout[]) => {
+  if ('BroadcastChannel' in window) {
+    const channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.postMessage({ type: 'layout-changed', layout });
+    channel.close();
+  }
+};
+
+export const subscribeDesktopLayoutChanged = (callback: (layout: WidgetLayout[]) => void) => {
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== DESKTOP_LAYOUT_KEY || !event.newValue) {
+      return;
+    }
+    try {
+      const layout = JSON.parse(event.newValue) as WidgetLayout[];
+      if (Array.isArray(layout)) {
+        callback(layout);
+      }
+    } catch {
+      // Ignore invalid layout payloads.
+    }
+  };
+
+  window.addEventListener('storage', handleStorage);
+
+  let channel: BroadcastChannel | null = null;
+  if ('BroadcastChannel' in window) {
+    channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.onmessage = (event) => {
+      if (event.data?.type === 'layout-changed' && Array.isArray(event.data.layout)) {
+        callback(event.data.layout);
+      }
+    };
+  }
+
+  return () => {
+    window.removeEventListener('storage', handleStorage);
+    channel?.close();
+  };
+};
+
 export const saveDesktopLayout = (layout: WidgetLayout[]) => {
   window.localStorage.setItem(DESKTOP_LAYOUT_KEY, JSON.stringify(layout));
+  notifyDesktopLayoutChanged(layout);
 };
 
 export const resetDesktopLayout = (): WidgetLayout[] => {
