@@ -15,38 +15,45 @@ body:has(.lively-wallpaper-page) {
 .lively-wallpaper-page {
   display: flex;
   min-height: 100vh;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: flex-end;
-  padding: 18px 22px;
+  padding: 16px 22px 56px 22px;
   color: #243039;
   background: transparent;
   pointer-events: none;
 }
 
 .lively-wallpaper-card {
-  width: clamp(360px, 24vw, 460px);
-  min-height: calc(100vh - 36px);
-  max-height: calc(100vh - 36px);
+  width: clamp(330px, 22vw, 400px);
+  max-height: calc(100vh - 76px);
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  gap: 9px;
   overflow: hidden;
-  border: 1px solid rgba(255, 250, 241, 0.42);
-  border-radius: 24px;
+  border: 1px solid rgba(255, 250, 241, 0.36);
+  border-radius: 22px;
   background:
-    linear-gradient(145deg, rgba(255, 250, 241, 0.74), rgba(220, 233, 237, 0.42)),
-    rgba(255, 255, 255, 0.2);
-  box-shadow: 0 24px 70px rgba(24, 37, 42, 0.16);
+    linear-gradient(145deg, rgba(251, 248, 239, 0.72), rgba(222, 235, 239, 0.42)),
+    rgba(255, 255, 255, 0.16);
+  box-shadow: 0 22px 58px rgba(24, 37, 42, 0.16);
   backdrop-filter: blur(18px) saturate(1.14);
-  padding: 16px;
+  padding: 13px;
   pointer-events: auto;
+}
+
+.lively-wallpaper-card.compact {
+  max-height: min(720px, calc(100vh - 76px));
+}
+
+.lively-wallpaper-card.expanded {
+  max-height: calc(100vh - 76px);
 }
 
 .lively-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
+  gap: 12px;
 }
 
 .lively-header p,
@@ -57,35 +64,35 @@ body:has(.lively-wallpaper-page) {
 
 .lively-header p {
   color: rgba(49, 93, 114, 0.86);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
 }
 
 .lively-header h1 {
-  margin-top: 4px;
+  margin-top: 3px;
   color: #243039;
-  font-size: 28px;
+  font-size: 25px;
   line-height: 1;
   letter-spacing: -0.5px;
 }
 
 .lively-header span {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   color: #7a8587;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 
 .lively-progress-ring {
   display: grid;
-  width: 76px;
-  height: 76px;
+  width: 62px;
+  height: 62px;
   flex: 0 0 auto;
   place-items: center;
-  border: 8px solid rgba(49, 93, 114, 0.18);
+  border: 7px solid rgba(49, 93, 114, 0.18);
   border-radius: 999px;
-  background: rgba(255, 250, 241, 0.58);
+  background: rgba(255, 250, 241, 0.52);
   color: #315d72;
 }
 
@@ -96,34 +103,34 @@ body:has(.lively-wallpaper-page) {
 
 .lively-progress-ring strong {
   transform: translateY(-5px);
-  font-size: 19px;
+  font-size: 17px;
   line-height: 1;
 }
 
 .lively-progress-ring small {
-  transform: translateY(13px);
+  transform: translateY(11px);
   color: #7a8587;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 900;
 }
 
 .lively-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 6px;
 }
 
 .lively-tag {
   display: inline-flex;
-  min-height: 29px;
+  min-height: 27px;
   align-items: center;
   gap: 6px;
   border: 1px solid rgba(49, 93, 114, 0.14);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.36);
+  background: rgba(255, 255, 255, 0.34);
   color: #315d72;
-  padding: 5px 9px;
-  font-size: 12px;
+  padding: 4px 8px;
+  font-size: 11px;
   font-weight: 900;
 }
 
@@ -142,20 +149,45 @@ body:has(.lively-wallpaper-page) {
   background: rgba(247, 232, 208, 0.72);
 }
 
+.lively-actions {
+  display: grid;
+  grid-template-columns: 0.85fr 1.35fr;
+  gap: 7px;
+}
+
+.lively-actions button {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid rgba(49, 93, 114, 0.15);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.42);
+  color: #315d72;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lively-actions button:hover {
+  background: rgba(255, 250, 241, 0.72);
+}
+
 .lively-overview {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 7px;
 }
 
 .lively-overview div {
   display: grid;
-  gap: 4px;
-  min-height: 76px;
+  gap: 3px;
+  min-height: 62px;
   border: 1px solid rgba(49, 93, 114, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.28);
-  padding: 10px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.26);
+  padding: 8px;
 }
 
 .lively-overview svg {
@@ -164,14 +196,14 @@ body:has(.lively-wallpaper-page) {
 
 .lively-overview span {
   color: #7a8587;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
 }
 
 .lively-overview strong {
   align-self: end;
   color: #243039;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
 }
 
@@ -180,26 +212,22 @@ body:has(.lively-wallpaper-page) {
   align-content: start;
   gap: 7px;
   min-height: 0;
-  overflow: auto;
-  padding-right: 2px;
-}
-
-.lively-timeline::-webkit-scrollbar {
-  width: 0;
+  overflow: hidden;
+  padding-right: 1px;
 }
 
 .lively-task {
   display: grid;
-  grid-template-columns: 86px 18px minmax(0, 1fr) 26px;
-  gap: 8px;
+  grid-template-columns: 80px 14px minmax(0, 1fr) 24px;
+  gap: 7px;
   align-items: center;
   width: 100%;
-  min-height: 50px;
+  min-height: 46px;
   border: 1px solid rgba(49, 93, 114, 0.1);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.34);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.32);
   color: #243039;
-  padding: 8px 9px;
+  padding: 7px 8px;
   text-align: left;
   transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
 }
@@ -229,15 +257,15 @@ body:has(.lively-wallpaper-page) {
 
 .lively-task-time {
   color: #315d72;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 900;
   white-space: nowrap;
 }
 
 .lively-task-dot {
-  width: 10px;
-  height: 10px;
-  border: 2px solid rgba(49, 93, 114, 0.48);
+  width: 8px;
+  height: 8px;
+  border: 2px solid rgba(49, 93, 114, 0.45);
   border-radius: 999px;
   background: rgba(255, 250, 241, 0.72);
 }
@@ -245,13 +273,13 @@ body:has(.lively-wallpaper-page) {
 .lively-task-main {
   display: grid;
   min-width: 0;
-  gap: 2px;
+  gap: 1px;
 }
 
 .lively-task-main strong {
   overflow: hidden;
   color: #243039;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -260,7 +288,7 @@ body:has(.lively-wallpaper-page) {
 .lively-task-main small {
   overflow: hidden;
   color: #7a8587;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -269,13 +297,13 @@ body:has(.lively-wallpaper-page) {
 .lively-check,
 .lively-static {
   display: grid;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   place-items: center;
   border: 1px solid rgba(47, 109, 90, 0.26);
   border-radius: 999px;
   color: #2f6d5a;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 900;
 }
 
@@ -290,9 +318,9 @@ body:has(.lively-wallpaper-page) {
   justify-content: space-between;
   gap: 10px;
   border-top: 1px solid rgba(49, 93, 114, 0.1);
-  padding-top: 11px;
+  padding-top: 9px;
   color: #7a8587;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
 }
 
@@ -303,12 +331,11 @@ body:has(.lively-wallpaper-page) {
 @media (max-width: 720px) {
   .lively-wallpaper-page {
     justify-content: center;
-    padding: 12px;
+    padding: 12px 12px 56px 12px;
   }
 
   .lively-wallpaper-card {
-    width: min(100%, 460px);
-    min-height: calc(100vh - 24px);
-    max-height: calc(100vh - 24px);
+    width: min(100%, 430px);
+    max-height: calc(100vh - 68px);
   }
 }
