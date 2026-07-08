@@ -6,7 +6,7 @@ const path = require('path');
 const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
 const windowStateFile = 'window-state.json';
-const windowStateProfile = 'right-widget-v2';
+const windowStateProfile = 'right-widget-v3';
 const startupShortcutName = '考研学习课表.lnk';
 
 let mainWindow = null;
@@ -14,6 +14,7 @@ let tray = null;
 let quitting = false;
 let saveBoundsTimer = null;
 let attachedToDesktop = false;
+let suppressBoundsSave = false;
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -99,12 +100,18 @@ function saveCurrentBounds() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
+  if (attachedToDesktop || suppressBoundsSave) {
+    return;
+  }
   const bounds = mainWindow.getBounds();
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   fs.writeFileSync(getWindowStatePath(), JSON.stringify({ profile: windowStateProfile, ...bounds }, null, 2), 'utf8');
 }
 
 function queueSaveCurrentBounds() {
+  if (attachedToDesktop || suppressBoundsSave) {
+    return;
+  }
   clearTimeout(saveBoundsTimer);
   saveBoundsTimer = setTimeout(saveCurrentBounds, 500);
 }
@@ -166,11 +173,13 @@ using System.Text;
 using System.Runtime.InteropServices;
 public class Win32DesktopLayer {
   public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr FindWindowEx(IntPtr hwndParent, IntPtr hwndChildAfter, string lpszClass, string lpszWindow);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, UInt32 Msg, IntPtr wParam, IntPtr lParam, UInt32 fuFlags, UInt32 uTimeout, out IntPtr lpdwResult);
   [DllImport("user32.dll", SetLastError=true)] public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
   [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, UInt32 uFlags);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
   [DllImport("user32.dll", CharSet=CharSet.Auto)] public static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
   [DllImport("user32.dll", EntryPoint="GetWindowLongPtr", SetLastError=true)] private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
   [DllImport("user32.dll", EntryPoint="SetWindowLongPtr", SetLastError=true)] private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
@@ -252,14 +261,20 @@ if ($script:desktopHost -eq [IntPtr]::Zero) {
 if ($script:desktopHost -eq [IntPtr]::Zero) {
   throw "Desktop WorkerW/Progman not found"
 }
+$hostRect = New-Object Win32DesktopLayer+RECT
+[void][Win32DesktopLayer]::GetWindowRect($script:desktopHost, [ref]$hostRect)
+$relativeX = ${bounds.x} - $hostRect.Left
+$relativeY = ${bounds.y} - $hostRect.Top
 [Win32DesktopLayer]::MakeDesktopChild($target)
 [void][Win32DesktopLayer]::SetParent($target, $script:desktopHost)
-[void][Win32DesktopLayer]::SetWindowPos($target, [IntPtr]::Zero, ${bounds.x}, ${bounds.y}, ${bounds.width}, ${bounds.height}, 0x0064)
-Write-Output "attached=$($script:desktopHost);class=$([Win32DesktopLayer]::ClassName($script:desktopHost))"
+[void][Win32DesktopLayer]::SetWindowPos($target, [IntPtr]::Zero, $relativeX, $relativeY, ${bounds.width}, ${bounds.height}, 0x0064)
+Write-Output "attached=$($script:desktopHost);class=$([Win32DesktopLayer]::ClassName($script:desktopHost));offset=$relativeX,$relativeY"
 `;
 
+  suppressBoundsSave = true;
   const result = await runPowerShell(script);
   attachedToDesktop = result.ok && result.stdout.includes('attached=');
+  suppressBoundsSave = false;
   refreshTrayMenu();
   return attachedToDesktop;
 }
