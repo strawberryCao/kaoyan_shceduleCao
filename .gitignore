@@ -1,41 +1,47 @@
-# dependencies
+# Dependencies
 node_modules/
 **/node_modules/
 
-# build outputs
+# Build outputs
 dist/
 **/dist/
-desktop-dist/
-**/desktop-dist/
 build/
 **/build/
 out/
 **/out/
+desktop-dist/
+**/desktop-dist/
+release/
+releases/
+coverage/
 
-# logs
+# Vite / bundler caches
+.vite/
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Logs
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+lerna-debug.log*
 dev-server.err.log
 dev-server.out.log
 
-# environment variables
-.env
-.env.*
-!.env.example
-
-# Vite
-.vite/
-.cache/
-
-# TypeScript
-*.tsbuildinfo
-
 # Electron / desktop packaging
-release/
-releases/
 *.exe
 *.dmg
 *.AppImage
@@ -44,20 +50,26 @@ releases/
 *.deb
 *.rpm
 
-# OS / editor
+# OS / editor files
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# local Codex / agent files
-.agents/
-.codex/
-
-# shortcuts
-*.lnk
-
-# temporary files
+# Temporary files
 tmp/
 temp/
 *.tmp
+*.tmp.*
+*.pid
+*.seed
+
+# Local shortcuts / helper artifacts
+*.lnk
+*.url
+
+# Local assistant / agent files
+.agents/
+.codex/

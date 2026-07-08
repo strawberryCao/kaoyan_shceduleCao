@@ -1,0 +1,184 @@
+﻿目录树（最多3层）：C:\Users\ASUS\Documents\Codex\2026-07-08\app-react-typescript-vite-github-pages
+
+.agents
+.codex
+.git
+│   ├── hooks
+│   │   ├── applypatch-msg.sample
+│   │   ├── commit-msg.sample
+│   │   ├── fsmonitor-watchman.sample
+│   │   ├── post-update.sample
+│   │   ├── pre-applypatch.sample
+│   │   ├── pre-commit.sample
+│   │   ├── pre-merge-commit.sample
+│   │   ├── pre-push.sample
+│   │   ├── pre-rebase.sample
+│   │   ├── pre-receive.sample
+│   │   ├── prepare-commit-msg.sample
+│   │   ├── push-to-checkout.sample
+│   │   ├── sendemail-validate.sample
+│   │   ├── update.sample
+│   ├── info
+│   │   ├── exclude
+│   ├── logs
+│   │   ├── refs
+│   │   ├── HEAD
+│   ├── objects
+│   │   ├── 03
+│   │   ├── 04
+│   │   ├── 08
+│   │   ├── 0a
+│   │   ├── 0b
+│   │   ├── 13
+│   │   ├── 19
+│   │   ├── 1c
+│   │   ├── 1f
+│   │   ├── 20
+│   │   ├── 22
+│   │   ├── 26
+│   │   ├── 28
+│   │   ├── 2a
+│   │   ├── 2d
+│   │   ├── 2e
+│   │   ├── 32
+│   │   ├── 33
+│   │   ├── 39
+│   │   ├── 3a
+│   │   ├── 3b
+│   │   ├── 3f
+│   │   ├── 40
+│   │   ├── 42
+│   │   ├── 43
+│   │   ├── 44
+│   │   ├── 45
+│   │   ├── 46
+│   │   ├── 48
+│   │   ├── 4a
+│   │   ├── 4b
+│   │   ├── 4c
+│   │   ├── 4e
+│   │   ├── 4f
+│   │   ├── 52
+│   │   ├── 53
+│   │   ├── 54
+│   │   ├── 58
+│   │   ├── 59
+│   │   ├── 5b
+│   │   ├── 5c
+│   │   ├── 5e
+│   │   ├── 61
+│   │   ├── 62
+│   │   ├── 63
+│   │   ├── 65
+│   │   ├── 66
+│   │   ├── 67
+│   │   ├── 69
+│   │   ├── 6c
+│   │   ├── 6d
+│   │   ├── 6f
+│   │   ├── 70
+│   │   ├── 74
+│   │   ├── 77
+│   │   ├── 78
+│   │   ├── 79
+│   │   ├── 7a
+│   │   ├── 7b
+│   │   ├── 7c
+│   │   ├── 7d
+│   │   ├── 7e
+│   │   ├── 7f
+│   │   ├── 84
+│   │   ├── 86
+│   │   ├── 89
+│   │   ├── 8d
+│   │   ├── 8e
+│   │   ├── 92
+│   │   ├── 93
+│   │   ├── 94
+│   │   ├── 95
+│   │   ├── 97
+│   │   ├── 9e
+│   │   ├── 9f
+│   │   ├── a2
+│   │   ├── a5
+│   │   ├── a6
+│   │   ├── a7
+│   │   ├── a9
+│   │   ├── ac
+│   │   ├── ad
+│   │   ├── af
+│   │   ├── b1
+│   │   ├── b2
+│   │   ├── b6
+│   │   ├── bb
+│   │   ├── bd
+│   │   ├── bf
+│   │   ├── c0
+│   │   ├── c1
+│   │   ├── c3
+│   │   ├── c8
+│   │   ├── ca
+│   │   ├── cb
+│   │   ├── cd
+│   │   ├── ce
+│   │   ├── d1
+│   │   ├── d5
+│   │   ├── d8
+│   │   ├── d9
+│   │   ├── da
+│   │   ├── db
+│   │   ├── dc
+│   │   ├── dd
+│   │   ├── de
+│   │   ├── e2
+│   │   ├── e4
+│   │   ├── e5
+│   │   ├── e8
+│   │   ├── ea
+│   │   ├── eb
+│   │   ├── ee
+│   │   ├── ef
+│   │   ├── f0
+│   │   ├── f3
+│   │   ├── f9
+│   │   ├── info
+│   │   ├── pack
+│   ├── refs
+│   │   ├── codex
+│   │   ├── heads
+│   │   ├── remotes
+│   │   ├── tags
+│   ├── COMMIT_EDITMSG
+│   ├── config
+│   ├── description
+│   ├── FETCH_HEAD
+│   ├── HEAD
+│   ├── index
+│   ├── ORIG_HEAD
+outputs
+│   ├── kaoyan-schedule-app
+│   │   ├── desktop-dist
+│   │   ├── dist
+│   │   ├── electron
+│   │   ├── node_modules
+│   │   ├── src
+│   │   ├── .gitignore
+│   │   ├── DESKTOP.md
+│   │   ├── dev-server.err.log
+│   │   ├── dev-server.out.log
+│   │   ├── index.html
+│   │   ├── LIVELY_WALLPAPER.md
+│   │   ├── package-lock.json
+│   │   ├── package.json
+│   │   ├── README.md
+│   │   ├── tsconfig.json
+│   │   ├── vite.config.mjs
+│   │   ├── 启动壁纸模式.cmd
+│   │   ├── 启动考研课表.cmd
+│   ├── 考研学习课表-壁纸模式.lnk
+│   ├── 考研学习课表-桌面版.lnk
+│   ├── 考研学习课表.lnk
+work
+README.md
+tree.txt
+目录三层统计.txt
