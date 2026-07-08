@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -6,6 +7,9 @@ const path = require('path');
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
 const DEFAULT_SUBJECT = '默认文件夹';
+const QWEN_API_KEY = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
+const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+const QWEN_MODEL = process.env.QWEN_MODEL || 'qwen-vl-plus';
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -18,11 +22,14 @@ function sendJson(res, status, data) {
   res.end(body);
 }
 
-function sanitizeSegment(input) {
-  return String(input || DEFAULT_SUBJECT)
+function sanitizeSegment(input, fallback = DEFAULT_SUBJECT, maxLength = 80) {
+  return String(input || fallback)
     .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
-    .trim()
-    .slice(0, 80) || DEFAULT_SUBJECT;
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^[._\s]+|[._\s]+$/g, '')
+    .slice(0, maxLength) || fallback;
 }
 
 function timestamp() {
@@ -58,6 +65,7 @@ function decodeDataUrl(dataUrl) {
     buffer: Buffer.from(match[2], 'base64'),
     ext,
     mime,
+    dataUrl: String(dataUrl),
   };
 }
 
@@ -78,20 +86,195 @@ function appendMetadata(subjectDir, metadata) {
   fs.writeFileSync(indexPath, JSON.stringify(list, null, 2), 'utf8');
 }
 
+function postJson(urlString, headers, payload, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(urlString);
+    const body = JSON.stringify(payload);
+    const request = https.request(
+      {
+        method: 'POST',
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+          ...headers,
+        },
+        timeout: timeoutMs,
+      },
+      (response) => {
+        let data = '';
+        response.setEncoding('utf8');
+        response.on('data', (chunk) => {
+          data += chunk;
+        });
+        response.on('end', () => {
+          if (response.statusCode < 200 || response.statusCode >= 300) {
+            reject(new Error(`Qwen HTTP ${response.statusCode}: ${data.slice(0, 500)}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(data));
+          } catch {
+            reject(new Error(`Invalid Qwen response: ${data.slice(0, 500)}`));
+          }
+        });
+      },
+    );
+
+    request.on('timeout', () => {
+      request.destroy(new Error('Qwen request timeout'));
+    });
+    request.on('error', reject);
+    request.write(body);
+    request.end();
+  });
+}
+
+function extractJsonObject(text) {
+  const raw = String(text || '').trim();
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(raw);
+  const candidate = fenced ? fenced[1] : raw;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    return null;
+  }
+  try {
+    return JSON.parse(candidate.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function guessSubjectFromText(text) {
+  const content = String(text || '');
+  const rules = [
+    ['高数', ['高数', '极限', '导数', '积分', '微分', '级数', '中值定理', '曲线积分', '多元函数']],
+    ['线代', ['线代', '矩阵', '行列式', '特征值', '特征向量', '线性方程组', '秩']],
+    ['概率论', ['概率', '随机变量', '分布', '期望', '方差', '大数定律', '中心极限定理']],
+    ['数据结构', ['数据结构', '链表', '栈', '队列', '树', '图', '排序', '查找', '堆', '哈希']],
+    ['组成原理', ['组成原理', 'CPU', 'Cache', '存储器', '指令', '流水线', '总线']],
+    ['操作系统', ['操作系统', '进程', '线程', '死锁', '分页', '段页', '文件系统', '调度']],
+    ['计算机网络', ['计网', '网络', 'TCP', 'UDP', 'IP', 'HTTP', 'DNS', '路由', '拥塞', '流量控制']],
+    ['英语', ['英语', '单词', '阅读', '翻译', '作文', '长难句']],
+  ];
+  for (const [subject, keywords] of rules) {
+    if (keywords.some((keyword) => content.toLowerCase().includes(String(keyword).toLowerCase()))) {
+      return subject;
+    }
+  }
+  return DEFAULT_SUBJECT;
+}
+
+function makeFallbackName({ kind, remark, subject }) {
+  const text = remark && remark.trim() ? remark : kind === 'canvas' ? '画布拼接笔记' : '图片笔记';
+  const safeSubject = sanitizeSegment(subject || guessSubjectFromText(text), DEFAULT_SUBJECT, 24);
+  const safeTitle = sanitizeSegment(text, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+  return {
+    subject: safeSubject,
+    title: safeTitle,
+    reason: 'fallback',
+  };
+}
+
+async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
+  if (!QWEN_API_KEY) {
+    return {
+      ...makeFallbackName({ kind, remark }),
+      modelUsed: null,
+      error: 'QWEN_API_KEY or DASHSCOPE_API_KEY is not set',
+    };
+  }
+
+  const prompt = [
+    '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
+    '要求：',
+    '1. 识别所属科目，只能从：高数、线代、概率论、数据结构、组成原理、操作系统、计算机网络、英语、默认文件夹 中选择。',
+    '2. title 用 8 到 22 个中文字符概括图片核心内容，不要出现“截图”“图片”“笔记”这类空泛词。',
+    '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
+    '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
+    '5. 只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据"}',
+    `保存类型：${kind === 'canvas' ? '多图画布' : '单图'}`,
+    `用户备注：${remark || '无'}`,
+  ].join('\n');
+
+  try {
+    const response = await postJson(
+      QWEN_BASE_URL,
+      { Authorization: `Bearer ${QWEN_API_KEY}` },
+      {
+        model: QWEN_MODEL,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: imageDataUrl } },
+            ],
+          },
+        ],
+        temperature: 0.2,
+      },
+    );
+
+    const text = response?.choices?.[0]?.message?.content;
+    const parsed = extractJsonObject(Array.isArray(text) ? JSON.stringify(text) : text);
+    if (!parsed) {
+      throw new Error('Qwen did not return valid JSON');
+    }
+
+    const subject = sanitizeSegment(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${remark || ''}`), DEFAULT_SUBJECT, 24);
+    const allowedSubjects = ['高数', '线代', '概率论', '数据结构', '组成原理', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
+    const title = sanitizeSegment(parsed.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+
+    return {
+      subject: allowedSubjects.includes(subject) ? subject : guessSubjectFromText(`${subject} ${title} ${remark || ''}`),
+      title,
+      reason: String(parsed.reason || '').slice(0, 120),
+      modelUsed: QWEN_MODEL,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      ...makeFallbackName({ kind, remark }),
+      modelUsed: QWEN_MODEL,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function ensureUniquePath(dir, baseName, ext) {
+  let filename = `${baseName}.${ext}`;
+  let filePath = path.join(dir, filename);
+  let counter = 2;
+  while (fs.existsSync(filePath)) {
+    filename = `${baseName}_${counter}.${ext}`;
+    filePath = path.join(dir, filename);
+    counter += 1;
+  }
+  return { filename, filePath };
+}
+
 async function handleSave(req, res) {
   const raw = await readBody(req);
   const payload = JSON.parse(raw || '{}');
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT);
+  const requestedSubject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
   const kind = payload.kind === 'canvas' ? 'canvas' : 'single';
   const remark = typeof payload.remark === 'string' ? payload.remark : '';
   const image = decodeDataUrl(payload.imageDataUrl);
 
+  const naming = await generateNameWithQwen({ imageDataUrl: image.dataUrl, kind, remark });
+  const subject = naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
-  const id = `${timestamp()}_${kind}_${Math.random().toString(16).slice(2, 8)}`;
-  const filename = `${id}.${image.ext}`;
-  const filePath = path.join(subjectDir, filename);
+  const createdStamp = timestamp();
+  const safeTitle = sanitizeSegment(naming.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+  const baseName = sanitizeSegment(`${subject}_${safeTitle}_${createdStamp}`, `${subject}_图片笔记_${createdStamp}`, 110);
+  const { filename, filePath } = ensureUniquePath(subjectDir, baseName, image.ext);
+  const id = path.basename(filename, path.extname(filename));
   const sidecarPath = path.join(subjectDir, `${id}.note.json`);
 
   fs.writeFileSync(filePath, image.buffer);
@@ -100,13 +283,21 @@ async function handleSave(req, res) {
     id,
     kind,
     subject,
+    requestedSubject,
+    title: safeTitle,
     remark,
     createdAt: new Date().toISOString(),
     fileName: filename,
     filePath,
     mime: image.mime,
+    naming: {
+      provider: 'qwen',
+      model: naming.modelUsed,
+      reason: naming.reason,
+      error: naming.error,
+    },
     classifier: {
-      status: 'pending',
+      status: naming.error ? 'fallback_named' : 'named',
       provider: 'qwen',
       scheduledAt: '24:00',
     },
@@ -118,6 +309,7 @@ async function handleSave(req, res) {
   sendJson(res, 200, {
     ok: true,
     filePath,
+    fileName: filename,
     metadata,
     notesRoot: NOTES_ROOT,
   });
@@ -140,6 +332,11 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         notesRoot: NOTES_ROOT,
         defaultSubject: DEFAULT_SUBJECT,
+        qwen: {
+          enabled: Boolean(QWEN_API_KEY),
+          model: QWEN_MODEL,
+          baseUrl: QWEN_BASE_URL,
+        },
       });
       return;
     }
@@ -161,4 +358,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);
   console.log(`Notes root: ${NOTES_ROOT}`);
+  console.log(`Qwen naming: ${QWEN_API_KEY ? `enabled (${QWEN_MODEL})` : 'disabled, set QWEN_API_KEY or DASHSCOPE_API_KEY'}`);
 });
