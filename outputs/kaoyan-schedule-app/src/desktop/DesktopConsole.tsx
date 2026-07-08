@@ -22,16 +22,21 @@ const createWidget = (type: WidgetType, index: number): WidgetLayout => {
 
 export function DesktopConsole() {
   const [layout, setLayout] = useState<WidgetLayout[]>(() => loadDesktopLayout());
-  const [savedText, setSavedText] = useState('布局已从本机读取');
+  const [savedText, setSavedText] = useState('布局已从本机读取，拖动后会实时同步');
+
+  const commitLayout = (nextLayout: WidgetLayout[], text = '已实时同步到壁纸') => {
+    setLayout(nextLayout);
+    saveDesktopLayout(nextLayout);
+    setSavedText(text);
+  };
 
   const addWidget = (type: WidgetType) => {
-    setLayout((current) => [...current, createWidget(type, current.length)]);
-    setSavedText('有未保存改动');
+    commitLayout([...layout, createWidget(type, layout.length)], '组件已添加并同步');
   };
 
   const save = () => {
     saveDesktopLayout(layout);
-    setSavedText('布局已保存，壁纸刷新后生效');
+    setSavedText('布局已保存并通知壁纸更新');
   };
 
   const reset = () => {
@@ -40,9 +45,7 @@ export function DesktopConsole() {
       return;
     }
     const defaults = getDefaultLayout();
-    setLayout(defaults);
-    saveDesktopLayout(defaults);
-    setSavedText('已恢复默认模板');
+    commitLayout(defaults, '已恢复默认模板并同步');
   };
 
   const openWallpaper = () => {
@@ -59,7 +62,7 @@ export function DesktopConsole() {
         </header>
 
         <section className="console-actions">
-          <button type="button" onClick={save}><Save size={15} /> 保存布局</button>
+          <button type="button" onClick={save}><Save size={15} /> 手动保存/同步</button>
           <button type="button" onClick={reset}><RotateCcw size={15} /> 重置模板</button>
           <button type="button" onClick={openWallpaper}>打开壁纸页</button>
         </section>
@@ -83,8 +86,7 @@ export function DesktopConsole() {
           editable
           layout={layout}
           onLayoutChange={(nextLayout) => {
-            setLayout(nextLayout);
-            setSavedText('有未保存改动');
+            commitLayout(nextLayout);
           }}
         />
       </section>
