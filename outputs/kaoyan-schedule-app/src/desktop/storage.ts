@@ -23,7 +23,7 @@ export const loadDesktopLayout = (): WidgetLayout[] => {
 
 export const fetchDesktopLayoutFromServer = async (): Promise<WidgetLayout[] | null> => {
   try {
-    const response = await fetch(`${LAYOUT_SERVER_URL}?t=${Date.now()}`, { cache: 'no-store' });
+    const response = await fetch(LAYOUT_SERVER_URL, { cache: 'no-store' });
     if (!response.ok) {
       return null;
     }
