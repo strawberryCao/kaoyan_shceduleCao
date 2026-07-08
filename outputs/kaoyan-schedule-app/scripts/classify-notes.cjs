@@ -2,35 +2,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const https = require('https');
+const { loadQwenConfig } = require('./qwen-config.cjs');
 
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
 const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
 const DEFAULT_SUBJECT = '默认文件夹';
 const DEFAULT_DIR = path.join(NOTES_ROOT, DEFAULT_SUBJECT);
 const LOG_PATH = path.join(ASSISTANT_ROOT, 'classify-notes.log');
-
-function normalizeQwenModel(input) {
-  const raw = String(input || '').trim();
-  if (!raw) {
-    return 'qwen-vl-plus';
-  }
-  const compact = raw.toLowerCase().replace(/\s+/g, '');
-  const aliases = new Map([
-    ['qwen-v1-plus', 'qwen-vl-plus'],
-    ['qwen-vlplus', 'qwen-vl-plus'],
-    ['qwen-vl_plus', 'qwen-vl-plus'],
-    ['qwenvlplus', 'qwen-vl-plus'],
-    ['qwen3.5-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus', 'qwen-vl-plus'],
-  ]);
-  return aliases.get(compact) || raw;
-}
-
-const QWEN_TOKEN = process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || '';
-const QWEN_BASE_URL = process.env.QWEN_BASE_URL || 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-const QWEN_MODEL = normalizeQwenModel(process.env.QWEN_MODEL || 'qwen-vl-plus');
-
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
 const SUBJECT_ALIASES = new Map([
   ['高数', '高等数学'],
@@ -44,7 +23,7 @@ const SUBJECT_ALIASES = new Map([
   ['默认', DEFAULT_SUBJECT],
 ]);
 
-const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
+const qwen = loadQwenConfig();
 
 function log(message) {
   fs.mkdirSync(ASSISTANT_ROOT, { recursive: true });
@@ -72,26 +51,18 @@ function timestampFromDate(date) {
 }
 
 function getMimeByExt(ext) {
-  if (ext === '.jpg' || ext === '.jpeg') {
-    return 'image/jpeg';
-  }
-  if (ext === '.webp') {
-    return 'image/webp';
-  }
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.webp') return 'image/webp';
   return 'image/png';
 }
 
 function fileToDataUrl(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  const mime = getMimeByExt(ext);
-  const buffer = fs.readFileSync(filePath);
-  return `data:${mime};base64,${buffer.toString('base64')}`;
+  return `data:${getMimeByExt(ext)};base64,${fs.readFileSync(filePath).toString('base64')}`;
 }
 
 function readJson(filePath, fallback) {
-  if (!fs.existsSync(filePath)) {
-    return fallback;
-  }
+  if (!fs.existsSync(filePath)) return fallback;
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
   } catch {
@@ -104,8 +75,7 @@ function writeJson(filePath, payload) {
 }
 
 function loadMetadataList(dir) {
-  const metadataPath = path.join(dir, 'metadata.json');
-  const data = readJson(metadataPath, []);
+  const data = readJson(path.join(dir, 'metadata.json'), []);
   return Array.isArray(data) ? data : [];
 }
 
@@ -116,12 +86,7 @@ function writeMetadataList(dir, list) {
 
 function removeFromMetadata(dir, metadata) {
   const list = loadMetadataList(dir);
-  const next = list.filter((item) => {
-    if (!item || typeof item !== 'object') {
-      return false;
-    }
-    return item.id !== metadata.id && item.fileName !== metadata.fileName && item.filePath !== metadata.filePath;
-  });
+  const next = list.filter((item) => item?.id !== metadata.id && item?.fileName !== metadata.fileName && item?.filePath !== metadata.filePath);
   writeMetadataList(dir, next);
 }
 
@@ -151,9 +116,7 @@ function postJson(urlString, headers, payload, timeoutMs = 30000) {
       (response) => {
         let data = '';
         response.setEncoding('utf8');
-        response.on('data', (chunk) => {
-          data += chunk;
-        });
+        response.on('data', (chunk) => { data += chunk; });
         response.on('end', () => {
           if (response.statusCode < 200 || response.statusCode >= 300) {
             reject(new Error(`HTTP ${response.statusCode}: ${data.slice(0, 500)}`));
@@ -181,9 +144,7 @@ function extractJsonObject(text) {
   const candidate = fenced ? fenced[1] : raw;
   const start = candidate.indexOf('{');
   const end = candidate.lastIndexOf('}');
-  if (start < 0 || end <= start) {
-    return null;
-  }
+  if (start < 0 || end <= start) return null;
   try {
     return JSON.parse(candidate.slice(start, end + 1));
   } catch {
@@ -193,23 +154,17 @@ function extractJsonObject(text) {
 
 function normalizeSubject(subjectText, fallback = DEFAULT_SUBJECT) {
   const raw = String(subjectText || '').trim();
-  if (SUBJECTS.includes(raw)) {
-    return raw;
-  }
-  if (SUBJECT_ALIASES.has(raw)) {
-    return SUBJECT_ALIASES.get(raw);
-  }
+  if (SUBJECTS.includes(raw)) return raw;
+  if (SUBJECT_ALIASES.has(raw)) return SUBJECT_ALIASES.get(raw);
   for (const subject of SUBJECTS) {
-    if (raw.includes(subject) || subject.includes(raw)) {
-      return subject;
-    }
+    if (raw.includes(subject) || subject.includes(raw)) return subject;
   }
   return fallback;
 }
 
 async function classifyImage({ imageDataUrl, remark }) {
-  if (!QWEN_TOKEN) {
-    throw new Error('QWEN_API_KEY or DASHSCOPE_API_KEY is not configured');
+  if (!qwen.apiKey) {
+    throw new Error(`Qwen API key is empty. configPath=${qwen.configPath}`);
   }
 
   const prompt = [
@@ -222,10 +177,10 @@ async function classifyImage({ imageDataUrl, remark }) {
   ].join('\n');
 
   const response = await postJson(
-    QWEN_BASE_URL,
-    { Authorization: `Bearer ${QWEN_TOKEN}` },
+    qwen.baseUrl,
+    { Authorization: `Bearer ${qwen.apiKey}` },
     {
-      model: QWEN_MODEL,
+      model: qwen.model,
       messages: [
         {
           role: 'user',
@@ -241,9 +196,7 @@ async function classifyImage({ imageDataUrl, remark }) {
 
   const content = response?.choices?.[0]?.message?.content;
   const parsed = extractJsonObject(Array.isArray(content) ? JSON.stringify(content) : content);
-  if (!parsed) {
-    throw new Error('model did not return valid JSON');
-  }
+  if (!parsed) throw new Error('model did not return valid JSON');
 
   return {
     subject: normalizeSubject(parsed.subject),
@@ -265,9 +218,7 @@ function ensureUniqueFilePath(dir, baseName, ext) {
 }
 
 function getCandidates() {
-  if (!fs.existsSync(DEFAULT_DIR)) {
-    return [];
-  }
+  if (!fs.existsSync(DEFAULT_DIR)) return [];
   return fs.readdirSync(DEFAULT_DIR)
     .filter((fileName) => IMAGE_EXTS.has(path.extname(fileName).toLowerCase()))
     .map((fileName) => path.join(DEFAULT_DIR, fileName));
@@ -276,8 +227,7 @@ function getCandidates() {
 function readSidecar(imagePath) {
   const parsed = path.parse(imagePath);
   const sidecarPath = path.join(parsed.dir, `${parsed.name}.note.json`);
-  const metadata = readJson(sidecarPath, null);
-  return { sidecarPath, metadata };
+  return { sidecarPath, metadata: readJson(sidecarPath, null) };
 }
 
 async function classifyOne(imagePath) {
@@ -297,9 +247,7 @@ async function classifyOne(imagePath) {
         mime: getMimeByExt(ext),
       };
 
-  const remark = baseMetadata.remark || '';
-  const result = await classifyImage({ imageDataUrl: fileToDataUrl(imagePath), remark });
-
+  const result = await classifyImage({ imageDataUrl: fileToDataUrl(imagePath), remark: baseMetadata.remark || '' });
   if (!result.subject || result.subject === DEFAULT_SUBJECT) {
     throw new Error('model kept this note in default folder');
   }
@@ -314,10 +262,7 @@ async function classifyOne(imagePath) {
   const newSidecarPath = path.join(destDir, `${newId}.note.json`);
 
   fs.renameSync(imagePath, newImagePath);
-
-  if (fs.existsSync(sidecarPath)) {
-    fs.rmSync(sidecarPath, { force: true });
-  }
+  if (fs.existsSync(sidecarPath)) fs.rmSync(sidecarPath, { force: true });
 
   const nextMetadata = {
     ...baseMetadata,
@@ -331,7 +276,9 @@ async function classifyOne(imagePath) {
       ...(baseMetadata.classifier || {}),
       status: 'auto_classified',
       provider: 'qwen',
-      model: QWEN_MODEL,
+      model: qwen.model,
+      baseUrl: qwen.baseUrl,
+      source: qwen.source,
       reason: result.reason,
       autoClassifiedAt: new Date().toISOString(),
     },
@@ -340,7 +287,6 @@ async function classifyOne(imagePath) {
   writeJson(newSidecarPath, nextMetadata);
   removeFromMetadata(DEFAULT_DIR, baseMetadata);
   appendToMetadata(destDir, nextMetadata);
-
   log(`OK ${originalName} -> ${result.subject}\\${newFileName}`);
 }
 
@@ -349,7 +295,10 @@ async function main() {
   log('---- classify default notes start ----');
   log(`notesRoot=${NOTES_ROOT}`);
   log(`defaultDir=${DEFAULT_DIR}`);
-  log(`model=${QWEN_MODEL}`);
+  log(`configPath=${qwen.configPath}`);
+  log(`configSource=${qwen.source}`);
+  log(`model=${qwen.model}`);
+  log(`baseUrl=${qwen.baseUrl}`);
 
   const candidates = getCandidates();
   if (candidates.length === 0) {
@@ -359,7 +308,6 @@ async function main() {
 
   let ok = 0;
   let failed = 0;
-
   for (const imagePath of candidates) {
     try {
       await classifyOne(imagePath);
