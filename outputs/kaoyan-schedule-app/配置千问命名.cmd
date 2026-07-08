@@ -1,45 +1,25 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableDelayedExpansion
+setlocal
 
 cd /d "%~dp0"
 
-echo ================================================
-echo        配置千问 / DashScope
-echo ================================================
-echo.
-echo 这个窗口才是填写配置的地方。
-echo 不要把配置粘到 Node 服务窗口里。
-echo.
+where node >nul 2>nul
+if errorlevel 1 (
+  echo Node.js was not found. Please install Node.js first.
+  pause
+  exit /b 1
+)
 
-set /p QWEN_KEY=请粘贴千问/DashScope 配置值后按回车: 
-if "%QWEN_KEY%"=="" (
+node "%~dp0scripts\configure-qwen.cjs"
+
+if errorlevel 1 (
   echo.
-  echo 配置值为空，已取消。
+  echo 配置失败。请把上面的错误发给 ChatGPT。
   pause
   exit /b 1
 )
 
 echo.
-echo 下面默认使用 qwen3-plus。
-echo 但注意：图片命名需要视觉能力；如果 qwen3-plus 不能识图，保存时会兜底命名。
-echo.
-set /p QWEN_MODEL_INPUT=请输入模型名，直接回车默认 qwen3-plus: 
-if "%QWEN_MODEL_INPUT%"=="" set "QWEN_MODEL_INPUT=qwen3-plus"
-
-setx QWEN_API_KEY "%QWEN_KEY%" >nul
-setx QWEN_MODEL "%QWEN_MODEL_INPUT%" >nul
-setx QWEN_BASE_URL "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions" >nul
-
-echo.
-echo 已写入 Windows 用户环境变量。
-echo QWEN_MODEL = %QWEN_MODEL_INPUT%
-echo QWEN_BASE_URL = https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions
-echo.
-echo 接下来请关闭旧服务窗口，然后重新双击：
-echo 启动考研桌面助手.cmd
-echo.
-echo 启动后打开这个地址检查：
-echo http://127.0.0.1:5174/health
-echo.
+echo 配置完成。
 pause
