@@ -1,5 +1,6 @@
 const readline = require('readline');
 const { spawnSync } = require('child_process');
+const { normalizeQwenModel, normalizeQwenBaseUrl, writeFileConfig, CONFIG_PATH } = require('./qwen-config.cjs');
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -8,24 +9,6 @@ const rl = readline.createInterface({
 
 function ask(question) {
   return new Promise((resolve) => rl.question(question, (answer) => resolve(answer.trim())));
-}
-
-function normalizeModelName(input) {
-  const raw = String(input || '').trim();
-  if (!raw) {
-    return 'qwen-vl-plus';
-  }
-  const compact = raw.toLowerCase().replace(/\s+/g, '');
-  const aliases = new Map([
-    ['qwen-v1-plus', 'qwen-vl-plus'],
-    ['qwen-vlplus', 'qwen-vl-plus'],
-    ['qwen-vl_plus', 'qwen-vl-plus'],
-    ['qwenvlplus', 'qwen-vl-plus'],
-    ['qwen3.5-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus-vl', 'qwen-vl-plus'],
-    ['qwen3-plus', 'qwen-vl-plus'],
-  ]);
-  return aliases.get(compact) || raw;
 }
 
 function setUserEnv(name, value) {
@@ -43,33 +26,42 @@ function setUserEnv(name, value) {
 
 async function main() {
   console.log('================================================');
-  console.log('       配置千问 / DashScope');
+  console.log('       配置千问 / 阿里云百炼');
   console.log('================================================');
-  console.log('这个脚本会写入 Windows 用户环境变量。');
-  console.log('密钥不会写进 GitHub 仓库。');
-  console.log('视觉命名/未分类整理推荐模型：qwen-vl-plus');
-  console.log('注意：是 qwen-vl-plus，中间是字母 l，不是数字 1。');
+  console.log('你现在用的是 sk-ws-... 工作空间 Key，必须配合百炼页面上的 OpenAI compatible 地址。');
+  console.log('位置：百炼 API Key 页面顶部，OpenAI compatible 后面的 URL。');
+  console.log('例子：https://ws-xxxx.cn-beijing.maas.aliyuncs.com/compatible-mode/v1');
+  console.log('脚本会自动补 /chat/completions。');
   console.log('');
 
-  const key = await ask('请粘贴新的千问/DashScope 配置值后按回车: ');
+  const key = await ask('请粘贴新的 sk-ws API Key 后按回车: ');
   if (!key) {
     throw new Error('配置值为空，已取消。');
   }
 
-  const modelInput = await ask('请输入模型名，直接回车默认 qwen-vl-plus: ');
-  const model = normalizeModelName(modelInput);
+  const baseInput = await ask('请粘贴 OpenAI compatible 地址后按回车: ');
+  if (!baseInput) {
+    throw new Error('OpenAI compatible 地址为空。sk-ws Key 不能使用旧的全局 dashscope 地址。');
+  }
 
-  setUserEnv('QWEN_API_KEY', key);
-  setUserEnv('QWEN_MODEL', model);
-  setUserEnv('QWEN_BASE_URL', 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions');
+  const modelInput = await ask('请输入模型名，直接回车默认 qwen-vl-plus: ');
+  const model = normalizeQwenModel(modelInput);
+  const baseUrl = normalizeQwenBaseUrl(baseInput);
+
+  const fileConfig = writeFileConfig({ apiKey: key, model, baseUrl: baseInput });
+
+  setUserEnv('QWEN_API_KEY', fileConfig.apiKey);
+  setUserEnv('QWEN_MODEL', fileConfig.model);
+  setUserEnv('QWEN_BASE_URL', fileConfig.baseUrl);
 
   console.log('');
-  console.log('已写入 Windows 用户环境变量。');
-  console.log(`QWEN_MODEL = ${model}`);
-  console.log('QWEN_BASE_URL = https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions');
+  console.log('已写入配置文件和 Windows 用户环境变量。');
+  console.log(`配置文件 = ${CONFIG_PATH}`);
+  console.log(`QWEN_MODEL = ${fileConfig.model}`);
+  console.log(`QWEN_BASE_URL = ${fileConfig.baseUrl}`);
   console.log('');
   console.log('接下来请关闭旧终端/旧服务窗口，然后重新双击：启动考研桌面助手.cmd');
-  console.log('再运行：立即整理未分类笔记.cmd');
+  console.log('再运行：测试千问连接.cmd');
 }
 
 main()
