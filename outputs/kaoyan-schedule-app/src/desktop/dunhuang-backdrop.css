@@ -27,17 +27,16 @@
   display: block;
   object-fit: cover;
   object-position: center;
-  opacity: 0;
-  filter: contrast(1.045) saturate(1.015);
+  opacity: 1;
   image-rendering: auto;
   transform: translateZ(0);
-  will-change: opacity;
+  backface-visibility: hidden;
 }
 
 .dh-dust-canvas {
   z-index: 2;
   display: block;
-  opacity: 0.9;
+  opacity: 1;
   transform: translateZ(0);
 }
 
@@ -46,8 +45,8 @@
   inset: 0;
   z-index: 3;
   background:
-    linear-gradient(90deg, rgba(52, 40, 34, 0.018), transparent 17%, transparent 78%, rgba(48, 37, 32, 0.052)),
-    linear-gradient(180deg, rgba(255, 252, 240, 0.003), transparent 70%, rgba(53, 39, 29, 0.034));
+    linear-gradient(90deg, rgba(52, 40, 34, 0.016), transparent 17%, transparent 78%, rgba(48, 37, 32, 0.046)),
+    linear-gradient(180deg, rgba(255, 252, 240, 0.002), transparent 70%, rgba(53, 39, 29, 0.03));
 }
 
 .desktop-workspace-page .desktop-wallpaper-ribbon {
@@ -141,11 +140,4 @@
 
 .desktop-progress-ring {
   border-color: rgba(198, 151, 92, 0.44);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dh-video-bg,
-  .dh-dust-canvas {
-    display: none;
-  }
 }
