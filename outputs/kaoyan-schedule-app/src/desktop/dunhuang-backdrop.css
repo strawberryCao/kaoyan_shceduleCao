@@ -32,7 +32,7 @@
 .dh-video-stack {
   z-index: 1;
   overflow: hidden;
-  background: #e8ddcb;
+  background: transparent;
 }
 
 .dh-video-bg {
