@@ -79,8 +79,8 @@
 
 .dh-interaction-canvas {
   z-index: 2;
-  mix-blend-mode: screen;
-  opacity: 0.58;
+  mix-blend-mode: normal;
+  opacity: 0.34;
 }
 
 .dh-vignette {
