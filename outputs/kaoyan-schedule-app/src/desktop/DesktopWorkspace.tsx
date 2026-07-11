@@ -6,6 +6,7 @@ import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout, sub
 import type { WidgetLayout } from './types';
 import { renderDesktopWidget } from './DesktopWidgets';
 import { DunhuangBackdrop } from './DunhuangBackdrop';
+import { AiCodeWidget } from './AiCodeWidget';
 
 interface DesktopWorkspaceProps {
   editable: boolean;
@@ -155,7 +156,7 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
           </header>
 
           <div className="desktop-widget-body">
-            {renderDesktopWidget(widget)}
+            {widget.type === 'customCode' ? <AiCodeWidget widget={widget} /> : renderDesktopWidget(widget)}
           </div>
 
           {editable && (
