@@ -145,7 +145,7 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
           </header>
 
           <div className="desktop-widget-body">
-            {renderDesktopWidget(widget.type)}
+            {renderDesktopWidget(widget)}
           </div>
 
           {editable && (
