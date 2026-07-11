@@ -16,25 +16,37 @@ type VideoCandidate = {
   type: string;
 };
 
+type PointerState = {
+  x: number;
+  y: number;
+  previousX: number;
+  previousY: number;
+  velocityX: number;
+  velocityY: number;
+  active: boolean;
+};
+
 const VIDEO_CANDIDATES: VideoCandidate[] = [
   { src: '/dunhuang-master.webm', type: 'video/webm' },
   { src: '/dunhuang-master.mp4', type: 'video/mp4' },
+  { src: '/dunhuang-reference.mp4', type: 'video/mp4' },
 ];
 
-const BASE_DUST = 42;
+const BASE_DUST = 46;
 const CROSSFADE_SECONDS = 0.8;
+const POINTER_RADIUS = 118;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 function createDust(width: number, height: number): DustParticle {
   return {
     x: Math.random() * width,
-    y: height * (0.48 + Math.random() * 0.5),
-    vx: 0.025 + Math.random() * 0.085,
-    vy: -0.008 - Math.random() * 0.032,
-    radius: 0.28 + Math.random() * 0.78,
-    alpha: 0.012 + Math.random() * 0.035,
+    y: height * (0.46 + Math.random() * 0.52),
+    vx: 0.022 + Math.random() * 0.072,
+    vy: -0.006 - Math.random() * 0.024,
+    radius: 0.32 + Math.random() * 0.72,
+    alpha: 0.012 + Math.random() * 0.032,
     phase: Math.random() * Math.PI * 2,
-    phaseSpeed: 0.004 + Math.random() * 0.009,
+    phaseSpeed: 0.004 + Math.random() * 0.008,
   };
 }
 
@@ -66,6 +78,15 @@ export function DunhuangBackdrop() {
   const firstVideoRef = useRef<HTMLVideoElement | null>(null);
   const secondVideoRef = useRef<HTMLVideoElement | null>(null);
   const dustCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pointerRef = useRef<PointerState>({
+    x: 0,
+    y: 0,
+    previousX: 0,
+    previousY: 0,
+    velocityX: 0,
+    velocityY: 0,
+    active: false,
+  });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -113,21 +134,77 @@ export function DunhuangBackdrop() {
       }
     };
 
+    const onPointerMove = (event: PointerEvent) => {
+      const rect = root.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+        pointerRef.current.active = false;
+        return;
+      }
+
+      const pointer = pointerRef.current;
+      const target = event.target instanceof Element ? event.target : null;
+      const overUi = Boolean(target?.closest('.desktop-widget, .desktop-console-sidebar, .desktop-control-dock'));
+      if (overUi) {
+        pointer.active = false;
+        return;
+      }
+
+      pointer.velocityX = pointer.active ? x - pointer.previousX : 0;
+      pointer.velocityY = pointer.active ? y - pointer.previousY : 0;
+      pointer.previousX = x;
+      pointer.previousY = y;
+      pointer.x = x;
+      pointer.y = y;
+      pointer.active = true;
+    };
+
+    const deactivatePointer = () => {
+      pointerRef.current.active = false;
+    };
+
     const draw = (now: number) => {
       const delta = clamp((now - previous) / (1000 / 60), 0.25, 2.5);
       previous = now;
       context.clearRect(0, 0, width, height);
 
+      const pointer = pointerRef.current;
+      pointer.velocityX *= 0.82;
+      pointer.velocityY *= 0.82;
+
       if (!reducedMotion && !document.hidden) {
         for (const particle of particles) {
           particle.phase += particle.phaseSpeed * delta;
-          particle.x += (particle.vx + Math.sin(particle.phase) * 0.012) * delta;
-          particle.y += (particle.vy + Math.cos(particle.phase * 0.73) * 0.006) * delta;
+          particle.vx += Math.sin(particle.phase) * 0.00016 * delta;
+          particle.vy += Math.cos(particle.phase * 0.73) * 0.00008 * delta;
 
-          if (particle.x > width + 4 || particle.y < height * 0.4) {
+          if (pointer.active) {
+            const dx = particle.x - pointer.x;
+            const dy = particle.y - pointer.y;
+            const distance = Math.hypot(dx, dy);
+            if (distance > 0.01 && distance < POINTER_RADIUS) {
+              const influence = 1 - distance / POINTER_RADIUS;
+              const normalX = dx / distance;
+              const normalY = dy / distance;
+              const tangentX = -normalY;
+              const tangentY = normalX;
+              const speed = clamp(Math.hypot(pointer.velocityX, pointer.velocityY) / 24, 0, 1);
+
+              particle.vx += (normalX * 0.018 + tangentX * pointer.velocityX * 0.0014) * influence * speed;
+              particle.vy += (normalY * 0.014 + tangentY * pointer.velocityY * 0.0011) * influence * speed;
+            }
+          }
+
+          particle.vx += (0.055 - particle.vx) * 0.006 * delta;
+          particle.vy += (-0.018 - particle.vy) * 0.006 * delta;
+          particle.x += particle.vx * delta;
+          particle.y += particle.vy * delta;
+
+          if (particle.x > width + 6 || particle.y < height * 0.38 || particle.y > height + 6) {
             Object.assign(particle, createDust(width, height), {
-              x: -3 - Math.random() * 10,
-              y: height * (0.55 + Math.random() * 0.44),
+              x: -4 - Math.random() * 12,
+              y: height * (0.54 + Math.random() * 0.44),
             });
           }
 
@@ -144,11 +221,17 @@ export function DunhuangBackdrop() {
     resize();
     const observer = new ResizeObserver(resize);
     observer.observe(root);
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerleave', deactivatePointer);
+    window.addEventListener('blur', deactivatePointer);
     animationId = window.requestAnimationFrame(draw);
 
     return () => {
       window.cancelAnimationFrame(animationId);
       observer.disconnect();
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerleave', deactivatePointer);
+      window.removeEventListener('blur', deactivatePointer);
     };
   }, []);
 
@@ -177,7 +260,7 @@ export function DunhuangBackdrop() {
       try {
         video.currentTime = 0;
       } catch {
-        // Metadata may not be available yet. The next playback attempt will reset it.
+        // Metadata may not be available yet.
       }
     };
 
@@ -267,24 +350,10 @@ export function DunhuangBackdrop() {
       <div className={`dh-image-fallback ${videoReady ? 'is-covered' : ''}`} />
       {videoSource && (
         <div className="dh-video-stack">
-          <video
-            ref={firstVideoRef}
-            className="dh-video-bg"
-            muted
-            playsInline
-            preload="auto"
-            poster="/dunhuang-wallpaper.png"
-          >
+          <video ref={firstVideoRef} className="dh-video-bg" muted playsInline preload="auto" poster="/dunhuang-wallpaper.png">
             <source src={videoSource.src} type={videoSource.type} />
           </video>
-          <video
-            ref={secondVideoRef}
-            className="dh-video-bg"
-            muted
-            playsInline
-            preload="auto"
-            poster="/dunhuang-wallpaper.png"
-          >
+          <video ref={secondVideoRef} className="dh-video-bg" muted playsInline preload="auto" poster="/dunhuang-wallpaper.png">
             <source src={videoSource.src} type={videoSource.type} />
           </video>
         </div>
