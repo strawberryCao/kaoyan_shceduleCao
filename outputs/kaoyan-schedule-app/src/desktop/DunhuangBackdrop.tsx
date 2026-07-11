@@ -11,24 +11,35 @@ type DustParticle = {
   maxLife: number;
 };
 
-const MAX_DUST = 42;
+const MAX_DUST = 72;
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
-const createDust = (x: number, y: number, windX: number, windY: number): DustParticle => {
+const createPointerDust = (x: number, y: number, windX: number, windY: number): DustParticle => {
   const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 0.72;
-  const speed = 0.2 + Math.random() * 0.58;
+  const speed = 0.34 + Math.random() * 0.9;
   return {
-    x: x + (Math.random() - 0.5) * 12,
-    y: y + (Math.random() - 0.5) * 9,
-    vx: Math.cos(angle) * speed + windX * 0.018,
-    vy: Math.sin(angle) * speed + windY * 0.018 - Math.random() * 0.11,
-    size: 0.24 + Math.random() * 0.58,
-    alpha: 0.018 + Math.random() * 0.032,
+    x: x + (Math.random() - 0.5) * 14,
+    y: y + (Math.random() - 0.5) * 10,
+    vx: Math.cos(angle) * speed + windX * 0.022,
+    vy: Math.sin(angle) * speed + windY * 0.022 - Math.random() * 0.15,
+    size: 0.34 + Math.random() * 0.72,
+    alpha: 0.05 + Math.random() * 0.065,
     life: 0,
-    maxLife: 56 + Math.random() * 42,
+    maxLife: 64 + Math.random() * 48,
   };
 };
+
+const createAmbientDust = (width: number, height: number): DustParticle => ({
+  x: Math.random() * width,
+  y: height * (0.5 + Math.random() * 0.46),
+  vx: 0.09 + Math.random() * 0.24,
+  vy: -0.035 - Math.random() * 0.11,
+  size: 0.24 + Math.random() * 0.44,
+  alpha: 0.018 + Math.random() * 0.032,
+  life: 0,
+  maxLife: 190 + Math.random() * 170,
+});
 
 export function DunhuangBackdrop() {
   const [videoReady, setVideoReady] = useState(false);
@@ -54,7 +65,7 @@ export function DunhuangBackdrop() {
       if (wakeVideo.readyState < 2 || mainVideo.readyState < 2) {
         return;
       }
-      if (Math.abs(wakeVideo.currentTime - mainVideo.currentTime) > 0.12) {
+      if (Math.abs(wakeVideo.currentTime - mainVideo.currentTime) > 0.08) {
         wakeVideo.currentTime = mainVideo.currentTime;
       }
       if (!mainVideo.paused && wakeVideo.paused) {
@@ -63,7 +74,7 @@ export function DunhuangBackdrop() {
     };
 
     syncVideos();
-    const timer = window.setInterval(syncVideos, 850);
+    const timer = window.setInterval(syncVideos, 600);
     mainVideo.addEventListener('play', syncVideos);
     mainVideo.addEventListener('seeked', syncVideos);
 
@@ -91,6 +102,7 @@ export function DunhuangBackdrop() {
     let height = 1;
     let wakeStrength = 0;
     let lastMoveAt = 0;
+    let lastAmbientAt = 0;
     const particles: DustParticle[] = [];
 
     const resize = () => {
@@ -122,22 +134,23 @@ export function DunhuangBackdrop() {
       pointer.y = event.clientY;
 
       const overWidget = event.target instanceof Element && Boolean(event.target.closest('.desktop-widget'));
-      const interactionScale = overWidget ? 0.28 : 1;
-      wakeStrength = clamp((speed / 38) * interactionScale, 0, 1);
+      const interactionScale = overWidget ? 0.25 : 1;
+      wakeStrength = clamp((speed / 28) * interactionScale, 0, 1);
       lastMoveAt = performance.now();
 
       root.style.setProperty('--dh-pointer-x', `${event.clientX}px`);
       root.style.setProperty('--dh-pointer-y', `${event.clientY}px`);
-      root.style.setProperty('--dh-wake-x', `${clamp(windX * 0.1, -6, 6)}px`);
-      root.style.setProperty('--dh-wake-y', `${clamp(windY * 0.1, -5, 5)}px`);
+      root.style.setProperty('--dh-wake-x', `${clamp(windX * 0.17, -12, 12)}px`);
+      root.style.setProperty('--dh-wake-y', `${clamp(windY * 0.14, -9, 9)}px`);
+      root.style.setProperty('--dh-wake-angle', `${clamp(Math.atan2(windY, windX) * 8, -12, 12)}deg`);
 
-      if (!overWidget && speed > 9) {
-        const count = Math.min(3, Math.floor(speed / 34) + 1);
+      if (!overWidget && speed > 6) {
+        const count = Math.min(5, Math.floor(speed / 22) + 1);
         for (let index = 0; index < count; index += 1) {
           if (particles.length >= MAX_DUST) {
             particles.shift();
           }
-          particles.push(createDust(event.clientX, event.clientY, windX, windY));
+          particles.push(createPointerDust(event.clientX, event.clientY, windX, windY));
         }
       }
     };
@@ -148,32 +161,37 @@ export function DunhuangBackdrop() {
       root.style.setProperty('--dh-wake-strength', '0');
     };
 
-    const draw = () => {
+    const draw = (now: number) => {
       context.clearRect(0, 0, width, height);
       context.save();
       context.globalCompositeOperation = 'source-over';
+
+      if (now - lastAmbientAt > 150 && particles.length < 34) {
+        particles.push(createAmbientDust(width, height));
+        lastAmbientAt = now;
+      }
 
       for (let index = particles.length - 1; index >= 0; index -= 1) {
         const particle = particles[index];
         particle.life += 1;
         particle.x += particle.vx;
         particle.y += particle.vy;
-        particle.vx *= 0.987;
-        particle.vy = particle.vy * 0.985 - 0.001;
+        particle.vx *= 0.991;
+        particle.vy = particle.vy * 0.989 - 0.0008;
 
         const t = particle.life / particle.maxLife;
-        const alpha = particle.alpha * (1 - t) * (0.42 + 0.58 * Math.sin(t * Math.PI));
+        const alpha = particle.alpha * (1 - t) * (0.38 + 0.62 * Math.sin(t * Math.PI));
         if (t >= 1 || alpha <= 0.001) {
           particles.splice(index, 1);
           continue;
         }
 
-        const radius = particle.size * (1 + t * 0.7);
-        const glowRadius = radius * 1.75;
+        const radius = particle.size * (1 + t * 0.55);
+        const glowRadius = radius * 1.48;
         const gradient = context.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y, glowRadius);
-        gradient.addColorStop(0, `rgba(191, 151, 94, ${alpha})`);
-        gradient.addColorStop(0.58, `rgba(154, 111, 66, ${alpha * 0.18})`);
-        gradient.addColorStop(1, 'rgba(154, 111, 66, 0)');
+        gradient.addColorStop(0, `rgba(176, 130, 77, ${alpha})`);
+        gradient.addColorStop(0.64, `rgba(135, 91, 50, ${alpha * 0.16})`);
+        gradient.addColorStop(1, 'rgba(135, 91, 50, 0)');
         context.fillStyle = gradient;
         context.beginPath();
         context.arc(particle.x, particle.y, glowRadius, 0, Math.PI * 2);
@@ -181,7 +199,7 @@ export function DunhuangBackdrop() {
       }
 
       const idleTime = performance.now() - lastMoveAt;
-      const fade = idleTime < 70 ? 1 : clamp(1 - (idleTime - 70) / 260, 0, 1);
+      const fade = idleTime < 90 ? 1 : clamp(1 - (idleTime - 90) / 420, 0, 1);
       root.style.setProperty('--dh-wake-strength', String(wakeStrength * fade));
 
       context.restore();
@@ -189,7 +207,7 @@ export function DunhuangBackdrop() {
     };
 
     resize();
-    draw();
+    animationId = window.requestAnimationFrame(draw);
     window.addEventListener('resize', resize);
     window.addEventListener('pointermove', onPointerMove, { passive: true });
     window.addEventListener('pointerleave', onPointerLeave);
@@ -217,6 +235,17 @@ export function DunhuangBackdrop() {
 
   return (
     <div ref={rootRef} className="dh-backdrop" aria-hidden="true">
+      <svg className="dh-filter-definitions" width="0" height="0" aria-hidden="true">
+        <filter id="dh-video-sharpen" x="-4%" y="-4%" width="108%" height="108%" colorInterpolationFilters="sRGB">
+          <feConvolveMatrix
+            order="3"
+            kernelMatrix="0 -0.18 0 -0.18 1.72 -0.18 0 -0.18 0"
+            divisor="1"
+            preserveAlpha="true"
+            edgeMode="duplicate"
+          />
+        </filter>
+      </svg>
       <div className={`dh-image-fallback ${videoReady ? 'is-hidden' : ''}`} />
       {!videoFailed && (
         <>
@@ -255,7 +284,6 @@ export function DunhuangBackdrop() {
         </>
       )}
       <canvas ref={canvasRef} className="dh-interaction-canvas" />
-      <div className="dh-atmosphere" />
       <div className="dh-vignette" />
     </div>
   );
