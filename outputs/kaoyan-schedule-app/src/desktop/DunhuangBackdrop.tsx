@@ -19,7 +19,6 @@ type VideoCandidate = {
 const VIDEO_CANDIDATES: VideoCandidate[] = [
   { src: '/dunhuang-master.webm', type: 'video/webm' },
   { src: '/dunhuang-master.mp4', type: 'video/mp4' },
-  { src: '/dunhuang-reference.mp4', type: 'video/mp4' },
 ];
 
 const BASE_DUST = 42;
