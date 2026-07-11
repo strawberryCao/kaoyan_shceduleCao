@@ -1,9 +1,9 @@
-:root {
-  --dh-x: 0px;
-  --dh-y: 0px;
-}
-
 .dh-backdrop {
+  --dh-pointer-x: 50vw;
+  --dh-pointer-y: 50vh;
+  --dh-wake-x: 0px;
+  --dh-wake-y: 0px;
+  --dh-wake-strength: 0;
   position: fixed;
   inset: 0;
   z-index: 0;
@@ -14,25 +14,26 @@
 
 .dh-image-fallback,
 .dh-video-bg,
-.dh-interaction-canvas {
+.dh-video-wake,
+.dh-interaction-canvas,
+.dh-atmosphere {
   position: absolute;
-  inset: -2vh -2vw;
-  width: 104vw;
-  height: 104vh;
+  inset: 0;
+  width: 100%;
+  height: 100%;
 }
 
 .dh-image-fallback {
   z-index: 0;
   background-image:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.02), rgba(34, 29, 27, 0.08)),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015), rgba(63, 49, 38, 0.055)),
     url('/dunhuang-wallpaper.png'),
     radial-gradient(ellipse at 18% 8%, rgba(255, 250, 235, 0.95) 0%, rgba(247, 235, 212, 0.72) 24%, transparent 48%),
     linear-gradient(135deg, #f1eadb 0%, #dfd0b8 42%, #b99b78 67%, #5e5348 100%);
   background-size: cover, cover, cover, cover;
   background-position: center, center, center, center;
-  transform: translate3d(calc(var(--dh-x) * -0.18), calc(var(--dh-y) * -0.12), 0) scale(1.015);
-  transition: opacity 0.8s ease, transform 0.5s ease-out;
-  filter: saturate(0.98) contrast(1.02);
+  transition: opacity 0.9s ease;
+  filter: saturate(0.96) contrast(1.01);
 }
 
 .dh-image-fallback.is-hidden {
@@ -48,48 +49,79 @@
 }
 
 .dh-image-fallback::before {
-  opacity: 0.09;
+  opacity: 0.075;
   mix-blend-mode: multiply;
   background:
-    repeating-linear-gradient(168deg, transparent 0 18px, rgba(92, 73, 55, 0.045) 19px, transparent 22px),
-    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.03) 8px, transparent 11px);
+    repeating-linear-gradient(168deg, transparent 0 18px, rgba(92, 73, 55, 0.038) 19px, transparent 22px),
+    repeating-linear-gradient(102deg, transparent 0 7px, rgba(255, 255, 255, 0.025) 8px, transparent 11px);
 }
 
 .dh-image-fallback::after {
-  opacity: 0.14;
+  opacity: 0.1;
   mix-blend-mode: soft-light;
   background:
-    radial-gradient(ellipse at 14% 16%, rgba(255, 255, 246, 0.28), transparent 34%),
-    radial-gradient(ellipse at 86% 78%, rgba(48, 43, 39, 0.20), transparent 44%);
+    radial-gradient(ellipse at 14% 16%, rgba(255, 255, 246, 0.22), transparent 34%),
+    radial-gradient(ellipse at 86% 78%, rgba(48, 43, 39, 0.15), transparent 44%);
+}
+
+.dh-video-bg,
+.dh-video-wake {
+  object-fit: cover;
+  object-position: center;
+  user-select: none;
 }
 
 .dh-video-bg {
   z-index: 1;
-  object-fit: cover;
-  object-position: center;
   opacity: 0;
-  transform: translate3d(calc(var(--dh-x) * -0.08), calc(var(--dh-y) * -0.06), 0) scale(1.015);
-  transition: opacity 1s ease, transform 0.5s ease-out;
-  filter: saturate(0.98) contrast(1.02);
+  transition: opacity 1s ease;
+  filter: saturate(0.96) contrast(1.015) brightness(0.985);
 }
 
 .dh-video-bg.is-ready {
   opacity: 1;
 }
 
-.dh-interaction-canvas {
+.dh-video-wake {
   z-index: 2;
+  opacity: calc(var(--dh-wake-strength) * 0.22);
+  transform: translate3d(var(--dh-wake-x), var(--dh-wake-y), 0) scale(1.004);
+  filter: saturate(1.015) contrast(1.01) blur(0.18px);
+  -webkit-mask-image: radial-gradient(circle 118px at var(--dh-pointer-x) var(--dh-pointer-y), #000 0%, rgba(0, 0, 0, 0.92) 35%, transparent 76%);
+  mask-image: radial-gradient(circle 118px at var(--dh-pointer-x) var(--dh-pointer-y), #000 0%, rgba(0, 0, 0, 0.92) 35%, transparent 76%);
+  will-change: opacity, transform, mask-image;
+}
+
+.dh-interaction-canvas {
+  z-index: 3;
   mix-blend-mode: normal;
-  opacity: 0.34;
+  opacity: 0.26;
+}
+
+.dh-atmosphere {
+  z-index: 4;
+  background:
+    radial-gradient(ellipse at 51% 36%, rgba(255, 247, 220, 0.075), transparent 42%),
+    linear-gradient(180deg, rgba(255, 251, 239, 0.025), transparent 44%, rgba(82, 61, 43, 0.045));
+  animation: dh-atmosphere-breathe 14s ease-in-out infinite alternate;
 }
 
 .dh-vignette {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 5;
   background:
-    radial-gradient(ellipse at 45% 45%, transparent 0%, transparent 62%, rgba(32, 28, 27, 0.16) 100%),
-    linear-gradient(90deg, rgba(255, 252, 240, 0.02), transparent 24%, rgba(33, 30, 30, 0.16) 100%);
+    radial-gradient(ellipse at 48% 45%, transparent 0%, transparent 66%, rgba(47, 36, 30, 0.105) 100%),
+    linear-gradient(90deg, rgba(255, 252, 240, 0.015), transparent 28%, rgba(48, 37, 32, 0.09) 100%);
+}
+
+@keyframes dh-atmosphere-breathe {
+  from {
+    opacity: 0.68;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .desktop-workspace-page .desktop-wallpaper-ribbon {
@@ -103,7 +135,7 @@
 
 .desktop-workspace-page > .desktop-widget,
 .desktop-empty-state {
-  z-index: 5;
+  z-index: 6;
 }
 
 .desktop-widget {
@@ -139,12 +171,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dh-video-bg,
-  .dh-image-fallback {
-    transform: none;
-  }
-
-  .dh-interaction-canvas {
+  .dh-video-wake,
+  .dh-interaction-canvas,
+  .dh-atmosphere {
     display: none;
   }
 }
