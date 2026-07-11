@@ -8,7 +8,8 @@ export type WidgetType =
   | 'memoryCard'
   | 'reviewLog'
   | 'quickLinks'
-  | 'customText';
+  | 'customText'
+  | 'customCode';
 
 export interface WidgetLayout {
   id: string;
