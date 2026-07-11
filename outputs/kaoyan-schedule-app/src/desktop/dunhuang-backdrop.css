@@ -78,7 +78,7 @@
 .dh-silk-glint {
   position: absolute;
   z-index: 3;
-  opacity: calc(0.065 + var(--dh-silk-energy) * 0.13);
+  opacity: 0.09;
   mix-blend-mode: screen;
   will-change: transform, opacity;
 }
@@ -93,7 +93,7 @@
     radial-gradient(ellipse at 73% 41%, rgba(255, 255, 245, 0.12), transparent 58%);
   -webkit-mask-image: linear-gradient(132deg, transparent 13%, #000 42%, rgba(0, 0, 0, 0.82) 66%, transparent 92%);
   mask-image: linear-gradient(132deg, transparent 13%, #000 42%, rgba(0, 0, 0, 0.82) 66%, transparent 92%);
-  transform: translate3d(var(--dh-silk-x), var(--dh-silk-y), 0) rotate(calc(var(--dh-silk-energy) * 0.35deg));
+  transform: translate3d(var(--dh-silk-x), var(--dh-silk-y), 0) rotate(0.12deg);
   animation: dh-silk-breathe-upper 8.5s ease-in-out infinite alternate;
 }
 
