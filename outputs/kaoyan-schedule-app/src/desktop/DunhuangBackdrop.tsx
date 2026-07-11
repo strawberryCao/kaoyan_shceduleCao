@@ -171,6 +171,7 @@ export function DunhuangBackdrop() {
     let animationId = 0;
     let transitionTimer = 0;
     let disposed = false;
+    let started = false;
 
     const resetVideo = (video: HTMLVideoElement) => {
       video.pause();
@@ -182,17 +183,23 @@ export function DunhuangBackdrop() {
     };
 
     const start = async () => {
-      if (disposed) {
+      if (disposed || started) {
         return;
       }
+      started = true;
       first.classList.add('is-visible');
       second.classList.remove('is-visible');
       resetVideo(second);
       try {
         await first.play();
-        setVideoReady(true);
+        if (!disposed) {
+          setVideoReady(true);
+        }
       } catch {
-        setVideoReady(false);
+        started = false;
+        if (!disposed) {
+          setVideoReady(false);
+        }
       }
     };
 
@@ -214,6 +221,9 @@ export function DunhuangBackdrop() {
           // Ignore until metadata is ready.
         }
         void standby.play().then(() => {
+          if (disposed) {
+            return;
+          }
           standby.classList.add('is-visible');
           active.classList.remove('is-visible');
           transitionTimer = window.setTimeout(() => {
@@ -228,12 +238,11 @@ export function DunhuangBackdrop() {
       animationId = window.requestAnimationFrame(monitor);
     };
 
-    const handleCanPlay = () => {
-      if (!videoReady) {
-        void start();
-      }
+    const handleCanPlay = () => void start();
+    const handleError = () => {
+      started = false;
+      setVideoReady(false);
     };
-    const handleError = () => setVideoReady(false);
 
     first.addEventListener('canplay', handleCanPlay);
     first.addEventListener('error', handleError);
@@ -253,7 +262,7 @@ export function DunhuangBackdrop() {
       resetVideo(first);
       resetVideo(second);
     };
-  }, [videoSource, videoReady]);
+  }, [videoSource]);
 
   return (
     <div ref={rootRef} className="dh-backdrop" aria-hidden="true">
