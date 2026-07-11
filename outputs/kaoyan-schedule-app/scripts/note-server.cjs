@@ -19,6 +19,7 @@ function sendJson(res, status, data) {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Cache-Control': 'no-store',
   });
   res.end(body);
 }
@@ -31,6 +32,11 @@ function sanitizeSegment(input, fallback = DEFAULT_SUBJECT, maxLength = 80) {
     .replace(/_+/g, '_')
     .replace(/^[._\s]+|[._\s]+$/g, '')
     .slice(0, maxLength) || fallback;
+}
+
+function clampNumber(value, fallback, min, max) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(max, Math.max(min, Math.round(number))) : fallback;
 }
 
 function timestamp() {
@@ -99,20 +105,23 @@ function appendMetadata(subjectDir, metadata) {
   const indexPath = metadataIndexPath(subjectDir);
   const legacyIndexPath = path.join(subjectDir, 'metadata.json');
   const existing = readJson(indexPath, readJson(legacyIndexPath, []));
-  const list = Array.isArray(existing) ? existing.filter((item) => item?.id !== metadata.id && item?.fileName !== metadata.fileName) : [];
+  const list = Array.isArray(existing)
+    ? existing.filter((item) => item?.id !== metadata.id && item?.fileName !== metadata.fileName)
+    : [];
   list.push(metadata);
   fs.writeFileSync(indexPath, JSON.stringify(list, null, 2), 'utf8');
 }
 
-function postJson(urlString, headers, payload, timeoutMs = 20000) {
+function postJson(urlString, headers, payload, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const body = JSON.stringify(payload);
-    const request = https.request(
+    const transport = url.protocol === 'http:' ? http : https;
+    const request = transport.request(
       {
         method: 'POST',
         hostname: url.hostname,
-        port: url.port || 443,
+        port: url.port || (url.protocol === 'http:' ? 80 : 443),
         path: `${url.pathname}${url.search}`,
         headers: {
           'Content-Type': 'application/json',
@@ -148,6 +157,19 @@ function postJson(urlString, headers, payload, timeoutMs = 20000) {
     request.write(body);
     request.end();
   });
+}
+
+function qwenContentToText(content) {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => typeof item === 'string' ? item : item?.text || item?.content || '')
+      .filter(Boolean)
+      .join('\n');
+  }
+  return String(content || '');
 }
 
 function extractJsonObject(text) {
@@ -237,8 +259,8 @@ async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
       },
     );
 
-    const text = response?.choices?.[0]?.message?.content;
-    const parsed = extractJsonObject(Array.isArray(text) ? JSON.stringify(text) : text);
+    const text = qwenContentToText(response?.choices?.[0]?.message?.content);
+    const parsed = extractJsonObject(text);
     if (!parsed) {
       throw new Error('Qwen did not return valid JSON');
     }
@@ -261,6 +283,61 @@ async function generateNameWithQwen({ imageDataUrl, kind, remark }) {
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function generateWidgetWithQwen(userPrompt) {
+  if (!qwen.apiKey) {
+    throw new Error(`千问 API 尚未配置，配置文件：${qwen.configPath}`);
+  }
+
+  const prompt = [
+    '你是“考研桌面助手”的前端模块生成器。根据用户需求生成一个可独立运行的小组件。',
+    '只输出一个 JSON 对象，不要 Markdown，不要解释。',
+    'JSON 格式：',
+    '{"title":"模块标题","width":360,"height":260,"html":"...","css":"...","js":"..."}',
+    '严格要求：',
+    '1. 只使用原生 HTML、CSS、JavaScript，不引用外部库、网址、字体或图片。',
+    '2. 禁止 fetch、XMLHttpRequest、WebSocket、EventSource、window.open、跳转、表单提交和跨页面通信。',
+    '3. 不访问 cookie、localStorage、sessionStorage、indexedDB、父页面或顶层窗口。',
+    '4. 所有交互仅操作当前模块 DOM；按钮必须可用，界面适合深色半透明桌面卡片。',
+    '5. HTML 不包含 script/style 标签；CSS 和 JS 分别放入对应字段。',
+    '6. width 取 240-720，height 取 150-620。内容精简，中文界面。',
+    `用户需求：${userPrompt}`,
+  ].join('\n');
+
+  const response = await postJson(
+    qwen.baseUrl,
+    { Authorization: `Bearer ${qwen.apiKey}` },
+    {
+      model: qwen.model,
+      messages: [
+        { role: 'system', content: '你只返回符合指定结构的 JSON。' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.35,
+    },
+    45000,
+  );
+
+  const text = qwenContentToText(response?.choices?.[0]?.message?.content);
+  const parsed = extractJsonObject(text);
+  if (!parsed) {
+    throw new Error('千问没有返回有效的模块 JSON');
+  }
+
+  const html = String(parsed.html || '').slice(0, 40000);
+  if (!html.trim()) {
+    throw new Error('千问返回的模块缺少 HTML');
+  }
+
+  return {
+    title: String(parsed.title || 'AI 代码模块').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 30) || 'AI 代码模块',
+    width: clampNumber(parsed.width, 360, 240, 720),
+    height: clampNumber(parsed.height, 260, 150, 620),
+    html,
+    css: String(parsed.css || '').slice(0, 30000),
+    js: String(parsed.js || '').slice(0, 30000),
+  };
 }
 
 function ensureUniquePath(dir, baseName, ext) {
@@ -309,6 +386,22 @@ async function handleLayoutSave(req, res) {
   });
 }
 
+async function handleGenerateWidget(req, res) {
+  const raw = await readBody(req);
+  const payload = JSON.parse(raw || '{}');
+  const prompt = String(payload.prompt || '').trim().slice(0, 1200);
+  if (prompt.length < 3) {
+    sendJson(res, 400, { ok: false, error: '请至少用一句话描述模块需求' });
+    return;
+  }
+  const widget = await generateWidgetWithQwen(prompt);
+  sendJson(res, 200, {
+    ok: true,
+    model: qwen.model,
+    widget,
+  });
+}
+
 async function handleSave(req, res) {
   const raw = await readBody(req);
   const payload = JSON.parse(raw || '{}');
@@ -318,7 +411,9 @@ async function handleSave(req, res) {
   const image = decodeDataUrl(payload.imageDataUrl);
 
   const naming = await generateNameWithQwen({ imageDataUrl: image.dataUrl, kind, remark });
-  const subject = naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
+  const subject = naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
+    ? requestedSubject
+    : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -390,6 +485,7 @@ const server = http.createServer(async (req, res) => {
         layoutPath: LAYOUT_PATH,
         defaultSubject: DEFAULT_SUBJECT,
         metadataPlacement: 'subject/.metadata',
+        aiWidgetEndpoint: '/ai/widget',
         qwen: {
           enabled: Boolean(qwen.apiKey),
           model: qwen.model,
@@ -417,6 +513,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && req.url === '/ai/widget') {
+      await handleGenerateWidget(req, res);
+      return;
+    }
+
     sendJson(res, 404, { ok: false, error: 'Not found' });
   } catch (error) {
     sendJson(res, 500, {
@@ -432,5 +533,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Assistant root: ${ASSISTANT_ROOT}`);
   console.log(`Layout file: ${LAYOUT_PATH}`);
   console.log(`Metadata placement: subject/.metadata`);
-  console.log(`Qwen naming: ${qwen.apiKey ? `enabled (${qwen.model})` : `disabled, configPath=${qwen.configPath}`}`);
+  console.log(`AI widget endpoint: http://127.0.0.1:${PORT}/ai/widget`);
+  console.log(`Qwen: ${qwen.apiKey ? `enabled (${qwen.model})` : `disabled, configPath=${qwen.configPath}`}`);
 });
