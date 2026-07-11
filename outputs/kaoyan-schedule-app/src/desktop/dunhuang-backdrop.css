@@ -9,6 +9,7 @@
 
 .dh-image-fallback,
 .dh-video-bg,
+.dh-video-canvas,
 .dh-interaction-canvas {
   position: absolute;
   inset: 0;
@@ -24,7 +25,7 @@
     linear-gradient(135deg, #f1eadb 0%, #dfd0b8 45%, #b99b78 72%, #5e5348 100%);
   background-size: cover, cover, cover;
   background-position: center, center, center;
-  transition: opacity 0.55s ease;
+  transition: opacity 0.45s ease;
   filter: saturate(0.96) contrast(1.04);
 }
 
@@ -33,16 +34,13 @@
 }
 
 .dh-video-bg {
+  z-index: 1;
   object-fit: cover;
   object-position: center;
   image-rendering: auto;
   user-select: none;
-}
-
-.dh-video-bg {
-  z-index: 1;
   opacity: 0;
-  transition: opacity 0.65s ease;
+  transition: opacity 0.45s ease;
   filter: saturate(1.01) contrast(1.02);
   transform: translateZ(0);
 }
@@ -51,10 +49,25 @@
   opacity: 1;
 }
 
+.dh-video-bg.is-webgl-source {
+  opacity: 0;
+}
+
+.dh-video-canvas {
+  z-index: 1;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  transform: translateZ(0);
+}
+
+.dh-video-canvas.is-ready {
+  opacity: 1;
+}
+
 .dh-interaction-canvas {
   z-index: 2;
+  opacity: 0.92;
   mix-blend-mode: multiply;
-  opacity: 0.62;
 }
 
 .dh-vignette {
@@ -154,7 +167,13 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .dh-video-canvas,
   .dh-interaction-canvas {
     display: none;
+  }
+
+  .dh-video-bg.is-ready,
+  .dh-video-bg.is-webgl-source {
+    opacity: 1;
   }
 }
