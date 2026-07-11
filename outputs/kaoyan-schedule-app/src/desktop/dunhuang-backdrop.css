@@ -1,4 +1,7 @@
 .dh-backdrop {
+  --dh-silk-x: 0px;
+  --dh-silk-y: 0px;
+  --dh-silk-energy: 0;
   position: fixed;
   inset: 0;
   z-index: 0;
@@ -9,7 +12,6 @@
 
 .dh-image-fallback,
 .dh-video-bg,
-.dh-video-canvas,
 .dh-interaction-canvas {
   position: absolute;
   inset: 0;
@@ -26,7 +28,7 @@
   background-size: cover, cover, cover;
   background-position: center, center, center;
   transition: opacity 0.45s ease;
-  filter: saturate(0.96) contrast(1.04);
+  filter: saturate(0.94) contrast(1.035);
 }
 
 .dh-image-fallback.is-hidden {
@@ -41,7 +43,7 @@
   user-select: none;
   opacity: 0;
   transition: opacity 0.45s ease;
-  filter: saturate(1.01) contrast(1.02);
+  filter: saturate(0.94) contrast(1.025) brightness(1.01);
   transform: translateZ(0);
 }
 
@@ -49,31 +51,87 @@
   opacity: 1;
 }
 
-.dh-video-bg.is-webgl-source {
-  opacity: 0;
+/*
+ * The pink oval is baked into the source artwork and therefore also into the
+ * generated loop. This layer only neutralizes its chroma; it never displaces
+ * pixels and cannot create the old lens/curved-surface effect.
+ */
+.dh-halo-neutralizer {
+  position: absolute;
+  left: 2.5%;
+  top: 11%;
+  z-index: 2;
+  width: 67%;
+  height: 63%;
+  border-radius: 45% 55% 51% 49% / 46% 43% 57% 54%;
+  background: rgba(232, 218, 191, 0.012);
+  -webkit-backdrop-filter: saturate(0.56) sepia(0.1) hue-rotate(-8deg) brightness(1.012);
+  backdrop-filter: saturate(0.56) sepia(0.1) hue-rotate(-8deg) brightness(1.012);
+  -webkit-mask-image: radial-gradient(ellipse 72% 68% at 48% 51%, #000 0%, rgba(0, 0, 0, 0.96) 38%, rgba(0, 0, 0, 0.48) 67%, transparent 100%);
+  mask-image: radial-gradient(ellipse 72% 68% at 48% 51%, #000 0%, rgba(0, 0, 0, 0.96) 38%, rgba(0, 0, 0, 0.48) 67%, transparent 100%);
 }
 
-.dh-video-canvas {
-  z-index: 1;
-  opacity: 0;
-  transition: opacity 0.4s ease;
-  transform: translateZ(0);
+/*
+ * These are light-reflection accents over the real moving video. They react to
+ * the mouse by a few pixels only; the background itself is never warped.
+ */
+.dh-silk-glint {
+  position: absolute;
+  z-index: 3;
+  opacity: calc(0.065 + var(--dh-silk-energy) * 0.13);
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
 }
 
-.dh-video-canvas.is-ready {
-  opacity: 1;
+.dh-silk-glint-upper {
+  right: -4%;
+  top: -7%;
+  width: 57%;
+  height: 72%;
+  background:
+    linear-gradient(122deg, transparent 18%, rgba(255, 247, 226, 0.11) 44%, rgba(232, 192, 139, 0.07) 57%, transparent 78%),
+    radial-gradient(ellipse at 73% 41%, rgba(255, 255, 245, 0.12), transparent 58%);
+  -webkit-mask-image: linear-gradient(132deg, transparent 13%, #000 42%, rgba(0, 0, 0, 0.82) 66%, transparent 92%);
+  mask-image: linear-gradient(132deg, transparent 13%, #000 42%, rgba(0, 0, 0, 0.82) 66%, transparent 92%);
+  transform: translate3d(var(--dh-silk-x), var(--dh-silk-y), 0) rotate(calc(var(--dh-silk-energy) * 0.35deg));
+  animation: dh-silk-breathe-upper 8.5s ease-in-out infinite alternate;
+}
+
+.dh-silk-glint-lower {
+  left: -8%;
+  bottom: -15%;
+  width: 116%;
+  height: 58%;
+  background:
+    linear-gradient(165deg, transparent 8%, rgba(255, 244, 218, 0.075) 33%, transparent 54%),
+    linear-gradient(12deg, transparent 21%, rgba(129, 157, 151, 0.055) 48%, rgba(241, 190, 129, 0.065) 68%, transparent 88%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.72) 28%, #000 55%, transparent 100%);
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.72) 28%, #000 55%, transparent 100%);
+  transform: translate3d(calc(var(--dh-silk-x) * -0.65), calc(var(--dh-silk-y) * 0.7), 0);
+  animation: dh-silk-breathe-lower 11s ease-in-out infinite alternate;
+}
+
+@keyframes dh-silk-breathe-upper {
+  from { margin-top: -1px; margin-right: 0; }
+  to { margin-top: 3px; margin-right: 4px; }
+}
+
+@keyframes dh-silk-breathe-lower {
+  from { margin-left: -2px; margin-bottom: 0; }
+  to { margin-left: 4px; margin-bottom: 3px; }
 }
 
 .dh-interaction-canvas {
-  z-index: 2;
-  opacity: 0.92;
+  z-index: 4;
+  opacity: 1;
   mix-blend-mode: multiply;
+  transform: translateZ(0);
 }
 
 .dh-vignette {
   position: absolute;
   inset: 0;
-  z-index: 3;
+  z-index: 5;
   background:
     linear-gradient(90deg, rgba(52, 40, 34, 0.035), transparent 18%, transparent 76%, rgba(48, 37, 32, 0.09)),
     linear-gradient(180deg, rgba(255, 252, 240, 0.01), transparent 64%, rgba(53, 39, 29, 0.055));
@@ -167,13 +225,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dh-video-canvas,
-  .dh-interaction-canvas {
-    display: none;
+  .dh-silk-glint {
+    animation: none;
   }
 
-  .dh-video-bg.is-ready,
-  .dh-video-bg.is-webgl-source {
-    opacity: 1;
+  .dh-interaction-canvas {
+    display: none;
   }
 }
