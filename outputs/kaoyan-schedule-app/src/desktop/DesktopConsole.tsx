@@ -1,9 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Eye, EyeOff, Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Plus, RotateCcw, Save, Sparkles, Trash2 } from 'lucide-react';
 import { getDefaultLayout, getWidgetDefinition, WIDGET_DEFINITIONS } from './registry';
 import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout } from './storage';
 import type { WidgetLayout, WidgetType } from './types';
 import { DesktopWorkspace } from './DesktopWorkspace';
+
+const AI_WIDGET_URL = 'http://127.0.0.1:5174/ai/widget';
+
+type AiWidgetResponse = {
+  ok?: boolean;
+  error?: string;
+  model?: string;
+  widget?: {
+    title?: string;
+    width?: number;
+    height?: number;
+    html?: string;
+    css?: string;
+    js?: string;
+  };
+};
 
 const createWidget = (
   type: WidgetType,
@@ -25,11 +41,21 @@ const createWidget = (
   };
 };
 
+const clampDimension = (value: number | undefined, fallback: number, min: number, max: number) => {
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.round(value as number)));
+};
+
 export function DesktopConsole() {
   const [layout, setLayout] = useState<WidgetLayout[]>(() => loadDesktopLayout());
   const [savedText, setSavedText] = useState('布局已从本机读取，拖动后会实时同步');
   const [customTitle, setCustomTitle] = useState('');
   const [customContent, setCustomContent] = useState('');
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiStatus, setAiStatus] = useState('描述你想要的功能，千问会生成一个可交互模块。');
+  const [aiGenerating, setAiGenerating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,6 +91,49 @@ export function DesktopConsole() {
     commitLayout([...layout, nextWidget], `已添加自定义模块「${title}」`);
     setCustomTitle('');
     setCustomContent('');
+  };
+
+  const generateAiWidget = async () => {
+    const prompt = aiPrompt.trim();
+    if (!prompt) {
+      setAiStatus('先写清楚模块要显示什么、可以进行哪些操作。');
+      return;
+    }
+
+    setAiGenerating(true);
+    setAiStatus('千问正在设计界面和交互代码……');
+    try {
+      const response = await fetch(AI_WIDGET_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
+      });
+      const payload = await response.json() as AiWidgetResponse;
+      if (!response.ok || !payload.ok || !payload.widget) {
+        throw new Error(payload.error || `AI 服务返回 ${response.status}`);
+      }
+
+      const definition = getWidgetDefinition('customCode');
+      const title = String(payload.widget.title || 'AI 代码模块').slice(0, 30);
+      const nextWidget = createWidget('customCode', layout.length, {
+        title,
+        width: clampDimension(payload.widget.width, definition.defaultWidth, 240, 720),
+        height: clampDimension(payload.widget.height, definition.defaultHeight, 150, 620),
+        content: JSON.stringify({
+          html: String(payload.widget.html || ''),
+          css: String(payload.widget.css || ''),
+          js: String(payload.widget.js || ''),
+        }),
+      });
+      commitLayout([...layout, nextWidget], `AI 模块「${title}」已生成并同步`);
+      setAiStatus(`已由 ${payload.model || '千问'} 生成「${title}」，可在右侧拖动和缩放。`);
+      setAiPrompt('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setAiStatus(`生成失败：${message}。请确认本地服务已启动且千问 API 已配置。`);
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   const save = () => {
@@ -105,7 +174,7 @@ export function DesktopConsole() {
   };
 
   const standardDefinitions = useMemo(
-    () => WIDGET_DEFINITIONS.filter((definition) => definition.type !== 'customText'),
+    () => WIDGET_DEFINITIONS.filter((definition) => !['customText', 'customCode'].includes(definition.type)),
     [],
   );
 
@@ -125,11 +194,40 @@ export function DesktopConsole() {
         </section>
 
         <div className="desktop-console-scroll">
+          <section className="ai-widget-creator">
+            <div className="console-section-heading">
+              <div>
+                <small>内置千问 · 安全代码沙箱</small>
+                <h2>AI 创建新模块</h2>
+              </div>
+              <Sparkles size={18} aria-hidden="true" />
+            </div>
+            <p>直接描述功能。AI 会生成模块的 HTML、CSS 和交互逻辑，并立即添加到桌面。</p>
+            <label>
+              模块需求
+              <textarea
+                maxLength={1200}
+                placeholder="例如：做一个可勾选的英语单词复习清单，顶部显示完成进度，带清空按钮。"
+                value={aiPrompt}
+                onChange={(event) => setAiPrompt(event.target.value)}
+              />
+            </label>
+            <button
+              className="ai-widget-generate"
+              type="button"
+              disabled={aiGenerating}
+              onClick={() => void generateAiWidget()}
+            >
+              <Sparkles size={15} /> {aiGenerating ? '正在生成……' : '让千问生成模块'}
+            </button>
+            <span className="ai-widget-status" aria-live="polite">{aiStatus}</span>
+          </section>
+
           <section className="custom-widget-creator">
             <div className="console-section-heading">
               <div>
-                <small>自定义添加</small>
-                <h2>新建模块</h2>
+                <small>手动添加</small>
+                <h2>新建文字便签</h2>
               </div>
               <Plus size={17} aria-hidden="true" />
             </div>
