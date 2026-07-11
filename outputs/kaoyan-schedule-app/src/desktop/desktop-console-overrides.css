@@ -1,0 +1,156 @@
+.desktop-console-sidebar {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.desktop-console-scroll {
+  display: grid;
+  min-height: 0;
+  gap: 18px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.console-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.console-section-heading h2,
+.console-section-heading small,
+.console-section-heading span {
+  margin: 0;
+}
+
+.console-section-heading h2 {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 14px;
+}
+
+.console-section-heading small,
+.console-section-heading span {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.custom-widget-creator {
+  border: 1px solid rgba(230, 195, 142, 0.2);
+  border-radius: 18px;
+  background: rgba(230, 195, 142, 0.065);
+  padding: 13px;
+}
+
+.custom-widget-creator label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.custom-widget-creator input,
+.custom-widget-creator textarea,
+.placed-widget-list article > input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 11px;
+  outline: none;
+  background: rgba(8, 7, 11, 0.42);
+  color: rgba(255, 255, 255, 0.9);
+  font: 750 12px/1.45 "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.custom-widget-creator input,
+.placed-widget-list article > input {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.custom-widget-creator textarea {
+  min-height: 78px;
+  resize: vertical;
+  padding: 9px 10px;
+}
+
+.custom-widget-creator input:focus,
+.custom-widget-creator textarea:focus,
+.placed-widget-list article > input:focus {
+  border-color: rgba(230, 195, 142, 0.42);
+}
+
+.custom-widget-add {
+  display: inline-flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 11px;
+  border: 1px solid rgba(230, 195, 142, 0.28);
+  border-radius: 12px;
+  background: rgba(230, 195, 142, 0.13);
+  color: #f3d8ae;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+.placed-widget-list {
+  padding-bottom: 18px;
+}
+
+.placed-widget-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+  padding: 7px;
+}
+
+.placed-widget-list article.is-hidden {
+  opacity: 0.52;
+}
+
+.placed-widget-list article > div {
+  display: flex;
+  gap: 5px;
+}
+
+.placed-widget-list article button {
+  display: grid;
+  width: 31px;
+  height: 31px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.64);
+  cursor: pointer;
+}
+
+.placed-widget-list article button:hover {
+  border-color: rgba(230, 195, 142, 0.34);
+  color: #f3d8ae;
+}
+
+.custom-text-widget textarea::placeholder {
+  color: rgba(255, 255, 255, 0.34);
+}
+
+@media (max-width: 980px) {
+  .desktop-console-shell {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+}
