@@ -3,14 +3,13 @@ chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 
 cd /d "%~dp0"
-set "TARGET=%~dp0public\dunhuang-reference.mp4"
 set "SOURCE="
 
-if exist "%USERPROFILE%\Downloads\ce23349f07467f40911d33ca2a59107c_raw.mp4" set "SOURCE=%USERPROFILE%\Downloads\ce23349f07467f40911d33ca2a59107c_raw.mp4"
-if not defined SOURCE if exist "%USERPROFILE%\Desktop\ce23349f07467f40911d33ca2a59107c_raw.mp4" set "SOURCE=%USERPROFILE%\Desktop\ce23349f07467f40911d33ca2a59107c_raw.mp4"
+rem 支持把视频直接拖到本脚本上。
+if not "%~1"=="" set "SOURCE=%~1"
 
 if not defined SOURCE (
-  for /f "usebackq delims=" %%F in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = '选择敦煌动态壁纸参考视频'; $dialog.Filter = 'MP4 视频 (*.mp4)|*.mp4|所有文件 (*.*)|*.*'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }"`) do set "SOURCE=%%F"
+  for /f "usebackq delims=" %%F in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.OpenFileDialog; $dialog.Title = '选择最终敦煌动态壁纸视频'; $dialog.Filter = '网页壁纸视频 (*.mp4;*.webm)|*.mp4;*.webm|MP4 视频 (*.mp4)|*.mp4|WebM 视频 (*.webm)|*.webm'; if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.FileName }"`) do set "SOURCE=%%F"
 )
 
 if not defined SOURCE (
@@ -25,8 +24,23 @@ if not exist "!SOURCE!" (
   exit /b 1
 )
 
+for %%F in ("!SOURCE!") do set "EXT=%%~xF"
+if /I "!EXT!"==".mp4" (
+  set "TARGET=%~dp0public\dunhuang-master.mp4"
+  set "OLD_TARGET=%~dp0public\dunhuang-master.webm"
+) else if /I "!EXT!"==".webm" (
+  set "TARGET=%~dp0public\dunhuang-master.webm"
+  set "OLD_TARGET=%~dp0public\dunhuang-master.mp4"
+) else (
+  echo 当前只支持 MP4 或 WebM。
+  echo 如果生成工具导出的是 MKV，请在生成工具里重新导出 MP4，不要直接改扩展名。
+  pause
+  exit /b 1
+)
+
 if not exist "%~dp0public" mkdir "%~dp0public"
-copy /Y "!SOURCE!" "%TARGET%" >nul
+if exist "!OLD_TARGET!" del /Q "!OLD_TARGET!"
+copy /Y "!SOURCE!" "!TARGET!" >nul
 if errorlevel 1 (
   echo 视频导入失败。
   pause
@@ -34,8 +48,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo 动态壁纸视频已导入：
-echo %TARGET%
+echo 高质量动态壁纸视频已导入：
+echo !TARGET!
 echo.
-echo 请重新启动“启动考研桌面助手.cmd”，壁纸会优先播放这个视频。
+echo 网页会自动优先使用这个视频，并在循环处进行 0.8 秒交叉淡化。
+echo 请彻底关闭旧服务，然后重新双击“启动考研桌面助手.cmd”。
 pause
