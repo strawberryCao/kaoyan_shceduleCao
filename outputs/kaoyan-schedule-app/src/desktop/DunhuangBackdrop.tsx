@@ -159,14 +159,14 @@ export function DunhuangBackdrop() {
       return;
     }
 
-    const videos = [firstVideoRef.current, secondVideoRef.current];
-    if (!videos[0] || !videos[1]) {
+    const first = firstVideoRef.current;
+    const second = secondVideoRef.current;
+    if (!first || !second) {
       return;
     }
 
-    const first = videos[0];
-    const second = videos[1];
-    let activeIndex = 0;
+    const videos: [HTMLVideoElement, HTMLVideoElement] = [first, second];
+    let activeIndex: 0 | 1 = 0;
     let transitionInProgress = false;
     let animationId = 0;
     let transitionTimer = 0;
@@ -205,11 +205,10 @@ export function DunhuangBackdrop() {
 
     const monitor = () => {
       const active = videos[activeIndex];
-      const standby = videos[1 - activeIndex];
+      const standbyIndex: 0 | 1 = activeIndex === 0 ? 1 : 0;
+      const standby = videos[standbyIndex];
       if (
-        active
-        && standby
-        && !transitionInProgress
+        !transitionInProgress
         && Number.isFinite(active.duration)
         && active.duration > CROSSFADE_SECONDS * 2
         && active.duration - active.currentTime <= CROSSFADE_SECONDS
@@ -228,7 +227,7 @@ export function DunhuangBackdrop() {
           active.classList.remove('is-visible');
           transitionTimer = window.setTimeout(() => {
             resetVideo(active);
-            activeIndex = 1 - activeIndex;
+            activeIndex = standbyIndex;
             transitionInProgress = false;
           }, CROSSFADE_SECONDS * 1000 + 80);
         }).catch(() => {
