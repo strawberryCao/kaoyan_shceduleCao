@@ -13,6 +13,7 @@ export const WIDGET_DEFINITIONS: WidgetDefinition[] = [
   { type: 'reviewLog', title: '复盘记录', description: '写下今天推进了什么、卡在哪里。', defaultWidth: 350, defaultHeight: 240 },
   { type: 'quickLinks', title: '快捷入口', description: '常用学习入口和管理页入口。', defaultWidth: 300, defaultHeight: 190 },
   { type: 'customText', title: '自定义便签', description: '自定义标题和内容，可重复添加多个独立模块。', defaultWidth: 320, defaultHeight: 220 },
+  { type: 'customCode', title: 'AI 代码模块', description: '由内置千问生成的交互式 HTML/CSS/JS 小组件。', defaultWidth: 360, defaultHeight: 260 },
 ];
 
 const makeWidget = (
