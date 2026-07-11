@@ -247,7 +247,7 @@ export function DunhuangBackdrop() {
     first.addEventListener('canplay', handleCanPlay);
     first.addEventListener('error', handleError);
     second.addEventListener('error', handleError);
-    if (first.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    if (first.readyState >= first.HAVE_FUTURE_DATA) {
       void start();
     }
     animationId = window.requestAnimationFrame(monitor);
