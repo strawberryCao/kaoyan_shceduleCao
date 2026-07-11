@@ -5,25 +5,29 @@ type DustParticle = {
   y: number;
   vx: number;
   vy: number;
+  baseVx: number;
+  baseVy: number;
   radius: number;
   alpha: number;
   phase: number;
   phaseSpeed: number;
-};
-
-type VideoCandidate = {
-  src: string;
-  type: string;
+  life: number;
+  maxLife: number;
+  interactive: boolean;
 };
 
 type PointerState = {
   x: number;
   y: number;
-  previousX: number;
-  previousY: number;
-  velocityX: number;
-  velocityY: number;
+  lastX: number;
+  lastY: number;
   active: boolean;
+  energy: number;
+};
+
+type VideoCandidate = {
+  src: string;
+  type: string;
 };
 
 const VIDEO_CANDIDATES: VideoCandidate[] = [
@@ -32,21 +36,57 @@ const VIDEO_CANDIDATES: VideoCandidate[] = [
   { src: '/dunhuang-reference.mp4', type: 'video/mp4' },
 ];
 
-const BASE_DUST = 46;
-const CROSSFADE_SECONDS = 0.8;
-const POINTER_RADIUS = 118;
+const BASE_DUST = 78;
+const MAX_DUST = 150;
+const VIDEO_BASE_OPACITY = 0.52;
+const LOOP_FADE_SECONDS = 1.05;
+const POINTER_RADIUS = 168;
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-function createDust(width: number, height: number): DustParticle {
+function smoothstep(edge0: number, edge1: number, value: number) {
+  const t = clamp((value - edge0) / Math.max(edge1 - edge0, 0.0001), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function createAmbientDust(width: number, height: number): DustParticle {
+  const baseVx = 0.035 + Math.random() * 0.11;
+  const baseVy = -0.012 - Math.random() * 0.045;
   return {
     x: Math.random() * width,
-    y: height * (0.46 + Math.random() * 0.52),
-    vx: 0.022 + Math.random() * 0.072,
-    vy: -0.006 - Math.random() * 0.024,
-    radius: 0.32 + Math.random() * 0.72,
-    alpha: 0.012 + Math.random() * 0.032,
+    y: height * (0.42 + Math.random() * 0.56),
+    vx: baseVx,
+    vy: baseVy,
+    baseVx,
+    baseVy,
+    radius: 0.42 + Math.random() * 0.95,
+    alpha: 0.035 + Math.random() * 0.065,
     phase: Math.random() * Math.PI * 2,
-    phaseSpeed: 0.004 + Math.random() * 0.008,
+    phaseSpeed: 0.004 + Math.random() * 0.012,
+    life: 0,
+    maxLife: Number.POSITIVE_INFINITY,
+    interactive: false,
+  };
+}
+
+function createInteractionDust(x: number, y: number, windX: number, windY: number): DustParticle {
+  const spread = Math.random() * Math.PI * 2;
+  const baseVx = windX * 0.055 + Math.cos(spread) * (0.22 + Math.random() * 0.5);
+  const baseVy = windY * 0.045 + Math.sin(spread) * (0.18 + Math.random() * 0.42) - 0.08;
+  return {
+    x: x + (Math.random() - 0.5) * 22,
+    y: y + (Math.random() - 0.5) * 16,
+    vx: baseVx,
+    vy: baseVy,
+    baseVx,
+    baseVy,
+    radius: 0.7 + Math.random() * 1.25,
+    alpha: 0.12 + Math.random() * 0.15,
+    phase: Math.random() * Math.PI * 2,
+    phaseSpeed: 0.015 + Math.random() * 0.02,
+    life: 0,
+    maxLife: 52 + Math.random() * 54,
+    interactive: true,
   };
 }
 
@@ -73,19 +113,16 @@ async function findAvailableVideo(signal: AbortSignal): Promise<VideoCandidate |
 
 export function DunhuangBackdrop() {
   const [videoSource, setVideoSource] = useState<VideoCandidate | null>(null);
-  const [videoReady, setVideoReady] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const firstVideoRef = useRef<HTMLVideoElement | null>(null);
-  const secondVideoRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const dustCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const pointerRef = useRef<PointerState>({
-    x: 0,
-    y: 0,
-    previousX: 0,
-    previousY: 0,
-    velocityX: 0,
-    velocityY: 0,
+    x: -1000,
+    y: -1000,
+    lastX: -1000,
+    lastY: -1000,
     active: false,
+    energy: 0,
   });
 
   useEffect(() => {
@@ -119,7 +156,7 @@ export function DunhuangBackdrop() {
 
     const resize = () => {
       const rect = root.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.35);
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
       width = Math.max(1, rect.width);
       height = Math.max(1, rect.height);
       canvas.width = Math.max(1, Math.round(width * dpr));
@@ -130,7 +167,7 @@ export function DunhuangBackdrop() {
 
       particles.length = 0;
       for (let index = 0; index < BASE_DUST; index += 1) {
-        particles.push(createDust(width, height));
+        particles.push(createAmbientDust(width, height));
       }
     };
 
@@ -138,26 +175,41 @@ export function DunhuangBackdrop() {
       const rect = root.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
-      if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
-        pointerRef.current.active = false;
-        return;
-      }
-
       const pointer = pointerRef.current;
-      const target = event.target instanceof Element ? event.target : null;
-      const overUi = Boolean(target?.closest('.desktop-widget, .desktop-console-sidebar, .desktop-control-dock'));
-      if (overUi) {
+
+      if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
         pointer.active = false;
         return;
       }
 
-      pointer.velocityX = pointer.active ? x - pointer.previousX : 0;
-      pointer.velocityY = pointer.active ? y - pointer.previousY : 0;
-      pointer.previousX = x;
-      pointer.previousY = y;
+      const windX = pointer.active ? x - pointer.lastX : 0;
+      const windY = pointer.active ? y - pointer.lastY : 0;
+      const speed = Math.hypot(windX, windY);
       pointer.x = x;
       pointer.y = y;
+      pointer.lastX = x;
+      pointer.lastY = y;
       pointer.active = true;
+      pointer.energy = Math.max(pointer.energy, clamp(speed / 18, 0, 1));
+
+      const target = event.target instanceof Element ? event.target : null;
+      const overUi = Boolean(target?.closest('.desktop-widget, .desktop-console-sidebar, .desktop-control-dock'));
+      if (reducedMotion || overUi || speed < 1.1) {
+        return;
+      }
+
+      const count = Math.min(9, Math.max(2, Math.floor(speed / 4.5)));
+      for (let index = 0; index < count; index += 1) {
+        if (particles.length >= MAX_DUST) {
+          const removable = particles.findIndex((particle) => particle.interactive);
+          if (removable >= 0) {
+            particles.splice(removable, 1);
+          } else {
+            break;
+          }
+        }
+        particles.push(createInteractionDust(x, y, windX, windY));
+      }
     };
 
     const deactivatePointer = () => {
@@ -170,45 +222,53 @@ export function DunhuangBackdrop() {
       context.clearRect(0, 0, width, height);
 
       const pointer = pointerRef.current;
-      pointer.velocityX *= 0.82;
-      pointer.velocityY *= 0.82;
+      pointer.energy *= Math.pow(0.91, delta);
 
       if (!reducedMotion && !document.hidden) {
-        for (const particle of particles) {
+        for (let index = particles.length - 1; index >= 0; index -= 1) {
+          const particle = particles[index];
           particle.phase += particle.phaseSpeed * delta;
-          particle.vx += Math.sin(particle.phase) * 0.00016 * delta;
-          particle.vy += Math.cos(particle.phase * 0.73) * 0.00008 * delta;
 
           if (pointer.active) {
             const dx = particle.x - pointer.x;
             const dy = particle.y - pointer.y;
-            const distance = Math.hypot(dx, dy);
-            if (distance > 0.01 && distance < POINTER_RADIUS) {
-              const influence = 1 - distance / POINTER_RADIUS;
-              const normalX = dx / distance;
-              const normalY = dy / distance;
-              const tangentX = -normalY;
-              const tangentY = normalX;
-              const speed = clamp(Math.hypot(pointer.velocityX, pointer.velocityY) / 24, 0, 1);
-
-              particle.vx += (normalX * 0.018 + tangentX * pointer.velocityX * 0.0014) * influence * speed;
-              particle.vy += (normalY * 0.014 + tangentY * pointer.velocityY * 0.0011) * influence * speed;
+            const distance = Math.max(1, Math.hypot(dx, dy));
+            if (distance < POINTER_RADIUS) {
+              const influence = (1 - distance / POINTER_RADIUS) * (0.32 + pointer.energy * 0.95);
+              const nx = dx / distance;
+              const ny = dy / distance;
+              const tangentX = -ny;
+              const tangentY = nx;
+              particle.vx += (nx * 0.032 + tangentX * 0.052) * influence * delta;
+              particle.vy += (ny * 0.024 + tangentY * 0.041) * influence * delta;
             }
           }
 
-          particle.vx += (0.055 - particle.vx) * 0.006 * delta;
-          particle.vy += (-0.018 - particle.vy) * 0.006 * delta;
-          particle.x += particle.vx * delta;
-          particle.y += particle.vy * delta;
+          particle.vx += (particle.baseVx - particle.vx) * 0.018 * delta;
+          particle.vy += (particle.baseVy - particle.vy) * 0.018 * delta;
+          particle.x += (particle.vx + Math.sin(particle.phase) * 0.015) * delta;
+          particle.y += (particle.vy + Math.cos(particle.phase * 0.73) * 0.008) * delta;
 
-          if (particle.x > width + 6 || particle.y < height * 0.38 || particle.y > height + 6) {
-            Object.assign(particle, createDust(width, height), {
-              x: -4 - Math.random() * 12,
-              y: height * (0.54 + Math.random() * 0.44),
+          if (particle.interactive) {
+            particle.life += delta;
+            if (particle.life >= particle.maxLife) {
+              particles.splice(index, 1);
+              continue;
+            }
+          } else if (particle.x > width + 5 || particle.y < height * 0.34 || particle.y > height + 5) {
+            Object.assign(particle, createAmbientDust(width, height), {
+              x: -4 - Math.random() * 14,
+              y: height * (0.48 + Math.random() * 0.5),
             });
           }
 
-          context.fillStyle = `rgba(126, 91, 52, ${particle.alpha})`;
+          const lifeOpacity = particle.interactive
+            ? Math.sin(Math.PI * clamp(particle.life / particle.maxLife, 0, 1))
+            : 1;
+          const alpha = particle.alpha * lifeOpacity;
+          context.fillStyle = particle.interactive
+            ? `rgba(132, 91, 48, ${alpha})`
+            : `rgba(139, 101, 59, ${alpha})`;
           context.beginPath();
           context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
           context.fill();
@@ -222,141 +282,93 @@ export function DunhuangBackdrop() {
     const observer = new ResizeObserver(resize);
     observer.observe(root);
     window.addEventListener('pointermove', onPointerMove, { passive: true });
-    window.addEventListener('pointerleave', deactivatePointer);
     window.addEventListener('blur', deactivatePointer);
+    document.addEventListener('mouseleave', deactivatePointer);
     animationId = window.requestAnimationFrame(draw);
 
     return () => {
       window.cancelAnimationFrame(animationId);
       observer.disconnect();
       window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerleave', deactivatePointer);
       window.removeEventListener('blur', deactivatePointer);
+      document.removeEventListener('mouseleave', deactivatePointer);
     };
   }, []);
 
   useEffect(() => {
-    if (!videoSource) {
-      setVideoReady(false);
+    const video = videoRef.current;
+    if (!video || !videoSource) {
       return;
     }
 
-    const first = firstVideoRef.current;
-    const second = secondVideoRef.current;
-    if (!first || !second) {
-      return;
-    }
-
-    const videos: [HTMLVideoElement, HTMLVideoElement] = [first, second];
-    let activeIndex: 0 | 1 = 0;
-    let transitionInProgress = false;
     let animationId = 0;
-    let transitionTimer = 0;
     let disposed = false;
-    let started = false;
-
-    const resetVideo = (video: HTMLVideoElement) => {
-      video.pause();
-      try {
-        video.currentTime = 0;
-      } catch {
-        // Metadata may not be available yet.
-      }
-    };
 
     const start = async () => {
-      if (disposed || started) {
-        return;
-      }
-      started = true;
-      first.classList.add('is-visible');
-      second.classList.remove('is-visible');
-      resetVideo(second);
       try {
-        await first.play();
-        if (!disposed) {
-          setVideoReady(true);
-        }
+        await video.play();
       } catch {
-        started = false;
-        if (!disposed) {
-          setVideoReady(false);
-        }
+        // Chromium or Lively may delay autoplay until the page is visible.
       }
     };
 
-    const monitor = () => {
-      const active = videos[activeIndex];
-      const standbyIndex: 0 | 1 = activeIndex === 0 ? 1 : 0;
-      const standby = videos[standbyIndex];
-      if (
-        !transitionInProgress
-        && Number.isFinite(active.duration)
-        && active.duration > CROSSFADE_SECONDS * 2
-        && active.duration - active.currentTime <= CROSSFADE_SECONDS
-      ) {
-        transitionInProgress = true;
-        try {
-          standby.currentTime = 0;
-        } catch {
-          // Ignore until metadata is ready.
-        }
-        void standby.play().then(() => {
-          if (disposed) {
-            return;
-          }
-          standby.classList.add('is-visible');
-          active.classList.remove('is-visible');
-          transitionTimer = window.setTimeout(() => {
-            resetVideo(active);
-            activeIndex = standbyIndex;
-            transitionInProgress = false;
-          }, CROSSFADE_SECONDS * 1000 + 80);
-        }).catch(() => {
-          transitionInProgress = false;
-        });
+    const updateOpacity = () => {
+      if (disposed) {
+        return;
       }
-      animationId = window.requestAnimationFrame(monitor);
+
+      if (Number.isFinite(video.duration) && video.duration > LOOP_FADE_SECONDS * 2) {
+        const fadeIn = smoothstep(0, LOOP_FADE_SECONDS, video.currentTime);
+        const fadeOut = smoothstep(0, LOOP_FADE_SECONDS, video.duration - video.currentTime);
+        const envelope = fadeIn * fadeOut;
+        video.style.opacity = `${VIDEO_BASE_OPACITY * envelope}`;
+      } else {
+        video.style.opacity = `${VIDEO_BASE_OPACITY}`;
+      }
+
+      animationId = window.requestAnimationFrame(updateOpacity);
     };
 
     const handleCanPlay = () => void start();
-    const handleError = () => {
-      started = false;
-      setVideoReady(false);
+    const handleVisibility = () => {
+      if (document.hidden) {
+        video.pause();
+      } else {
+        void start();
+      }
     };
 
-    first.addEventListener('canplay', handleCanPlay);
-    first.addEventListener('error', handleError);
-    second.addEventListener('error', handleError);
-    if (first.readyState >= first.HAVE_FUTURE_DATA) {
+    video.addEventListener('canplay', handleCanPlay);
+    document.addEventListener('visibilitychange', handleVisibility);
+    if (video.readyState >= video.HAVE_FUTURE_DATA) {
       void start();
     }
-    animationId = window.requestAnimationFrame(monitor);
+    animationId = window.requestAnimationFrame(updateOpacity);
 
     return () => {
       disposed = true;
       window.cancelAnimationFrame(animationId);
-      window.clearTimeout(transitionTimer);
-      first.removeEventListener('canplay', handleCanPlay);
-      first.removeEventListener('error', handleError);
-      second.removeEventListener('error', handleError);
-      resetVideo(first);
-      resetVideo(second);
+      video.removeEventListener('canplay', handleCanPlay);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      video.pause();
     };
   }, [videoSource]);
 
   return (
     <div ref={rootRef} className="dh-backdrop" aria-hidden="true">
-      <div className={`dh-image-fallback ${videoReady ? 'is-covered' : ''}`} />
+      <div className="dh-image-base" />
       {videoSource && (
-        <div className="dh-video-stack">
-          <video ref={firstVideoRef} className="dh-video-bg" muted playsInline preload="auto" poster="/dunhuang-wallpaper.png">
-            <source src={videoSource.src} type={videoSource.type} />
-          </video>
-          <video ref={secondVideoRef} className="dh-video-bg" muted playsInline preload="auto" poster="/dunhuang-wallpaper.png">
-            <source src={videoSource.src} type={videoSource.type} />
-          </video>
-        </div>
+        <video
+          ref={videoRef}
+          className="dh-video-bg"
+          muted
+          loop
+          playsInline
+          preload="auto"
+          poster="/dunhuang-wallpaper.png"
+        >
+          <source src={videoSource.src} type={videoSource.type} />
+        </video>
       )}
       <canvas ref={dustCanvasRef} className="dh-dust-canvas" />
       <div className="dh-vignette" />
