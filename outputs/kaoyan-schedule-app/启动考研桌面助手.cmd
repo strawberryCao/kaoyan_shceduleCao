@@ -75,13 +75,13 @@ start "Kaoyan Web Server" /min npm.cmd run dev -- --host 127.0.0.1 --port 5173 -
 timeout /t 4 >nul
 
 echo.
-echo Opening unified hub...
-start "" "http://127.0.0.1:5173/?hub=1"
+echo Opening desktop console...
+start "" "http://127.0.0.1:5173/?console=1"
 
 echo.
-echo Hub:       http://127.0.0.1:5173/?hub=1
-echo Wallpaper: http://127.0.0.1:5173/?wallpaper=1
 echo Console:   http://127.0.0.1:5173/?console=1
+echo Wallpaper: http://127.0.0.1:5173/?wallpaper=1
+echo Hub:       http://127.0.0.1:5173/?hub=1
 echo Notes:     http://127.0.0.1:5173/?notes=1
 echo Health:    http://127.0.0.1:5174/health
 echo.
