@@ -11,20 +11,20 @@ type DustParticle = {
   maxLife: number;
 };
 
-const MAX_DUST = 90;
+const MAX_DUST = 70;
 
 const createDust = (x: number, y: number, windX: number, windY: number): DustParticle => {
-  const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 1.1;
-  const speed = 0.35 + Math.random() * 1.15;
+  const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 0.9;
+  const speed = 0.28 + Math.random() * 0.82;
   return {
-    x: x + (Math.random() - 0.5) * 30,
-    y: y + (Math.random() - 0.5) * 22,
-    vx: Math.cos(angle) * speed + windX * 0.035,
-    vy: Math.sin(angle) * speed + windY * 0.035 - Math.random() * 0.25,
-    size: 0.8 + Math.random() * 2.4,
-    alpha: 0.08 + Math.random() * 0.16,
+    x: x + (Math.random() - 0.5) * 18,
+    y: y + (Math.random() - 0.5) * 14,
+    vx: Math.cos(angle) * speed + windX * 0.026,
+    vy: Math.sin(angle) * speed + windY * 0.026 - Math.random() * 0.16,
+    size: 0.38 + Math.random() * 0.95,
+    alpha: 0.028 + Math.random() * 0.055,
     life: 0,
-    maxLife: 90 + Math.random() * 70,
+    maxLife: 70 + Math.random() * 55,
   };
 };
 
@@ -75,8 +75,8 @@ export function DunhuangBackdrop() {
       document.documentElement.style.setProperty('--dh-x', `${(event.clientX / Math.max(1, width) - 0.5) * 8}px`);
       document.documentElement.style.setProperty('--dh-y', `${(event.clientY / Math.max(1, height) - 0.5) * 6}px`);
 
-      if (speed > 8) {
-        const count = Math.min(8, Math.floor(speed / 22) + 1);
+      if (speed > 10) {
+        const count = Math.min(5, Math.floor(speed / 30) + 1);
         for (let index = 0; index < count; index += 1) {
           if (particles.length >= MAX_DUST) {
             particles.shift();
@@ -89,31 +89,32 @@ export function DunhuangBackdrop() {
     const draw = () => {
       context.clearRect(0, 0, width, height);
       context.save();
-      context.globalCompositeOperation = 'screen';
+      context.globalCompositeOperation = 'source-over';
 
       for (let index = particles.length - 1; index >= 0; index -= 1) {
         const particle = particles[index];
         particle.life += 1;
         particle.x += particle.vx;
         particle.y += particle.vy;
-        particle.vx *= 0.985;
-        particle.vy = particle.vy * 0.982 - 0.002;
+        particle.vx *= 0.986;
+        particle.vy = particle.vy * 0.984 - 0.0015;
 
         const t = particle.life / particle.maxLife;
-        const alpha = particle.alpha * (1 - t) * (0.5 + 0.5 * Math.sin(t * Math.PI));
-        if (t >= 1 || alpha <= 0.002) {
+        const alpha = particle.alpha * (1 - t) * (0.45 + 0.55 * Math.sin(t * Math.PI));
+        if (t >= 1 || alpha <= 0.0015) {
           particles.splice(index, 1);
           continue;
         }
 
-        const radius = particle.size * (1 + t * 2.4);
-        const gradient = context.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y, radius * 4.2);
-        gradient.addColorStop(0, `rgba(255, 226, 169, ${alpha})`);
-        gradient.addColorStop(0.45, `rgba(236, 181, 101, ${alpha * 0.32})`);
-        gradient.addColorStop(1, 'rgba(236, 181, 101, 0)');
+        const radius = particle.size * (1 + t * 1.15);
+        const glowRadius = radius * 2.25;
+        const gradient = context.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y, glowRadius);
+        gradient.addColorStop(0, `rgba(229, 194, 133, ${alpha})`);
+        gradient.addColorStop(0.55, `rgba(197, 146, 82, ${alpha * 0.22})`);
+        gradient.addColorStop(1, 'rgba(197, 146, 82, 0)');
         context.fillStyle = gradient;
         context.beginPath();
-        context.arc(particle.x, particle.y, radius * 4.2, 0, Math.PI * 2);
+        context.arc(particle.x, particle.y, glowRadius, 0, Math.PI * 2);
         context.fill();
       }
 
