@@ -13,7 +13,7 @@ import {
   STORAGE_KEY,
 } from '../utils/schedule';
 import { fileToDataUrl } from '../utils/notes';
-import type { WidgetType } from './types';
+import type { WidgetLayout } from './types';
 
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
 
@@ -294,6 +294,20 @@ function ReviewLogWidget() {
   );
 }
 
+function CustomTextWidget({ widget }: { widget: WidgetLayout }) {
+  const [text, setText] = usePersistentText(widgetStoreKey(`custom-${widget.id}`), widget.content ?? '');
+  return (
+    <div className="study-widget-content text-widget custom-text-widget">
+      <textarea
+        aria-label={`${widget.title}内容`}
+        placeholder="在这里写内容……"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+      />
+    </div>
+  );
+}
+
 function QuickLinksWidget() {
   const openManagement = () => window.open(`${window.location.origin}/`, '_blank', 'noopener,noreferrer');
   const openConsole = () => window.open(`${window.location.origin}/?console=1`, '_blank', 'noopener,noreferrer');
@@ -307,8 +321,8 @@ function QuickLinksWidget() {
   );
 }
 
-export function renderDesktopWidget(type: WidgetType) {
-  switch (type) {
+export function renderDesktopWidget(widget: WidgetLayout) {
+  switch (widget.type) {
     case 'schedule':
       return <ScheduleWidget />;
     case 'noteDock':
@@ -327,6 +341,8 @@ export function renderDesktopWidget(type: WidgetType) {
       return <ReviewLogWidget />;
     case 'quickLinks':
       return <QuickLinksWidget />;
+    case 'customText':
+      return <CustomTextWidget widget={widget} />;
     default:
       return null;
   }
