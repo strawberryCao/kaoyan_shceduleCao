@@ -8,8 +8,7 @@
   isolation: isolate;
 }
 
-.dh-image-fallback,
-.dh-video-stack,
+.dh-image-base,
 .dh-video-bg,
 .dh-dust-canvas {
   position: absolute;
@@ -18,42 +17,27 @@
   height: 100%;
 }
 
-.dh-image-fallback {
+.dh-image-base {
   z-index: 0;
   background: #e8ddcb url('/dunhuang-wallpaper.png') center / cover no-repeat;
-  opacity: 1;
-  transition: opacity 280ms linear;
-}
-
-.dh-image-fallback.is-covered {
-  opacity: 0;
-}
-
-.dh-video-stack {
-  z-index: 1;
-  overflow: hidden;
-  background: transparent;
 }
 
 .dh-video-bg {
+  z-index: 1;
   display: block;
   object-fit: cover;
   object-position: center;
   opacity: 0;
-  transition: opacity 800ms linear;
+  filter: contrast(1.045) saturate(1.015);
   image-rendering: auto;
   transform: translateZ(0);
   will-change: opacity;
 }
 
-.dh-video-bg.is-visible {
-  opacity: 1;
-}
-
 .dh-dust-canvas {
   z-index: 2;
   display: block;
-  opacity: 0.72;
+  opacity: 0.9;
   transform: translateZ(0);
 }
 
@@ -62,8 +46,8 @@
   inset: 0;
   z-index: 3;
   background:
-    linear-gradient(90deg, rgba(52, 40, 34, 0.022), transparent 17%, transparent 78%, rgba(48, 37, 32, 0.058)),
-    linear-gradient(180deg, rgba(255, 252, 240, 0.004), transparent 70%, rgba(53, 39, 29, 0.038));
+    linear-gradient(90deg, rgba(52, 40, 34, 0.018), transparent 17%, transparent 78%, rgba(48, 37, 32, 0.052)),
+    linear-gradient(180deg, rgba(255, 252, 240, 0.003), transparent 70%, rgba(53, 39, 29, 0.034));
 }
 
 .desktop-workspace-page .desktop-wallpaper-ribbon {
@@ -160,12 +144,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dh-video-stack,
+  .dh-video-bg,
   .dh-dust-canvas {
     display: none;
-  }
-
-  .dh-image-fallback.is-covered {
-    opacity: 1;
   }
 }
