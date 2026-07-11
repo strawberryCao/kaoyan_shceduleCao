@@ -41,18 +41,6 @@ if not exist node_modules\three (
   )
 )
 
-if not exist "%~dp0public\dunhuang-reference.mp4" (
-  if exist "%USERPROFILE%\Downloads\ce23349f07467f40911d33ca2a59107c_raw.mp4" (
-    copy /Y "%USERPROFILE%\Downloads\ce23349f07467f40911d33ca2a59107c_raw.mp4" "%~dp0public\dunhuang-reference.mp4" >nul
-    echo Imported reference wallpaper video from Downloads.
-  ) else if exist "%USERPROFILE%\Desktop\ce23349f07467f40911d33ca2a59107c_raw.mp4" (
-    copy /Y "%USERPROFILE%\Desktop\ce23349f07467f40911d33ca2a59107c_raw.mp4" "%~dp0public\dunhuang-reference.mp4" >nul
-    echo Imported reference wallpaper video from Desktop.
-  ) else (
-    echo Reference video not found. You can run 导入动态壁纸视频.cmd later.
-  )
-)
-
 echo Registering note organizer schedule: every 2 days at 09:00...
 schtasks /Create /F /TN "KaoyanNotesAutoClassify" /TR "\"%~dp0scripts\run-classify-notes.cmd\"" /SC DAILY /MO 2 /ST 09:00 >nul 2>nul
 if errorlevel 1 (

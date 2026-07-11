@@ -13,8 +13,6 @@ type DustParticle = {
 
 const MAX_DUST = 72;
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-
 const createPointerDust = (x: number, y: number, windX: number, windY: number): DustParticle => {
   const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 0.72;
   const speed = 0.34 + Math.random() * 0.9;
@@ -46,44 +44,8 @@ export function DunhuangBackdrop() {
   const [videoFailed, setVideoFailed] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const wakeVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointerRef = useRef({ x: 0, y: 0, active: false });
-
-  useEffect(() => {
-    if (!videoReady) {
-      return;
-    }
-
-    const mainVideo = videoRef.current;
-    const wakeVideo = wakeVideoRef.current;
-    if (!mainVideo || !wakeVideo) {
-      return;
-    }
-
-    const syncVideos = () => {
-      if (wakeVideo.readyState < 2 || mainVideo.readyState < 2) {
-        return;
-      }
-      if (Math.abs(wakeVideo.currentTime - mainVideo.currentTime) > 0.08) {
-        wakeVideo.currentTime = mainVideo.currentTime;
-      }
-      if (!mainVideo.paused && wakeVideo.paused) {
-        void wakeVideo.play().catch(() => undefined);
-      }
-    };
-
-    syncVideos();
-    const timer = window.setInterval(syncVideos, 600);
-    mainVideo.addEventListener('play', syncVideos);
-    mainVideo.addEventListener('seeked', syncVideos);
-
-    return () => {
-      window.clearInterval(timer);
-      mainVideo.removeEventListener('play', syncVideos);
-      mainVideo.removeEventListener('seeked', syncVideos);
-    };
-  }, [videoReady]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -100,8 +62,6 @@ export function DunhuangBackdrop() {
     let animationId = 0;
     let width = 1;
     let height = 1;
-    let wakeStrength = 0;
-    let lastMoveAt = 0;
     let lastAmbientAt = 0;
     const particles: DustParticle[] = [];
 
@@ -122,8 +82,6 @@ export function DunhuangBackdrop() {
         pointer.x = event.clientX;
         pointer.y = event.clientY;
         pointer.active = true;
-        root.style.setProperty('--dh-pointer-x', `${event.clientX}px`);
-        root.style.setProperty('--dh-pointer-y', `${event.clientY}px`);
         return;
       }
 
@@ -134,15 +92,6 @@ export function DunhuangBackdrop() {
       pointer.y = event.clientY;
 
       const overWidget = event.target instanceof Element && Boolean(event.target.closest('.desktop-widget'));
-      const interactionScale = overWidget ? 0.25 : 1;
-      wakeStrength = clamp((speed / 28) * interactionScale, 0, 1);
-      lastMoveAt = performance.now();
-
-      root.style.setProperty('--dh-pointer-x', `${event.clientX}px`);
-      root.style.setProperty('--dh-pointer-y', `${event.clientY}px`);
-      root.style.setProperty('--dh-wake-x', `${clamp(windX * 0.17, -12, 12)}px`);
-      root.style.setProperty('--dh-wake-y', `${clamp(windY * 0.14, -9, 9)}px`);
-      root.style.setProperty('--dh-wake-angle', `${clamp(Math.atan2(windY, windX) * 8, -12, 12)}deg`);
 
       if (!overWidget && speed > 6) {
         const count = Math.min(5, Math.floor(speed / 22) + 1);
@@ -157,8 +106,6 @@ export function DunhuangBackdrop() {
 
     const onPointerLeave = () => {
       pointerRef.current.active = false;
-      wakeStrength = 0;
-      root.style.setProperty('--dh-wake-strength', '0');
     };
 
     const draw = (now: number) => {
@@ -186,21 +133,12 @@ export function DunhuangBackdrop() {
           continue;
         }
 
-        const radius = particle.size * (1 + t * 0.55);
-        const glowRadius = radius * 1.48;
-        const gradient = context.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y, glowRadius);
-        gradient.addColorStop(0, `rgba(176, 130, 77, ${alpha})`);
-        gradient.addColorStop(0.64, `rgba(135, 91, 50, ${alpha * 0.16})`);
-        gradient.addColorStop(1, 'rgba(135, 91, 50, 0)');
-        context.fillStyle = gradient;
+        const radius = Math.max(0.34, particle.size * (1 + t * 0.42));
+        context.fillStyle = `rgba(132, 91, 49, ${alpha})`;
         context.beginPath();
-        context.arc(particle.x, particle.y, glowRadius, 0, Math.PI * 2);
+        context.arc(particle.x, particle.y, radius, 0, Math.PI * 2);
         context.fill();
       }
-
-      const idleTime = performance.now() - lastMoveAt;
-      const fade = idleTime < 90 ? 1 : clamp(1 - (idleTime - 90) / 420, 0, 1);
-      root.style.setProperty('--dh-wake-strength', String(wakeStrength * fade));
 
       context.restore();
       animationId = window.requestAnimationFrame(draw);
@@ -225,63 +163,30 @@ export function DunhuangBackdrop() {
   const handleVideoReady = () => {
     setVideoReady(true);
     setVideoFailed(false);
-    const mainVideo = videoRef.current;
-    const wakeVideo = wakeVideoRef.current;
-    if (mainVideo && wakeVideo && wakeVideo.readyState >= 1) {
-      wakeVideo.currentTime = mainVideo.currentTime;
-      void wakeVideo.play().catch(() => undefined);
-    }
   };
 
   return (
     <div ref={rootRef} className="dh-backdrop" aria-hidden="true">
-      <svg className="dh-filter-definitions" width="0" height="0" aria-hidden="true">
-        <filter id="dh-video-sharpen" x="-4%" y="-4%" width="108%" height="108%" colorInterpolationFilters="sRGB">
-          <feConvolveMatrix
-            order="3"
-            kernelMatrix="0 -0.18 0 -0.18 1.72 -0.18 0 -0.18 0"
-            divisor="1"
-            preserveAlpha="true"
-            edgeMode="duplicate"
-          />
-        </filter>
-      </svg>
       <div className={`dh-image-fallback ${videoReady ? 'is-hidden' : ''}`} />
       {!videoFailed && (
-        <>
-          <video
-            ref={videoRef}
-            className={`dh-video-bg ${videoReady ? 'is-ready' : ''}`}
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            poster="/dunhuang-wallpaper.png"
-            disablePictureInPicture
-            onCanPlay={handleVideoReady}
-            onError={() => {
-              setVideoFailed(true);
-              setVideoReady(false);
-            }}
-          >
-            <source src="/dunhuang-reference.mp4" type="video/mp4" />
-            <source src="/dunhuang-loop.mp4" type="video/mp4" />
-          </video>
-          <video
-            ref={wakeVideoRef}
-            className="dh-video-wake"
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="auto"
-            disablePictureInPicture
-          >
-            <source src="/dunhuang-reference.mp4" type="video/mp4" />
-            <source src="/dunhuang-loop.mp4" type="video/mp4" />
-          </video>
-        </>
+        <video
+          ref={videoRef}
+          className={`dh-video-bg ${videoReady ? 'is-ready' : ''}`}
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="auto"
+          poster="/dunhuang-wallpaper.png"
+          disablePictureInPicture
+          onCanPlay={handleVideoReady}
+          onError={() => {
+            setVideoFailed(true);
+            setVideoReady(false);
+          }}
+        >
+          <source src="/dunhuang-loop.mp4" type="video/mp4" />
+        </video>
       )}
       <canvas ref={canvasRef} className="dh-interaction-canvas" />
       <div className="dh-vignette" />

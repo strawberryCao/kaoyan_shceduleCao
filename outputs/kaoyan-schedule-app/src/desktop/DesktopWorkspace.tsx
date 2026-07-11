@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { GripHorizontal, Trash2 } from 'lucide-react';
+import { GripHorizontal, Plus, Settings, Trash2 } from 'lucide-react';
 import { getDefaultLayout } from './registry';
 import { fetchDesktopLayoutFromServer, loadDesktopLayout, saveDesktopLayout, subscribeDesktopLayoutChanged } from './storage';
 import type { WidgetLayout } from './types';
@@ -112,6 +112,16 @@ export function DesktopWorkspace({ editable, layout: controlledLayout, onLayoutC
       onMouseLeave={() => setDragState(null)}
     >
       <DunhuangBackdrop />
+
+      {!editable && (
+        <nav className="desktop-control-dock" aria-label="桌面壁纸控制">
+          <a href="?console=1" target="_blank" rel="noopener noreferrer">
+            <Settings size={15} aria-hidden="true" />
+            控制台
+            <span><Plus size={12} aria-hidden="true" /> 添加模块</span>
+          </a>
+        </nav>
+      )}
 
       {visibleLayout.map((widget) => (
         <section
