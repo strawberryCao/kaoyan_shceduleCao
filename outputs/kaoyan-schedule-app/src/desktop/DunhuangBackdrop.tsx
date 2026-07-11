@@ -11,32 +11,73 @@ type DustParticle = {
   maxLife: number;
 };
 
-const MAX_DUST = 70;
+const MAX_DUST = 42;
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const createDust = (x: number, y: number, windX: number, windY: number): DustParticle => {
-  const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 0.9;
-  const speed = 0.28 + Math.random() * 0.82;
+  const angle = Math.atan2(windY, windX) + (Math.random() - 0.5) * 0.72;
+  const speed = 0.2 + Math.random() * 0.58;
   return {
-    x: x + (Math.random() - 0.5) * 18,
-    y: y + (Math.random() - 0.5) * 14,
-    vx: Math.cos(angle) * speed + windX * 0.026,
-    vy: Math.sin(angle) * speed + windY * 0.026 - Math.random() * 0.16,
-    size: 0.38 + Math.random() * 0.95,
-    alpha: 0.028 + Math.random() * 0.055,
+    x: x + (Math.random() - 0.5) * 12,
+    y: y + (Math.random() - 0.5) * 9,
+    vx: Math.cos(angle) * speed + windX * 0.018,
+    vy: Math.sin(angle) * speed + windY * 0.018 - Math.random() * 0.11,
+    size: 0.24 + Math.random() * 0.58,
+    alpha: 0.018 + Math.random() * 0.032,
     life: 0,
-    maxLife: 70 + Math.random() * 55,
+    maxLife: 56 + Math.random() * 42,
   };
 };
 
 export function DunhuangBackdrop() {
   const [videoReady, setVideoReady] = useState(false);
   const [videoFailed, setVideoFailed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const wakeVideoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pointerRef = useRef({ x: 0, y: 0, px: 0, py: 0, active: false });
+  const pointerRef = useRef({ x: 0, y: 0, active: false });
 
   useEffect(() => {
+    if (!videoReady) {
+      return;
+    }
+
+    const mainVideo = videoRef.current;
+    const wakeVideo = wakeVideoRef.current;
+    if (!mainVideo || !wakeVideo) {
+      return;
+    }
+
+    const syncVideos = () => {
+      if (wakeVideo.readyState < 2 || mainVideo.readyState < 2) {
+        return;
+      }
+      if (Math.abs(wakeVideo.currentTime - mainVideo.currentTime) > 0.12) {
+        wakeVideo.currentTime = mainVideo.currentTime;
+      }
+      if (!mainVideo.paused && wakeVideo.paused) {
+        void wakeVideo.play().catch(() => undefined);
+      }
+    };
+
+    syncVideos();
+    const timer = window.setInterval(syncVideos, 850);
+    mainVideo.addEventListener('play', syncVideos);
+    mainVideo.addEventListener('seeked', syncVideos);
+
+    return () => {
+      window.clearInterval(timer);
+      mainVideo.removeEventListener('play', syncVideos);
+      mainVideo.removeEventListener('seeked', syncVideos);
+    };
+  }, [videoReady]);
+
+  useEffect(() => {
+    const root = rootRef.current;
     const canvas = canvasRef.current;
-    if (!canvas) {
+    if (!root || !canvas) {
       return;
     }
 
@@ -48,6 +89,8 @@ export function DunhuangBackdrop() {
     let animationId = 0;
     let width = 1;
     let height = 1;
+    let wakeStrength = 0;
+    let lastMoveAt = 0;
     const particles: DustParticle[] = [];
 
     const resize = () => {
@@ -63,20 +106,33 @@ export function DunhuangBackdrop() {
 
     const onPointerMove = (event: PointerEvent) => {
       const pointer = pointerRef.current;
+      if (!pointer.active) {
+        pointer.x = event.clientX;
+        pointer.y = event.clientY;
+        pointer.active = true;
+        root.style.setProperty('--dh-pointer-x', `${event.clientX}px`);
+        root.style.setProperty('--dh-pointer-y', `${event.clientY}px`);
+        return;
+      }
+
       const windX = event.clientX - pointer.x;
       const windY = event.clientY - pointer.y;
       const speed = Math.hypot(windX, windY);
-      pointer.px = pointer.x;
-      pointer.py = pointer.y;
       pointer.x = event.clientX;
       pointer.y = event.clientY;
-      pointer.active = true;
 
-      document.documentElement.style.setProperty('--dh-x', `${(event.clientX / Math.max(1, width) - 0.5) * 8}px`);
-      document.documentElement.style.setProperty('--dh-y', `${(event.clientY / Math.max(1, height) - 0.5) * 6}px`);
+      const overWidget = event.target instanceof Element && Boolean(event.target.closest('.desktop-widget'));
+      const interactionScale = overWidget ? 0.28 : 1;
+      wakeStrength = clamp((speed / 38) * interactionScale, 0, 1);
+      lastMoveAt = performance.now();
 
-      if (speed > 10) {
-        const count = Math.min(5, Math.floor(speed / 30) + 1);
+      root.style.setProperty('--dh-pointer-x', `${event.clientX}px`);
+      root.style.setProperty('--dh-pointer-y', `${event.clientY}px`);
+      root.style.setProperty('--dh-wake-x', `${clamp(windX * 0.1, -6, 6)}px`);
+      root.style.setProperty('--dh-wake-y', `${clamp(windY * 0.1, -5, 5)}px`);
+
+      if (!overWidget && speed > 9) {
+        const count = Math.min(3, Math.floor(speed / 34) + 1);
         for (let index = 0; index < count; index += 1) {
           if (particles.length >= MAX_DUST) {
             particles.shift();
@@ -84,6 +140,12 @@ export function DunhuangBackdrop() {
           particles.push(createDust(event.clientX, event.clientY, windX, windY));
         }
       }
+    };
+
+    const onPointerLeave = () => {
+      pointerRef.current.active = false;
+      wakeStrength = 0;
+      root.style.setProperty('--dh-wake-strength', '0');
     };
 
     const draw = () => {
@@ -96,27 +158,31 @@ export function DunhuangBackdrop() {
         particle.life += 1;
         particle.x += particle.vx;
         particle.y += particle.vy;
-        particle.vx *= 0.986;
-        particle.vy = particle.vy * 0.984 - 0.0015;
+        particle.vx *= 0.987;
+        particle.vy = particle.vy * 0.985 - 0.001;
 
         const t = particle.life / particle.maxLife;
-        const alpha = particle.alpha * (1 - t) * (0.45 + 0.55 * Math.sin(t * Math.PI));
-        if (t >= 1 || alpha <= 0.0015) {
+        const alpha = particle.alpha * (1 - t) * (0.42 + 0.58 * Math.sin(t * Math.PI));
+        if (t >= 1 || alpha <= 0.001) {
           particles.splice(index, 1);
           continue;
         }
 
-        const radius = particle.size * (1 + t * 1.15);
-        const glowRadius = radius * 2.25;
+        const radius = particle.size * (1 + t * 0.7);
+        const glowRadius = radius * 1.75;
         const gradient = context.createRadialGradient(particle.x, particle.y, 0, particle.x, particle.y, glowRadius);
-        gradient.addColorStop(0, `rgba(229, 194, 133, ${alpha})`);
-        gradient.addColorStop(0.55, `rgba(197, 146, 82, ${alpha * 0.22})`);
-        gradient.addColorStop(1, 'rgba(197, 146, 82, 0)');
+        gradient.addColorStop(0, `rgba(191, 151, 94, ${alpha})`);
+        gradient.addColorStop(0.58, `rgba(154, 111, 66, ${alpha * 0.18})`);
+        gradient.addColorStop(1, 'rgba(154, 111, 66, 0)');
         context.fillStyle = gradient;
         context.beginPath();
         context.arc(particle.x, particle.y, glowRadius, 0, Math.PI * 2);
         context.fill();
       }
+
+      const idleTime = performance.now() - lastMoveAt;
+      const fade = idleTime < 70 ? 1 : clamp(1 - (idleTime - 70) / 260, 0, 1);
+      root.style.setProperty('--dh-wake-strength', String(wakeStrength * fade));
 
       context.restore();
       animationId = window.requestAnimationFrame(draw);
@@ -126,34 +192,70 @@ export function DunhuangBackdrop() {
     draw();
     window.addEventListener('resize', resize);
     window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerleave', onPointerLeave);
+    window.addEventListener('blur', onPointerLeave);
 
     return () => {
       window.cancelAnimationFrame(animationId);
       window.removeEventListener('resize', resize);
       window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerleave', onPointerLeave);
+      window.removeEventListener('blur', onPointerLeave);
     };
   }, []);
 
+  const handleVideoReady = () => {
+    setVideoReady(true);
+    setVideoFailed(false);
+    const mainVideo = videoRef.current;
+    const wakeVideo = wakeVideoRef.current;
+    if (mainVideo && wakeVideo && wakeVideo.readyState >= 1) {
+      wakeVideo.currentTime = mainVideo.currentTime;
+      void wakeVideo.play().catch(() => undefined);
+    }
+  };
+
   return (
-    <div className="dh-backdrop" aria-hidden="true">
+    <div ref={rootRef} className="dh-backdrop" aria-hidden="true">
       <div className={`dh-image-fallback ${videoReady ? 'is-hidden' : ''}`} />
       {!videoFailed && (
-        <video
-          className={`dh-video-bg ${videoReady ? 'is-ready' : ''}`}
-          src="/dunhuang-loop.mp4"
-          autoPlay
-          muted
-          loop
-          playsInline
-          preload="auto"
-          onCanPlay={() => setVideoReady(true)}
-          onError={() => {
-            setVideoFailed(true);
-            setVideoReady(false);
-          }}
-        />
+        <>
+          <video
+            ref={videoRef}
+            className={`dh-video-bg ${videoReady ? 'is-ready' : ''}`}
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="auto"
+            poster="/dunhuang-wallpaper.png"
+            disablePictureInPicture
+            onCanPlay={handleVideoReady}
+            onError={() => {
+              setVideoFailed(true);
+              setVideoReady(false);
+            }}
+          >
+            <source src="/dunhuang-reference.mp4" type="video/mp4" />
+            <source src="/dunhuang-loop.mp4" type="video/mp4" />
+          </video>
+          <video
+            ref={wakeVideoRef}
+            className="dh-video-wake"
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="auto"
+            disablePictureInPicture
+          >
+            <source src="/dunhuang-reference.mp4" type="video/mp4" />
+            <source src="/dunhuang-loop.mp4" type="video/mp4" />
+          </video>
+        </>
       )}
       <canvas ref={canvasRef} className="dh-interaction-canvas" />
+      <div className="dh-atmosphere" />
       <div className="dh-vignette" />
     </div>
   );
