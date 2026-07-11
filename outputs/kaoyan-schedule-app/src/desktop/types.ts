@@ -7,7 +7,8 @@ export type WidgetType =
   | 'debtBoard'
   | 'memoryCard'
   | 'reviewLog'
-  | 'quickLinks';
+  | 'quickLinks'
+  | 'customText';
 
 export interface WidgetLayout {
   id: string;
@@ -19,6 +20,7 @@ export interface WidgetLayout {
   height: number;
   visible: boolean;
   zIndex: number;
+  content?: string;
 }
 
 export interface WidgetDefinition {
