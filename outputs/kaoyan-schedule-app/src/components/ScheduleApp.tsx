@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { EyeOff, LocateFixed, Minus, MoreHorizontal, Pin, X } from 'lucide-react';
 import { DataPanel } from './DataPanel';
 import { DayCard } from './DayCard';
 import { NotesPanel } from './NotesPanel';
@@ -36,8 +37,10 @@ const panelButtons: Array<{ value: ActivePanel; label: string }> = [
 export function ScheduleApp() {
   const days = useMemo(() => generateSchedule(), []);
   const todayDay = useMemo(() => getCurrentScheduleDay(days), [days]);
+  const desktopMode = Boolean(window.kaoyanDesktop?.isElectron);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [activePanel, setActivePanel] = useState<ActivePanel>('schedule');
+  const [detailOpen, setDetailOpen] = useState(false);
   const [filter, setFilter] = useState<FilterType>('all');
   const [selectedDate, setSelectedDate] = useState(todayDay.date);
   const [records, setRecords] = useState<RecordsByDate>(() => {
@@ -171,6 +174,156 @@ export function ScheduleApp() {
       />
     );
   };
+
+  if (desktopMode) {
+    return (
+      <main className="app-shell desktop-shell wallpaper-desktop-shell">
+        <section className="wallpaper-widget">
+          <header className="widget-toolbar">
+            <div>
+              <p>今日课表</p>
+              <strong>{selectedDay.date}</strong>
+            </div>
+
+            <div className="widget-actions" aria-label="桌面组件操作">
+              <button type="button" title="恢复到红框位置" onClick={() => void window.kaoyanDesktop?.restoreDefaultPosition()}>
+                <LocateFixed aria-hidden="true" size={15} />
+              </button>
+              <button type="button" title="保存当前位置" onClick={() => void window.kaoyanDesktop?.savePosition()}>
+                <Pin aria-hidden="true" size={15} />
+              </button>
+              <button type="button" title="最小化" onClick={() => window.kaoyanDesktop?.minimize()}>
+                <Minus aria-hidden="true" size={15} />
+              </button>
+              <button type="button" title="隐藏到托盘" onClick={() => window.kaoyanDesktop?.hide()}>
+                <EyeOff aria-hidden="true" size={15} />
+              </button>
+              <button type="button" title="退出" onClick={() => window.kaoyanDesktop?.close()}>
+                <X aria-hidden="true" size={15} />
+              </button>
+              <button
+                className={detailOpen ? 'active' : ''}
+                type="button"
+                title="更多"
+                onClick={() => setDetailOpen((open) => !open)}
+              >
+                <MoreHorizontal aria-hidden="true" size={16} />
+              </button>
+            </div>
+          </header>
+
+          <section className="widget-core">
+            <DayCard
+              day={selectedDay}
+              isToday={selectedDay.date === todayDay.date}
+              onToggleTask={toggleTask}
+              record={getRecord(selectedDay)}
+            />
+          </section>
+
+          {detailOpen && (
+            <aside className="widget-detail-drawer" aria-label="详细功能">
+              <div className="drawer-head">
+                <span>详细功能</span>
+                <button type="button" onClick={() => setDetailOpen(false)}>
+                  <X aria-hidden="true" size={15} />
+                  收起
+                </button>
+              </div>
+
+              <nav className="drawer-tabs" aria-label="详情切换">
+                {panelButtons.map((panel) => (
+                  <button
+                    className={activePanel === panel.value ? 'active' : ''}
+                    key={panel.value}
+                    type="button"
+                    onClick={() => setActivePanel(panel.value)}
+                  >
+                    {panel.label}
+                  </button>
+                ))}
+              </nav>
+
+              {activePanel === 'schedule' && (
+                <section className="drawer-section">
+                  <div className="drawer-quick-row">
+                    <button type="button" onClick={() => setSelectedDate(todayDay.date)}>
+                      今日
+                    </button>
+                    <button type="button" onClick={() => stepDay(-1)}>
+                      前一天
+                    </button>
+                    <button type="button" onClick={() => stepDay(1)}>
+                      后一天
+                    </button>
+                  </div>
+
+                  <div className="drawer-filter-row">
+                    {(['all', 'A', 'B', 'basketball'] as FilterType[]).map((item) => (
+                      <button
+                        className={filter === item ? 'active' : ''}
+                        key={item}
+                        type="button"
+                        onClick={() => changeFilter(item)}
+                      >
+                        {item === 'all' ? '全部' : item === 'basketball' ? '打球' : `${item}日`}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="drawer-date-strip">
+                    {filteredDays.map((day) => (
+                      <button
+                        className={selectedDay.date === day.date ? 'active' : ''}
+                        key={day.date}
+                        type="button"
+                        onClick={() => setSelectedDate(day.date)}
+                      >
+                        <span>{day.date.slice(5)}</span>
+                        <small>{day.type}日</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {activePanel === 'notes' && (
+                <NotesPanel day={selectedDay} onUpdateField={updateField} record={getRecord(selectedDay)} />
+              )}
+
+              {activePanel === 'stats' && (
+                <section className="content-panel stats-view" aria-label="学习统计">
+                  <div className="panel-heading">
+                    <p>整体进度</p>
+                    <h2>30 天统计</h2>
+                  </div>
+                  <StatsPanel stats={stats} />
+                </section>
+              )}
+
+              {activePanel === 'data' && (
+                <DataPanel onClear={clearRecords} onExport={exportRecords} onImportClick={() => fileInputRef.current?.click()} />
+              )}
+            </aside>
+          )}
+
+          <input
+            accept="application/json,.json"
+            className="visually-hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                void importRecords(file);
+              }
+              event.currentTarget.value = '';
+            }}
+            ref={fileInputRef}
+            type="file"
+          />
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="app-shell">
