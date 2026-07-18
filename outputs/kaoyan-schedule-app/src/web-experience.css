@@ -1,0 +1,317 @@
+:root {
+  --web-bg: #f4f5f7;
+  --web-surface: #ffffff;
+  --web-surface-soft: #f8f9fb;
+  --web-ink: #18212f;
+  --web-muted: #6f7887;
+  --web-line: #e4e7ec;
+  --web-line-strong: #d7dce3;
+  --web-accent: #b87942;
+  --web-accent-dark: #8c552e;
+  --web-accent-soft: #f8eee5;
+  --web-blue: #41677d;
+  --web-green: #39745e;
+  --web-danger: #b25252;
+  --web-shadow-sm: 0 1px 2px rgba(24, 33, 47, 0.04), 0 8px 24px rgba(24, 33, 47, 0.05);
+  --web-shadow-lg: 0 24px 80px rgba(31, 38, 49, 0.16);
+  --web-radius-sm: 10px;
+  --web-radius: 16px;
+  --web-radius-lg: 24px;
+}
+
+.app-hub-page button,
+.app-shell button,
+.note-capture-page button,
+.desktop-console-shell button,
+.command-palette button,
+.command-launcher {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.app-hub-page :is(button, input, textarea, select):focus-visible,
+.app-shell :is(button, input, textarea, select):focus-visible,
+.note-capture-page :is(button, input, textarea, select):focus-visible,
+.desktop-console-shell :is(button, input, textarea, select):focus-visible,
+.command-palette :is(button, input):focus-visible,
+.command-launcher:focus-visible {
+  outline: 3px solid rgba(184, 121, 66, 0.24);
+  outline-offset: 2px;
+}
+
+.command-launcher {
+  position: fixed;
+  z-index: 12000;
+  right: 18px;
+  bottom: 18px;
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(24, 33, 47, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 0 10px 34px rgba(24, 33, 47, 0.14);
+  color: var(--web-ink);
+  padding: 6px 8px 6px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  backdrop-filter: blur(16px) saturate(1.12);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.command-launcher:hover {
+  border-color: rgba(184, 121, 66, 0.42);
+  box-shadow: 0 14px 40px rgba(24, 33, 47, 0.18);
+  transform: translateY(-2px);
+}
+
+.command-launcher svg {
+  color: var(--web-accent-dark);
+}
+
+.command-launcher kbd,
+.command-palette kbd {
+  border: 1px solid var(--web-line);
+  border-bottom-color: var(--web-line-strong);
+  border-radius: 7px;
+  background: var(--web-surface-soft);
+  color: var(--web-muted);
+  padding: 3px 6px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  box-shadow: inset 0 -1px 0 rgba(24, 33, 47, 0.04);
+}
+
+body:has(.note-capture-page) .command-launcher {
+  bottom: 76px;
+}
+
+.command-palette-backdrop {
+  position: fixed;
+  z-index: 20000;
+  inset: 0;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  background: rgba(21, 27, 36, 0.36);
+  padding: min(13vh, 110px) 18px 18px;
+  backdrop-filter: blur(8px);
+  animation: command-backdrop-in 140ms ease-out both;
+}
+
+.command-palette {
+  overflow: hidden;
+  width: min(680px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.64);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: var(--web-shadow-lg);
+  color: var(--web-ink);
+  animation: command-palette-in 170ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.command-palette > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--web-line);
+  padding: 14px 16px;
+}
+
+.command-palette > header > svg {
+  color: var(--web-accent-dark);
+}
+
+.command-palette > header input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--web-ink);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.command-palette > header input::placeholder {
+  color: #9aa1ad;
+  font-weight: 600;
+}
+
+.command-palette > header button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--web-muted);
+}
+
+.command-palette > header button:hover {
+  border-color: var(--web-line);
+  background: var(--web-surface-soft);
+  color: var(--web-ink);
+}
+
+.command-results {
+  display: grid;
+  max-height: min(58vh, 520px);
+  gap: 4px;
+  overflow: auto;
+  padding: 8px;
+}
+
+.command-results > button {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  min-height: 58px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--web-ink);
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.command-results > button.is-active,
+.command-results > button:hover {
+  border-color: #ead9c9;
+  background: #fbf5ef;
+}
+
+.command-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 11px;
+  background: var(--web-surface-soft);
+  color: var(--web-blue);
+}
+
+.command-results > button.is-active .command-icon {
+  background: #f2e3d6;
+  color: var(--web-accent-dark);
+}
+
+.command-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.command-copy strong,
+.command-copy .command-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.command-copy strong {
+  font-size: 14px;
+}
+
+.command-copy .command-description {
+  color: var(--web-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.command-results em {
+  border-radius: 999px;
+  background: #eef2f5;
+  color: var(--web-muted);
+  padding: 4px 8px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.command-empty {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  color: var(--web-muted);
+  text-align: center;
+}
+
+.command-empty svg {
+  margin-bottom: 4px;
+  color: #a6adb7;
+}
+
+.command-empty strong {
+  color: var(--web-ink);
+}
+
+.command-empty span {
+  font-size: 13px;
+}
+
+.command-palette > footer {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  border-top: 1px solid var(--web-line);
+  background: var(--web-surface-soft);
+  color: var(--web-muted);
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.command-palette > footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@keyframes command-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes command-palette-in {
+  from { opacity: 0; transform: translateY(-12px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (max-width: 680px) {
+  .command-launcher span {
+    display: none;
+  }
+
+  .command-palette-backdrop {
+    padding: 10px;
+  }
+
+  .command-palette {
+    border-radius: 18px;
+  }
+
+  .command-results {
+    max-height: calc(100vh - 150px);
+  }
+
+  .command-palette > footer {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .command-launcher,
+  .command-palette-backdrop,
+  .command-palette,
+  .command-results > button {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
+  }
+}

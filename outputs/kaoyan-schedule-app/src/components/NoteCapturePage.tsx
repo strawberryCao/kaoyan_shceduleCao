@@ -1,614 +1,470 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Brush, Clipboard, FileImage, ImagePlus, MousePointer2, Save, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
-import { fileToDataUrl, loadImage, saveNoteImage } from '../utils/notes';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import {
+  Clipboard,
+  FolderOpen,
+  Plus,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react';
+import { CanvasWorkspace, renderCanvasPreview, type CanvasWorkspaceHandle } from './CanvasWorkspace';
+import {
+  createEmptyCanvasDocument,
+  getCanvasCompletionIssues,
+  parseCanvasDocument,
+  type CanvasDocument,
+} from '../utils/canvasDocument';
+import {
+  listCanvasProjects,
+  loadCanvasProject,
+  saveCanvasProject,
+  type CanvasProjectSummary,
+} from '../utils/canvasProjects';
+import { createNoteUid, saveNoteImage } from '../utils/notes';
+type DraftStatus = 'saving' | 'saved' | 'failed';
 
-const BOARD_WIDTH = 2600;
-const BOARD_HEIGHT = 1800;
+const LAST_CANVAS_DRAFT_KEY = 'kaoyan.canvas.lastDraftId.v1';
+const CANVAS_REMARK_KEY_PREFIX = 'kaoyan.canvas.publishRemark.v1.';
+const SAFE_CANVAS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 
-type ElementType = 'image' | 'text' | 'stroke';
-
-type SelectedKey = `${ElementType}:${string}`;
-
-interface BoardImage {
-  id: string;
-  src: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+interface InitialCanvasState {
+  document: CanvasDocument;
+  restoredDraft: boolean;
 }
 
-interface BoardText {
-  id: string;
-  text: string;
-  x: number;
-  y: number;
-}
-
-interface StrokePoint {
-  x: number;
-  y: number;
-}
-
-interface BoardStroke {
-  id: string;
-  points: StrokePoint[];
-  color: string;
-  width: number;
-}
-
-interface SelectionBox {
-  start: StrokePoint;
-  current: StrokePoint;
-}
-
-type CanvasTool = 'select' | 'brush';
-
-type DragState =
-  | { type: 'image'; id: string; startX: number; startY: number; originX: number; originY: number }
-  | { type: 'resize'; id: string; startX: number; startY: number; originWidth: number; originHeight: number }
-  | { type: 'text'; id: string; startX: number; startY: number; originX: number; originY: number };
-
-const makeId = () => `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-const makeKey = (type: ElementType, id: string): SelectedKey => `${type}:${id}`;
-const parseKey = (key: SelectedKey) => {
-  const [type, id] = key.split(':') as [ElementType, string];
-  return { type, id };
-};
-
-const getImageFileFromFiles = (files: FileList | null): File | null => {
-  if (!files) {
-    return null;
+const createInitialCanvasState = (): InitialCanvasState => {
+  const document = createEmptyCanvasDocument();
+  const params = new URLSearchParams(window.location.search);
+  const requestedDraftId = params.get('canvasDraft')
+    || (!params.get('canvasProject') ? localStorage.getItem(LAST_CANVAS_DRAFT_KEY) : null);
+  if (!requestedDraftId || !SAFE_CANVAS_ID.test(requestedDraftId)) {
+    return { document, restoredDraft: false };
   }
-  return Array.from(files).find((file) => file.type.startsWith('image/')) ?? null;
-};
 
-const getImageFileFromClipboard = (items: DataTransferItemList): File | null => {
-  return Array.from(items).find((item) => item.type.startsWith('image/'))?.getAsFile() ?? null;
-};
-
-const strokeToPath = (points: StrokePoint[]): string => {
-  if (points.length === 0) {
-    return '';
+  try {
+    const saved = localStorage.getItem(`kaoyan.canvas.draft.v1.${requestedDraftId}`);
+    if (saved) {
+      const draft = parseCanvasDocument(saved);
+      if (draft.id === requestedDraftId) return { document: draft, restoredDraft: true };
+    }
+  } catch {
+    // A malformed local draft must not prevent the canvas page from opening.
   }
-  return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+
+  document.id = requestedDraftId;
+  return { document, restoredDraft: false };
 };
 
-const getRectFromBox = (box: SelectionBox) => {
-  const left = Math.min(box.start.x, box.current.x);
-  const top = Math.min(box.start.y, box.current.y);
-  const right = Math.max(box.start.x, box.current.x);
-  const bottom = Math.max(box.start.y, box.current.y);
-  return { left, top, right, bottom, width: right - left, height: bottom - top };
-};
+const readCanvasRemark = (document: CanvasDocument): string => (
+  localStorage.getItem(`${CANVAS_REMARK_KEY_PREFIX}${document.id}`)
+  ?? document.publishRemark
+  ?? ''
+);
 
-const intersects = (a: { left: number; top: number; right: number; bottom: number }, b: { left: number; top: number; right: number; bottom: number }) => {
-  return a.left <= b.right && a.right >= b.left && a.top <= b.bottom && a.bottom >= b.top;
-};
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error ?? new Error('无法读取画布预览图。'));
+  reader.readAsDataURL(blob);
+});
 
-const getStrokeBounds = (stroke: BoardStroke) => {
-  if (stroke.points.length === 0) {
-    return { left: 0, top: 0, right: 0, bottom: 0 };
-  }
-  const xs = stroke.points.map((point) => point.x);
-  const ys = stroke.points.map((point) => point.y);
-  const pad = stroke.width + 4;
-  return {
-    left: Math.min(...xs) - pad,
-    top: Math.min(...ys) - pad,
-    right: Math.max(...xs) + pad,
-    bottom: Math.max(...ys) + pad,
-  };
+const hasCanvasContent = (document: CanvasDocument): boolean => (
+  document.images.length > 0 || document.texts.length > 0 || document.annotations.length > 0
+);
+
+const canvasSemanticFingerprint = (document: CanvasDocument, publishRemark: string): string => JSON.stringify({
+  title: document.title,
+  publishRemark,
+  images: document.images.map(({ src, ...image }) => ({
+    ...image,
+    srcLength: src.length,
+    srcTail: src.slice(-64),
+  })),
+  texts: document.texts,
+  anchors: document.anchors,
+  annotations: document.annotations,
+});
+
+const formatProjectTime = (value: string): string => {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
 };
 
 export function NoteCapturePage() {
-  const singleInputRef = useRef<HTMLInputElement>(null);
-  const canvasInputRef = useRef<HTMLInputElement>(null);
-  const boardRef = useRef<HTMLDivElement>(null);
-  const [singleImage, setSingleImage] = useState<string | null>(null);
-  const [singleRemark, setSingleRemark] = useState('');
-  const [canvasRemark, setCanvasRemark] = useState('');
-  const [activeMode, setActiveMode] = useState<'single' | 'canvas'>('single');
-  const [images, setImages] = useState<BoardImage[]>([]);
-  const [texts, setTexts] = useState<BoardText[]>([]);
-  const [strokes, setStrokes] = useState<BoardStroke[]>([]);
-  const [tool, setTool] = useState<CanvasTool>('select');
-  const [selectedKeys, setSelectedKeys] = useState<SelectedKey[]>([]);
-  const [drawingId, setDrawingId] = useState<string | null>(null);
-  const [dragState, setDragState] = useState<DragState | null>(null);
-  const [selectionBox, setSelectionBox] = useState<SelectionBox | null>(null);
-  const [zoom, setZoom] = useState(0.55);
-  const [message, setMessage] = useState('大画布支持缩放、滚动、框选、多删。图片是位图，文字和画笔线条按矢量元素编辑。');
-  const [saving, setSaving] = useState(false);
+  const initialCanvasStateRef = useRef<InitialCanvasState | null>(null);
+  if (!initialCanvasStateRef.current) initialCanvasStateRef.current = createInitialCanvasState();
+  const workspaceRef = useRef<CanvasWorkspaceHandle>(null);
+  const initialProjectAttemptedRef = useRef(false);
+  const lastPublishedFingerprintRef = useRef<string | null>(null);
+  const publishOperationRef = useRef<{ fingerprint: string; noteUid: string } | null>(null);
+  const changeSequenceRef = useRef(0);
+  const publishingRef = useRef(false);
+  const persistInFlightRef = useRef(false);
+  const activeCanvasIdRef = useRef(initialCanvasStateRef.current.document.id);
+  const openRequestSequenceRef = useRef(0);
 
-  const getBoardPoint = useCallback((clientX: number, clientY: number): StrokePoint => {
-    const rect = boardRef.current?.getBoundingClientRect();
-    if (!rect) {
-      return { x: 0, y: 0 };
+  const [canvasDocument, setCanvasDocument] = useState<CanvasDocument>(() => initialCanvasStateRef.current!.document);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [canvasRemark, setCanvasRemark] = useState(() => readCanvasRemark(initialCanvasStateRef.current!.document));
+  const [canvasMessage, setCanvasMessage] = useState('');
+  const [canvasDirty, setCanvasDirty] = useState(() => initialCanvasStateRef.current!.restoredDraft);
+  const [canvasSaving, setCanvasSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<DraftStatus>('saved');
+  const [projects, setProjects] = useState<CanvasProjectSummary[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState('');
+
+  const updateLocation = useCallback((target?: { projectId?: string; draftId?: string }) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('notes', '1');
+    url.searchParams.set('mode', 'canvas');
+    if (target?.projectId) url.searchParams.set('canvasProject', target.projectId);
+    else url.searchParams.delete('canvasProject');
+    if (target?.draftId) url.searchParams.set('canvasDraft', target.draftId);
+    else url.searchParams.delete('canvasDraft');
+    window.history.replaceState(null, '', url);
+  }, []);
+
+  const refreshProjects = useCallback(async () => {
+    setProjectsLoading(true);
+    try {
+      setProjects(await listCanvasProjects());
+    } catch (error) {
+      setCanvasMessage(error instanceof Error ? error.message : '读取画布列表失败。');
+    } finally {
+      setProjectsLoading(false);
     }
-    return {
-      x: Math.max(0, Math.min(BOARD_WIDTH, (clientX - rect.left) / zoom)),
-      y: Math.max(0, Math.min(BOARD_HEIGHT, (clientY - rect.top) / zoom)),
-    };
-  }, [zoom]);
+  }, []);
 
-  const isSelected = (type: ElementType, id: string) => selectedKeys.includes(makeKey(type, id));
-
-  const selectOnly = (type: ElementType, id: string) => {
-    setSelectedKeys([makeKey(type, id)]);
-  };
-
-  const deleteSelected = useCallback(() => {
-    if (selectedKeys.length === 0) {
-      setMessage('先点选元素，或在选择模式下拖出一个框选区域，再删除。');
-      return;
-    }
-    const imageIds = new Set(selectedKeys.map(parseKey).filter((item) => item.type === 'image').map((item) => item.id));
-    const textIds = new Set(selectedKeys.map(parseKey).filter((item) => item.type === 'text').map((item) => item.id));
-    const strokeIds = new Set(selectedKeys.map(parseKey).filter((item) => item.type === 'stroke').map((item) => item.id));
-    setImages((current) => current.filter((item) => !imageIds.has(item.id)));
-    setTexts((current) => current.filter((item) => !textIds.has(item.id)));
-    setStrokes((current) => current.filter((item) => !strokeIds.has(item.id)));
-    setSelectedKeys([]);
-    setMessage(`已删除 ${selectedKeys.length} 个元素。`);
-  }, [selectedKeys]);
-
-  useEffect(() => {
-    const handleDelete = (event: KeyboardEvent) => {
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        const target = event.target as HTMLElement | null;
-        if (target?.tagName === 'TEXTAREA' || target?.tagName === 'INPUT') {
-          return;
+  const installCanvasDocument = useCallback((serverDocument: CanvasDocument) => {
+    let document = serverDocument;
+    let restoredLocalChanges = false;
+    try {
+      const savedDraft = localStorage.getItem(`kaoyan.canvas.draft.v1.${serverDocument.id}`);
+      if (savedDraft) {
+        const localDraft = parseCanvasDocument(savedDraft);
+        if (localDraft.id === serverDocument.id && localDraft.updatedAt > serverDocument.updatedAt) {
+          document = localDraft;
+          restoredLocalChanges = true;
         }
-        deleteSelected();
       }
-    };
-    window.addEventListener('keydown', handleDelete);
-    return () => window.removeEventListener('keydown', handleDelete);
-  }, [deleteSelected]);
+    } catch {
+      // Ignore an invalid local copy and keep the server project usable.
+    }
+    const serverRemark = serverDocument.publishRemark ?? '';
+    const localRemark = localStorage.getItem(`${CANVAS_REMARK_KEY_PREFIX}${serverDocument.id}`);
+    const remark = localRemark ?? document.publishRemark ?? serverRemark;
+    if (localRemark !== null && localRemark !== serverRemark) restoredLocalChanges = true;
 
-  const addSingleFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setMessage('目前只支持图片文件。');
+    changeSequenceRef.current += 1;
+    activeCanvasIdRef.current = document.id;
+    setCanvasDocument(document);
+    setCanvasRemark(remark);
+    setSelectedProjectId(document.id);
+    setCanvasDirty(restoredLocalChanges);
+    setWorkspaceRevision((value) => value + 1);
+    localStorage.removeItem(LAST_CANVAS_DRAFT_KEY);
+    updateLocation({ projectId: document.id });
+    return { document, restoredLocalChanges };
+  }, [updateLocation]);
+
+  const openCanvasProject = useCallback(async (projectId: string, confirmDiscard = true) => {
+    if (!projectId) return;
+    if (confirmDiscard && canvasDirty && !window.confirm('当前画布有未保存修改。建议先按 Ctrl+S 保存工程；仍要打开另一个画布并离开这些修改吗？')) {
       return;
     }
-    const dataUrl = await fileToDataUrl(file);
-    setSingleImage(dataUrl);
-    setActiveMode('single');
-    setMessage('图片已放入单图保存区，补充备注后点击保存。');
-  };
-
-  const addCanvasImage = useCallback(async (file: File, clientX?: number, clientY?: number) => {
-    if (!file.type.startsWith('image/')) {
-      setMessage('目前只支持图片文件。');
-      return;
+    const requestSequence = ++openRequestSequenceRef.current;
+    try {
+      setCanvasMessage('正在打开可编辑画布工程…');
+      const document = await loadCanvasProject(projectId);
+      if (requestSequence !== openRequestSequenceRef.current) return;
+      const installed = installCanvasDocument(document);
+      setCanvasMessage(installed.restoredLocalChanges
+        ? `已打开“${installed.document.title || '未命名画布'}”，并恢复了本机未保存修改。`
+        : `已打开“${installed.document.title || '未命名画布'}”，可以继续编辑。`);
+    } catch (error) {
+      if (requestSequence !== openRequestSequenceRef.current) return;
+      const localDraftKey = `kaoyan.canvas.draft.v1.${projectId}`;
+      if (!confirmDiscard && SAFE_CANVAS_ID.test(projectId)) {
+        const savedDraft = localStorage.getItem(localDraftKey);
+        if (savedDraft) {
+          try {
+            const fallback = parseCanvasDocument(savedDraft);
+            if (fallback.id !== projectId) throw new Error('草稿编号不一致。');
+            changeSequenceRef.current += 1;
+            activeCanvasIdRef.current = fallback.id;
+            setCanvasDocument(fallback);
+            setCanvasRemark(readCanvasRemark(fallback));
+            setSelectedProjectId('');
+            setCanvasDirty(true);
+            setWorkspaceRevision((value) => value + 1);
+            localStorage.setItem(LAST_CANVAS_DRAFT_KEY, projectId);
+            updateLocation({ draftId: projectId });
+            setCanvasMessage('服务端没有找到工程，已恢复这份本机草稿。请按 Ctrl+S 重新存入“我的画布”。');
+            return;
+          } catch {
+            // Fall through to the original load error when the local copy is invalid.
+          }
+        }
+      }
+      setCanvasMessage(error instanceof Error ? error.message : '打开画布失败。');
     }
-    const src = await fileToDataUrl(file);
-    const image = await loadImage(src);
-    const maxWidth = 720;
-    const ratio = image.width > maxWidth ? maxWidth / image.width : 1;
-    const width = Math.max(180, Math.round(image.width * ratio));
-    const height = Math.max(120, Math.round(image.height * ratio));
-    const point = clientX && clientY ? getBoardPoint(clientX, clientY) : { x: 120 + images.length * 30, y: 120 + images.length * 30 };
-    const id = makeId();
-
-    setImages((current) => [
-      ...current,
-      {
-        id,
-        src,
-        x: Math.max(0, Math.min(BOARD_WIDTH - width, point.x - width / 2)),
-        y: Math.max(0, Math.min(BOARD_HEIGHT - height, point.y - height / 2)),
-        width,
-        height,
-      },
-    ]);
-    setSelectedKeys([makeKey('image', id)]);
-    setTool('select');
-    setActiveMode('canvas');
-    setMessage('图片已加入大画布。可以缩放视图、滚动画布、框选多个元素删除。');
-  }, [getBoardPoint, images.length]);
+  }, [canvasDirty, installCanvasDocument, updateLocation]);
 
   useEffect(() => {
-    const handlePaste = async (event: ClipboardEvent) => {
-      const file = event.clipboardData ? getImageFileFromClipboard(event.clipboardData.items) : null;
-      if (!file) {
-        return;
-      }
-      event.preventDefault();
-      if (activeMode === 'canvas') {
-        await addCanvasImage(file);
-      } else {
-        await addSingleFile(file);
-      }
-    };
-    window.addEventListener('paste', handlePaste);
-    return () => window.removeEventListener('paste', handlePaste);
-  }, [activeMode, addCanvasImage]);
+    void refreshProjects();
+  }, [refreshProjects]);
 
-  const saveSingle = async () => {
-    if (!singleImage) {
-      setMessage('先拖入、粘贴或选择一张图片。');
-      return;
-    }
+  useEffect(() => {
+    if (initialProjectAttemptedRef.current) return;
+    initialProjectAttemptedRef.current = true;
+    const projectId = new URLSearchParams(window.location.search).get('canvasProject');
+    if (projectId) void openCanvasProject(projectId, false);
+  }, [openCanvasProject]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('canvasProject')) return;
+    localStorage.setItem(LAST_CANVAS_DRAFT_KEY, canvasDocument.id);
+    updateLocation({ draftId: canvasDocument.id });
+  }, [canvasDocument.id, updateLocation]);
+
+  const persistCanvasDocument = useCallback(async (
+    document: CanvasDocument,
+    announce = true,
+    options?: { expectedSequence?: number; remark?: string },
+  ): Promise<CanvasDocument> => {
+    if (persistInFlightRef.current) throw new Error('画布工程正在保存，请稍候。');
+    const expectedSequence = options?.expectedSequence ?? changeSequenceRef.current;
+    const remark = options?.remark ?? canvasRemark;
+    const snapshot: CanvasDocument = { ...document, publishRemark: remark };
     try {
-      setSaving(true);
-      const result = await saveNoteImage({ imageDataUrl: singleImage, kind: 'single', remark: singleRemark });
-      setMessage(`单图已保存：${result.filePath ?? ''}`);
-      setSingleImage(null);
-      setSingleRemark('');
+      persistInFlightRef.current = true;
+      setCanvasSaving(true);
+      const result = await saveCanvasProject(snapshot);
+      const savedDocument = result.document!;
+      localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${savedDocument.id}`, remark);
+      const changedWhileSaving = changeSequenceRef.current !== expectedSequence;
+      const sameWorkspace = activeCanvasIdRef.current === savedDocument.id;
+      if (sameWorkspace) {
+        setSelectedProjectId(savedDocument.id);
+        if (localStorage.getItem(LAST_CANVAS_DRAFT_KEY) === savedDocument.id) {
+          localStorage.removeItem(LAST_CANVAS_DRAFT_KEY);
+        }
+        updateLocation({ projectId: savedDocument.id });
+        if (!changedWhileSaving) {
+          setCanvasDocument(savedDocument);
+          setCanvasDirty(false);
+        } else {
+          setCanvasDirty(true);
+        }
+      }
+      if (announce && sameWorkspace) setCanvasMessage(changedWhileSaving
+          ? '请求开始时的版本已保存；保存期间的新修改仍待 Ctrl+S 保存。'
+          : `可编辑工程“${savedDocument.title || '未命名画布'}”已保存；没有调用 AI。`);
+      void refreshProjects();
+      return savedDocument;
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存失败');
+      if (activeCanvasIdRef.current === snapshot.id) {
+        setCanvasMessage(error instanceof Error ? error.message : '保存画布工程失败。');
+      }
+      throw error;
     } finally {
-      setSaving(false);
+      persistInFlightRef.current = false;
+      setCanvasSaving(false);
     }
-  };
+  }, [canvasRemark, refreshProjects, updateLocation]);
 
-  const renderCanvas = async (): Promise<string> => {
-    const scale = 2;
-    const canvas = document.createElement('canvas');
-    canvas.width = BOARD_WIDTH * scale;
-    canvas.height = BOARD_HEIGHT * scale;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      throw new Error('无法创建画布');
-    }
-
-    ctx.scale(scale, scale);
-    ctx.fillStyle = '#f7f4ee';
-    ctx.fillRect(0, 0, BOARD_WIDTH, BOARD_HEIGHT);
-    ctx.fillStyle = '#ded6cb';
-    for (let x = 0; x < BOARD_WIDTH; x += 32) {
-      ctx.fillRect(x, 0, 1, BOARD_HEIGHT);
-    }
-    for (let y = 0; y < BOARD_HEIGHT; y += 32) {
-      ctx.fillRect(0, y, BOARD_WIDTH, 1);
-    }
-
-    for (const item of images) {
-      const image = await loadImage(item.src);
-      ctx.drawImage(image, item.x, item.y, item.width, item.height);
-    }
-
-    for (const stroke of strokes) {
-      if (stroke.points.length < 2) {
-        continue;
-      }
-      ctx.beginPath();
-      ctx.strokeStyle = stroke.color;
-      ctx.lineWidth = stroke.width;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (const point of stroke.points.slice(1)) {
-        ctx.lineTo(point.x, point.y);
-      }
-      ctx.stroke();
-    }
-
-    ctx.font = '800 28px Microsoft YaHei, sans-serif';
-    ctx.fillStyle = '#243039';
-    for (const item of texts) {
-      ctx.fillText(item.text, item.x, item.y);
-    }
-
-    return canvas.toDataURL('image/png');
-  };
-
-  const saveCanvas = async () => {
-    if (images.length === 0 && texts.length === 0 && strokes.length === 0) {
-      setMessage('画布还是空的。先粘贴/拖入图片、双击打字，或切到画笔写东西。');
+  const createNewCanvas = () => {
+    if (canvasDirty && !window.confirm('当前画布有未保存修改。建议先按 Ctrl+S 保存工程；仍要新建并离开这些修改吗？')) {
       return;
     }
+    openRequestSequenceRef.current += 1;
+    const document = createEmptyCanvasDocument('未命名画布');
+    changeSequenceRef.current += 1;
+    activeCanvasIdRef.current = document.id;
+    setCanvasDocument(document);
+    setSelectedProjectId('');
+    setCanvasDirty(false);
+    setCanvasRemark('');
+    setWorkspaceRevision((value) => value + 1);
+    setCanvasMessage('已新建空白画布。拖入图片，或按 I 选择图片。');
+    localStorage.setItem(LAST_CANVAS_DRAFT_KEY, document.id);
+    localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${document.id}`, '');
+    updateLocation({ draftId: document.id });
+  };
+
+  const publishCanvas = async () => {
+    if (publishingRef.current) return;
+    const document = workspaceRef.current?.getDocument();
+    if (!document || !hasCanvasContent(document)) {
+      setCanvasMessage('画布还是空的，先加入图片、文字或批注。');
+      return;
+    }
+    const completionIssues = getCanvasCompletionIssues(document);
+    if (completionIssues.length > 0) {
+      setCanvasMessage(`还不能存入笔记：${completionIssues.join('；')}。Ctrl+S 仍可保存这份草稿。`);
+      return;
+    }
+    const publishRemark = canvasRemark;
+    const expectedSequence = changeSequenceRef.current;
+    const fingerprint = canvasSemanticFingerprint(document, publishRemark);
+    if (
+      lastPublishedFingerprintRef.current === fingerprint
+      && !window.confirm('这份画布发布后没有修改。确定要再次存入笔记吗？')
+    ) return;
+
+    if (publishOperationRef.current?.fingerprint !== fingerprint) {
+      publishOperationRef.current = { fingerprint, noteUid: createNoteUid() };
+    }
+    const publishNoteUid = publishOperationRef.current.noteUid;
+
     try {
-      setSaving(true);
-      const imageDataUrl = await renderCanvas();
-      const result = await saveNoteImage({ imageDataUrl, kind: 'canvas', remark: canvasRemark });
-      setMessage(`画布已保存：${result.filePath ?? ''}`);
-      setImages([]);
-      setTexts([]);
-      setStrokes([]);
-      setSelectedKeys([]);
-      setCanvasRemark('');
+      publishingRef.current = true;
+      setPublishing(true);
+      setCanvasMessage('正在保存工程并生成笔记预览图…');
+      const savedDocument = await persistCanvasDocument(document, false, { expectedSequence, remark: publishRemark });
+      const preview = await renderCanvasPreview(savedDocument);
+      const imageDataUrl = await blobToDataUrl(preview);
+      const result = await saveNoteImage({
+        imageDataUrl,
+        kind: 'canvas',
+        noteUid: publishNoteUid,
+        remark: publishRemark,
+        canvasProjectId: savedDocument.id,
+      });
+      lastPublishedFingerprintRef.current = fingerprint;
+      publishOperationRef.current = null;
+      if (activeCanvasIdRef.current === document.id) {
+        setCanvasMessage(changeSequenceRef.current === expectedSequence
+          ? `已存入笔记：${result.filePath ?? result.fileName ?? ''}。原画布仍可继续编辑。`
+          : `已存入笔记：${result.filePath ?? result.fileName ?? ''}。发布期间的新修改仍待 Ctrl+S 保存。`);
+      }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '保存失败');
+      if (activeCanvasIdRef.current === document.id) {
+        setCanvasMessage(error instanceof Error ? error.message : '画布存入笔记失败。');
+      }
     } finally {
-      setSaving(false);
+      publishingRef.current = false;
+      setPublishing(false);
     }
   };
 
-  const move = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (!dragState) {
-      return;
-    }
-    const dx = (event.clientX - dragState.startX) / zoom;
-    const dy = (event.clientY - dragState.startY) / zoom;
-
-    if (dragState.type === 'image') {
-      setImages((current) => current.map((image) => image.id === dragState.id ? { ...image, x: Math.max(0, dragState.originX + dx), y: Math.max(0, dragState.originY + dy) } : image));
-    }
-
-    if (dragState.type === 'resize') {
-      setImages((current) => current.map((image) => image.id === dragState.id ? { ...image, width: Math.max(90, dragState.originWidth + dx), height: Math.max(70, dragState.originHeight + dy) } : image));
-    }
-
-    if (dragState.type === 'text') {
-      setTexts((current) => current.map((item) => item.id === dragState.id ? { ...item, x: Math.max(0, dragState.originX + dx), y: Math.max(0, dragState.originY + dy) } : item));
-    }
+  const updateCanvasRemark = (value: string) => {
+    changeSequenceRef.current += 1;
+    setCanvasRemark(value);
+    setCanvasDirty(true);
+    localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${canvasDocument.id}`, value);
   };
 
-  const addText = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.target !== boardRef.current || tool !== 'select') {
-      return;
-    }
-    const text = window.prompt('输入要放在画布上的文字：', '');
-    if (!text) {
-      return;
-    }
-    const point = getBoardPoint(event.clientX, event.clientY);
-    const id = makeId();
-    setTexts((current) => [...current, { id, text, x: point.x, y: point.y }]);
-    setSelectedKeys([makeKey('text', id)]);
+  const handleCanvasShellKeyDownCapture = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 's') return;
+    const target = event.target as HTMLElement;
+    if (target.closest('.canvas-workspace')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return;
+    const document = workspaceRef.current?.getDocument();
+    if (!document) return;
+    const expectedSequence = changeSequenceRef.current;
+    void persistCanvasDocument(document, true, { expectedSequence, remark: canvasRemark }).catch(() => undefined);
   };
 
-  const selectByBox = (box: SelectionBox) => {
-    const rect = getRectFromBox(box);
-    if (rect.width < 8 || rect.height < 8) {
-      setSelectedKeys([]);
-      return;
-    }
-    const next: SelectedKey[] = [];
-    for (const image of images) {
-      if (intersects(rect, { left: image.x, top: image.y, right: image.x + image.width, bottom: image.y + image.height })) {
-        next.push(makeKey('image', image.id));
-      }
-    }
-    for (const text of texts) {
-      const width = Math.max(120, text.text.length * 28);
-      if (intersects(rect, { left: text.x, top: text.y - 32, right: text.x + width, bottom: text.y + 8 })) {
-        next.push(makeKey('text', text.id));
-      }
-    }
-    for (const stroke of strokes) {
-      if (intersects(rect, getStrokeBounds(stroke))) {
-        next.push(makeKey('stroke', stroke.id));
-      }
-    }
-    setSelectedKeys(next);
-    setMessage(next.length > 0 ? `已框选 ${next.length} 个元素。按 Delete 或点“删除选中”。` : '框选区域内没有元素。');
-  };
-
-  const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.target !== boardRef.current || !boardRef.current) {
-      return;
-    }
-    const point = getBoardPoint(event.clientX, event.clientY);
-    if (tool === 'brush') {
-      const id = makeId();
-      setStrokes((current) => [...current, { id, points: [point], color: '#243039', width: 4 }]);
-      setDrawingId(id);
-      setSelectedKeys([makeKey('stroke', id)]);
-      event.currentTarget.setPointerCapture(event.pointerId);
-      return;
-    }
-
-    setSelectionBox({ start: point, current: point });
-    setSelectedKeys([]);
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-
-  const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!boardRef.current) {
-      return;
-    }
-    const point = getBoardPoint(event.clientX, event.clientY);
-    if (drawingId) {
-      setStrokes((current) => current.map((stroke) => stroke.id === drawingId ? { ...stroke, points: [...stroke.points, point] } : stroke));
-      return;
-    }
-    if (selectionBox) {
-      setSelectionBox((current) => current ? { ...current, current: point } : null);
-    }
-  };
-
-  const handlePointerUp = () => {
-    if (selectionBox) {
-      selectByBox(selectionBox);
-    }
-    setDrawingId(null);
-    setSelectionBox(null);
-  };
-
-  const selectionRect = selectionBox ? getRectFromBox(selectionBox) : null;
-
+  const selectedMissingFromList = selectedProjectId && !projects.some((project) => project.id === selectedProjectId);
   return (
-    <main className="note-capture-page">
-      <header className="note-capture-header">
-        <div>
-          <p>考研笔记台</p>
-          <h1>稳定保存图片和画布</h1>
-          <span>{message}</span>
-        </div>
-        <div className="note-capture-header-actions">
-          <button type="button" onClick={() => window.open(`${window.location.origin}/?wallpaper=1`, '_blank', 'noopener,noreferrer')}>
-            <ArrowLeft size={15} /> 回到壁纸页
-          </button>
-          <button type="button" onClick={() => window.open('http://127.0.0.1:5174/health', '_blank', 'noopener,noreferrer')}>
-            检查保存服务
-          </button>
-        </div>
+    <main
+      className="note-capture-page canvas-mode"
+      onKeyDownCapture={handleCanvasShellKeyDownCapture}
+    >
+      <header className="note-app-bar">
+        <div className="note-app-identity"><Clipboard size={16} aria-hidden="true" /><strong>画布</strong></div>
+        {canvasMessage && <p className="note-app-status" title={canvasMessage} aria-live="polite">{canvasMessage}</p>}
       </header>
 
-      <section className="note-capture-tabs">
-        <button className={activeMode === 'single' ? 'active' : ''} type="button" onClick={() => setActiveMode('single')}>单图保存</button>
-        <button className={activeMode === 'canvas' ? 'active' : ''} type="button" onClick={() => setActiveMode('canvas')}>存储画布</button>
-      </section>
-
-      <section className="note-capture-layout">
-        <section className="note-capture-panel single-panel">
-          <header>
-            <FileImage size={18} />
-            <div>
-              <h2>单图保存</h2>
-              <p>拖入图片、Ctrl+V 粘贴，或选择文件。</p>
-            </div>
-          </header>
-          <div
-            className={`single-drop-zone ${singleImage ? 'has-image' : ''}`}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={async (event) => {
-              event.preventDefault();
-              const file = getImageFileFromFiles(event.dataTransfer.files);
-              if (file) {
-                await addSingleFile(file);
-              }
-            }}
-            onClick={() => singleInputRef.current?.click()}
-          >
-            {singleImage ? <img src={singleImage} alt="待保存图片" /> : <span><Clipboard size={20} /> 拖入 / 粘贴 / 点击选择图片</span>}
-          </div>
-          <textarea value={singleRemark} onChange={(event) => setSingleRemark(event.target.value)} placeholder="备注，可为空。千问会结合图片和备注命名。" />
-          <input ref={singleInputRef} type="file" accept="image/*" hidden onChange={async (event) => {
-            const file = getImageFileFromFiles(event.currentTarget.files);
-            if (file) {
-              await addSingleFile(file);
-            }
-            event.currentTarget.value = '';
-          }} />
-          <button className="note-primary-button" type="button" onClick={saveSingle} disabled={saving || !singleImage}>
-            <Save size={15} /> {saving ? '保存中' : '保存单图'}
-          </button>
-        </section>
-
-        <section className="note-capture-panel canvas-panel">
-          <header>
-            <ImagePlus size={18} />
-            <div>
-              <h2>存储画布</h2>
-              <p>{BOARD_WIDTH} × {BOARD_HEIGHT} 逻辑大画布，支持缩放、滚动、框选、多删、画笔。</p>
-            </div>
-          </header>
-          <div className="canvas-toolbar">
-            <button className={tool === 'select' ? 'active' : ''} type="button" onClick={() => setTool('select')}><MousePointer2 size={14} /> 选择/框选</button>
-            <button className={tool === 'brush' ? 'active' : ''} type="button" onClick={() => setTool('brush')}><Brush size={14} /> 画笔</button>
-            <button type="button" onClick={() => setZoom((value) => Math.max(0.25, Number((value - 0.15).toFixed(2))))}><ZoomOut size={14} /> 缩小</button>
-            <span className="canvas-zoom-label">{Math.round(zoom * 100)}%</span>
-            <button type="button" onClick={() => setZoom((value) => Math.min(2, Number((value + 0.15).toFixed(2))))}><ZoomIn size={14} /> 放大</button>
-            <button type="button" onClick={() => canvasInputRef.current?.click()}>选择图片加入画布</button>
-            <button type="button" onClick={deleteSelected}><Trash2 size={14} /> 删除选中 {selectedKeys.length ? `(${selectedKeys.length})` : ''}</button>
-            <button type="button" onClick={() => { setImages([]); setTexts([]); setStrokes([]); setSelectedKeys([]); }}>清空画布</button>
-          </div>
-
-          <div className="capture-board-viewport">
-            <div className="capture-board-stage" style={{ width: BOARD_WIDTH * zoom, height: BOARD_HEIGHT * zoom }}>
-              <div
-                className={`capture-board tool-${tool}`}
-                ref={boardRef}
-                style={{ width: BOARD_WIDTH, height: BOARD_HEIGHT, transform: `scale(${zoom})` }}
-                onDoubleClick={addText}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={async (event) => {
-                  event.preventDefault();
-                  const file = getImageFileFromFiles(event.dataTransfer.files);
-                  if (file) {
-                    await addCanvasImage(file, event.clientX, event.clientY);
-                  }
-                }}
-                onMouseMove={move}
-                onMouseUp={() => setDragState(null)}
-                onMouseLeave={() => setDragState(null)}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerUp={handlePointerUp}
-              >
-                <span className="capture-board-tip">拖动画布滚动条移动视野；选择模式空白处拖拽框选；图片是位图，文字和画笔按矢量元素编辑</span>
-                {images.map((image) => (
-                  <div
-                    className={`capture-board-image ${isSelected('image', image.id) ? 'selected' : ''}`}
-                    key={image.id}
-                    style={{ left: image.x, top: image.y, width: image.width, height: image.height }}
-                    onMouseDown={(event) => {
-                      event.stopPropagation();
-                      if (tool !== 'select') {
-                        return;
-                      }
-                      selectOnly('image', image.id);
-                      setDragState({ type: 'image', id: image.id, startX: event.clientX, startY: event.clientY, originX: image.x, originY: image.y });
-                    }}
-                  >
-                    <img src={image.src} alt="画布图片" draggable={false} />
-                    <button className="capture-item-delete" type="button" onClick={(event) => { event.stopPropagation(); setImages((current) => current.filter((item) => item.id !== image.id)); }} aria-label="删除图片">×</button>
-                    <span
-                      className="capture-board-resize"
-                      onMouseDown={(event) => {
-                        event.stopPropagation();
-                        selectOnly('image', image.id);
-                        setDragState({ type: 'resize', id: image.id, startX: event.clientX, startY: event.clientY, originWidth: image.width, originHeight: image.height });
-                      }}
-                    />
-                  </div>
-                ))}
-                <svg className="capture-stroke-layer" viewBox={`0 0 ${BOARD_WIDTH} ${BOARD_HEIGHT}`}>
-                  {strokes.map((stroke) => (
-                    <path
-                      className={isSelected('stroke', stroke.id) ? 'selected' : ''}
-                      key={stroke.id}
-                      d={strokeToPath(stroke.points)}
-                      fill="none"
-                      stroke={stroke.color}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={stroke.width}
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        if (tool === 'select') {
-                          selectOnly('stroke', stroke.id);
-                        }
-                      }}
-                    />
+      <section className="note-capture-layout is-canvas">
+          <section className="canvas-project-shell">
+            <div className="canvas-project-bar">
+              <button type="button" onClick={createNewCanvas} disabled={canvasSaving || publishing}><Plus size={15} /> 新建画布</button>
+              <label className="canvas-project-picker">
+                <FolderOpen size={16} />
+                <select
+                  aria-label="打开我的画布"
+                  value={selectedProjectId}
+                  disabled={projectsLoading || canvasSaving || publishing}
+                  onChange={(event) => {
+                    const projectId = event.target.value;
+                    if (projectId) void openCanvasProject(projectId);
+                    else createNewCanvas();
+                  }}
+                >
+                  <option value="">我的画布：当前未保存</option>
+                  {selectedMissingFromList && <option value={selectedProjectId}>当前工程</option>}
+                  {projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.title || '未命名画布'} · {project.imageCount} 图 · {formatProjectTime(project.updatedAt)}
+                    </option>
                   ))}
-                </svg>
-                {texts.map((item) => (
-                  <span
-                    className={`capture-board-text ${isSelected('text', item.id) ? 'selected' : ''}`}
-                    key={item.id}
-                    style={{ left: item.x, top: item.y }}
-                    onMouseDown={(event) => {
-                      event.stopPropagation();
-                      if (tool !== 'select') {
-                        return;
-                      }
-                      selectOnly('text', item.id);
-                      setDragState({ type: 'text', id: item.id, startX: event.clientX, startY: event.clientY, originX: item.x, originY: item.y });
-                    }}
-                  >
-                    {item.text}
-                    <button type="button" onClick={(event) => { event.stopPropagation(); setTexts((current) => current.filter((text) => text.id !== item.id)); }} aria-label="删除文字">×</button>
+                </select>
+              </label>
+              <button type="button" onClick={() => void refreshProjects()} disabled={projectsLoading} title="刷新我的画布">
+                <RefreshCw size={15} className={projectsLoading ? 'is-spinning' : ''} /> 刷新
+              </button>
+              <div className="canvas-project-state" aria-live="polite">
+                {selectedProjectId && (
+                  <span className={canvasDirty ? 'is-dirty' : ''}>
+                    {canvasSaving ? '工程保存中' : canvasDirty ? '有未保存修改' : '工程已同步'}
                   </span>
-                ))}
-                {selectionRect && (
-                  <span
-                    className="capture-selection-box"
-                    style={{ left: selectionRect.left, top: selectionRect.top, width: selectionRect.width, height: selectionRect.height }}
-                  />
                 )}
+                {draftStatus === 'failed' && <span className="is-error">本机草稿空间不足，请按 Ctrl+S 保存工程</span>}
               </div>
             </div>
-          </div>
 
-          <textarea value={canvasRemark} onChange={(event) => setCanvasRemark(event.target.value)} placeholder="画布备注，可为空。" />
-          <input ref={canvasInputRef} type="file" accept="image/*" hidden onChange={async (event) => {
-            const file = getImageFileFromFiles(event.currentTarget.files);
-            if (file) {
-              await addCanvasImage(file);
-            }
-            event.currentTarget.value = '';
-          }} />
-          <button className="note-primary-button" type="button" onClick={saveCanvas} disabled={saving || (images.length === 0 && texts.length === 0 && strokes.length === 0)}>
-            <Save size={15} /> {saving ? '保存中' : '保存画布'}
-          </button>
+            <CanvasWorkspace
+              key={`${canvasDocument.id}:${workspaceRevision}`}
+              ref={workspaceRef}
+              initialDocument={canvasDocument}
+              draftKey={`kaoyan.canvas.draft.v1.${canvasDocument.id}`}
+              onChange={(document) => {
+                changeSequenceRef.current += 1;
+                if (activeCanvasIdRef.current !== document.id) {
+                  openRequestSequenceRef.current += 1;
+                  activeCanvasIdRef.current = document.id;
+                  setSelectedProjectId('');
+                  localStorage.setItem(LAST_CANVAS_DRAFT_KEY, document.id);
+                  updateLocation({ draftId: document.id });
+                }
+                setCanvasDocument(document);
+                setCanvasDirty(true);
+                if (!selectedProjectId) localStorage.setItem(LAST_CANVAS_DRAFT_KEY, document.id);
+              }}
+              onSave={async (document) => {
+                const expectedSequence = changeSequenceRef.current;
+                await persistCanvasDocument(document, true, { expectedSequence, remark: canvasRemark });
+              }}
+              onError={(error) => setCanvasMessage(error.message)}
+              onDraftStatus={setDraftStatus}
+            />
+
+            <section className="canvas-publish-panel">
+              <label htmlFor="canvas-publish-remark">画布备注</label>
+              <textarea
+                id="canvas-publish-remark"
+                value={canvasRemark}
+                onChange={(event) => updateCanvasRemark(event.target.value)}
+                placeholder="补充页码、错因或需要记住的内容（可选）"
+              />
+              <button className="note-primary-button" title="生成整张画布预览并交给 AI 整理" type="button" onClick={() => void publishCanvas()} disabled={publishing || canvasSaving}>
+                <Sparkles size={15} /> {publishing ? '正在存入笔记' : '完成并存入笔记'}
+              </button>
+            </section>
+          </section>
         </section>
-      </section>
     </main>
   );
 }

@@ -8,6 +8,7 @@ import {
   ListChecks,
   NotebookPen,
 } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import type { ActivePanel, FilterType, ScheduleDay } from '../types';
 import { getDateDistanceFromStart } from '../utils/schedule';
 
@@ -50,6 +51,7 @@ export function Sidebar({
   onFilterChange,
   onStepDay,
 }: SidebarProps) {
+  const dateListRef = useRef<HTMLDivElement>(null);
   const filteredDays = days.filter((day) => {
     if (filter === 'all') {
       return true;
@@ -60,25 +62,29 @@ export function Sidebar({
     return day.type === filter;
   });
 
+  useEffect(() => {
+    dateListRef.current
+      ?.querySelector<HTMLElement>('.date-pill.active')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [selectedDay.date, filter]);
+
+  const selectedIndex = filteredDays.findIndex((day) => day.date === selectedDay.date);
+  const canStepBack = filteredDays.length > 0 && selectedIndex !== 0;
+  const canStepForward = filteredDays.length > 0 && selectedIndex !== filteredDays.length - 1;
+
   return (
     <aside className="date-rail" aria-label="课表导航">
-      <div className="rail-head">
-        <p>当前查看</p>
-        <strong>{selectedDay.date.slice(5)}</strong>
-        <span>{selectedDay.weekday}</span>
-      </div>
-
       <div className="quick-actions compact" aria-label="日期快捷操作">
         <button type="button" onClick={() => onDateChange(todayDay.date)}>
           <Home aria-hidden="true" size={16} />
           今日
         </button>
-        <button type="button" onClick={() => onStepDay(-1)}>
+        <button disabled={!canStepBack} type="button" onClick={() => onStepDay(-1)}>
           <ChevronLeft aria-hidden="true" size={16} />
-          前一天
+          前日
         </button>
-        <button type="button" onClick={() => onStepDay(1)}>
-          后一天
+        <button disabled={!canStepForward} type="button" onClick={() => onStepDay(1)}>
+          次日
           <ChevronRight aria-hidden="true" size={16} />
         </button>
       </div>
@@ -86,6 +92,7 @@ export function Sidebar({
       <div className="filter-row" aria-label="日期筛选">
         {filters.map((item) => (
           <button
+            aria-pressed={filter === item.value}
             className={filter === item.value ? 'active' : ''}
             key={item.value}
             type="button"
@@ -96,11 +103,12 @@ export function Sidebar({
         ))}
       </div>
 
-      <div className="date-list" aria-label="30 天日期列表">
+      <div className="date-list" aria-label="30 天日期列表" ref={dateListRef}>
         {filteredDays.map((day) => {
           const dayNumber = getDateDistanceFromStart(day.date) + 1;
           return (
             <button
+              aria-current={selectedDay.date === day.date ? 'date' : undefined}
               className={selectedDay.date === day.date ? 'date-pill active' : 'date-pill'}
               key={day.date}
               type="button"
@@ -122,6 +130,7 @@ export function Sidebar({
             const Icon = panel.icon;
             return (
               <button
+                aria-current={activePanel === panel.value ? 'page' : undefined}
                 className={activePanel === panel.value ? 'active' : ''}
                 key={panel.value}
                 type="button"

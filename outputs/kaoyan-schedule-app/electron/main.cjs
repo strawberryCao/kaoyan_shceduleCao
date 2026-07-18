@@ -1,14 +1,28 @@
-const { app, BrowserWindow, Menu, Tray, ipcMain, nativeImage, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, screen } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
 const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
+const noteAppFlag = '--note-app';
+const noteAppCloseFlag = '--close-note-app';
+const launchAsNoteApp = process.argv.includes(noteAppFlag);
+const launchAsNoteAppClose = process.argv.includes(noteAppCloseFlag);
+const noteCompactSize = { width: 300, height: 132 };
+const noteRemarkSize = { width: 400, height: 440 };
 const windowStateFile = 'window-state.json';
 const windowStateProfile = 'normal-desktop-v1';
 const startupShortcutName = '考研学习课表.lnk';
 
 let mainWindow = null;
+let noteWindow = null;
+let noteWindowMode = 'compact';
+let noteCompactBounds = null;
+let noteWindowDirty = false;
+let noteWindowSaving = false;
+let noteClosePromptOpen = false;
+let noteCloseAfterSave = false;
+let quitAfterNoteClose = false;
 let tray = null;
 let quitting = false;
 let saveBoundsTimer = null;
@@ -193,8 +207,7 @@ function buildTrayMenu() {
     {
       label: '退出',
       click: () => {
-        quitting = true;
-        app.quit();
+        requestAppQuit();
       },
     },
   ]);
@@ -205,7 +218,7 @@ function refreshTrayMenu() {
 }
 
 function showWindow() {
-  if (!mainWindow) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
   if (mainWindow.isMinimized()) {
@@ -215,7 +228,139 @@ function showWindow() {
   mainWindow.focus();
 }
 
+function showNoteWindow() {
+  if (!noteWindow || noteWindow.isDestroyed()) {
+    return;
+  }
+  if (noteWindow.isMinimized()) {
+    noteWindow.restore();
+  }
+  noteWindow.show();
+  noteWindow.focus();
+}
+
+async function closeNoteWindow() {
+  if (!noteWindow || noteWindow.isDestroyed()) {
+    return false;
+  }
+
+  if (noteWindowSaving) {
+    noteCloseAfterSave = true;
+    showNoteWindow();
+    return false;
+  }
+
+  if (noteWindowDirty) {
+    showNoteWindow();
+    if (noteClosePromptOpen) {
+      return false;
+    }
+
+    noteClosePromptOpen = true;
+    try {
+      const result = await dialog.showMessageBox(noteWindow, {
+        type: 'warning',
+        title: '笔记尚未保存',
+        message: '这张图片的备注还没有保存。',
+        detail: '你可以返回小窗继续编辑，或者放弃这次内容并关闭。',
+        buttons: ['继续编辑', '放弃并关闭'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (result.response !== 1) {
+        quitAfterNoteClose = false;
+        return false;
+      }
+      noteWindowDirty = false;
+      noteCloseAfterSave = false;
+    } finally {
+      noteClosePromptOpen = false;
+    }
+  }
+
+  noteWindow.close();
+  return true;
+}
+
+function finishAppQuit() {
+  quitAfterNoteClose = false;
+  quitting = true;
+  app.quit();
+}
+
+function requestAppQuit() {
+  if (noteWindow && !noteWindow.isDestroyed() && (noteWindowDirty || noteWindowSaving)) {
+    quitAfterNoteClose = true;
+    void closeNoteWindow();
+    return;
+  }
+  finishAppQuit();
+}
+
+function fitBoundsToWorkArea(bounds) {
+  const display = screen.getDisplayMatching(bounds);
+  const workArea = display.workArea;
+  const width = Math.min(bounds.width, workArea.width);
+  const height = Math.min(bounds.height, workArea.height);
+  return {
+    x: clamp(Math.round(bounds.x), workArea.x, workArea.x + workArea.width - width),
+    y: clamp(Math.round(bounds.y), workArea.y, workArea.y + workArea.height - height),
+    width,
+    height,
+  };
+}
+
+function setNoteWindowMode(mode) {
+  if (!noteWindow || noteWindow.isDestroyed() || !['compact', 'remark'].includes(mode)) {
+    return false;
+  }
+
+  if (mode === noteWindowMode) {
+    return true;
+  }
+
+  if (mode === 'remark') {
+    const current = noteWindow.getBounds();
+    noteCompactBounds = { ...current, ...noteCompactSize };
+    const expanded = fitBoundsToWorkArea({
+      x: current.x + Math.round((current.width - noteRemarkSize.width) / 2),
+      y: current.y + Math.round((current.height - noteRemarkSize.height) / 2),
+      ...noteRemarkSize,
+    });
+    noteWindowMode = 'remark';
+    noteWindow.setBounds(expanded, true);
+    return true;
+  }
+
+  const current = noteWindow.getBounds();
+  const compact = fitBoundsToWorkArea(noteCompactBounds ?? {
+    x: current.x + Math.round((current.width - noteCompactSize.width) / 2),
+    y: current.y + Math.round((current.height - noteCompactSize.height) / 2),
+    ...noteCompactSize,
+  });
+  noteWindowMode = 'compact';
+  noteWindow.setBounds(compact, true);
+  noteCompactBounds = null;
+  return true;
+}
+
+function loadRendererRoute(targetWindow, search = '') {
+  if (isDev) {
+    targetWindow.loadURL(`${devServerUrl}/${search}`);
+    return;
+  }
+  targetWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'), {
+    search: search.replace(/^\?/, ''),
+  });
+}
+
 function createWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showWindow();
+    return mainWindow;
+  }
+
   const bounds = readSavedBounds() ?? getDefaultBounds();
 
   mainWindow = new BrowserWindow({
@@ -241,11 +386,7 @@ function createWindow() {
     },
   });
 
-  if (isDev) {
-    mainWindow.loadURL(devServerUrl);
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
-  }
+  loadRendererRoute(mainWindow);
 
   mainWindow.once('ready-to-show', () => {
     showWindow();
@@ -255,23 +396,103 @@ function createWindow() {
   mainWindow.on('resize', queueSaveCurrentBounds);
 
   mainWindow.on('close', (event) => {
-    if (!quitting) {
+    if (!quitting && tray) {
       event.preventDefault();
       mainWindow.hide();
     }
   });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  return mainWindow;
 }
 
-app.whenReady().then(() => {
-  app.setAppUserModelId('com.local.kaoyan.schedule');
-  setAutoLaunch(false);
+function createNoteWindow() {
+  if (noteWindow && !noteWindow.isDestroyed()) {
+    showNoteWindow();
+    return noteWindow;
+  }
 
-  createWindow();
+  noteWindow = new BrowserWindow({
+    width: noteCompactSize.width,
+    height: noteCompactSize.height,
+    minWidth: 280,
+    minHeight: 120,
+    frame: false,
+    show: false,
+    skipTaskbar: false,
+    alwaysOnTop: false,
+    transparent: true,
+    hasShadow: true,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: '考研笔记台',
+    backgroundColor: '#00000000',
+    icon: createTrayIcon(),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+
+  loadRendererRoute(noteWindow, '?noteApp=1');
+
+  noteWindow.once('ready-to-show', () => {
+    showNoteWindow();
+  });
+
+  noteWindow.on('close', (event) => {
+    if (noteWindowDirty) {
+      event.preventDefault();
+      void closeNoteWindow();
+    }
+  });
+
+  noteWindow.on('closed', () => {
+    const shouldQuitApp = quitAfterNoteClose;
+    noteWindow = null;
+    noteWindowMode = 'compact';
+    noteCompactBounds = null;
+    noteWindowDirty = false;
+    noteWindowSaving = false;
+    noteClosePromptOpen = false;
+    noteCloseAfterSave = false;
+    quitAfterNoteClose = false;
+    if (shouldQuitApp) {
+      finishAppQuit();
+      return;
+    }
+    if (!mainWindow && !tray && !quitting) {
+      finishAppQuit();
+    }
+  });
+
+  return noteWindow;
+}
+
+function ensureTray() {
+  if (tray) {
+    return tray;
+  }
   tray = new Tray(createTrayIcon());
   tray.setToolTip('考研学习课表');
   tray.setContextMenu(buildTrayMenu());
   tray.on('click', () => showWindow());
+  return tray;
+}
 
+function ensureMainExperience() {
+  createWindow();
+  ensureTray();
+  showWindow();
+}
+
+function registerIpcHandlers() {
   ipcMain.handle('auto-launch:get', () => getAutoLaunch());
   ipcMain.handle('auto-launch:set', (_event, enabled) => {
     setAutoLaunch(Boolean(enabled));
@@ -286,27 +507,133 @@ app.whenReady().then(() => {
     saveCurrentBounds();
     return mainWindow?.getBounds();
   });
-  ipcMain.on('window:minimize', () => mainWindow?.minimize());
-  ipcMain.on('window:hide', () => mainWindow?.hide());
-  ipcMain.on('window:close', () => {
-    quitting = true;
-    app.quit();
+  ipcMain.handle('note-app:open', () => {
+    createNoteWindow();
+    return true;
   });
-});
+  ipcMain.handle('note-app:close', () => closeNoteWindow());
+  ipcMain.handle('note-app:set-dirty', (event, dirty, saving) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow !== noteWindow) {
+      return false;
+    }
+    noteWindowSaving = Boolean(saving);
+    noteWindowDirty = Boolean(dirty) || noteWindowSaving;
+    if (noteCloseAfterSave && !noteWindowSaving) {
+      if (!noteWindowDirty) {
+        noteCloseAfterSave = false;
+        setImmediate(() => void closeNoteWindow());
+      } else {
+        // Saving ended with the pending note still present, so keep it open.
+        noteCloseAfterSave = false;
+        quitAfterNoteClose = false;
+      }
+    }
+    return true;
+  });
+  ipcMain.handle('note-app:set-mode', (event, mode) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow !== noteWindow) {
+      return false;
+    }
+    return setNoteWindowMode(mode);
+  });
+  ipcMain.handle('note-canvas:open', async (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (senderWindow !== noteWindow) {
+      return false;
+    }
+    await shell.openExternal(`${devServerUrl}/?notes=1&mode=canvas`);
+    return true;
+  });
+  ipcMain.on('window:minimize', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.minimize();
+  });
+  ipcMain.on('window:hide', (event) => {
+    BrowserWindow.fromWebContents(event.sender)?.hide();
+  });
+  ipcMain.on('window:close', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow) {
+      return;
+    }
+    if (senderWindow === mainWindow) {
+      requestAppQuit();
+      return;
+    }
+    if (senderWindow === noteWindow) {
+      void closeNoteWindow();
+      return;
+    }
+    senderWindow.close();
+  });
+}
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    createWindow();
-  } else {
-    showWindow();
-  }
-});
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-app.on('before-quit', () => {
-  quitting = true;
-  saveCurrentBounds();
-});
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (_event, argv) => {
+    if (argv.includes(noteAppCloseFlag)) {
+      void closeNoteWindow();
+      return;
+    }
+    if (argv.includes(noteAppFlag)) {
+      createNoteWindow();
+      return;
+    }
+    ensureMainExperience();
+  });
 
-app.on('window-all-closed', (event) => {
-  event.preventDefault();
-});
+  app.whenReady().then(() => {
+    app.setAppUserModelId('com.local.kaoyan.schedule');
+    registerIpcHandlers();
+
+    if (launchAsNoteAppClose) {
+      quitting = true;
+      app.quit();
+      return;
+    }
+
+    if (launchAsNoteApp) {
+      createNoteWindow();
+      return;
+    }
+
+    setAutoLaunch(false);
+    ensureMainExperience();
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length > 0) {
+      if (noteWindow) {
+        showNoteWindow();
+      } else {
+        showWindow();
+      }
+      return;
+    }
+    if (launchAsNoteApp) {
+      createNoteWindow();
+    } else {
+      ensureMainExperience();
+    }
+  });
+
+  app.on('before-quit', (event) => {
+    if (!quitting && noteWindow && !noteWindow.isDestroyed() && (noteWindowDirty || noteWindowSaving)) {
+      event.preventDefault();
+      requestAppQuit();
+      return;
+    }
+    quitting = true;
+    saveCurrentBounds();
+  });
+
+  app.on('window-all-closed', () => {
+    if (!tray && process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+}

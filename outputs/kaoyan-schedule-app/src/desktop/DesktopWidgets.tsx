@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ExternalLink, ImagePlus, Pause, Play, RotateCcw, X } from 'lucide-react';
-import { NoteDock } from '../components/NoteDock';
+import { BookOpenCheck, Check, ChevronLeft, ChevronRight, ExternalLink, Eye, EyeOff, ImagePlus, Pause, Pencil, Play, RotateCcw, Save, Sparkles, X } from 'lucide-react';
+import { openNoteCaptureApp } from '../components/NoteDock';
 import type { DayRecord, RecordsByDate, ScheduleDay, ScheduleTask } from '../types';
 import {
   calculateStats,
@@ -8,11 +8,31 @@ import {
   getCurrentScheduleDay,
   getDayProgress,
   getDefaultRecord,
-  makeStoragePayload,
-  normalizeRecords,
-  STORAGE_KEY,
 } from '../utils/schedule';
 import { fileToDataUrl } from '../utils/notes';
+import {
+  clearPendingLearningRecord,
+  fetchLearningData,
+  getManualRecords,
+  patchLearningCard,
+  patchLearningDay,
+  putLearningManualRecords,
+  queuePendingLearningRecord,
+  readLearningDataCache,
+  readPendingLearningRecords,
+  readPendingLearningReplacement,
+  recordsMissingFromSnapshot,
+  subscribeLearningDataCache,
+  subscribeLearningDataFromServer,
+  type LearningDataSnapshot,
+} from '../utils/learningData';
+import {
+  mergeScheduleRecords,
+  readScheduleRecords,
+  sameScheduleRecords,
+  saveScheduleRecords,
+  subscribeScheduleRecords,
+} from '../utils/scheduleRecords';
 import type { WidgetLayout } from './types';
 
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
@@ -34,39 +54,81 @@ const getFirstImageFile = (files: FileList | null): File | null => {
   return Array.from(files).find((file) => file.type.startsWith('image/')) ?? null;
 };
 
-const openNoteCaptureWindow = () => {
-  const opened = window.open(
-    `${window.location.origin}/?notes=1`,
-    'kaoyan_note_capture',
-    'width=1280,height=860,left=80,top=60',
-  );
-  opened?.focus();
+const withPendingLearningRecords = (records: RecordsByDate): RecordsByDate => {
+  const replacement = readPendingLearningReplacement();
+  return mergeScheduleRecords(replacement ?? records, readPendingLearningRecords());
+};
+
+const useLearningSnapshot = () => {
+  const [snapshot, setSnapshot] = useState<LearningDataSnapshot>(() => readLearningDataCache());
+  useEffect(() => {
+    const unsubscribe = subscribeLearningDataCache(setSnapshot);
+    const unsubscribeServer = subscribeLearningDataFromServer();
+    const refresh = () => void fetchLearningData().then(setSnapshot).catch(() => undefined);
+    refresh();
+    const timer = window.setInterval(refresh, 60_000);
+    return () => {
+      unsubscribe();
+      unsubscribeServer();
+      window.clearInterval(timer);
+    };
+  }, []);
+  return [snapshot, setSnapshot] as const;
 };
 
 function ScheduleWidget() {
   const days = useMemo(() => generateSchedule(), []);
   const todayDay = useMemo(() => getCurrentScheduleDay(days), [days]);
   const [clock, setClock] = useState(() => new Date());
-  const [records, setRecords] = useState<RecordsByDate>(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      return {};
-    }
-    try {
-      return normalizeRecords(JSON.parse(saved), days);
-    } catch {
-      return {};
-    }
-  });
+  const [records, setRecords] = useState<RecordsByDate>(() => withPendingLearningRecords(mergeScheduleRecords(
+    getManualRecords(readLearningDataCache()),
+    readScheduleRecords(days),
+  )));
+  const recordsRef = useRef(records);
+  const [learningData, setLearningData] = useLearningSnapshot();
+  const migrationInFlightRef = useRef(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
+  useEffect(() => subscribeScheduleRecords(days, (nextLocalRecords) => {
+    const nextRecords = withPendingLearningRecords(nextLocalRecords);
+    recordsRef.current = nextRecords;
+    setRecords(nextRecords);
+  }), [days]);
+
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(makeStoragePayload(records)));
-  }, [records]);
+    const serviceRecords = getManualRecords(learningData);
+    if (Object.keys(serviceRecords).length === 0) {
+      return;
+    }
+    const localFallback = recordsMissingFromSnapshot(readScheduleRecords(days), learningData);
+    const nextRecords = withPendingLearningRecords(mergeScheduleRecords(
+      serviceRecords,
+      localFallback,
+    ));
+    recordsRef.current = nextRecords;
+    setRecords(nextRecords);
+    if (!sameScheduleRecords(readScheduleRecords(days), nextRecords)) {
+      saveScheduleRecords(nextRecords);
+    }
+  }, [days, learningData]);
+
+  useEffect(() => {
+    const missing = recordsMissingFromSnapshot(records, learningData);
+    if (migrationInFlightRef.current || Object.keys(missing).length === 0) {
+      return;
+    }
+    migrationInFlightRef.current = true;
+    void putLearningManualRecords(missing, 'merge')
+      .then(setLearningData)
+      .catch(() => undefined)
+      .finally(() => {
+        migrationInFlightRef.current = false;
+      });
+  }, [learningData, records, setLearningData]);
 
   const todayRecord = recordFor(records, todayDay);
   const progress = getDayProgress(todayDay, todayRecord);
@@ -78,19 +140,28 @@ function ScheduleWidget() {
     if (!task.trackable) {
       return;
     }
-    setRecords((current) => {
-      const previous = recordFor(current, todayDay);
-      const completed = previous.completedTaskIds.includes(task.id);
-      return {
-        ...current,
-        [todayDay.date]: {
-          ...previous,
-          completedTaskIds: completed
-            ? previous.completedTaskIds.filter((taskId) => taskId !== task.id)
-            : [...previous.completedTaskIds, task.id],
-        },
-      };
-    });
+    const currentRecords = recordsRef.current;
+    const previous = recordFor(currentRecords, todayDay);
+    const completed = previous.completedTaskIds.includes(task.id);
+    const nextRecord = {
+      ...previous,
+      completedTaskIds: completed
+        ? previous.completedTaskIds.filter((taskId) => taskId !== task.id)
+        : [...previous.completedTaskIds, task.id],
+    };
+    const nextRecords = { ...currentRecords, [todayDay.date]: nextRecord };
+    recordsRef.current = nextRecords;
+    setRecords(nextRecords);
+    saveScheduleRecords(nextRecords);
+    queuePendingLearningRecord(todayDay.date, nextRecord);
+    void patchLearningDay(todayDay.date, nextRecord)
+      .then((snapshot) => {
+        clearPendingLearningRecord(todayDay.date, nextRecord);
+        setLearningData(snapshot);
+      })
+      .catch(() => {
+        // The local record remains usable and will be retried by the full schedule.
+      });
   };
 
   return (
@@ -231,6 +302,13 @@ function DebtBoardWidget() {
 function MemoryCardWidget() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [text, setText] = usePersistentText(widgetStoreKey('memory-card'), '今日背诵：\n- 极限定义的量词顺序\n- 数据结构时间复杂度\n- 计网协议端口');
+  const [learningData, setLearningData] = useLearningSnapshot();
+  const [manualMode, setManualMode] = useState(false);
+  const [cardIndex, setCardIndex] = useState(0);
+  const [revealed, setRevealed] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editFront, setEditFront] = useState('');
+  const [editBack, setEditBack] = useState('');
   const [images, setImages] = useState<string[]>(() => {
     try {
       const parsed = JSON.parse(window.localStorage.getItem(widgetStoreKey('memory-images')) ?? '[]');
@@ -244,13 +322,76 @@ function MemoryCardWidget() {
     window.localStorage.setItem(widgetStoreKey('memory-images'), JSON.stringify(images));
   }, [images]);
 
+  const cards = useMemo(() => learningData.cards
+    .filter((card) => card.status !== 'archived')
+    .sort((left, right) => {
+      const statusOrder = (status: string) => status === 'draft' ? 0 : 1;
+      return statusOrder(left.status) - statusOrder(right.status)
+        || right.createdAt.localeCompare(left.createdAt);
+    }), [learningData.cards]);
+  const cardCounts = useMemo(() => ({
+    draft: learningData.cards.filter((card) => card.status === 'draft').length,
+    active: learningData.cards.filter((card) => card.status === 'active').length,
+    archived: learningData.cards.filter((card) => card.status === 'archived').length,
+  }), [learningData.cards]);
+  const currentCard = cards[cardIndex] ?? null;
+
+  useEffect(() => {
+    setCardIndex((current) => Math.max(0, Math.min(current, Math.max(0, cards.length - 1))));
+  }, [cards.length]);
+
+  useEffect(() => {
+    setRevealed(false);
+    setEditing(false);
+    setEditFront(currentCard?.front ?? '');
+    setEditBack(currentCard?.back ?? '');
+  }, [currentCard?.id]);
+
   const addImage = async (file: File | null) => {
     if (!file || !file.type.startsWith('image/')) {
       return;
     }
     const dataUrl = await fileToDataUrl(file);
     setImages((current) => [...current, dataUrl]);
+    setManualMode(true);
   };
+
+  const updateCurrentCard = async (patch: Parameters<typeof patchLearningCard>[1]) => {
+    if (!currentCard) {
+      return false;
+    }
+    try {
+      const snapshot = await patchLearningCard(currentCard.id, patch);
+      setLearningData(snapshot);
+      return true;
+    } catch {
+      // Keep the draft visible so the user can retry when the local service returns.
+      return false;
+    }
+  };
+
+  const saveCardEdits = async () => {
+    const saved = await updateCurrentCard({
+      front: editFront.trim(),
+      back: editBack.trim(),
+      userEdited: true,
+    });
+    if (saved) {
+      setEditing(false);
+    }
+  };
+
+  const stepCard = (direction: -1 | 1) => {
+    if (cards.length === 0) {
+      return;
+    }
+    setCardIndex((current) => (current + direction + cards.length) % cards.length);
+  };
+
+  const pageText = currentCard?.pageRefs
+    .map((item) => item.raw || [item.page ? `p${item.page}` : '', item.question ?? ''].filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join('、') ?? '';
 
   return (
     <div
@@ -261,16 +402,95 @@ function MemoryCardWidget() {
         await addImage(getFirstImageFile(event.dataTransfer.files));
       }}
     >
-      <textarea value={text} onChange={(event) => setText(event.target.value)} />
-      <div className="memory-image-strip">
-        {images.map((src, index) => (
-          <figure key={`${src.slice(0, 32)}-${index}`}>
-            <img src={src} alt={`背诵图片 ${index + 1}`} />
-            <button type="button" onClick={() => setImages((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label="删除图片"><X size={12} /></button>
-          </figure>
-        ))}
-        <button type="button" className="memory-add-image" onClick={() => fileInputRef.current?.click()}><ImagePlus size={15} /> 添加图片</button>
+      <div className="memory-modebar">
+        <span title={`草稿 ${cardCounts.draft} / 启用 ${cardCounts.active} / 忽略 ${cardCounts.archived}`}>
+          <Sparkles size={13} /> 草稿 {cardCounts.draft} · 启用 {cardCounts.active} · 忽略 {cardCounts.archived}
+        </span>
+        <button type="button" disabled={cards.length === 0} onClick={() => setManualMode((value) => !value)}>
+          {manualMode || cards.length === 0 ? <BookOpenCheck size={13} /> : <ImagePlus size={13} />}
+          {cards.length === 0 ? '暂无 AI 卡' : manualMode ? '查看 AI 卡' : '手写区'}
+        </button>
       </div>
+
+      {!manualMode && currentCard ? (
+        <section className="structured-memory-card" aria-label={`AI 背诵卡 ${cardIndex + 1}`}>
+          <header>
+            <span className={currentCard.status === 'draft' ? 'is-draft' : 'is-active'}>
+              {currentCard.status === 'draft' ? '草稿' : '已启用'}
+            </span>
+            <strong>{currentCard.subject || currentCard.sourceTitle || '背诵卡片'}</strong>
+            <small>{cardIndex + 1}/{cards.length}</small>
+          </header>
+          {editing ? (
+            <div className="structured-memory-editor">
+              <label>正面<textarea value={editFront} onChange={(event) => setEditFront(event.target.value)} /></label>
+              <label>背面<textarea value={editBack} onChange={(event) => setEditBack(event.target.value)} /></label>
+            </div>
+          ) : (
+            <div className="structured-memory-body">
+              <p>{currentCard.front || currentCard.sourceTitle || '请回忆这条笔记的核心内容。'}</p>
+              {revealed ? (
+                <div className="structured-memory-answer">{currentCard.back || '该卡片暂无答案。'}</div>
+              ) : (
+                <button type="button" className="structured-memory-reveal" onClick={() => setRevealed(true)}>
+                  <Eye size={13} /> 显示答案
+                </button>
+              )}
+              {(pageText || currentCard.knowledgePath.length > 0 || currentCard.tags.length > 0 || currentCard.dueDate) && (
+                <small>
+                  {[pageText, currentCard.knowledgePath.join(' / '), currentCard.tags.map((tag) => `#${tag}`).join(' '), currentCard.dueDate ? `复习 ${currentCard.dueDate}` : '']
+                    .filter(Boolean)
+                    .join(' · ')}
+                </small>
+              )}
+              <div className="structured-memory-actions">
+                {currentCard.status === 'draft' ? (
+                  <>
+                    <button type="button" onClick={() => void updateCurrentCard({ status: 'active' })}><Check size={12} /> 启用</button>
+                    <button type="button" onClick={() => void updateCurrentCard({ status: 'archived' })}><X size={12} /> 忽略</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'forgotten' })}><RotateCcw size={12} /> 忘记</button>
+                    <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'remembered' })}><Check size={12} /> 记住</button>
+                    <button type="button" onClick={() => void updateCurrentCard({ status: 'archived' })}><X size={12} /> 忽略</button>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+          <footer>
+            {editing ? (
+              <>
+                <button type="button" onClick={() => setEditing(false)}><X size={13} /> 取消</button>
+                <button type="button" onClick={() => void saveCardEdits()}><Save size={13} /> 保存</button>
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={() => stepCard(-1)} aria-label="上一张"><ChevronLeft size={14} /></button>
+                <button type="button" onClick={() => setRevealed((value) => !value)}>
+                  {revealed ? <EyeOff size={13} /> : <Eye size={13} />} {revealed ? '隐藏' : '翻卡'}
+                </button>
+                <button type="button" onClick={() => setEditing(true)}><Pencil size={12} /> 编辑</button>
+                <button type="button" onClick={() => stepCard(1)} aria-label="下一张"><ChevronRight size={14} /></button>
+              </>
+            )}
+          </footer>
+        </section>
+      ) : (
+        <>
+          <textarea value={text} onChange={(event) => setText(event.target.value)} />
+          <div className="memory-image-strip">
+            {images.map((src, index) => (
+              <figure key={`${src.slice(0, 32)}-${index}`}>
+                <img src={src} alt={`背诵图片 ${index + 1}`} />
+                <button type="button" onClick={() => setImages((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label="删除图片"><X size={12} /></button>
+              </figure>
+            ))}
+            <button type="button" className="memory-add-image" onClick={() => fileInputRef.current?.click()}><ImagePlus size={15} /> 添加图片</button>
+          </div>
+        </>
+      )}
       <input
         ref={fileInputRef}
         type="file"
@@ -315,7 +535,7 @@ function QuickLinksWidget() {
     <div className="study-widget-content quick-links-widget">
       <button type="button" onClick={openManagement}><ExternalLink size={14} /> 完整课表</button>
       <button type="button" onClick={openConsole}><ExternalLink size={14} /> 桌面控制台</button>
-      <button type="button" onClick={openNoteCaptureWindow}><ExternalLink size={14} /> 笔记台</button>
+      <button type="button" onClick={() => void openNoteCaptureApp()}><ExternalLink size={14} /> 笔记台小 App</button>
       <button type="button" onClick={() => window.open('http://127.0.0.1:5174/health', '_blank', 'noopener,noreferrer')}><ExternalLink size={14} /> 笔记服务</button>
     </div>
   );
@@ -326,7 +546,7 @@ export function renderDesktopWidget(widget: WidgetLayout) {
     case 'schedule':
       return <ScheduleWidget />;
     case 'noteDock':
-      return <NoteDock />;
+      return null;
     case 'pomodoro':
       return <PomodoroWidget />;
     case 'countdown':

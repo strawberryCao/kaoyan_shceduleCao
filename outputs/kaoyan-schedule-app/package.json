@@ -9,6 +9,10 @@
   "scripts": {
     "dev": "vite --config vite.config.mjs",
     "note:server": "node scripts/note-server.cjs",
+    "notes:organize": "node scripts/organize-notes.cjs --force",
+    "notes:organize:preview": "node scripts/organize-notes.cjs --dry-run",
+    "notes:index": "node scripts/rebuild-note-index.cjs --apply",
+    "notes:index:preview": "node scripts/rebuild-note-index.cjs",
     "build": "tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs",
     "build:wallpaper": "npm run build",
     "electron:dev": "concurrently -k \"vite --config vite.config.mjs --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && electron .\"",

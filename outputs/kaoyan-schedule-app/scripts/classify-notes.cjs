@@ -3,6 +3,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const { loadQwenConfig } = require('./qwen-config.cjs');
+const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
 
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
 const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
@@ -283,8 +284,8 @@ async function classifyOne(imagePath) {
   const newSidecarPath = path.join(metadataDir(destDir), `${newId}.note.json`);
 
   fs.renameSync(imagePath, newImagePath);
-  if (fs.existsSync(sidecarPath)) fs.rmSync(sidecarPath, { force: true });
-  if (legacySidecarPath !== sidecarPath && fs.existsSync(legacySidecarPath)) fs.rmSync(legacySidecarPath, { force: true });
+  unlinkFileIfExists(sidecarPath);
+  if (legacySidecarPath !== sidecarPath) unlinkFileIfExists(legacySidecarPath);
 
   const nextMetadata = {
     ...baseMetadata,
