@@ -4,6 +4,17 @@ const path = require('node:path');
 const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
 
 const CANVAS_DOCUMENT_VERSION = 1;
+const CANVAS_RELATION_TYPES = Object.freeze([
+  '解释',
+  '推导',
+  '对比',
+  '纠错',
+  '题目→答案',
+  '错因→改法',
+  '前后步骤',
+  '自定义',
+]);
+const CANVAS_RELATION_TYPE_SET = new Set(CANVAS_RELATION_TYPES);
 const DOCUMENTS_DIRECTORY = '.canvas-documents';
 const DOCUMENT_FILE = 'document.json';
 
@@ -20,6 +31,9 @@ const DEFAULT_LIMITS = Object.freeze({
   maxAnchors: 1000,
   maxAnnotations: 500,
   maxRelations: 500,
+  maxStrokes: 5000,
+  maxStrokePoints: 500000,
+  maxPointsPerStroke: 20000,
   maxGroups: 100,
   maxAnchorsPerAnnotation: 64,
   maxTitleLength: 240,
@@ -34,7 +48,7 @@ const DEFAULT_LIMITS = Object.freeze({
 
 const CANVAS_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
-const KNOWN_ARRAY_FIELDS = ['images', 'nodes', 'texts', 'anchors', 'annotations', 'relations', 'groups'];
+const KNOWN_ARRAY_FIELDS = ['images', 'nodes', 'texts', 'anchors', 'annotations', 'relations', 'strokes', 'groups'];
 
 class CanvasDocumentValidationError extends Error {
   constructor(issues) {
@@ -212,6 +226,10 @@ function validateCanvasDocument(document, options = {}) {
   checkString(issues, document.title, 'title', limits.maxTitleLength, { allowEmpty: true });
   checkString(issues, document.createdAt, 'createdAt', 80, { optional: true, allowEmpty: false });
   checkString(issues, document.updatedAt, 'updatedAt', 80, { optional: true, allowEmpty: false });
+  checkNumber(issues, document.syncRevision, 'syncRevision', { optional: true, min: 0 });
+  if (document.syncRevision !== undefined) {
+    addIssue(issues, Number.isInteger(document.syncRevision), 'syncRevision must be an integer');
+  }
 
   for (const field of KNOWN_ARRAY_FIELDS) {
     if (document[field] !== undefined && !Array.isArray(document[field])) {
@@ -225,6 +243,7 @@ function validateCanvasDocument(document, options = {}) {
   const anchors = Array.isArray(document.anchors) ? document.anchors : [];
   const annotations = Array.isArray(document.annotations) ? document.annotations : [];
   const relations = Array.isArray(document.relations) ? document.relations : [];
+  const strokes = Array.isArray(document.strokes) ? document.strokes : [];
   const groups = Array.isArray(document.groups) ? document.groups : [];
 
   addIssue(issues, images.length + nodes.length <= limits.maxImages, `images/nodes exceed ${limits.maxImages}`);
@@ -232,6 +251,7 @@ function validateCanvasDocument(document, options = {}) {
   addIssue(issues, anchors.length <= limits.maxAnchors, `anchors exceed ${limits.maxAnchors}`);
   addIssue(issues, annotations.length <= limits.maxAnnotations, `annotations exceed ${limits.maxAnnotations}`);
   addIssue(issues, relations.length <= limits.maxRelations, `relations exceed ${limits.maxRelations}`);
+  addIssue(issues, strokes.length <= limits.maxStrokes, `strokes exceed ${limits.maxStrokes}`);
   addIssue(issues, groups.length <= limits.maxGroups, `groups exceed ${limits.maxGroups}`);
 
   const idRegistry = new Map();
@@ -369,7 +389,27 @@ function validateCanvasDocument(document, options = {}) {
     addEntityId(issues, idRegistry, relation.id, field, limits);
     if (typeof relation.id === 'string' && relation.id.trim()) addressableIds.add(relation.id);
     checkString(issues, relation.label ?? relation.text, `${field}.label`, limits.maxTextLength, { optional: true, allowEmpty: true });
+    if (relation.kind === 'arrow') {
+      checkGenericReference(relation.fromAnchorId, `${field}.fromAnchorId`);
+      checkGenericReference(relation.toAnchorId, `${field}.toAnchorId`);
+      if (typeof relation.fromAnchorId === 'string' && typeof relation.toAnchorId === 'string') {
+        addIssue(
+          issues,
+          relation.fromAnchorId !== relation.toAnchorId,
+          `${field}.fromAnchorId and ${field}.toAnchorId must be different`,
+        );
+      }
+      checkString(issues, relation.relationType, `${field}.relationType`, limits.maxLabelLength);
+      if (typeof relation.relationType === 'string') {
+        addIssue(
+          issues,
+          CANVAS_RELATION_TYPE_SET.has(relation.relationType),
+          `${field}.relationType must be one of the supported canvas relation types`,
+        );
+      }
+    }
     for (const key of ['fromId', 'toId', 'sourceId', 'targetId', 'fromAnchorId', 'toAnchorId', 'fromAnnotationId', 'toAnnotationId']) {
+      if (relation.kind === 'arrow' && (key === 'fromAnchorId' || key === 'toAnchorId')) continue;
       if (relation[key] !== undefined) checkGenericReference(relation[key], `${field}.${key}`);
     }
     for (const key of ['anchorIds', 'annotationIds', 'memberIds', 'targetIds']) {
@@ -381,6 +421,43 @@ function validateCanvasDocument(document, options = {}) {
       relation[key].forEach((id, refIndex) => checkGenericReference(id, `${field}.${key}[${refIndex}]`));
     }
   });
+
+  let strokePointCount = 0;
+  strokes.forEach((stroke, index) => {
+    const field = `strokes[${index}]`;
+    if (!isPlainObject(stroke)) {
+      issues.push(`${field} must be an object`);
+      return;
+    }
+    addEntityId(issues, idRegistry, stroke.id, field, limits);
+    addIssue(issues, stroke.kind === 'ink', `${field}.kind must be ink`);
+    addIssue(issues, stroke.tool === 'pen' || stroke.tool === 'highlighter', `${field}.tool must be pen or highlighter`);
+    checkString(issues, stroke.color, `${field}.color`, limits.maxLabelLength);
+    checkNumber(issues, stroke.width, `${field}.width`, { min: 0.1, max: limits.maxFontSize });
+    checkNumber(issues, stroke.opacity, `${field}.opacity`, { min: 0, max: 1 });
+    checkNumber(issues, stroke.z, `${field}.z`, { optional: true, min: -limits.maxCoordinate, max: limits.maxCoordinate });
+    if (!Array.isArray(stroke.points)) {
+      issues.push(`${field}.points must be an array`);
+      return;
+    }
+    strokePointCount += stroke.points.length;
+    addIssue(issues, stroke.points.length > 0, `${field}.points must not be empty`);
+    addIssue(
+      issues,
+      stroke.points.length <= limits.maxPointsPerStroke,
+      `${field}.points exceed ${limits.maxPointsPerStroke}`,
+    );
+    stroke.points.forEach((point, pointIndex) => {
+      const pointField = `${field}.points[${pointIndex}]`;
+      if (!isPlainObject(point)) {
+        issues.push(`${pointField} must be an object`);
+        return;
+      }
+      checkPosition(issues, point, pointField, limits);
+      checkNumber(issues, point.pressure, `${pointField}.pressure`, { min: 0, max: 1 });
+    });
+  });
+  addIssue(issues, strokePointCount <= limits.maxStrokePoints, `stroke points exceed ${limits.maxStrokePoints}`);
 
   groups.forEach((group, index) => {
     const field = `groups[${index}]`;
@@ -485,6 +562,10 @@ function summarizeDocument(document, validation, documentPath) {
       + (Array.isArray(document.annotations)
         ? document.annotations.filter((item) => item?.kind === 'relation').length
         : 0),
+    strokeCount: Array.isArray(document.strokes) ? document.strokes.length : 0,
+    syncRevision: Number.isInteger(document.syncRevision) && document.syncRevision >= 0
+      ? document.syncRevision
+      : 0,
     byteLength: validation.byteLength,
     dataUrlCount: validation.dataUrlCount,
     documentPath,
@@ -580,6 +661,36 @@ function createCanvasDocumentStore(options = {}) {
     return JSON.parse(validation.serialized);
   }
 
+  function deleteDocument(canvasId) {
+    const document = readDocument(canvasId, { validate: false });
+    if (!document) return null;
+    const projectPath = path.dirname(getDocumentPath(canvasId));
+    const trashRoot = path.join(rootPath, '.trash');
+    const deletedAt = now();
+    const stamp = Number.isFinite(deletedAt.getTime()) ? deletedAt.getTime() : Date.now();
+    let trashPath = path.join(trashRoot, `${canvasId}-${stamp}`);
+    let suffix = 1;
+    while (fs.existsSync(trashPath)) {
+      trashPath = path.join(trashRoot, `${canvasId}-${stamp}-${suffix}`);
+      suffix += 1;
+    }
+    try {
+      fs.mkdirSync(trashRoot, { recursive: true });
+      fs.renameSync(projectPath, trashPath);
+    } catch (error) {
+      throw new CanvasDocumentStoreError(
+        `Unable to delete canvas document ${canvasId}: ${error.message}`,
+        'CANVAS_DOCUMENT_DELETE_FAILED',
+        error,
+      );
+    }
+    return {
+      document,
+      deletedAt: deletedAt.toISOString(),
+      trashPath,
+    };
+  }
+
   function listDocuments(listOptions = {}) {
     if (!fs.existsSync(rootPath)) return [];
     const summaries = [];
@@ -617,6 +728,7 @@ function createCanvasDocumentStore(options = {}) {
     getDocumentPath,
     validateDocument,
     saveDocument,
+    deleteDocument,
     readDocument,
     listDocuments,
   };
@@ -624,6 +736,7 @@ function createCanvasDocumentStore(options = {}) {
 
 module.exports = {
   CANVAS_DOCUMENT_VERSION,
+  CANVAS_RELATION_TYPES,
   DEFAULT_LIMITS,
   DOCUMENTS_DIRECTORY,
   DOCUMENT_FILE,

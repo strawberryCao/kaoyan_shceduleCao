@@ -46,7 +46,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
   };
 
   return (
-    <div className={collapsed ? 'web-app-frame is-collapsed' : 'web-app-frame'}>
+    <div className={`${collapsed || active === 'notes' ? 'web-app-frame is-collapsed' : 'web-app-frame'}${active === 'notes' ? ' is-canvas-active' : ''}`}>
       <aside className="web-app-nav" aria-label="全局导航">
         <button className="web-app-brand" type="button" onClick={() => go('?hub=1')} title="考研桌面助手">
           <span>研</span>

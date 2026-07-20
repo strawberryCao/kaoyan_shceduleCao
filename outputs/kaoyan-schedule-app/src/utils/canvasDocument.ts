@@ -18,6 +18,24 @@ export interface CanvasPoint {
   y: number;
 }
 
+export type CanvasInkTool = 'pen' | 'highlighter';
+
+export interface CanvasInkPoint extends CanvasPoint {
+  /** Normalized Pointer Events pressure (0..1). */
+  pressure: number;
+}
+
+export interface CanvasInkStroke {
+  id: string;
+  kind: 'ink';
+  tool: CanvasInkTool;
+  points: CanvasInkPoint[];
+  color: string;
+  width: number;
+  opacity: number;
+  z: number;
+}
+
 export interface CanvasViewport {
   zoom: number;
   scrollLeft: number;
@@ -82,20 +100,42 @@ export interface CanvasAnnotationNode {
   z: number;
 }
 
+export interface CanvasArrowRelation {
+  id: string;
+  kind: 'arrow';
+  fromAnchorId: string;
+  toAnchorId: string;
+  relationType: CanvasRelationType;
+  color: string;
+  z: number;
+}
+
 export interface CanvasDocument {
   version: typeof CANVAS_DOCUMENT_VERSION;
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Monotonic server revision used to synchronize the same canvas across devices. */
+  syncRevision: number;
   /** Remark used only when the user explicitly publishes this canvas as a note. */
   publishRemark?: string;
   images: CanvasImageNode[];
   texts: CanvasTextNode[];
   anchors: CanvasAnchor[];
   annotations: CanvasAnnotationNode[];
+  /** Older stored v1 documents may omit this; parsing normalizes it to an empty array. */
+  relations: CanvasArrowRelation[];
+  /** Older stored v1 documents may omit this; parsing normalizes it to an empty array. */
+  strokes: CanvasInkStroke[];
   viewport: CanvasViewport;
 }
+
+type StoredCanvasDocument = Omit<CanvasDocument, 'relations' | 'strokes' | 'syncRevision'> & {
+  relations?: CanvasArrowRelation[];
+  strokes?: CanvasInkStroke[];
+  syncRevision?: number;
+};
 
 export function createCanvasId(prefix = 'canvas'): string {
   const random = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -112,25 +152,35 @@ export function createEmptyCanvasDocument(title = '未命名画布'): CanvasDocu
     title,
     createdAt: now,
     updatedAt: now,
+    syncRevision: 0,
     publishRemark: '',
     images: [],
     texts: [],
     anchors: [],
     annotations: [],
-    viewport: { zoom: 0.72, scrollLeft: 0, scrollTop: 0 },
+    relations: [],
+    strokes: [],
+    viewport: { zoom: 0.9, scrollLeft: 0, scrollTop: 0 },
   };
 }
 
-export function cloneCanvasDocument(document: CanvasDocument): CanvasDocument {
+export function cloneCanvasDocument(document: StoredCanvasDocument): CanvasDocument {
   // Keep immutable image data strings shared between undo snapshots. JSON
   // round-tripping duplicated every embedded image for every history entry and
   // could consume hundreds of megabytes on an otherwise modest multi-image canvas.
   return {
     ...document,
+    syncRevision: Number.isInteger(document.syncRevision) && Number(document.syncRevision) >= 0
+      ? Number(document.syncRevision)
+      : 0,
     images: document.images.map((item) => ({ ...item })),
     texts: document.texts.map((item) => ({ ...item })),
     anchors: document.anchors.map((item) => ({ ...item })),
     annotations: document.annotations.map((item) => ({ ...item, anchorIds: [...item.anchorIds] })),
+    relations: Array.isArray(document.relations) ? document.relations.map((item) => ({ ...item })) : [],
+    strokes: Array.isArray(document.strokes)
+      ? document.strokes.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point })) }))
+      : [],
     viewport: { ...document.viewport },
   };
 }
@@ -138,7 +188,7 @@ export function cloneCanvasDocument(document: CanvasDocument): CanvasDocument {
 const isFiniteNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 /** Lightweight runtime guard for local drafts and imported JSON files. */
-export function isCanvasDocument(value: unknown): value is CanvasDocument {
+export function isCanvasDocument(value: unknown): value is StoredCanvasDocument {
   if (!value || typeof value !== 'object') return false;
   const item = value as Partial<CanvasDocument>;
   return item.version === CANVAS_DOCUMENT_VERSION
@@ -146,17 +196,21 @@ export function isCanvasDocument(value: unknown): value is CanvasDocument {
     && typeof item.title === 'string'
     && typeof item.createdAt === 'string'
     && typeof item.updatedAt === 'string'
+    && (item.syncRevision === undefined
+      || (Number.isInteger(item.syncRevision) && Number(item.syncRevision) >= 0))
     && Array.isArray(item.images)
     && Array.isArray(item.texts)
     && Array.isArray(item.anchors)
     && Array.isArray(item.annotations)
+    && (item.relations === undefined || Array.isArray(item.relations))
+    && (item.strokes === undefined || Array.isArray(item.strokes))
     && !!item.viewport
     && isFiniteNumber(item.viewport.zoom)
     && isFiniteNumber(item.viewport.scrollLeft)
     && isFiniteNumber(item.viewport.scrollTop);
 }
 
-export function parseCanvasDocument(input: string | CanvasDocument): CanvasDocument {
+export function parseCanvasDocument(input: string | StoredCanvasDocument): CanvasDocument {
   const parsed: unknown = typeof input === 'string' ? JSON.parse(input) : input;
   if (!isCanvasDocument(parsed)) {
     throw new Error('无法识别这个画布文件，或文件版本不受支持。');

@@ -25,7 +25,112 @@ test('returns an empty versioned snapshot before the first write', (t) => {
     updatedAt: null,
     days: {},
     cards: [],
+    deletedNotes: {},
   });
+});
+
+test('supports note and card CRUD with recoverable tombstones that survive sync and rebuild', (t) => {
+  const store = makeFixture(t);
+  let snapshot = store.createNote({
+    noteUid: 'manual-mistake-note',
+    capturedDate: '2026-07-16',
+    title: '二叉树遍历错题',
+    remark: '先写递归出口',
+    subject: '数据结构',
+    knowledgePath: ['数据结构', '树'],
+    noteType: 'mistake',
+    tags: ['重点'],
+    createCard: true,
+  }, { expectedRevision: 0 });
+  let note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.manualCreated, true);
+  assert.equal(note.classificationSource, 'manual');
+  assert.deepEqual(note.tags, ['重点', '错题']);
+  assert.equal(snapshot.cards.length, 1);
+  assert.equal(snapshot.cards[0].status, 'active');
+  assert.equal(snapshot.cards[0].dueDate, '2026-07-17');
+  assert.equal(snapshot.cards[0].front, '二叉树遍历错题');
+
+  snapshot = store.updateNote('manual-mistake-note', {
+    subject: '操作系统',
+  }, { expectedRevision: snapshot.revision });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.subject, '操作系统');
+  assert.deepEqual(note.knowledgePath, ['操作系统', '树']);
+  assert.equal(snapshot.cards[0].subject, '操作系统');
+  assert.deepEqual(snapshot.cards[0].knowledgePath, ['操作系统', '树']);
+
+  snapshot = store.updateNote('manual-mistake-note', {
+    title: '二叉树遍历与递归',
+    remark: '检查递归出口和访问顺序',
+    tags: ['错题', '递归'],
+    noteType: 'mistake',
+    wrongReason: '前序与中序混淆',
+  }, { expectedRevision: snapshot.revision });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.title, '二叉树遍历与递归');
+  assert.equal(note.remark, '检查递归出口和访问顺序');
+  assert.equal(note.wrongReason, '前序与中序混淆');
+
+  snapshot = store.createCard({
+    noteUid: 'manual-mistake-note',
+    kind: 'memory',
+    front: '三种深度优先遍历？',
+    back: '前序、中序、后序',
+    status: 'draft',
+  }, { expectedRevision: snapshot.revision });
+  const customCard = snapshot.cards.find((card) => card.front === '三种深度优先遍历？');
+  assert.ok(customCard);
+  snapshot = store.updateCard(customCard.id, { back: '前序 / 中序 / 后序' }, { expectedRevision: snapshot.revision });
+  assert.equal(snapshot.cards.find((card) => card.id === customCard.id).back, '前序 / 中序 / 后序');
+  snapshot = store.deleteCard(customCard.id, { expectedRevision: snapshot.revision });
+  assert.equal(snapshot.cards.some((card) => card.id === customCard.id), false);
+
+  snapshot = store.deleteNote('manual-mistake-note', { expectedRevision: snapshot.revision });
+  assert.equal(Object.values(snapshot.days).flatMap((day) => day.autoNotes).length, 0);
+  assert.equal(snapshot.cards.length, 0);
+  assert.equal(snapshot.deletedNotes['manual-mistake-note'].note.title, '二叉树遍历与递归');
+  assert.equal(snapshot.deletedNotes['manual-mistake-note'].cards.length, 1);
+
+  snapshot = store.syncNote({
+    noteUid: 'manual-mistake-note',
+    title: 'AI 不应复活',
+    subject: '数据结构',
+    createdAt: '2026-07-16T04:00:00.000Z',
+  }, { enrichment: { capturedDate: '2026-07-16', noteType: 'mistake' } });
+  assert.equal(Object.values(snapshot.days).flatMap((day) => day.autoNotes).length, 0);
+  assert.ok(snapshot.deletedNotes['manual-mistake-note']);
+
+  snapshot = store.rebuildNoteIndex([{
+    metadata: {
+      noteUid: 'manual-mistake-note',
+      title: '重建也不应复活',
+      subject: '数据结构',
+      createdAt: '2026-07-16T04:00:00.000Z',
+    },
+    enrichment: { capturedDate: '2026-07-16', noteType: 'mistake' },
+  }]);
+  assert.equal(Object.values(snapshot.days).flatMap((day) => day.autoNotes).length, 0);
+  assert.ok(snapshot.deletedNotes['manual-mistake-note']);
+
+  snapshot = store.restoreNote('manual-mistake-note', { expectedRevision: snapshot.revision });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.title, '二叉树遍历与递归');
+  assert.equal(snapshot.cards.length, 1);
+  assert.equal(snapshot.deletedNotes['manual-mistake-note'], undefined);
+
+  snapshot = store.syncNote({
+    noteUid: 'manual-mistake-note',
+    title: 'AI 新标题',
+    remark: 'AI 新备注',
+    subject: '数据结构',
+    createdAt: '2026-07-16T04:00:00.000Z',
+  }, { enrichment: { capturedDate: '2026-07-16', tags: ['AI'], noteType: 'memory' } });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.title, '二叉树遍历与递归');
+  assert.equal(note.remark, '检查递归出口和访问顺序');
+  assert.deepEqual(note.tags, ['错题', '递归']);
+  assert.equal(note.noteType, 'mistake');
 });
 
 test('removes a stale write lock without blocking the service', (t) => {
@@ -257,6 +362,131 @@ test('organization decisions survive later note syncs and full index rebuilds', 
     () => store.updateNote('note-confirmed', { organizationStatus: 'unknown' }),
     /Invalid note organization status/,
   );
+});
+
+test('manual classification updates notes and cards and survives later AI syncs', (t) => {
+  const store = makeFixture(t);
+  const metadata = {
+    noteUid: 'note-manual-classification',
+    title: '被错误放进收件箱的数学题',
+    subject: '默认文件夹',
+    createdAt: '2026-07-17T03:00:00.000Z',
+  };
+  let snapshot = store.syncNote(metadata, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: '默认文件夹',
+      knowledgePath: ['默认文件夹'],
+      organizationStatus: 'pending',
+      classificationSource: 'ai',
+    },
+    cards: [{ sourceKey: 'mistake:0', kind: 'mistake', front: '重做这道题', back: '答案' }],
+  });
+
+  snapshot = store.updateNote('note-manual-classification', {
+    subject: '高等数学',
+    knowledgePath: ['高等数学', '数列极限'],
+    questionType: '极限计算',
+    wrongReason: '忽略等价无穷小条件',
+  });
+  const corrected = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(corrected.subject, '高等数学');
+  assert.deepEqual(corrected.knowledgePath, ['高等数学', '数列极限']);
+  assert.equal(corrected.organizationStatus, 'confirmed');
+  assert.equal(corrected.classificationSource, 'manual');
+  assert.equal(snapshot.cards[0].subject, '高等数学');
+  assert.deepEqual(snapshot.cards[0].knowledgePath, ['高等数学', '数列极限']);
+
+  snapshot = store.syncNote({ ...metadata, subject: '概率论' }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: '概率论',
+      knowledgePath: ['概率论', '随机变量'],
+      questionType: '选择题',
+      wrongReason: 'AI 新判断',
+      organizationStatus: 'confirmed',
+      classificationSource: 'ai',
+    },
+    cards: [{ sourceKey: 'mistake:0', kind: 'mistake', front: '重做这道题', back: '新答案' }],
+  });
+  const afterAi = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(afterAi.subject, '高等数学');
+  assert.deepEqual(afterAi.knowledgePath, ['高等数学', '数列极限']);
+  assert.equal(afterAi.questionType, '极限计算');
+  assert.equal(afterAi.wrongReason, '忽略等价无穷小条件');
+  assert.equal(afterAi.classificationSource, 'manual');
+});
+
+test('manual move to the default bucket is not reverted from the previous file folder', (t) => {
+  const store = makeFixture(t);
+  const oldFilePath = path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '计算机视觉', '图像.png');
+  let snapshot = store.syncNote({
+    noteUid: 'note-manual-default',
+    title: '图像噪声分析',
+    subject: '计算机视觉',
+    filePath: oldFilePath,
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: '计算机视觉',
+      knowledgePath: ['计算机视觉', '图像噪声'],
+      organizationStatus: 'confirmed',
+      classificationSource: 'ai',
+    },
+  });
+
+  snapshot = store.updateNote('note-manual-default', {
+    subject: '默认文件夹',
+    knowledgePath: ['默认文件夹', '图像噪声'],
+    organizationStatus: 'pending',
+  });
+  let note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.subject, '默认文件夹');
+  assert.deepEqual(note.knowledgePath, ['默认文件夹', '图像噪声']);
+  assert.equal(note.classificationSource, 'manual');
+
+  snapshot = store.syncNote({
+    noteUid: 'note-manual-default',
+    title: '图像噪声分析',
+    subject: '默认文件夹',
+    filePath: path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '默认文件夹', '图像.png'),
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: '默认文件夹',
+      knowledgePath: ['默认文件夹', '图像噪声'],
+      organizationStatus: 'confirmed',
+      classificationSource: 'manual',
+    },
+  });
+  note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.subject, '默认文件夹');
+  assert.deepEqual(note.knowledgePath, ['默认文件夹', '图像噪声']);
+});
+
+test('repairs a stale inbox subject from the existing subject folder', (t) => {
+  const store = makeFixture(t);
+  const snapshot = store.syncNote({
+    noteUid: 'note-stale-inbox',
+    title: '已经移动过的数学题',
+    subject: '默认文件夹',
+    filePath: path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '高等数学', '数学题.png'),
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: '默认文件夹',
+      knowledgePath: ['默认文件夹'],
+      organizationStatus: 'pending',
+    },
+  });
+  const note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.subject, '高等数学');
+  assert.deepEqual(note.knowledgePath, ['高等数学']);
+  assert.equal(note.organizationStatus, 'confirmed');
+  assert.equal(note.classificationSource, 'local');
 });
 
 test('restoreSnapshot restores a normalized recovery payload without lowering the live revision', (t) => {

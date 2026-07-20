@@ -25,6 +25,9 @@ import {
 import {
   clearPendingLearningRecord,
   clearPendingLearningReplacement,
+  createLearningNote,
+  deleteLearningCard,
+  deleteLearningNote,
   fetchLearningData,
   getManualRecords,
   patchLearningDay,
@@ -38,6 +41,7 @@ import {
   readPendingLearningReplacement,
   subscribeLearningDataCache,
   subscribeLearningDataFromServer,
+  subscribeLearningDataPolling,
   type LearningDataSnapshot,
 } from '../utils/learningData';
 
@@ -114,7 +118,7 @@ export function ScheduleApp() {
 
   const readLivePendingRecords = (): RecordsByDate => Object.fromEntries(pendingSyncRecordsRef.current);
 
-  const acceptLearningSnapshot = (snapshot: LearningDataSnapshot) => {
+  const acceptLearningSnapshot = (snapshot: LearningDataSnapshot, force = false) => {
     const current = learningDataRef.current;
     const incomingUpdatedAt = snapshot.updatedAt ? Date.parse(snapshot.updatedAt) : Number.NaN;
     const currentUpdatedAt = current.updatedAt ? Date.parse(current.updatedAt) : Number.NaN;
@@ -124,7 +128,7 @@ export function ScheduleApp() {
     // A rebuild or restore can legitimately restart from a lower revision.
     // In that case the newer server timestamp is authoritative over an older
     // localStorage snapshot, while genuinely older events are still ignored.
-    if (snapshot.revision < current.revision && !isNewerServerEpoch) {
+    if (!force && snapshot.revision < current.revision && !isNewerServerEpoch) {
       return false;
     }
     learningDataRef.current = snapshot;
@@ -225,6 +229,10 @@ export function ScheduleApp() {
 
   useEffect(() => subscribeLearningDataFromServer(), []);
 
+  // iPad Safari may suspend an EventSource while the tab is in the background.
+  // Polling refreshes immediately on mount and provides a quiet fallback.
+  useEffect(() => subscribeLearningDataPolling(), []);
+
   useEffect(() => {
     const controller = new AbortController();
     Object.entries(readPendingLearningRecords()).forEach(([date, record]) => {
@@ -267,7 +275,7 @@ export function ScheduleApp() {
         }
 
         if (!controller.signal.aborted) {
-          const accepted = acceptLearningSnapshot(snapshot);
+          const accepted = acceptLearningSnapshot(snapshot, true);
           applyRecords(mergePendingRecords(
             accepted ? snapshot : learningDataRef.current,
             readLivePendingRecords(),
@@ -419,6 +427,7 @@ export function ScheduleApp() {
       return (
         <LearningCenter
           snapshot={learningData}
+          scheduleDays={days}
           onOpenDate={(date) => {
             if (days.some((day) => day.date === date)) {
               setSelectedDate(date);
@@ -429,8 +438,20 @@ export function ScheduleApp() {
             const snapshot = await patchLearningCard(cardId, patch);
             applyLearningSnapshot(snapshot);
           }}
-          onPatchNote={async (noteUid, organizationStatus) => {
-            const snapshot = await patchLearningNote(noteUid, organizationStatus);
+          onDeleteCard={async (cardId) => {
+            const snapshot = await deleteLearningCard(cardId);
+            applyLearningSnapshot(snapshot);
+          }}
+          onCreateNote={async (input) => {
+            const snapshot = await createLearningNote(input);
+            applyLearningSnapshot(snapshot);
+          }}
+          onPatchNote={async (noteUid, patch) => {
+            const snapshot = await patchLearningNote(noteUid, patch);
+            applyLearningSnapshot(snapshot);
+          }}
+          onDeleteNote={async (noteUid) => {
+            const snapshot = await deleteLearningNote(noteUid);
             applyLearningSnapshot(snapshot);
           }}
         />

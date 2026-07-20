@@ -13,6 +13,12 @@ const {
 } = require('./canvas-document-store.cjs');
 const { createLearningDataStore, formatDateInTimeZone, LearningDataConflictError } = require('./learning-data-store.cjs');
 const { resolveNoteImage, revealNoteImage } = require('./note-file-access.cjs');
+const {
+  ensureKnowledgePoint,
+  ensureSubject,
+  loadTaxonomy,
+  saveTaxonomyAtomic,
+} = require('./note-taxonomy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
 const { loadQwenConfig } = require('./qwen-config.cjs');
 const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
@@ -24,6 +30,10 @@ const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
 const ORGANIZER_STATE_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-state.json');
 const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
 const AI_PROVIDER_CONFIG_PATH = process.env.KAOYAN_AI_CONFIG_PATH || path.join(ASSISTANT_ROOT, 'ai-providers.json');
+const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
+const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
+const LIVE_STROKE_MAX_POINTS = 4096;
+const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const DEFAULT_SUBJECT = '默认文件夹';
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -32,6 +42,7 @@ const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
 const canvasProjects = createCanvasDocumentStore({
   rootDir: path.join(ASSISTANT_ROOT, 'canvas-projects'),
 });
+const canvasEventClients = new Set();
 const layoutEventClients = new Set();
 const learningEventClients = new Set();
 let noteAppReadyAt = null;
@@ -75,6 +86,30 @@ function sendJson(res, status, data) {
     'Cache-Control': 'no-store',
   });
   res.end(body);
+}
+
+function isLanProxyRequest(req) {
+  return String(req.headers[LAN_PROXY_HEADER] || '') === '1';
+}
+
+function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchParams()) {
+  const queryKeys = [...searchParams.keys()];
+  if (method === 'GET' && pathname === '/note-file') {
+    return queryKeys.length === 1 && queryKeys[0] === 'path' && Boolean(searchParams.get('path'));
+  }
+  if (queryKeys.length > 0) return false;
+  if (method === 'GET' && pathname === '/canvas-projects') return true;
+  if (method === 'GET' && pathname === '/canvas-projects/events') return true;
+  if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
+  if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
+  if (method === 'POST' && pathname === '/save-note') return true;
+  if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
+  if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
+  if (method === 'PATCH' && pathname === '/learning-data/day') return true;
+  if (method === 'PUT' && pathname === '/learning-data/manual-records') return true;
+  if (method === 'POST' && /^\/learning-data\/notes\/[^/]+\/restore$/.test(pathname)) return true;
+  if ((method === 'PATCH' || method === 'DELETE') && /^\/learning-data\/(?:notes|cards)\/[^/]+$/.test(pathname)) return true;
+  return false;
 }
 
 function allowedCorsOrigin(req) {
@@ -158,9 +193,8 @@ function timestamp(input = new Date()) {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-function readBody(req) {
+function readBody(req, maxBytes = 80 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
-    const maxBytes = 80 * 1024 * 1024;
     let body = '';
     let receivedBytes = 0;
     let tooLarge = false;
@@ -182,6 +216,69 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function isPlainJsonObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function requireLiveStrokeNumber(value, field, min, max) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    throw new SyntaxError(`${field} must be a finite number between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function requireLiveStrokeString(value, field, maxLength) {
+  if (typeof value !== 'string') {
+    throw new SyntaxError(`${field} must be a string`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw new SyntaxError(`${field} must be a non-empty string of at most ${maxLength} characters`);
+  }
+  return normalized;
+}
+
+function normalizeLiveStrokePayload(payload) {
+  if (!isPlainJsonObject(payload)) throw new SyntaxError('live stroke payload must be an object');
+  const sourceClientId = requireLiveStrokeString(payload.clientId, 'clientId', 128);
+  if (!isPlainJsonObject(payload.stroke)) throw new SyntaxError('stroke must be an object');
+  const source = payload.stroke;
+  const id = requireLiveStrokeString(source.id, 'stroke.id', 120);
+  if (source.kind !== 'ink') throw new SyntaxError('stroke.kind must be ink');
+  if (source.tool !== 'pen' && source.tool !== 'highlighter') {
+    throw new SyntaxError('stroke.tool must be pen or highlighter');
+  }
+  if (!Array.isArray(source.points) || source.points.length < 1 || source.points.length > LIVE_STROKE_MAX_POINTS) {
+    throw new SyntaxError(`stroke.points must contain between 1 and ${LIVE_STROKE_MAX_POINTS} points`);
+  }
+  const points = source.points.map((point, index) => {
+    if (!isPlainJsonObject(point)) throw new SyntaxError(`stroke.points[${index}] must be an object`);
+    return {
+      x: requireLiveStrokeNumber(point.x, `stroke.points[${index}].x`, -10_000_000, 10_000_000),
+      y: requireLiveStrokeNumber(point.y, `stroke.points[${index}].y`, -10_000_000, 10_000_000),
+      pressure: requireLiveStrokeNumber(point.pressure, `stroke.points[${index}].pressure`, 0, 1),
+    };
+  });
+  if (typeof source.color !== 'string' || !/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(source.color)) {
+    throw new SyntaxError('stroke.color must be a hexadecimal CSS color');
+  }
+  return {
+    sourceClientId,
+    stroke: {
+      id,
+      kind: 'ink',
+      tool: source.tool,
+      points,
+      color: source.color.toLowerCase(),
+      width: requireLiveStrokeNumber(source.width, 'stroke.width', 0.1, 512),
+      opacity: requireLiveStrokeNumber(source.opacity, 'stroke.opacity', 0, 1),
+      z: requireLiveStrokeNumber(source.z, 'stroke.z', -10_000_000, 10_000_000),
+    },
+  };
 }
 
 function decodeDataUrl(dataUrl) {
@@ -281,6 +378,145 @@ function readSaveReceipt(noteUid) {
   };
 }
 
+function findSavedNote(noteUid) {
+  const saved = readSaveReceipt(noteUid);
+  if (saved || !fs.existsSync(NOTES_ROOT)) return saved;
+  const directories = [NOTES_ROOT];
+  while (directories.length > 0) {
+    const directory = directories.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        directories.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !/\.note\.json$/i.test(entry.name) || path.basename(directory) !== '.metadata') continue;
+      const metadata = readJson(fullPath, null);
+      const filePath = metadata?.filePath;
+      if (metadata?.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) continue;
+      return {
+        receipt: {
+          noteUid,
+          sidecarPath: fullPath,
+          filePath,
+          fileName: metadata.fileName || path.basename(filePath),
+          learningSyncError: null,
+        },
+        metadata,
+        filePath,
+        fileName: metadata.fileName || path.basename(filePath),
+      };
+    }
+  }
+  return null;
+}
+
+function persistManualClassification(noteUid, patch) {
+  const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
+  if (!patch || !classificationKeys.some((key) => Object.hasOwn(patch, key))) return null;
+  const saved = findSavedNote(noteUid);
+  if (!saved) return null;
+
+  const currentLearning = saved.metadata.learning && typeof saved.metadata.learning === 'object'
+    ? saved.metadata.learning
+    : {};
+  const subject = sanitizeSegment(patch.subject || currentLearning.subject || saved.metadata.subject, DEFAULT_SUBJECT, 60);
+  const incomingPath = Array.isArray(patch.knowledgePath) ? patch.knowledgePath : currentLearning.knowledgePath;
+  const knowledgePath = [subject, ...(Array.isArray(incomingPath) ? incomingPath : [])
+    .map((item) => sanitizeSegment(item, '', 60))
+    .filter((item) => item && item !== subject && item !== saved.metadata.subject)]
+    .slice(0, 3);
+  const knowledgePoint = knowledgePath[1] || null;
+
+  const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
+  const subjectNode = ensureSubject(taxonomy, subject, { createdBy: 'user' });
+  const pointNode = knowledgePoint
+    ? ensureKnowledgePoint(taxonomy, subjectNode, knowledgePoint, { createdBy: 'user' })
+    : null;
+  saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
+
+  const destinationDir = path.join(NOTES_ROOT, subject);
+  fs.mkdirSync(metadataDir(destinationDir), { recursive: true });
+  const sourceImagePath = saved.filePath;
+  const sourceSidecarPath = saved.receipt.sidecarPath;
+  const sourceSubjectDir = path.dirname(sourceImagePath);
+  const sourceExt = path.extname(sourceImagePath).replace(/^\./, '') || 'png';
+  const sourceStem = path.basename(sourceImagePath, path.extname(sourceImagePath));
+  const target = ensureUniquePath(destinationDir, sourceStem, sourceExt, sourceImagePath);
+  const targetId = path.basename(target.filename, path.extname(target.filename));
+  const targetSidecarPath = sidecarPathForId(destinationDir, targetId);
+  const updatedAt = new Date().toISOString();
+  const metadata = {
+    ...saved.metadata,
+    id: targetId,
+    subject,
+    fileName: target.filename,
+    filePath: target.filePath,
+    updatedAt,
+    classification: {
+      ...(saved.metadata.classification || {}),
+      subjectId: subjectNode.id,
+      subjectName: subjectNode.name,
+      knowledgePointId: pointNode?.id || null,
+      knowledgePointName: pointNode?.name || null,
+      correctedBy: 'user',
+      correctedAt: updatedAt,
+    },
+    organizer: {
+      ...(saved.metadata.organizer || {}),
+      status: 'user_corrected',
+      proposed: null,
+    },
+    learning: {
+      ...currentLearning,
+      subject,
+      knowledgePath,
+      ...(Object.hasOwn(patch, 'questionType') ? { questionType: String(patch.questionType || '').trim().slice(0, 60) } : {}),
+      ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: String(patch.wrongReason || '').trim().slice(0, 500) } : {}),
+      organizationStatus: 'confirmed',
+      classificationSource: 'manual',
+      pendingAiOrganization: false,
+    },
+  };
+
+  const moved = path.resolve(sourceImagePath) !== path.resolve(target.filePath);
+  if (!moved) {
+    fs.writeFileSync(sourceSidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
+    appendMetadata(destinationDir, metadata);
+    writeSaveReceipt(noteUid, metadata, saved.receipt.learningSyncError);
+    return metadata;
+  }
+
+  fs.renameSync(sourceImagePath, target.filePath);
+  try {
+    fs.writeFileSync(targetSidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
+    appendMetadata(destinationDir, metadata);
+    writeSaveReceipt(noteUid, metadata, saved.receipt.learningSyncError);
+  } catch (error) {
+    unlinkFileIfExists(targetSidecarPath);
+    if (fs.existsSync(target.filePath) && !fs.existsSync(sourceImagePath)) fs.renameSync(target.filePath, sourceImagePath);
+    try {
+      writeSaveReceipt(noteUid, saved.metadata, saved.receipt.learningSyncError);
+    } catch {
+      // The original image and sidecar are still valid; a later launch can rebuild the receipt.
+    }
+    throw error;
+  }
+  if (path.resolve(sourceSidecarPath) !== path.resolve(targetSidecarPath)) unlinkFileIfExists(sourceSidecarPath);
+  try {
+    removeMetadataEntry(sourceSubjectDir, noteUid);
+  } catch {
+    // A stale aggregate index is repairable from the sidecars.
+  }
+  return metadata;
+}
+
 function removeMetadataEntry(subjectDir, noteUid) {
   const indexPath = metadataIndexPath(subjectDir);
   const existing = readJson(indexPath, []);
@@ -371,6 +607,7 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
     '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
     '要求：',
     '1. 识别所属科目，只能从：高等数学、线性代数、概率论、数据结构、计算机组成、操作系统、计算机网络、英语、默认文件夹 中选择。',
+    '1.1 只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。不要因为不完全确定就退回默认。',
     '2. title 用 8 到 22 个中文字符概括图片核心内容，不要出现“截图”“图片”“笔记”这类空泛词。',
     '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
     '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
@@ -524,6 +761,44 @@ function sendLayoutEvent(res, payload) {
 
 function sendLearningEvent(res, payload) {
   res.write(`event: learning-data\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
+function sendCanvasEvent(res, payload) {
+  res.write(`event: canvas-project\ndata: ${JSON.stringify(payload)}\n\n`);
+}
+
+function broadcastCanvasProject(payload) {
+  for (const client of canvasEventClients) {
+    try {
+      sendCanvasEvent(client, payload);
+    } catch {
+      canvasEventClients.delete(client);
+    }
+  }
+}
+
+function handleCanvasEvents(req, res) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.socket?.setKeepAlive(true);
+  res.write('retry: 1500\n: connected\n\n');
+  canvasEventClients.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': keepalive\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      canvasEventClients.delete(res);
+    }
+  }, 20_000);
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    canvasEventClients.delete(res);
+  });
 }
 
 function broadcastLearningData(payload) {
@@ -704,7 +979,8 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
     wrongReason: parsed.wrongReasons?.[0] || '',
     intent,
     cards,
-    organizationStatus: 'pending',
+    organizationStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+    classificationSource: details.subject && details.subject !== DEFAULT_SUBJECT ? 'local' : 'ai',
     flags: parsed.flags,
     pendingAiOrganization: true,
   };
@@ -738,6 +1014,12 @@ function markAiNamingFailed(noteUid, error, naming = null) {
       status: 'fallback_named',
       provider: naming?.providerUsed || null,
     },
+    learning: {
+      ...(saved.metadata.learning || {}),
+      organizationStatus: saved.metadata.subject === DEFAULT_SUBJECT ? 'pending' : 'confirmed',
+      classificationSource: saved.metadata.learning?.classificationSource || 'local',
+      pendingAiOrganization: false,
+    },
   };
   persistBackgroundMetadata(saved, metadata);
 }
@@ -765,9 +1047,12 @@ async function runAiNamingJob(noteUid) {
   const latest = readSaveReceipt(noteUid);
   if (!latest) return;
   const requestedSubject = sanitizeSegment(latest.metadata.requestedSubject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
-  const subject = naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
-    ? requestedSubject
-    : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
+  const keepsManualClassification = latest.metadata.learning?.classificationSource === 'manual';
+  const subject = keepsManualClassification
+    ? sanitizeSegment(latest.metadata.subject, DEFAULT_SUBJECT, 60)
+    : naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
+      ? requestedSubject
+      : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -808,6 +1093,17 @@ async function runAiNamingJob(noteUid) {
       ...(latest.metadata.classifier || {}),
       status: 'named',
       provider: naming.providerUsed,
+    },
+    learning: {
+      ...(latest.metadata.learning || {}),
+      title: safeTitle,
+      subject,
+      knowledgePath: keepsManualClassification
+        ? latest.metadata.learning.knowledgePath
+        : [subject, ...((latest.metadata.learning?.knowledgePath || []).filter((item) => item !== latest.metadata.subject && item !== subject))].slice(0, 3),
+      organizationStatus: keepsManualClassification || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+      classificationSource: keepsManualClassification ? 'manual' : 'ai',
+      pendingAiOrganization: false,
     },
   };
 
@@ -1000,6 +1296,11 @@ async function handleSave(req, res) {
 }
 
 async function handleCanvasProjectRoute(req, res, pathname) {
+  if (req.method === 'GET' && pathname === '/canvas-projects/events') {
+    handleCanvasEvents(req, res);
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/canvas-projects') {
     const projects = canvasProjects.listDocuments().map((project) => ({
       id: project.id,
@@ -1011,8 +1312,26 @@ async function handleCanvasProjectRoute(req, res, pathname) {
       annotationCount: project.annotationCount,
       anchorCount: project.anchorCount,
       relationCount: project.relationCount,
+      strokeCount: project.strokeCount,
+      syncRevision: project.syncRevision,
     }));
     sendJson(res, 200, { ok: true, projects });
+    return true;
+  }
+
+  const liveStrokeMatch = /^\/canvas-projects\/([^/]+)\/live-stroke$/.exec(pathname);
+  if (req.method === 'POST' && liveStrokeMatch) {
+    const projectId = decodeURIComponent(liveStrokeMatch[1]);
+    assertCanvasId(projectId);
+    const payload = JSON.parse((await readBody(req, LIVE_STROKE_MAX_BODY_BYTES)) || '{}');
+    const { sourceClientId, stroke } = normalizeLiveStrokePayload(payload);
+    broadcastCanvasProject({
+      type: 'live-stroke',
+      projectId,
+      sourceClientId,
+      stroke,
+    });
+    sendJson(res, 202, { ok: true });
     return true;
   }
 
@@ -1036,13 +1355,100 @@ async function handleCanvasProjectRoute(req, res, pathname) {
     const source = payload.document && typeof payload.document === 'object'
       ? payload.document
       : payload;
+    const expectedRevision = payload.document && typeof payload.document === 'object'
+      ? payload.expectedRevision
+      : undefined;
+    if (
+      expectedRevision !== undefined
+      && (!Number.isInteger(expectedRevision) || expectedRevision < 0)
+    ) {
+      throw new SyntaxError('expectedRevision must be a non-negative integer');
+    }
+    let sourceClientId = null;
+    if (payload.document && typeof payload.document === 'object' && payload.clientId !== undefined) {
+      if (typeof payload.clientId !== 'string' || !payload.clientId.trim() || payload.clientId.trim().length > 128) {
+        throw new SyntaxError('clientId must be a non-empty string of at most 128 characters');
+      }
+      sourceClientId = payload.clientId.trim();
+    }
+    const existing = canvasProjects.readDocument(projectId, { validate: false });
+    const actualRevision = Number.isInteger(existing?.syncRevision) && existing.syncRevision >= 0
+      ? existing.syncRevision
+      : 0;
+    if (expectedRevision !== undefined && expectedRevision !== actualRevision) {
+      sendJson(res, 409, {
+        ok: false,
+        code: 'CANVAS_REVISION_CONFLICT',
+        error: `Canvas project revision changed from ${expectedRevision} to ${actualRevision}`,
+        expectedRevision,
+        actualRevision,
+      });
+      return true;
+    }
+    const updatedAt = new Date().toISOString();
     const document = canvasProjects.saveDocument({
       ...source,
       id: projectId,
-      updatedAt: new Date().toISOString(),
+      syncRevision: actualRevision + 1,
+      updatedAt,
     }, { canvasId: projectId });
     const summary = canvasProjects.listDocuments().find((item) => item.id === projectId) ?? null;
+    broadcastCanvasProject({
+      type: 'saved',
+      projectId,
+      revision: document.syncRevision,
+      updatedAt: document.updatedAt,
+      sourceClientId,
+    });
     sendJson(res, 200, { ok: true, document, summary });
+    return true;
+  }
+
+  if (req.method === 'DELETE') {
+    const payload = JSON.parse((await readBody(req)) || '{}');
+    const expectedRevision = payload.expectedRevision;
+    if (expectedRevision !== undefined && (!Number.isInteger(expectedRevision) || expectedRevision < 0)) {
+      throw new SyntaxError('expectedRevision must be a non-negative integer');
+    }
+    let sourceClientId = null;
+    if (payload.clientId !== undefined) {
+      if (typeof payload.clientId !== 'string' || !payload.clientId.trim() || payload.clientId.trim().length > 128) {
+        throw new SyntaxError('clientId must be a non-empty string of at most 128 characters');
+      }
+      sourceClientId = payload.clientId.trim();
+    }
+    const existing = canvasProjects.readDocument(projectId, { validate: false });
+    if (!existing) {
+      sendJson(res, 404, { ok: false, error: '找不到这个画布工程' });
+      return true;
+    }
+    const actualRevision = Number.isInteger(existing.syncRevision) && existing.syncRevision >= 0
+      ? existing.syncRevision
+      : 0;
+    if (expectedRevision !== undefined && expectedRevision !== actualRevision) {
+      sendJson(res, 409, {
+        ok: false,
+        code: 'CANVAS_REVISION_CONFLICT',
+        error: `Canvas project revision changed from ${expectedRevision} to ${actualRevision}`,
+        expectedRevision,
+        actualRevision,
+      });
+      return true;
+    }
+    const deleted = canvasProjects.deleteDocument(projectId);
+    broadcastCanvasProject({
+      type: 'deleted',
+      projectId,
+      revision: actualRevision,
+      updatedAt: deleted.deletedAt,
+      sourceClientId,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      projectId,
+      deletedAt: deleted.deletedAt,
+      recoverable: true,
+    });
     return true;
   }
 
@@ -1057,6 +1463,26 @@ async function handleLearningDataRoute(req, res, pathname) {
 
   if (req.method === 'GET' && pathname === '/learning-data') {
     sendJson(res, 200, learningData.getSnapshot());
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/learning-data/notes') {
+    const payload = JSON.parse((await readBody(req)) || '{}');
+    const snapshot = learningData.createNote(payload.input ?? payload.note, {
+      expectedRevision: payload.expectedRevision,
+    });
+    broadcastLearningData(snapshot);
+    sendJson(res, 201, snapshot);
+    return true;
+  }
+
+  if (req.method === 'POST' && pathname === '/learning-data/cards') {
+    const payload = JSON.parse((await readBody(req)) || '{}');
+    const snapshot = learningData.createCard(payload.input ?? payload.card, {
+      expectedRevision: payload.expectedRevision,
+    });
+    broadcastLearningData(snapshot);
+    sendJson(res, 201, snapshot);
     return true;
   }
 
@@ -1083,9 +1509,42 @@ async function handleLearningDataRoute(req, res, pathname) {
 
   const cardMatch = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
   const noteMatch = /^\/learning-data\/notes\/([^/]+)$/.exec(pathname);
+  const noteRestoreMatch = /^\/learning-data\/notes\/([^/]+)\/restore$/.exec(pathname);
+  if (noteRestoreMatch && req.method === 'POST') {
+    const payload = JSON.parse((await readBody(req)) || '{}');
+    const snapshot = learningData.restoreNote(decodeURIComponent(noteRestoreMatch[1]), {
+      expectedRevision: payload.expectedRevision,
+    });
+    broadcastLearningData(snapshot);
+    sendJson(res, 200, snapshot);
+    return true;
+  }
   if (noteMatch && req.method === 'PATCH') {
     const payload = JSON.parse((await readBody(req)) || '{}');
-    const snapshot = learningData.updateNote(decodeURIComponent(noteMatch[1]), payload.patch, {
+    const noteUid = decodeURIComponent(noteMatch[1]);
+    let snapshot = learningData.updateNote(noteUid, payload.patch, {
+      expectedRevision: payload.expectedRevision,
+    });
+    try {
+      const metadata = persistManualClassification(noteUid, payload.patch);
+      if (metadata) {
+        snapshot = learningData.syncNote(metadata, {
+          enrichment: metadata.learning,
+          cards: snapshot.cards
+            .filter((card) => card.noteUid === noteUid)
+            .map((card) => ({ ...card, sourceFilePath: metadata.filePath })),
+        });
+      }
+    } catch (error) {
+      console.warn(`Manual note classification metadata sync failed for ${noteUid}:`, error);
+    }
+    broadcastLearningData(snapshot);
+    sendJson(res, 200, snapshot);
+    return true;
+  }
+  if (noteMatch && req.method === 'DELETE') {
+    const payload = JSON.parse((await readBody(req)) || '{}');
+    const snapshot = learningData.deleteNote(decodeURIComponent(noteMatch[1]), {
       expectedRevision: payload.expectedRevision,
     });
     broadcastLearningData(snapshot);
@@ -1171,7 +1630,18 @@ async function handleOrganizerRoute(req, res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const corsOrigin = allowedCorsOrigin(req);
+  const lanProxyRequest = isLanProxyRequest(req);
+  if (lanProxyRequest) {
+    const lanRequestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
+    const lanPathname = lanRequestUrl.pathname;
+    const lanMethod = req.method || 'GET';
+    if (!isAllowedLanProxyRoute(lanMethod, lanPathname, lanRequestUrl.searchParams)) {
+      sendJson(res, 403, { ok: false, error: 'This endpoint is not available over LAN app access.' });
+      return;
+    }
+  }
+
+  const corsOrigin = lanProxyRequest ? null : allowedCorsOrigin(req);
   if (corsOrigin) {
     res.setHeader('Access-Control-Allow-Origin', corsOrigin);
     res.setHeader('Vary', 'Origin');
@@ -1221,7 +1691,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const payload = JSON.parse((await readBody(req)) || '{}');
-      const image = revealNoteImage(NOTES_ROOT, payload.path);
+      const image = await revealNoteImage(NOTES_ROOT, payload.path);
       sendJson(res, 200, { ok: true, filePath: image.filePath });
       return;
     }
@@ -1327,13 +1797,16 @@ const server = http.createServer(async (req, res) => {
         ? 400
       : error instanceof CanvasDocumentStoreError && error.code === 'CANVAS_DOCUMENT_READ_FAILED'
         ? 500
-        : error instanceof LearningDataConflictError
+      : error instanceof LearningDataConflictError
       ? 409
+      : ['NOTE_ALREADY_EXISTS', 'CARD_ALREADY_EXISTS', 'NOTE_DELETED'].includes(error?.code) ? 409
+      : ['INVALID_LEARNING_NOTE', 'INVALID_LEARNING_CARD'].includes(error?.code) ? 400
       : error?.code === 'LEARNING_DATA_BUSY' ? 503
       : error?.code === 'NOTE_PATH_FORBIDDEN' ? 403
       : error?.code === 'NOTE_FILE_NOT_FOUND' ? 404
       : error?.code === 'NOTE_FILE_UNSUPPORTED' ? 415
       : error?.code === 'NOTE_REVEAL_UNSUPPORTED' ? 501
+      : error?.code === 'NOTE_REVEAL_LAUNCH_FAILED' ? 503
       : error?.code === 'NOTE_NOT_FOUND' ? 404
       : error?.code === 'CARD_NOT_FOUND' ? 404 : 500;
     sendJson(res, status, {
@@ -1361,6 +1834,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);
   console.log(`Note app endpoint: http://127.0.0.1:${PORT}/open-note-app`);
   console.log(`Note app close endpoint: http://127.0.0.1:${PORT}/close-note-app`);
+  console.log('LAN app proxy: enabled without device authentication (canvas and learning-data routes)');
   console.log(`Qwen: ${qwen.apiKey ? `enabled (${qwen.model})` : `disabled, configPath=${qwen.configPath}`}`);
   const currentRouter = getAiRouter();
   console.log(`AI router providers: ${currentRouter ? currentRouter.getStatus().providers.filter((provider) => provider.enabled).map((provider) => provider.id).join(', ') || 'none' : `unavailable (${aiRouterInitError})`}`);

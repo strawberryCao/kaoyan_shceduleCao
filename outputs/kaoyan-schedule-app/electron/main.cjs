@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, screen } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { resolveNoteImage } = require('../scripts/note-file-access.cjs');
 
 const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
@@ -423,7 +424,7 @@ function createNoteWindow() {
     frame: false,
     show: false,
     skipTaskbar: false,
-    alwaysOnTop: false,
+    alwaysOnTop: true,
     transparent: true,
     hasShadow: true,
     resizable: false,
@@ -443,6 +444,7 @@ function createNoteWindow() {
   loadRendererRoute(noteWindow, '?noteApp=1');
 
   noteWindow.once('ready-to-show', () => {
+    noteWindow?.setAlwaysOnTop(true, 'floating');
     showNoteWindow();
   });
 
@@ -544,6 +546,19 @@ function registerIpcHandlers() {
       return false;
     }
     await shell.openExternal(`${devServerUrl}/?notes=1&mode=canvas`);
+    return true;
+  });
+  ipcMain.handle('file:show-item-in-folder', (_event, filePath) => {
+    const notesRoot = process.env.KAOYAN_NOTES_ROOT || path.join(app.getPath('desktop'), '笔记');
+    const image = resolveNoteImage(notesRoot, filePath);
+    shell.showItemInFolder(image.filePath);
+    return true;
+  });
+  ipcMain.handle('file:open-path', async (_event, filePath) => {
+    const notesRoot = process.env.KAOYAN_NOTES_ROOT || path.join(app.getPath('desktop'), '笔记');
+    const image = resolveNoteImage(notesRoot, filePath);
+    const error = await shell.openPath(image.filePath);
+    if (error) throw new Error(error);
     return true;
   });
   ipcMain.on('window:minimize', (event) => {

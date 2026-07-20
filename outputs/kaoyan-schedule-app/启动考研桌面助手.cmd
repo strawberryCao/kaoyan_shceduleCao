@@ -31,16 +31,6 @@ if not exist node_modules (
   )
 )
 
-if not exist node_modules\three (
-  echo Three.js dependency is missing. Installing dependencies, please wait...
-  call npm.cmd install
-  if errorlevel 1 (
-    echo Dependency installation failed.
-    pause
-    exit /b 1
-  )
-)
-
 echo Checking smart note organizer schedule: daily check at 09:00, run when 72 hours are due...
 schtasks /Query /TN "KaoyanNotesSmartOrganizer" >nul 2>nul
 if errorlevel 1 (
@@ -58,6 +48,9 @@ schtasks /Query /TN "KaoyanNotesAutoClassify" >nul 2>nul
 if not errorlevel 1 schtasks /Delete /F /TN "KaoyanNotesAutoClassify" >nul 2>nul
 
 if /I "%~1"=="--schedule-only" exit /b 0
+
+set "KAOYAN_LAN_IP="
+for /f "delims=" %%i in ('node "scripts\lan-address.cjs"') do set "KAOYAN_LAN_IP=%%i"
 
 echo Restarting local servers so the latest code is used...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr /R /C:":5173 .*LISTENING"') do taskkill /PID %%a /F >nul 2>nul
@@ -85,6 +78,12 @@ echo Wallpaper: http://127.0.0.1:5173/?wallpaper=1
 echo Hub:       http://127.0.0.1:5173/?hub=1
 echo Canvas:    http://127.0.0.1:5173/?notes=1^&mode=canvas
 echo Health:    http://127.0.0.1:5174/health
+if defined KAOYAN_LAN_IP (
+  echo.
+  echo iPad Canvas: http://%KAOYAN_LAN_IP%:5173/?notes=1^&mode=canvas
+  echo No pairing code is required. Port 5174 remains local-only.
+  echo If iPad cannot connect, allow TCP 5173 for the local subnet in Windows Firewall.
+)
 echo.
 echo Smart organizer: checks daily at 09:00 and runs every 72 hours
 echo Task name: KaoyanNotesSmartOrganizer

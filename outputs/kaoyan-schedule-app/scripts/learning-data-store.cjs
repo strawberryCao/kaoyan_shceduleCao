@@ -10,6 +10,7 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CARD_STATUSES = new Set(['draft', 'active', 'archived']);
 const CARD_KINDS = new Set(['memory', 'mistake']);
 const NOTE_ORGANIZATION_STATUSES = new Set(['pending', 'confirmed', 'ignored']);
+const DEFAULT_SUBJECT_NAMES = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 function resolveOrganizationStatus(incomingStatus, existingStatus) {
   const incoming = NOTE_ORGANIZATION_STATUSES.has(incomingStatus) ? incomingStatus : null;
@@ -46,6 +47,7 @@ function defaultSnapshot() {
     updatedAt: null,
     days: {},
     cards: [],
+    deletedNotes: {},
   };
 }
 
@@ -125,25 +127,44 @@ function normalizeAutoNote(value) {
   }
 
   const confidence = Number(value.confidence);
+  const filePath = asString(value.filePath);
+  const rawSubject = asString(value.subject, '默认文件夹');
+  const fileSubject = filePath ? path.basename(path.dirname(filePath)).trim() : '';
+  const inferredFromFile = value.classificationSource !== 'manual'
+    && DEFAULT_SUBJECT_NAMES.has(rawSubject)
+    && fileSubject
+    && !DEFAULT_SUBJECT_NAMES.has(fileSubject)
+    && !['.metadata', '笔记'].includes(fileSubject);
+  const subject = inferredFromFile ? fileSubject : rawSubject;
+  const rawKnowledgePath = uniqueStrings(value.knowledgePath);
+  const knowledgePath = inferredFromFile
+    ? [subject, ...rawKnowledgePath.filter((item) => !DEFAULT_SUBJECT_NAMES.has(item) && item !== subject)].slice(0, 3)
+    : rawKnowledgePath;
+  const organizationStatus = NOTE_ORGANIZATION_STATUSES.has(value.organizationStatus)
+    ? value.organizationStatus
+    : 'pending';
   return {
     noteUid,
     capturedDate: DATE_PATTERN.test(asString(value.capturedDate)) ? value.capturedDate : '',
     title: asString(value.title),
-    subject: asString(value.subject, '默认文件夹'),
+    subject,
     remark: asString(value.remark),
     createdAt: asString(value.createdAt),
     updatedAt: asString(value.updatedAt),
     firstSyncedAt: asString(value.firstSyncedAt),
-    filePath: asString(value.filePath),
+    filePath,
     pageRefs: normalizePageRefs(value.pageRefs),
     tags: uniqueStrings(value.tags),
-    knowledgePath: uniqueStrings(value.knowledgePath),
+    knowledgePath,
     noteType: asString(value.noteType),
     questionType: asString(value.questionType),
     wrongReason: asString(value.wrongReason),
-    organizationStatus: NOTE_ORGANIZATION_STATUSES.has(value.organizationStatus)
-      ? value.organizationStatus
-      : 'pending',
+    organizationStatus: inferredFromFile && organizationStatus === 'pending' ? 'confirmed' : organizationStatus,
+    classificationSource: ['ai', 'local', 'manual'].includes(value.classificationSource)
+      ? inferredFromFile && value.classificationSource !== 'manual' ? 'local' : value.classificationSource
+      : inferredFromFile ? 'local' : 'ai',
+    manualCreated: value.manualCreated === true,
+    userEditedFields: uniqueStrings(value.userEditedFields),
     items: normalizeLearningItems(value.items),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: uniqueStrings(value.cardIds),
@@ -199,6 +220,22 @@ function normalizeDay(value) {
   };
 }
 
+function normalizeDeletedNote(value, noteUid) {
+  if (!isPlainObject(value)) return null;
+  const note = normalizeAutoNote({ ...(isPlainObject(value.note) ? value.note : {}), noteUid });
+  if (!note) return null;
+  const cards = Array.isArray(value.cards)
+    ? value.cards
+      .map((card) => normalizeCard({ ...(isPlainObject(card) ? card : {}), noteUid }))
+      .filter(Boolean)
+    : [];
+  return {
+    deletedAt: asOptionalString(value.deletedAt) || note.updatedAt || note.createdAt,
+    note,
+    cards: [...new Map(cards.map((card) => [card.id, card])).values()],
+  };
+}
+
 function normalizeSnapshot(value) {
   if (!isPlainObject(value)) {
     return defaultSnapshot();
@@ -217,6 +254,13 @@ function normalizeSnapshot(value) {
     ? value.cards.map(normalizeCard).filter(Boolean)
     : [];
   const dedupedCards = [...new Map(cards.map((card) => [card.id, card])).values()];
+  const deletedNotes = {};
+  if (isPlainObject(value.deletedNotes)) {
+    for (const [noteUid, deletedNote] of Object.entries(value.deletedNotes)) {
+      const normalized = normalizeDeletedNote(deletedNote, noteUid);
+      if (normalized) deletedNotes[noteUid] = normalized;
+    }
+  }
 
   const revision = Number(value.revision);
   return {
@@ -225,6 +269,7 @@ function normalizeSnapshot(value) {
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,
     days,
     cards: dedupedCards,
+    deletedNotes,
   };
 }
 
@@ -452,6 +497,9 @@ function createLearningDataStore(options = {}) {
     if (!noteUid) {
       throw new Error('noteUid is required for idempotent learning-data sync');
     }
+    if (snapshot.deletedNotes?.[noteUid]) {
+      return snapshot;
+    }
     const enrichment = isPlainObject(syncOptions.enrichment)
       ? syncOptions.enrichment
       : isPlainObject(metadata.learning) ? metadata.learning : {};
@@ -463,7 +511,7 @@ function createLearningDataStore(options = {}) {
       ? syncOptions.cards
       : Array.isArray(enrichment.cards) ? enrichment.cards : [];
 
-    let existingNote = null;
+    let existingNote = normalizeAutoNote(syncOptions.existingNote);
     for (const [date, dayValue] of Object.entries(snapshot.days)) {
       const day = normalizeDay(dayValue);
       const found = day.autoNotes.find((note) => note.noteUid === noteUid);
@@ -484,8 +532,12 @@ function createLearningDataStore(options = {}) {
         id,
         noteUid,
         sourceKey,
-        subject: card?.subject ?? enrichment.subject ?? metadata.subject,
-        knowledgePath: card?.knowledgePath ?? enrichment.knowledgePath,
+        subject: existingNote?.classificationSource === 'manual'
+          ? existingNote.subject
+          : card?.subject ?? enrichment.subject ?? metadata.subject,
+        knowledgePath: existingNote?.classificationSource === 'manual'
+          ? existingNote.knowledgePath
+          : card?.knowledgePath ?? enrichment.knowledgePath,
         tags: card?.tags ?? enrichment.tags,
         pageRefs: card?.pageRefs ?? enrichment.pageRefs,
         sourceTitle: card?.sourceTitle ?? metadata.title,
@@ -536,27 +588,42 @@ function createLearningDataStore(options = {}) {
 
     const cardIds = snapshot.cards.filter((card) => card.noteUid === noteUid).map((card) => card.id);
     const confidence = Number(enrichment.confidence);
+    const userEditedFields = new Set(existingNote?.userEditedFields || []);
+    const keepUserValue = (field, incoming, fallback) => (
+      userEditedFields.has(field) ? existingNote?.[field] : incoming ?? fallback
+    );
     const autoNote = normalizeAutoNote({
       ...existingNote,
       noteUid,
       capturedDate,
-      title: enrichment.title ?? metadata.title ?? existingNote?.title,
-      subject: enrichment.subject ?? metadata.subject ?? existingNote?.subject,
-      remark: metadata.remark ?? existingNote?.remark,
+      title: keepUserValue('title', enrichment.title ?? metadata.title, existingNote?.title),
+      subject: existingNote?.classificationSource === 'manual'
+        ? existingNote.subject
+        : enrichment.subject ?? metadata.subject ?? existingNote?.subject,
+      remark: keepUserValue('remark', metadata.remark, existingNote?.remark),
       createdAt,
       updatedAt: timestamp,
       firstSyncedAt: existingNote?.firstSyncedAt || timestamp,
       filePath: metadata.filePath ?? existingNote?.filePath,
       pageRefs: enrichment.pageRefs ?? existingNote?.pageRefs,
-      tags: enrichment.tags ?? existingNote?.tags,
-      knowledgePath: enrichment.knowledgePath ?? existingNote?.knowledgePath,
-      noteType: enrichment.noteType ?? existingNote?.noteType,
-      questionType: enrichment.questionType ?? existingNote?.questionType,
-      wrongReason: enrichment.wrongReason ?? existingNote?.wrongReason,
+      tags: keepUserValue('tags', enrichment.tags, existingNote?.tags),
+      knowledgePath: existingNote?.classificationSource === 'manual'
+        ? existingNote.knowledgePath
+        : enrichment.knowledgePath ?? existingNote?.knowledgePath,
+      noteType: keepUserValue('noteType', enrichment.noteType, existingNote?.noteType),
+      questionType: existingNote?.classificationSource === 'manual'
+        ? existingNote.questionType
+        : enrichment.questionType ?? existingNote?.questionType,
+      wrongReason: existingNote?.classificationSource === 'manual'
+        ? existingNote.wrongReason
+        : enrichment.wrongReason ?? existingNote?.wrongReason,
       organizationStatus: resolveOrganizationStatus(
         enrichment.organizationStatus,
         existingNote?.organizationStatus,
       ),
+      classificationSource: existingNote?.classificationSource === 'manual'
+        ? 'manual'
+        : enrichment.classificationSource ?? existingNote?.classificationSource ?? 'ai',
       items: enrichment.items ?? existingNote?.items,
       confidence: Number.isFinite(confidence) ? confidence : existingNote?.confidence,
       cardIds,
@@ -602,6 +669,7 @@ function createLearningDataStore(options = {}) {
       for (const entry of deduped.values()) {
         const previous = previousNotes.get(getNoteUid(entry.metadata));
         applyNoteSync(snapshot, entry.metadata, {
+          existingNote: previous,
           enrichment: {
             ...(entry.enrichment || {}),
             organizationStatus: resolveOrganizationStatus(
@@ -612,7 +680,20 @@ function createLearningDataStore(options = {}) {
           cards: entry.cards,
         }, timestamp);
       }
-      snapshot.cards = snapshot.cards.filter((card) => noteUids.has(card.noteUid));
+      for (const previous of previousNotes.values()) {
+        if (!previous.manualCreated || snapshot.deletedNotes?.[previous.noteUid] || noteUids.has(previous.noteUid)) continue;
+        const capturedDate = DATE_PATTERN.test(previous.capturedDate)
+          ? previous.capturedDate
+          : formatDateInTimeZone(previous.createdAt || timestamp, timeZone);
+        const day = normalizeDay(snapshot.days[capturedDate]);
+        day.autoNotes.push(previous);
+        snapshot.days[capturedDate] = day;
+        noteUids.add(previous.noteUid);
+      }
+      const liveNoteUids = new Set(Object.values(snapshot.days)
+        .flatMap((day) => normalizeDay(day).autoNotes)
+        .map((note) => note.noteUid));
+      snapshot.cards = snapshot.cards.filter((card) => liveNoteUids.has(card.noteUid));
       return snapshot;
     }, mutationOptions);
   }
@@ -621,6 +702,139 @@ function createLearningDataStore(options = {}) {
     if (!isPlainObject(value)) throw new Error('Invalid learning data snapshot');
     const restored = normalizeSnapshot(value);
     return commit(() => restored, mutationOptions);
+  }
+
+  function findLiveNote(snapshot, noteUid) {
+    for (const [date, dayValue] of Object.entries(snapshot.days)) {
+      const day = normalizeDay(dayValue);
+      const note = day.autoNotes.find((item) => item.noteUid === noteUid);
+      if (note) return { date, day, note };
+    }
+    return null;
+  }
+
+  function learningError(message, code) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  function createNote(input, mutationOptions = {}) {
+    if (!isPlainObject(input)) throw learningError('Invalid learning note input', 'INVALID_LEARNING_NOTE');
+    return commit((snapshot) => {
+      const noteUid = (asOptionalString(input.noteUid) || `note-${crypto.randomUUID()}`).slice(0, 160);
+      if (snapshot.deletedNotes?.[noteUid]) {
+        throw learningError(`Learning note is deleted: ${noteUid}`, 'NOTE_DELETED');
+      }
+      if (findLiveNote(snapshot, noteUid)) {
+        throw learningError(`Learning note already exists: ${noteUid}`, 'NOTE_ALREADY_EXISTS');
+      }
+      const timestamp = now().toISOString();
+      const capturedDate = DATE_PATTERN.test(asString(input.capturedDate))
+        ? input.capturedDate
+        : formatDateInTimeZone(timestamp, timeZone);
+      const subject = asOptionalString(input.subject);
+      if (!subject) throw learningError('Learning note subject is required', 'INVALID_LEARNING_NOTE');
+      const knowledgePath = uniqueStrings(input.knowledgePath);
+      const normalizedPath = [subject, ...knowledgePath.filter((item) => item !== subject)].slice(0, 3);
+      const noteType = asString(input.noteType, 'note').trim().slice(0, 40) || 'note';
+      const tags = uniqueStrings(input.tags);
+      if (noteType === 'mistake' && !tags.includes('错题')) tags.push('错题');
+      if (noteType === 'memory' && !tags.includes('背诵')) tags.push('背诵');
+      let note = normalizeAutoNote({
+        noteUid,
+        capturedDate,
+        title: asString(input.title).slice(0, 240),
+        subject,
+        remark: asString(input.remark).slice(0, 8000),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        firstSyncedAt: timestamp,
+        filePath: '',
+        pageRefs: normalizePageRefs(input.pageRefs),
+        tags,
+        knowledgePath: normalizedPath,
+        noteType,
+        questionType: asString(input.questionType).slice(0, 60),
+        wrongReason: asString(input.wrongReason).slice(0, 1000),
+        organizationStatus: 'confirmed',
+        classificationSource: 'manual',
+        manualCreated: true,
+        userEditedFields: ['title', 'remark', 'tags', 'noteType'],
+        items: normalizeLearningItems(input.items),
+        confidence: null,
+        cardIds: [],
+      });
+      if (input.createCard === true && (noteType === 'mistake' || noteType === 'memory')) {
+        const sourceKey = 'manual:create';
+        const card = normalizeCard({
+          id: makeCardId(noteUid, sourceKey),
+          noteUid,
+          sourceKey,
+          kind: noteType === 'mistake' ? 'mistake' : 'memory',
+          front: note.title,
+          back: note.remark,
+          subject: note.subject,
+          knowledgePath: note.knowledgePath,
+          tags: note.tags,
+          pageRefs: note.pageRefs,
+          sourceTitle: note.title,
+          sourceFilePath: '',
+          status: 'active',
+          dueDate: formatDateInTimeZone(timestamp, timeZone),
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          userEdited: true,
+        });
+        snapshot.cards.push(card);
+        note = normalizeAutoNote({ ...note, cardIds: [card.id] });
+      }
+      const day = normalizeDay(snapshot.days[capturedDate]);
+      day.autoNotes.push(note);
+      snapshot.days[capturedDate] = day;
+      return snapshot;
+    }, mutationOptions);
+  }
+
+  function createCard(input, mutationOptions = {}) {
+    if (!isPlainObject(input)) throw learningError('Invalid learning card input', 'INVALID_LEARNING_CARD');
+    const noteUid = asOptionalString(input.noteUid);
+    if (!noteUid) throw learningError('Learning card noteUid is required', 'INVALID_LEARNING_CARD');
+    return commit((snapshot) => {
+      const entry = findLiveNote(snapshot, noteUid);
+      if (!entry) throw learningError(`Learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+      const timestamp = now().toISOString();
+      const sourceKey = (asOptionalString(input.sourceKey) || `manual:${crypto.randomUUID()}`).slice(0, 160);
+      const cardId = (asOptionalString(input.id) || makeCardId(noteUid, sourceKey)).slice(0, 160);
+      if (snapshot.cards.some((card) => card.id === cardId)) {
+        throw learningError(`Learning card already exists: ${cardId}`, 'CARD_ALREADY_EXISTS');
+      }
+      const card = normalizeCard({
+        id: cardId,
+        noteUid,
+        sourceKey,
+        kind: CARD_KINDS.has(input.kind) ? input.kind : 'memory',
+        front: asString(input.front).slice(0, 2000),
+        back: asString(input.back).slice(0, 8000),
+        subject: asOptionalString(input.subject) || entry.note.subject,
+        knowledgePath: Array.isArray(input.knowledgePath) ? input.knowledgePath : entry.note.knowledgePath,
+        tags: Array.isArray(input.tags) ? input.tags : entry.note.tags,
+        pageRefs: Array.isArray(input.pageRefs) ? input.pageRefs : entry.note.pageRefs,
+        sourceTitle: asOptionalString(input.sourceTitle) || entry.note.title,
+        sourceFilePath: entry.note.filePath,
+        status: CARD_STATUSES.has(input.status) ? input.status : 'draft',
+        dueDate: DATE_PATTERN.test(asString(input.dueDate)) ? input.dueDate : '',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        userEdited: true,
+      });
+      snapshot.cards.push(card);
+      entry.day.autoNotes = entry.day.autoNotes.map((note) => note.noteUid === noteUid
+        ? normalizeAutoNote({ ...note, cardIds: [...note.cardIds, card.id], updatedAt: timestamp })
+        : note);
+      snapshot.days[entry.date] = entry.day;
+      return snapshot;
+    }, mutationOptions);
   }
 
   function updateCard(cardId, patch, mutationOptions = {}) {
@@ -668,20 +882,66 @@ function createLearningDataStore(options = {}) {
 
   function updateNote(noteUid, patch, mutationOptions = {}) {
     if (!asOptionalString(noteUid) || !isPlainObject(patch)) {
-      throw new Error('Invalid note update');
+      throw learningError('Invalid note update', 'INVALID_LEARNING_NOTE');
     }
-    const organizationStatus = patch.organizationStatus;
-    if (!NOTE_ORGANIZATION_STATUSES.has(organizationStatus)) {
-      throw new Error('Invalid note organization status');
+    const hasOrganizationStatus = Object.hasOwn(patch, 'organizationStatus');
+    if (hasOrganizationStatus && !NOTE_ORGANIZATION_STATUSES.has(patch.organizationStatus)) {
+      throw learningError('Invalid note organization status', 'INVALID_LEARNING_NOTE');
+    }
+    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
+    const contentKeys = ['title', 'remark', 'tags', 'noteType'];
+    const editableKeys = [...classificationKeys, ...contentKeys];
+    const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
+    if (!hasOrganizationStatus && !editableKeys.some((key) => Object.hasOwn(patch, key))) {
+      throw learningError('Empty note update', 'INVALID_LEARNING_NOTE');
+    }
+    const subject = Object.hasOwn(patch, 'subject') ? asOptionalString(patch.subject) : null;
+    if (Object.hasOwn(patch, 'subject') && !subject) {
+      throw learningError('Invalid note subject', 'INVALID_LEARNING_NOTE');
+    }
+    if (Object.hasOwn(patch, 'knowledgePath') && !Array.isArray(patch.knowledgePath)) {
+      throw learningError('Invalid note knowledge path', 'INVALID_LEARNING_NOTE');
+    }
+    if (Object.hasOwn(patch, 'tags') && !Array.isArray(patch.tags)) {
+      throw learningError('Invalid note tags', 'INVALID_LEARNING_NOTE');
     }
     return commit((snapshot) => {
       let found = false;
       const timestamp = now().toISOString();
+      let nextSubject = null;
+      let nextKnowledgePath = null;
       for (const day of Object.values(snapshot.days)) {
         day.autoNotes = day.autoNotes.map((note) => {
           if (note.noteUid !== noteUid) return note;
           found = true;
-          return normalizeAutoNote({ ...note, organizationStatus, updatedAt: timestamp });
+          nextSubject = subject || note.subject;
+          nextKnowledgePath = Object.hasOwn(patch, 'knowledgePath')
+            ? uniqueStrings(patch.knowledgePath).slice(0, 3)
+            : note.knowledgePath;
+          if (nextKnowledgePath[0] !== nextSubject) {
+            nextKnowledgePath = [nextSubject, ...nextKnowledgePath.filter((item) => item !== note.subject && item !== nextSubject)].slice(0, 3);
+          }
+          const userEditedFields = new Set(note.userEditedFields);
+          contentKeys.forEach((key) => {
+            if (Object.hasOwn(patch, key)) userEditedFields.add(key);
+          });
+          return normalizeAutoNote({
+            ...note,
+            ...(Object.hasOwn(patch, 'title') ? { title: asString(patch.title).slice(0, 240) } : {}),
+            ...(Object.hasOwn(patch, 'remark') ? { remark: asString(patch.remark).slice(0, 8000) } : {}),
+            ...(Object.hasOwn(patch, 'tags') ? { tags: uniqueStrings(patch.tags) } : {}),
+            ...(Object.hasOwn(patch, 'noteType') ? { noteType: asString(patch.noteType).trim().slice(0, 40) || 'note' } : {}),
+            ...(subject ? { subject } : {}),
+            ...((subject || Object.hasOwn(patch, 'knowledgePath')) ? { knowledgePath: nextKnowledgePath } : {}),
+            ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
+            ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
+            organizationStatus: hasOrganizationStatus
+              ? patch.organizationStatus
+              : editableKeys.some((key) => Object.hasOwn(patch, key)) ? 'confirmed' : note.organizationStatus,
+            classificationSource: editsClassification ? 'manual' : note.classificationSource,
+            userEditedFields: [...userEditedFields],
+            updatedAt: timestamp,
+          });
         });
       }
       if (!found) {
@@ -689,6 +949,70 @@ function createLearningDataStore(options = {}) {
         error.code = 'NOTE_NOT_FOUND';
         throw error;
       }
+      if (editableKeys.some((key) => Object.hasOwn(patch, key))) {
+        snapshot.cards = snapshot.cards.map((card) => card.noteUid === noteUid
+          ? normalizeCard({
+              ...card,
+              ...(editsClassification ? {
+                subject: nextSubject || card.subject,
+                knowledgePath: nextKnowledgePath || card.knowledgePath,
+              } : {}),
+              ...(Object.hasOwn(patch, 'title') ? { sourceTitle: asString(patch.title).slice(0, 240) } : {}),
+              ...(Object.hasOwn(patch, 'tags') ? { tags: uniqueStrings(patch.tags) } : {}),
+              updatedAt: timestamp,
+            })
+          : card);
+      }
+      return snapshot;
+    }, mutationOptions);
+  }
+
+  function deleteNote(noteUid, mutationOptions = {}) {
+    if (!asOptionalString(noteUid)) throw learningError('Invalid note id', 'INVALID_LEARNING_NOTE');
+    return commit((snapshot) => {
+      const entry = findLiveNote(snapshot, noteUid);
+      if (!entry) throw learningError(`Learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+      const deletedAt = now().toISOString();
+      const cards = snapshot.cards.filter((card) => card.noteUid === noteUid);
+      snapshot.deletedNotes[noteUid] = normalizeDeletedNote({
+        deletedAt,
+        note: { ...entry.note, updatedAt: deletedAt },
+        cards,
+      }, noteUid);
+      entry.day.autoNotes = entry.day.autoNotes.filter((note) => note.noteUid !== noteUid);
+      snapshot.days[entry.date] = entry.day;
+      snapshot.cards = snapshot.cards.filter((card) => card.noteUid !== noteUid);
+      return snapshot;
+    }, mutationOptions);
+  }
+
+  function restoreNote(noteUid, mutationOptions = {}) {
+    if (!asOptionalString(noteUid)) throw learningError('Invalid note id', 'INVALID_LEARNING_NOTE');
+    return commit((snapshot) => {
+      const deleted = normalizeDeletedNote(snapshot.deletedNotes?.[noteUid], noteUid);
+      if (!deleted) throw learningError(`Deleted learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+      if (findLiveNote(snapshot, noteUid)) {
+        throw learningError(`Learning note already exists: ${noteUid}`, 'NOTE_ALREADY_EXISTS');
+      }
+      const timestamp = now().toISOString();
+      const capturedDate = DATE_PATTERN.test(deleted.note.capturedDate)
+        ? deleted.note.capturedDate
+        : formatDateInTimeZone(deleted.note.createdAt || timestamp, timeZone);
+      const restoredCards = deleted.cards.map((card) => normalizeCard({ ...card, updatedAt: timestamp }));
+      const note = normalizeAutoNote({
+        ...deleted.note,
+        capturedDate,
+        updatedAt: timestamp,
+        cardIds: restoredCards.map((card) => card.id),
+      });
+      const day = normalizeDay(snapshot.days[capturedDate]);
+      day.autoNotes = day.autoNotes.filter((item) => item.noteUid !== noteUid);
+      day.autoNotes.push(note);
+      snapshot.days[capturedDate] = day;
+      const restoredIds = new Set(restoredCards.map((card) => card.id));
+      snapshot.cards = snapshot.cards.filter((card) => !restoredIds.has(card.id));
+      snapshot.cards.push(...restoredCards);
+      delete snapshot.deletedNotes[noteUid];
       return snapshot;
     }, mutationOptions);
   }
@@ -698,6 +1022,9 @@ function createLearningDataStore(options = {}) {
       throw new Error('Invalid card id');
     }
     return commit((snapshot) => {
+      if (!snapshot.cards.some((card) => card.id === cardId)) {
+        throw learningError(`Learning card not found: ${cardId}`, 'CARD_NOT_FOUND');
+      }
       snapshot.cards = snapshot.cards.filter((card) => card.id !== cardId);
       for (const day of Object.values(snapshot.days)) {
         day.autoNotes = day.autoNotes.map((note) => ({
@@ -724,7 +1051,11 @@ function createLearningDataStore(options = {}) {
     syncNote,
     rebuildNoteIndex,
     restoreSnapshot,
+    createNote,
     updateNote,
+    deleteNote,
+    restoreNote,
+    createCard,
     updateCard,
     deleteCard,
   };

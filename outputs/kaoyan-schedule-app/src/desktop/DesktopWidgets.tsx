@@ -12,7 +12,6 @@ import {
 import { fileToDataUrl } from '../utils/notes';
 import {
   clearPendingLearningRecord,
-  fetchLearningData,
   getManualRecords,
   patchLearningCard,
   patchLearningDay,
@@ -24,6 +23,7 @@ import {
   recordsMissingFromSnapshot,
   subscribeLearningDataCache,
   subscribeLearningDataFromServer,
+  subscribeLearningDataPolling,
   type LearningDataSnapshot,
 } from '../utils/learningData';
 import {
@@ -64,13 +64,11 @@ const useLearningSnapshot = () => {
   useEffect(() => {
     const unsubscribe = subscribeLearningDataCache(setSnapshot);
     const unsubscribeServer = subscribeLearningDataFromServer();
-    const refresh = () => void fetchLearningData().then(setSnapshot).catch(() => undefined);
-    refresh();
-    const timer = window.setInterval(refresh, 60_000);
+    const unsubscribePolling = subscribeLearningDataPolling();
     return () => {
       unsubscribe();
       unsubscribeServer();
-      window.clearInterval(timer);
+      unsubscribePolling();
     };
   }, []);
   return [snapshot, setSnapshot] as const;

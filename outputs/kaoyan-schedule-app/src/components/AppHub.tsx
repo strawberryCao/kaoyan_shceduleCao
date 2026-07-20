@@ -23,6 +23,7 @@ import {
   type LearningDataSnapshot,
 } from '../utils/learningData';
 import { fetchWithTimeout } from '../utils/localService';
+import { NOTE_SERVER_URL } from '../utils/notes';
 import {
   generateSchedule,
   getCurrentScheduleDay,
@@ -108,7 +109,7 @@ export function AppHub() {
     const unsubscribeLearning = subscribeLearningDataCache(applyServiceSnapshot);
     const unsubscribeServer = subscribeLearningDataFromServer();
     void fetchLearningData(controller.signal).then(applyServiceSnapshot).catch(() => undefined);
-    void fetchWithTimeout('http://127.0.0.1:5174/health', {
+    void fetchWithTimeout(`${NOTE_SERVER_URL}/health`, {
       cache: 'no-store',
       signal: controller.signal,
     }, 1800)

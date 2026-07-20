@@ -1,6 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { createAiRouter } = require('./ai-router.cjs');
+const {
+  AI_408_SUBJECTS,
+  AI_FALLBACK_SUBJECT,
+  filterTaxonomyForAi,
+  resolveAiSubject,
+} = require('./ai-subject-policy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
 
 const ANALYZER_VERSION = 'note-ai-analyzer-v2';
@@ -247,14 +253,16 @@ function buildPrompt(contextPayload) {
     '目标不是机械匹配关键词，而是判断图片实际知识内容、题目类型、用户为何记录它，以及它是否值得记忆或重做。',
     '“记”“记住”“背”“要背”等是很强的记忆意图提示，但没有这些词时，也要依据定义、公式、结论、易混点和用户语义判断；不能只靠固定词表。',
     '分类规则：',
-    '1. subject 和 knowledgePoint 优先复用 existingTaxonomy 中已有的规范名称；确实没有合适节点才提出稳定、简短的新名称。',
+    `1. subject 只能从 existingTaxonomy 中已有的 408 一级科目选择：${AI_408_SUBJECTS.join('、')}。禁止创建、提议或输出其他一级科目。`,
+    `1.1 新领域或更细的主题只能写入 knowledgePoint/tags/items，绝不能写入 subject；无法可靠归入上述四科时 subject 必须为“${AI_FALLBACK_SUBJECT}”。`,
+    '1.2 你必须做出最合理的科目判断。只要图片或备注能可靠识别为某个 408 科目，就不得因为信心不足而退回默认分类；默认分类只用于图片不可读、没有学习内容、跨科歧义或确实无法判断。',
     '2. aliases 只放与规范分类真正同义的名称，不要放上下位概念或无关标签。',
     '3. subject/knowledgePoint 是整张笔记用于归档的主分类。canvas 含多道题时选共同或最主要分类，并在 items 中逐项描述。',
     '4. single 通常是一道题或一个知识单元；除非图片明显包含多个独立题目，不要拆成多个 items。canvas 可返回多个 items 和多张 cards。',
     '5. questionType 概括题型（如极限计算、证明题、选择题、代码分析）；不是题目则为 null。wrongReason 必须根据备注和图片语义总结真实错因；无法判断则为 null，禁止编造。',
     '6. intent.isMistake 表示用户将它作为错题/易错内容记录；intent.shouldMemorize 表示需要背诵、熟记或主动回忆。不要因为它仅仅是一道普通题就设为 true。',
     '7. 只有整张或对应 item 存在错题意图或记忆意图时才生成 cards；普通参考笔记的 cards 必须为空。卡片应是可主动回忆的问答，不要只抄标题。',
-    '8. confidence 衡量主分类和语义判断的可靠程度；图片不清晰或跨多个不相关主题时应降低。',
+    '8. confidence 衡量主分类和语义判断的可靠程度；置信度只用于记录可靠性，不用于要求用户确认，也不能替代你的最佳分类判断。图片不清晰或跨多个不相关主题时应降低。',
     '9. 所有文字使用简洁中文。不要输出 Markdown，不要解释 JSON 之外的内容。',
     '必须严格使用以下 JSON 结构；没有错因时 wrongReason 为 null，没有分项或卡片时用空数组：',
     '{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}',
@@ -389,7 +397,10 @@ function createNoteAiAnalyzer(options = {}) {
     const metadata = context.metadata && typeof context.metadata === 'object' ? context.metadata : {};
     const parsed = parseRemark(typeof metadata.remark === 'string' ? metadata.remark : '');
     const hints = detectStrongIntentHints(metadata.remark, parsed);
-    const taxonomy = compactTaxonomy(context.taxonomy, taxonomyMaxChars);
+    // Unknown legacy/user subjects remain in the persisted taxonomy, but they
+    // are deliberately omitted from the AI prompt so the model cannot select
+    // them as a new top-level classification.
+    const taxonomy = compactTaxonomy(filterTaxonomyForAi(context.taxonomy), taxonomyMaxChars);
     const promptContext = makePromptContext(context, parsed, hints, taxonomy);
     const imageDataUrl = imagePathToDataUrl(context.imagePath);
 
@@ -410,7 +421,37 @@ function createNoteAiAnalyzer(options = {}) {
       maxTokens: metadata.kind === 'canvas' ? 4_000 : 2_400,
     });
 
-    return normalizeAnalysis(result.json, result.provider, result.model, parsed, hints);
+    const analysis = normalizeAnalysis(result.json, result.provider, result.model, parsed, hints);
+    const subjectDecision = resolveAiSubject(context.taxonomy, {
+      requestedSubject: analysis.subject,
+      subjectAliases: analysis.subjectAliases,
+      currentSubject: context.currentCategory?.subject,
+      knowledgePoint: analysis.knowledgePoint,
+      questionType: analysis.questionType,
+      title: analysis.title,
+      summary: analysis.summary,
+      tags: analysis.tags,
+      items: analysis.items,
+    });
+    return {
+      ...analysis,
+      subject: subjectDecision.subject,
+      // Never attach an unknown model-proposed first-level name as an alias to
+      // a valid 408 subject or to the fallback bucket.
+      aliases: {
+        ...analysis.aliases,
+        subject: subjectDecision.reason === 'direct' || subjectDecision.reason === 'alias'
+          ? analysis.aliases.subject
+          : [],
+      },
+      subjectAliases: subjectDecision.reason === 'direct' || subjectDecision.reason === 'alias'
+        ? analysis.subjectAliases
+        : [],
+      subjectPolicy: {
+        fallback: subjectDecision.fallback,
+        reason: subjectDecision.reason,
+      },
+    };
   };
   analyzer.analyzerVersion = ANALYZER_VERSION;
   return analyzer;

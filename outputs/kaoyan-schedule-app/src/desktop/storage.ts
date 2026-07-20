@@ -1,10 +1,11 @@
 import { DESKTOP_LAYOUT_KEY, getDefaultLayout } from './registry';
 import type { WidgetLayout } from './types';
 import { fetchWithTimeout } from '../utils/localService';
+import { NOTE_SERVER_URL } from '../utils/notes';
 
 const CHANNEL_NAME = 'kaoyan-desktop-layout';
-const LAYOUT_SERVER_URL = 'http://127.0.0.1:5174/layout';
-const LAYOUT_EVENTS_URL = 'http://127.0.0.1:5174/layout/events';
+const LAYOUT_SERVER_URL = `${NOTE_SERVER_URL}/layout`;
+const LAYOUT_EVENTS_URL = `${NOTE_SERVER_URL}/layout/events`;
 
 const normalizeDesktopLayout = (layout: WidgetLayout[]): WidgetLayout[] => layout
   .filter((item) => item && item.id && item.type)

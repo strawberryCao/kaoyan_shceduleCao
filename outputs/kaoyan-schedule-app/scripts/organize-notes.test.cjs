@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { acquireOrganizerLock, organizeNotes, recoverMoves } = require('./organize-notes.cjs');
+const { ensureKnowledgePoint, ensureSubject, loadTaxonomy, saveTaxonomyAtomic } = require('./note-taxonomy.cjs');
 
 function makeFixture(prefix = 'kaoyan-organizer-') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -29,6 +30,24 @@ function makeFixture(prefix = 'kaoyan-organizer-') {
   return { root, notesRoot, assistantRoot, sourceDir, imagePath, sidecarPath };
 }
 
+function moveFixtureToSubject(fixture, subject, learning = null) {
+  const metadata = JSON.parse(fs.readFileSync(fixture.sidecarPath, 'utf8'));
+  const subjectDir = path.join(fixture.notesRoot, subject);
+  const metadataDir = path.join(subjectDir, '.metadata');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  const imagePath = path.join(subjectDir, path.basename(fixture.imagePath));
+  const sidecarPath = path.join(metadataDir, path.basename(fixture.sidecarPath));
+  fs.renameSync(fixture.imagePath, imagePath);
+  fs.unlinkSync(fixture.sidecarPath);
+  fs.writeFileSync(sidecarPath, JSON.stringify({
+    ...metadata,
+    subject,
+    filePath: imagePath,
+    ...(learning ? { learning } : {}),
+  }, null, 2));
+  return { subjectDir, imagePath, sidecarPath };
+}
+
 test('enriches metadata but keeps physical storage at subject depth', async (t) => {
   const fixture = makeFixture();
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
@@ -37,7 +56,7 @@ test('enriches metadata but keeps physical storage at subject depth', async (t) 
   const analyzer = async () => {
     analyzerCalls += 1;
     return {
-      subject: '高等数学',
+      subject: '数据结构',
       knowledgePoint: '函数极限',
       title: '函数极限定义域错题',
       confidence: 0.96,
@@ -66,7 +85,7 @@ test('enriches metadata but keeps physical storage at subject depth', async (t) 
   assert.equal(first.synced, 1);
   assert.equal(fs.existsSync(fixture.imagePath), false);
 
-  const destinationDir = path.join(fixture.notesRoot, '高等数学');
+  const destinationDir = path.join(fixture.notesRoot, '数据结构');
   const destinationImage = path.join(destinationDir, path.basename(fixture.imagePath));
   const destinationSidecar = path.join(destinationDir, '.metadata', '默认文件夹_待整理_20260717_090000.note.json');
   assert.equal(fs.existsSync(destinationImage), true);
@@ -79,6 +98,8 @@ test('enriches metadata but keeps physical storage at subject depth', async (t) 
   assert.deepEqual(metadata.extracted.questions, ['3.1']);
   assert.equal(metadata.organizer.learningSyncStatus, 'synced');
   assert.equal(metadata.learning.cards.length, 1);
+  assert.equal(metadata.learning.organizationStatus, 'confirmed');
+  assert.equal(metadata.learning.classificationSource, 'ai');
 
   const second = await organizeNotes({
     notesRoot: fixture.notesRoot,
@@ -103,7 +124,7 @@ test('dry run reports the move without changing metadata or files', async (t) =>
     assistantRoot: fixture.assistantRoot,
     dryRun: true,
     syncNote: false,
-    analyzeNote: async () => ({ subject: '高等数学', knowledgePoint: '导数', confidence: 0.99 }),
+    analyzeNote: async () => ({ subject: '数据结构', knowledgePoint: '查找', confidence: 0.99 }),
   });
   assert.equal(report.wouldMove, 1);
   assert.equal(fs.existsSync(fixture.imagePath), true);
@@ -112,7 +133,7 @@ test('dry run reports the move without changing metadata or files', async (t) =>
   assert.equal(fs.existsSync(path.join(fixture.assistantRoot, 'note-organizer-state.json')), false);
 });
 
-test('keeps low-confidence category changes in place for review', async (t) => {
+test('auto-applies a usable AI category even when confidence is low', async (t) => {
   const fixture = makeFixture('kaoyan-organizer-review-');
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
   const report = await organizeNotes({
@@ -120,15 +141,208 @@ test('keeps low-confidence category changes in place for review', async (t) => {
     assistantRoot: fixture.assistantRoot,
     syncNote: false,
     cadenceMs: 0,
-    analyzeNote: async () => ({ subject: '高等数学', knowledgePoint: '极限', confidence: 0.55 }),
+    analyzeNote: async () => ({ subject: '数据结构', knowledgePoint: '图的遍历', confidence: 0.55 }),
   });
-  assert.equal(report.moved, 0);
+  assert.equal(report.moved, 1);
+  assert.equal(report.needsReview, 0);
+  assert.equal(fs.existsSync(fixture.imagePath), false);
+  const movedSidecar = path.join(
+    fixture.notesRoot,
+    '数据结构',
+    '.metadata',
+    path.basename(fixture.sidecarPath),
+  );
+  const metadata = JSON.parse(fs.readFileSync(movedSidecar, 'utf8'));
+  assert.equal(metadata.subject, '数据结构');
+  assert.equal(metadata.organizer.status, 'organized');
+  assert.equal(metadata.organizer.proposed, null);
+  assert.equal(metadata.learning.organizationStatus, 'confirmed');
+});
+
+test('blocks an unknown AI first-level subject, prunes its legacy AI root and preserves user roots', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-subject-guard-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  fs.mkdirSync(fixture.assistantRoot, { recursive: true });
+  const taxonomyPath = path.join(fixture.assistantRoot, 'note-taxonomy.json');
+  let taxonomy = loadTaxonomy(taxonomyPath);
+  ensureSubject(taxonomy, '计算机视觉', { createdBy: 'ai' });
+  const userSubject = ensureSubject(taxonomy, '自定义专题', { createdBy: 'user' });
+  const userSubjectId = userSubject.id;
+  taxonomy = saveTaxonomyAtomic(taxonomyPath, taxonomy);
+  moveFixtureToSubject(fixture, '计算机视觉', {
+    subject: '计算机视觉',
+    knowledgePath: ['计算机视觉', '卷积神经网络'],
+    classificationSource: 'ai',
+    organizationStatus: 'confirmed',
+  });
+
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    taxonomyPath,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({
+      subject: '计算机视觉',
+      knowledgePoint: '卷积神经网络',
+      title: '图像分类模型',
+      confidence: 0.99,
+    }),
+  });
+
+  assert.equal(report.processed, 1);
+  assert.equal(report.moved, 1);
   assert.equal(report.needsReview, 1);
-  assert.equal(fs.existsSync(fixture.imagePath), true);
   const metadata = JSON.parse(fs.readFileSync(fixture.sidecarPath, 'utf8'));
   assert.equal(metadata.subject, '默认文件夹');
+  assert.equal(metadata.classification.knowledgePointName, null);
+  assert.deepEqual(metadata.organizer.subjectPolicy, {
+    requested: '计算机视觉',
+    resolved: '默认文件夹',
+    reason: 'unknown',
+  });
+  const reloaded = loadTaxonomy(taxonomyPath);
+  assert.equal(reloaded.subjects.some((subject) => subject.name === '计算机视觉'), false);
+  assert.equal(reloaded.subjects.find((subject) => subject.name === '自定义专题').id, userSubjectId);
+});
+
+test('keeps an old AI-organized note inside its user-owned non-408 subject', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-user-owned-legacy-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  fs.mkdirSync(fixture.assistantRoot, { recursive: true });
+  const taxonomyPath = path.join(fixture.assistantRoot, 'note-taxonomy.json');
+  let taxonomy = loadTaxonomy(taxonomyPath);
+  const mathSubject = ensureSubject(taxonomy, '高等数学', { createdBy: 'user' });
+  const oldPoint = ensureKnowledgePoint(taxonomy, mathSubject, '函数极限', { createdBy: 'user' });
+  taxonomy = saveTaxonomyAtomic(taxonomyPath, taxonomy);
+  const relocated = moveFixtureToSubject(fixture, '高等数学', {
+    subject: '高等数学',
+    knowledgePath: ['高等数学', '函数极限'],
+    classificationSource: 'ai',
+    organizationStatus: 'confirmed',
+  });
+
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    taxonomyPath,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({ subject: '数据结构', knowledgePoint: '二叉树', confidence: 0.99 }),
+  });
+  assert.equal(report.moved, 0);
+  const metadata = JSON.parse(fs.readFileSync(relocated.sidecarPath, 'utf8'));
+  assert.equal(metadata.subject, '高等数学');
+  assert.equal(metadata.classification.knowledgePointId, oldPoint.id);
+  assert.equal(metadata.classification.knowledgePointName, '函数极限');
+  assert.equal(metadata.organizer.subjectPolicy.reason, 'current-user');
+  assert.equal(metadata.learning.classificationSource, 'ai');
+  const reloaded = loadTaxonomy(taxonomyPath);
+  const reloadedMath = reloaded.subjects.find((subject) => subject.name === '高等数学');
+  assert.equal(reloadedMath.knowledgePoints.some((point) => point.name === '函数极限'), true);
+  assert.equal(reloadedMath.knowledgePoints.some((point) => point.name === '二叉树'), false);
+});
+
+test('treats every compatible default bucket name as pending review', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-default-alias-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  fs.mkdirSync(fixture.assistantRoot, { recursive: true });
+  const taxonomyPath = path.join(fixture.assistantRoot, 'note-taxonomy.json');
+  let taxonomy = loadTaxonomy(taxonomyPath);
+  const fallback = taxonomy.subjects.find((subject) => subject.name === '默认文件夹');
+  fallback.name = '未分类';
+  fallback.aliases = ['默认文件夹', '默认'];
+  taxonomy = saveTaxonomyAtomic(taxonomyPath, taxonomy);
+
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    taxonomyPath,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({ subject: '计算机视觉', knowledgePoint: '卷积神经网络', confidence: 0.9 }),
+  });
+  assert.equal(report.needsReview, 1);
+  const movedSidecar = path.join(fixture.notesRoot, '未分类', '.metadata', path.basename(fixture.sidecarPath));
+  const metadata = JSON.parse(fs.readFileSync(movedSidecar, 'utf8'));
+  assert.equal(metadata.subject, '未分类');
   assert.equal(metadata.organizer.status, 'needs_review');
-  assert.deepEqual(metadata.organizer.proposed, { subject: '高等数学', knowledgePoint: '极限' });
+  assert.equal(metadata.learning.organizationStatus, 'pending');
+});
+
+test('does not create a taxonomy root from a non-manual unknown physical directory', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-physical-unknown-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  moveFixtureToSubject(fixture, '遗留专题');
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({ subject: '数据结构', knowledgePoint: '二叉树', confidence: 0.9 }),
+  });
+  assert.equal(report.moved, 1);
+  const taxonomy = loadTaxonomy(path.join(fixture.assistantRoot, 'note-taxonomy.json'));
+  assert.equal(taxonomy.subjects.some((subject) => subject.name === '遗留专题'), false);
+});
+
+test('preserves and ensures a manual unknown physical category as user-owned', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-manual-unknown-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const relocated = moveFixtureToSubject(fixture, '自定义408专题', {
+    subject: '自定义408专题',
+    knowledgePath: ['自定义408专题', '专题知识点'],
+    classificationSource: 'manual',
+    organizationStatus: 'confirmed',
+  });
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({ subject: '计算机网络', knowledgePoint: 'TCP', confidence: 0.99 }),
+  });
+  assert.equal(report.moved, 0);
+  const metadata = JSON.parse(fs.readFileSync(relocated.sidecarPath, 'utf8'));
+  assert.equal(metadata.subject, '自定义408专题');
+  assert.equal(metadata.learning.classificationSource, 'manual');
+  const taxonomy = loadTaxonomy(path.join(fixture.assistantRoot, 'note-taxonomy.json'));
+  const subject = taxonomy.subjects.find((item) => item.name === '自定义408专题');
+  assert.equal(subject.createdBy, 'user');
+  assert.equal(subject.knowledgePoints.some((point) => point.name === '专题知识点'), true);
+});
+
+test('semantically remaps an unknown AI label to an existing 408 subject and keeps it as a knowledge point', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-subject-remap-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    syncNote: false,
+    cadenceMs: 0,
+    analyzeNote: async () => ({
+      subject: '网络编程专题',
+      knowledgePoint: 'TCP 拥塞控制',
+      summary: '分析 TCP 滑动窗口和超时重传。',
+      tags: ['TCP'],
+      confidence: 0.9,
+    }),
+  });
+
+  assert.equal(report.moved, 1);
+  assert.equal(report.needsReview, 0);
+  const movedSidecar = path.join(
+    fixture.notesRoot,
+    '计算机网络',
+    '.metadata',
+    path.basename(fixture.sidecarPath),
+  );
+  const metadata = JSON.parse(fs.readFileSync(movedSidecar, 'utf8'));
+  assert.equal(metadata.subject, '计算机网络');
+  assert.equal(metadata.classification.knowledgePointName, 'TCP 拥塞控制');
+  assert.equal(metadata.organizer.subjectPolicy.reason, 'semantic');
+  const taxonomy = loadTaxonomy(path.join(fixture.assistantRoot, 'note-taxonomy.json'));
+  assert.equal(taxonomy.subjects.some((subject) => subject.name === '网络编程专题'), false);
 });
 
 test('uses the learning data store when available and skips a successful run for 72 hours', async (t) => {

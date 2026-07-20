@@ -5,6 +5,35 @@ import { fetchWithTimeout } from './localService';
 export type LearningCardStatus = 'draft' | 'active' | 'archived';
 export type LearningCardKind = 'memory' | 'mistake';
 export type LearningNoteOrganizationStatus = 'pending' | 'confirmed' | 'ignored';
+export type LearningNoteClassificationSource = 'ai' | 'local' | 'manual';
+
+export interface LearningNotePatch {
+  title?: string;
+  remark?: string;
+  tags?: string[];
+  noteType?: string;
+  subject?: string;
+  knowledgePath?: string[];
+  questionType?: string;
+  wrongReason?: string;
+  organizationStatus?: LearningNoteOrganizationStatus;
+}
+
+export interface LearningNoteCreateInput {
+  noteUid?: string;
+  capturedDate?: string;
+  title: string;
+  remark?: string;
+  tags?: string[];
+  noteType?: string;
+  subject: string;
+  knowledgePath?: string[];
+  questionType?: string;
+  wrongReason?: string;
+  pageRefs?: LearningPageRef[];
+  items?: LearningAutoNote['items'];
+  createCard?: boolean;
+}
 
 export interface LearningPageRef {
   raw: string;
@@ -29,6 +58,9 @@ export interface LearningAutoNote {
   questionType: string;
   wrongReason: string;
   organizationStatus: LearningNoteOrganizationStatus;
+  classificationSource: LearningNoteClassificationSource;
+  manualCreated: boolean;
+  userEditedFields: string[];
   items: Array<{
     title: string;
     knowledgePoint: string;
@@ -70,6 +102,26 @@ export interface LearningCard {
   userEdited: boolean;
 }
 
+export interface LearningCardCreateInput {
+  noteUid: string;
+  kind: LearningCardKind;
+  front: string;
+  back: string;
+  subject?: string;
+  knowledgePath?: string[];
+  tags?: string[];
+  pageRefs?: LearningPageRef[];
+  sourceTitle?: string;
+  status?: LearningCardStatus;
+  dueDate?: string;
+}
+
+export interface DeletedLearningNote {
+  deletedAt: string;
+  note: LearningAutoNote;
+  cards: LearningCard[];
+}
+
 export interface LearningDay {
   manual: DayRecord;
   autoNotes: LearningAutoNote[];
@@ -81,6 +133,7 @@ export interface LearningDataSnapshot {
   updatedAt: string | null;
   days: Record<string, LearningDay>;
   cards: LearningCard[];
+  deletedNotes: Record<string, DeletedLearningNote>;
 }
 
 const LEARNING_DATA_CACHE_KEY = 'kaoyan-learning-data-v1';
@@ -88,6 +141,12 @@ const LEARNING_PENDING_RECORDS_KEY = 'kaoyan-learning-pending-records-v1';
 const LEARNING_PENDING_REPLACE_KEY = 'kaoyan-learning-pending-replace-v1';
 const LEARNING_DATA_EVENT = 'kaoyan-learning-data-changed';
 const LEARNING_DATA_EVENTS_URL = `${NOTE_SERVER_URL}/learning-data/events`;
+let lastLearningDataCacheKey: string | null = null;
+let learningDataEventSource: EventSource | null = null;
+let learningDataEventSubscribers = 0;
+let learningDataPollSubscribers = 0;
+let learningDataPollTimer: number | null = null;
+let learningDataPollInFlight: Promise<unknown> | null = null;
 
 const emptyRecord = (): DayRecord => ({
   completedTaskIds: [],
@@ -102,12 +161,14 @@ export const emptyLearningData = (): LearningDataSnapshot => ({
   updatedAt: null,
   days: {},
   cards: [],
+  deletedNotes: {},
 });
 
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const strings = (value: unknown): string[] => Array.isArray(value)
   ? [...new Set(value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
   : [];
+const DEFAULT_SUBJECT_NAMES = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 const normalizeManual = (value: unknown): DayRecord => {
   const source = isObject(value) ? value : {};
@@ -132,6 +193,21 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     return null;
   }
   const confidence = Number(value.confidence);
+  const filePath = typeof value.filePath === 'string' ? value.filePath : '';
+  const rawSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';
+  const pathParts = filePath.split(/[\\/]/).filter(Boolean);
+  const fileSubject = pathParts.length > 1 ? pathParts[pathParts.length - 2].trim() : '';
+  const inferredFromFile = value.classificationSource !== 'manual'
+    && DEFAULT_SUBJECT_NAMES.has(rawSubject)
+    && fileSubject
+    && !DEFAULT_SUBJECT_NAMES.has(fileSubject)
+    && fileSubject !== '.metadata'
+    && fileSubject !== '笔记';
+  const subject = inferredFromFile ? fileSubject : rawSubject;
+  const rawKnowledgePath = strings(value.knowledgePath);
+  const knowledgePath = inferredFromFile
+    ? [subject, ...rawKnowledgePath.filter((item) => !DEFAULT_SUBJECT_NAMES.has(item) && item !== subject)].slice(0, 3)
+    : rawKnowledgePath;
   const items = Array.isArray(value.items) ? value.items.filter(isObject).slice(0, 24).map((item) => ({
     title: typeof item.title === 'string' ? item.title : '',
     knowledgePoint: typeof item.knowledgePoint === 'string' ? item.knowledgePoint : '',
@@ -149,21 +225,30 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     noteUid: value.noteUid,
     capturedDate: typeof value.capturedDate === 'string' ? value.capturedDate : '',
     title: typeof value.title === 'string' ? value.title : '',
-    subject: typeof value.subject === 'string' ? value.subject : '默认文件夹',
+    subject,
     remark: typeof value.remark === 'string' ? value.remark : '',
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
     firstSyncedAt: typeof value.firstSyncedAt === 'string' ? value.firstSyncedAt : '',
-    filePath: typeof value.filePath === 'string' ? value.filePath : '',
+    filePath,
     pageRefs: normalizePageRefs(value.pageRefs),
     tags: strings(value.tags),
-    knowledgePath: strings(value.knowledgePath),
+    knowledgePath,
     noteType: typeof value.noteType === 'string' ? value.noteType : '',
     questionType: typeof value.questionType === 'string' ? value.questionType : '',
     wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',
-    organizationStatus: value.organizationStatus === 'confirmed' || value.organizationStatus === 'ignored'
+    organizationStatus: inferredFromFile && value.organizationStatus !== 'ignored'
+      ? 'confirmed'
+      : value.organizationStatus === 'confirmed' || value.organizationStatus === 'ignored'
       ? value.organizationStatus
       : 'pending',
+    classificationSource: inferredFromFile && value.classificationSource !== 'manual'
+      ? 'local'
+      : value.classificationSource === 'manual' || value.classificationSource === 'local'
+      ? value.classificationSource
+      : 'ai',
+    manualCreated: value.manualCreated === true,
+    userEditedFields: strings(value.userEditedFields),
     items,
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: strings(value.cardIds),
@@ -206,6 +291,22 @@ const normalizeCard = (value: unknown): LearningCard | null => {
   };
 };
 
+const normalizeDeletedNote = (noteUid: string, value: unknown): DeletedLearningNote | null => {
+  if (!isObject(value)) return null;
+  const note = normalizeAutoNote({ ...(isObject(value.note) ? value.note : {}), noteUid });
+  if (!note) return null;
+  const cards = Array.isArray(value.cards)
+    ? value.cards
+      .map((card) => normalizeCard({ ...(isObject(card) ? card : {}), noteUid }))
+      .filter((card): card is LearningCard => Boolean(card))
+    : [];
+  return {
+    deletedAt: typeof value.deletedAt === 'string' ? value.deletedAt : note.updatedAt || note.createdAt,
+    note,
+    cards: [...new Map(cards.map((card) => [card.id, card])).values()],
+  };
+};
+
 export const normalizeLearningData = (value: unknown): LearningDataSnapshot => {
   if (!isObject(value)) {
     return emptyLearningData();
@@ -228,14 +329,26 @@ export const normalizeLearningData = (value: unknown): LearningDataSnapshot => {
   const cards = Array.isArray(value.cards)
     ? value.cards.map(normalizeCard).filter((card): card is LearningCard => Boolean(card))
     : [];
+  const deletedNotes: Record<string, DeletedLearningNote> = {};
+  if (isObject(value.deletedNotes)) {
+    Object.entries(value.deletedNotes).forEach(([noteUid, deletedNote]) => {
+      const normalized = normalizeDeletedNote(noteUid, deletedNote);
+      if (normalized) deletedNotes[noteUid] = normalized;
+    });
+  }
   return {
     version: Number.isFinite(Number(value.version)) ? Number(value.version) : 1,
     revision: Number.isInteger(Number(value.revision)) ? Number(value.revision) : 0,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,
     days,
     cards: [...new Map(cards.map((card) => [card.id, card])).values()],
+    deletedNotes,
   };
 };
+
+const learningDataCacheKey = (snapshot: LearningDataSnapshot): string => (
+  `${snapshot.version}:${snapshot.revision}:${snapshot.updatedAt ?? ''}`
+);
 
 const extractSnapshot = (payload: unknown): LearningDataSnapshot => {
   if (isObject(payload)) {
@@ -250,7 +363,16 @@ const extractSnapshot = (payload: unknown): LearningDataSnapshot => {
 };
 
 const requestSnapshot = async (url: string, init?: RequestInit): Promise<LearningDataSnapshot> => {
-  const response = await fetchWithTimeout(url, { cache: 'no-store', ...init }, 4000);
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, { cache: 'no-store', ...init }, 4000);
+  } catch (error) {
+    if (init?.signal?.aborted) throw error;
+    const timedOut = error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    throw new Error(timedOut
+      ? '本地笔记服务响应超时，请稍后重试。'
+      : '本地笔记服务已断开，请重新启动考研桌面助手后重试。');
+  }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     const error = new Error(isObject(payload) && typeof payload.error === 'string' ? payload.error : `学习数据服务返回 ${response.status}`);
@@ -289,6 +411,42 @@ export const putLearningManualRecords = (
   body: JSON.stringify({ records, mode, expectedRevision }),
 });
 
+export const createLearningNote = (
+  input: LearningNoteCreateInput,
+  expectedRevision?: number,
+): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/notes`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input, expectedRevision }),
+});
+
+export const deleteLearningNote = (
+  noteUid: string,
+  expectedRevision?: number,
+): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}`, {
+  method: 'DELETE',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ expectedRevision }),
+});
+
+export const restoreLearningNote = (
+  noteUid: string,
+  expectedRevision?: number,
+): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/restore`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ expectedRevision }),
+});
+
+export const createLearningCard = (
+  input: LearningCardCreateInput,
+  expectedRevision?: number,
+): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/cards`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ input, expectedRevision }),
+});
+
 export const patchLearningCard = (
   cardId: string,
   patch: Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -301,14 +459,23 @@ export const patchLearningCard = (
   body: JSON.stringify({ patch, expectedRevision }),
 });
 
+export const deleteLearningCard = (
+  cardId: string,
+  expectedRevision?: number,
+): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/cards/${encodeURIComponent(cardId)}`, {
+  method: 'DELETE',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ expectedRevision }),
+});
+
 export const patchLearningNote = (
   noteUid: string,
-  organizationStatus: Exclude<LearningNoteOrganizationStatus, 'pending'>,
+  patch: LearningNotePatch,
   expectedRevision?: number,
 ): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}`, {
   method: 'PATCH',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ patch: { organizationStatus }, expectedRevision }),
+  body: JSON.stringify({ patch, expectedRevision }),
 });
 
 export const getManualRecords = (snapshot: LearningDataSnapshot): RecordsByDate => Object.fromEntries(
@@ -323,14 +490,23 @@ export const hasLearningContent = (snapshot: LearningDataSnapshot): boolean => s
 
 export const readLearningDataCache = (): LearningDataSnapshot => {
   try {
-    return normalizeLearningData(JSON.parse(window.localStorage.getItem(LEARNING_DATA_CACHE_KEY) ?? 'null'));
+    const snapshot = normalizeLearningData(JSON.parse(window.localStorage.getItem(LEARNING_DATA_CACHE_KEY) ?? 'null'));
+    lastLearningDataCacheKey = learningDataCacheKey(snapshot);
+    return snapshot;
   } catch {
-    return emptyLearningData();
+    const snapshot = emptyLearningData();
+    lastLearningDataCacheKey = learningDataCacheKey(snapshot);
+    return snapshot;
   }
 };
 
 export const saveLearningDataCache = (snapshot: LearningDataSnapshot) => {
   const normalized = normalizeLearningData(snapshot);
+  const cacheKey = learningDataCacheKey(normalized);
+  if (cacheKey === lastLearningDataCacheKey) {
+    return;
+  }
+  lastLearningDataCacheKey = cacheKey;
   window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, JSON.stringify(normalized));
   window.dispatchEvent(new CustomEvent(LEARNING_DATA_EVENT, { detail: normalized }));
 };
@@ -345,7 +521,9 @@ export const subscribeLearningDataCache = (callback: (snapshot: LearningDataSnap
       return;
     }
     try {
-      callback(normalizeLearningData(JSON.parse(event.newValue)));
+      const snapshot = normalizeLearningData(JSON.parse(event.newValue));
+      lastLearningDataCacheKey = learningDataCacheKey(snapshot);
+      callback(snapshot);
     } catch {
       // Ignore a malformed cache update and keep the last usable snapshot.
     }
@@ -362,18 +540,56 @@ export const subscribeLearningDataFromServer = () => {
   if (!('EventSource' in window)) {
     return () => undefined;
   }
-  const source = new EventSource(LEARNING_DATA_EVENTS_URL);
-  const handleSnapshot = (event: MessageEvent<string>) => {
-    try {
-      saveLearningDataCache(normalizeLearningData(JSON.parse(event.data)));
-    } catch {
-      // Keep the last usable cache. EventSource reconnects automatically.
+  learningDataEventSubscribers += 1;
+  if (!learningDataEventSource) {
+    learningDataEventSource = new EventSource(LEARNING_DATA_EVENTS_URL);
+    learningDataEventSource.addEventListener('learning-data', ((event: MessageEvent<string>) => {
+      try {
+        saveLearningDataCache(normalizeLearningData(JSON.parse(event.data)));
+      } catch {
+        // Keep the last usable cache. EventSource reconnects automatically.
+      }
+    }) as EventListener);
+  }
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    learningDataEventSubscribers = Math.max(0, learningDataEventSubscribers - 1);
+    if (learningDataEventSubscribers === 0 && learningDataEventSource) {
+      learningDataEventSource.close();
+      learningDataEventSource = null;
     }
   };
-  source.addEventListener('learning-data', handleSnapshot as EventListener);
+};
+
+const refreshLearningDataCache = () => {
+  if (learningDataPollInFlight) return learningDataPollInFlight;
+  learningDataPollInFlight = fetchLearningData()
+    .catch(() => undefined)
+    .finally(() => {
+      learningDataPollInFlight = null;
+    });
+  return learningDataPollInFlight;
+};
+
+export const subscribeLearningDataPolling = () => {
+  learningDataPollSubscribers += 1;
+  if (learningDataPollSubscribers === 1) {
+    void refreshLearningDataCache();
+    learningDataPollTimer = window.setInterval(() => {
+      void refreshLearningDataCache();
+    }, 15_000);
+  }
+  let released = false;
   return () => {
-    source.removeEventListener('learning-data', handleSnapshot as EventListener);
-    source.close();
+    if (released) return;
+    released = true;
+    learningDataPollSubscribers = Math.max(0, learningDataPollSubscribers - 1);
+    if (learningDataPollSubscribers === 0 && learningDataPollTimer !== null) {
+      window.clearInterval(learningDataPollTimer);
+      learningDataPollTimer = null;
+    }
   };
 };
 

@@ -47,7 +47,15 @@ function resolveNoteImage(notesRoot, requestedPath) {
   return { filePath, mime };
 }
 
-function revealNoteImage(notesRoot, requestedPath, options = {}) {
+function makeRevealLaunchError(cause) {
+  const detail = cause instanceof Error ? cause.message : String(cause || 'unknown error');
+  const error = new Error(`无法启动资源管理器：${detail}`);
+  error.code = 'NOTE_REVEAL_LAUNCH_FAILED';
+  error.cause = cause;
+  return error;
+}
+
+async function revealNoteImage(notesRoot, requestedPath, options = {}) {
   const resolved = resolveNoteImage(notesRoot, requestedPath);
   if ((options.platform || process.platform) !== 'win32') {
     const error = new Error('当前系统暂不支持在资源管理器中显示');
@@ -55,13 +63,36 @@ function revealNoteImage(notesRoot, requestedPath, options = {}) {
     throw error;
   }
   const launch = options.spawn || spawn;
-  const child = launch('explorer.exe', ['/select,', resolved.filePath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: false,
+  const windowsRoot = options.windowsRoot || process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+  const explorerPath = options.explorerPath || path.join(windowsRoot, 'explorer.exe');
+  let child;
+  try {
+    child = launch(explorerPath, ['/select,', resolved.filePath], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+  } catch (error) {
+    throw makeRevealLaunchError(error);
+  }
+  if (!child || typeof child.once !== 'function') {
+    throw makeRevealLaunchError(new Error('资源管理器进程没有返回可监听的句柄'));
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    child.once('error', (cause) => {
+      if (settled) return;
+      settled = true;
+      reject(makeRevealLaunchError(cause));
+    });
+    child.once('spawn', () => {
+      if (settled) return;
+      settled = true;
+      if (typeof child.unref === 'function') child.unref();
+      resolve(resolved);
+    });
   });
-  if (typeof child?.unref === 'function') child.unref();
-  return resolved;
 }
 
 module.exports = {

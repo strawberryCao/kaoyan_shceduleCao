@@ -86,6 +86,17 @@ function makeDocument(overrides = {}) {
   };
 }
 
+function makeArrowRelation(overrides = {}) {
+  return {
+    id: 'arrow-a',
+    kind: 'arrow',
+    fromAnchorId: 'anchor-a',
+    toAnchorId: 'anchor-b',
+    relationType: '推导',
+    ...overrides,
+  };
+}
+
 test('saves atomically at the stable project path and preserves unknown fields', (t) => {
   const store = makeStore(t);
   const saved = store.saveDocument(makeDocument());
@@ -99,6 +110,101 @@ test('saves atomically at the stable project path and preserves unknown fields',
     fs.readdirSync(path.dirname(expectedPath)).filter((name) => name.endsWith('.tmp')),
     [],
   );
+});
+
+test('saves top-level arrow direction and relation type without creating a relation annotation', (t) => {
+  const store = makeStore(t);
+  const arrow = makeArrowRelation();
+  const document = makeDocument({
+    annotations: makeDocument().annotations.filter((annotation) => annotation.kind !== 'relation'),
+    relations: [arrow],
+  });
+
+  const saved = store.saveDocument(document);
+  assert.deepEqual(saved.relations, [arrow]);
+  assert.equal(saved.relations[0].fromAnchorId, 'anchor-a');
+  assert.equal(saved.relations[0].toAnchorId, 'anchor-b');
+  assert.equal(saved.relations[0].relationType, '推导');
+  assert.equal(saved.annotations.some((annotation) => annotation.kind === 'relation'), false);
+  assert.deepEqual(store.readDocument(document.id).relations, [arrow]);
+});
+
+test('strictly validates arrow endpoints and relation type while preserving unknown legacy relations', () => {
+  const base = makeDocument({
+    annotations: makeDocument().annotations.filter((annotation) => annotation.kind !== 'relation'),
+  });
+  const invalidCases = [
+    {
+      relation: makeArrowRelation({ fromAnchorId: undefined }),
+      issue: 'fromAnchorId must be a string',
+    },
+    {
+      relation: makeArrowRelation({ toAnchorId: undefined }),
+      issue: 'toAnchorId must be a string',
+    },
+    {
+      relation: makeArrowRelation({ toAnchorId: 'anchor-a' }),
+      issue: 'must be different',
+    },
+    {
+      relation: makeArrowRelation({ relationType: '包含' }),
+      issue: 'relationType must be one of the supported canvas relation types',
+    },
+    {
+      relation: makeArrowRelation({ relationType: undefined }),
+      issue: 'relationType must be a string',
+    },
+    {
+      relation: makeArrowRelation({ toAnchorId: 'missing-anchor' }),
+      issue: 'references a missing entity (missing-anchor)',
+    },
+  ];
+
+  for (const { relation, issue } of invalidCases) {
+    assert.throws(
+      () => validateCanvasDocument({ ...base, relations: [relation] }),
+      (error) => error instanceof CanvasDocumentValidationError
+        && error.issues.some((entry) => entry.includes(issue)),
+      issue,
+    );
+  }
+
+  assert.doesNotThrow(() => validateCanvasDocument({
+    ...base,
+    relations: [{
+      id: 'legacy-edge',
+      kind: 'legacy-curve',
+      sourceId: 'anchor-a',
+      targetId: 'anchor-b',
+      relationType: '历史自定义关系',
+      futureField: true,
+    }],
+  }));
+});
+
+test('keeps relation counts compatible across old cards, new arrows and mixed documents', (t) => {
+  const store = makeStore(t);
+  const noteOnly = makeDocument().annotations.filter((annotation) => annotation.kind !== 'relation');
+  store.saveDocument(makeDocument({ id: 'old-card', relations: undefined }));
+  store.saveDocument(makeDocument({ id: 'new-arrow', annotations: noteOnly, relations: [makeArrowRelation()] }));
+  store.saveDocument(makeDocument({ id: 'mixed', relations: [makeArrowRelation()] }));
+
+  const summaries = new Map(store.listDocuments().map((summary) => [summary.id, summary]));
+  assert.equal(summaries.get('old-card').relationCount, 1);
+  assert.equal(summaries.get('new-arrow').relationCount, 1);
+  assert.equal(summaries.get('new-arrow').annotationCount, 1);
+  assert.equal(summaries.get('mixed').relationCount, 2);
+  assert.equal(summaries.get('mixed').annotationCount, 2);
+});
+
+test('accepts and round-trips old documents that omit the relations array', (t) => {
+  const store = makeStore(t);
+  const oldDocument = makeDocument({ id: 'without-relations' });
+  assert.equal(Object.hasOwn(oldDocument, 'relations'), false);
+  assert.doesNotThrow(() => validateCanvasDocument(oldDocument));
+  const saved = store.saveDocument(oldDocument);
+  assert.equal(Object.hasOwn(saved, 'relations'), false);
+  assert.equal(Object.hasOwn(store.readDocument(oldDocument.id), 'relations'), false);
 });
 
 test('uses an explicit canvas-projects root directly for the new server integration', (t) => {
@@ -116,6 +222,20 @@ test('uses an explicit canvas-projects root directly for the new server integrat
   assert.equal(fs.existsSync(path.join(projectsRoot, '.canvas-documents')), false);
 });
 
+test('deletes a canvas project from the list while keeping a recoverable trash copy', (t) => {
+  const store = makeStore(t);
+  const saved = store.saveDocument(makeDocument({ id: 'delete-me', syncRevision: 4 }));
+
+  const deleted = store.deleteDocument(saved.id);
+
+  assert.equal(deleted.document.id, saved.id);
+  assert.equal(store.readDocument(saved.id), null);
+  assert.deepEqual(store.listDocuments(), []);
+  assert.equal(fs.existsSync(path.join(deleted.trashPath, 'document.json')), true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(deleted.trashPath, 'document.json'), 'utf8')).syncRevision, 4);
+  assert.equal(store.deleteDocument(saved.id), null);
+});
+
 test('fills compatible defaults for id, version and timestamps when the caller supplies canvasId', (t) => {
   const store = makeStore(t);
   const document = makeDocument({
@@ -130,6 +250,28 @@ test('fills compatible defaults for id, version and timestamps when the caller s
   assert.equal(saved.version, CANVAS_DOCUMENT_VERSION);
   assert.equal(saved.createdAt, '2026-07-17T10:20:30.000Z');
   assert.equal(saved.updatedAt, '2026-07-17T10:20:30.000Z');
+});
+
+test('accepts an optional non-negative sync revision and includes it in summaries', (t) => {
+  const store = makeStore(t);
+  const legacy = store.saveDocument(makeDocument({ id: 'legacy-revision', syncRevision: undefined }));
+  const synced = store.saveDocument(makeDocument({ id: 'synced-revision', syncRevision: 7 }));
+
+  assert.equal(Object.hasOwn(legacy, 'syncRevision'), false);
+  assert.equal(synced.syncRevision, 7);
+  const summaries = new Map(store.listDocuments().map((summary) => [summary.id, summary]));
+  assert.equal(summaries.get('legacy-revision').syncRevision, 0);
+  assert.equal(summaries.get('synced-revision').syncRevision, 7);
+  assert.throws(
+    () => validateCanvasDocument(makeDocument({ syncRevision: 1.5 })),
+    (error) => error instanceof CanvasDocumentValidationError
+      && error.issues.some((issue) => issue.includes('syncRevision must be an integer')),
+  );
+  assert.throws(
+    () => validateCanvasDocument(makeDocument({ syncRevision: -1 })),
+    (error) => error instanceof CanvasDocumentValidationError
+      && error.issues.some((issue) => issue.includes('syncRevision must be >= 0')),
+  );
 });
 
 test('validates normalized anchors and references while allowing incomplete drafts', () => {
@@ -247,5 +389,32 @@ test('read surfaces stored JSON and validation failures with stable error codes'
   assert.throws(
     () => store.readDocument('invalid-v1'),
     (error) => error instanceof CanvasDocumentStoreError && error.code === 'CANVAS_DOCUMENT_READ_FAILED',
+  );
+});
+
+test('round-trips pressure-sensitive ink strokes and reports them in project summaries', (t) => {
+  const store = makeStore(t);
+  const stroke = {
+    id: 'stroke-a',
+    kind: 'ink',
+    tool: 'pen',
+    color: '#272522',
+    width: 6,
+    opacity: 0.98,
+    z: 5,
+    points: [
+      { x: 120, y: 160, pressure: 0.18 },
+      { x: 126, y: 166, pressure: 0.72 },
+    ],
+  };
+  const saved = store.saveDocument(makeDocument({ strokes: [stroke] }));
+
+  assert.deepEqual(saved.strokes, [stroke]);
+  assert.deepEqual(store.readDocument(saved.id).strokes, [stroke]);
+  assert.equal(store.listDocuments()[0].strokeCount, 1);
+  assert.throws(
+    () => validateCanvasDocument(makeDocument({ strokes: [{ ...stroke, points: [{ x: 1, y: 2, pressure: 1.2 }] }] })),
+    (error) => error instanceof CanvasDocumentValidationError
+      && error.issues.some((issue) => issue.includes('pressure must be <= 1')),
   );
 });

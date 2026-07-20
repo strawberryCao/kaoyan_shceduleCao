@@ -54,6 +54,9 @@ if not exist node_modules\.bin\wait-on.cmd (
   )
 )
 
+set "KAOYAN_LAN_IP="
+for /f "delims=" %%i in ('node "scripts\lan-address.cjs"') do set "KAOYAN_LAN_IP=%%i"
+
 netstat -ano | findstr /R /C:":5174 .*LISTENING" >nul 2>nul
 if errorlevel 1 (
   start "Kaoyan Note Server" /min node "scripts\note-server.cjs"
@@ -61,7 +64,7 @@ if errorlevel 1 (
 
 netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
 if errorlevel 1 (
-  start "Kaoyan Wallpaper Server" /min npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
+  start "Kaoyan Wallpaper Server" /min npm.cmd run dev -- --host 0.0.0.0 --port 5173 --strictPort
 )
 
 echo Waiting for local services...
@@ -70,6 +73,13 @@ if errorlevel 1 (
   echo Local services did not become ready. Please close this window and try again.
   pause
   exit /b 1
+)
+
+if defined KAOYAN_LAN_IP (
+  echo LAN Canvas: http://%KAOYAN_LAN_IP%:5173/?notes=1^&mode=canvas
+  echo No pairing code is required. Keep port 5174 private.
+) else (
+  echo No active LAN IPv4 address was found. Connect this computer to Wi-Fi and restart.
 )
 
 if /i "%~1"=="--services-only" exit /b 0

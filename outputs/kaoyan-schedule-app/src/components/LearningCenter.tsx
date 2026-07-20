@@ -10,16 +10,37 @@ import {
   ClipboardCheck,
   Copy,
   FileImage,
+  FileDown,
+  FileText,
   FolderOpen,
   Inbox,
+  Pencil,
+  Plus,
   RotateCcw,
+  Save,
   Search,
+  Star,
   Tag,
+  Trash2,
   TriangleAlert,
   X,
+  ZoomIn,
 } from 'lucide-react';
-import type { LearningAutoNote, LearningCard, LearningDataSnapshot } from '../utils/learningData';
+import type { ScheduleDay } from '../types';
+import type {
+  LearningAutoNote,
+  LearningCard,
+  LearningDataSnapshot,
+  LearningNoteCreateInput,
+  LearningNotePatch,
+} from '../utils/learningData';
 import { NOTE_SERVER_URL } from '../utils/notes';
+import {
+  buildWeeklyReviewPackage,
+  getWeekStart,
+  shiftWeek,
+  weeklyReviewFilename,
+} from '../utils/weeklyReview';
 import '../learning-center.css';
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -28,12 +49,16 @@ export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 's
 
 export interface LearningCenterProps {
   snapshot: LearningDataSnapshot;
+  scheduleDays: ScheduleDay[];
   onPatchCard: (cardId: string, patch: LearningCardPatch) => Promise<unknown> | unknown;
-  onPatchNote: (noteUid: string, organizationStatus: 'confirmed' | 'ignored') => Promise<unknown> | unknown;
+  onDeleteCard: (cardId: string) => Promise<unknown> | unknown;
+  onCreateNote: (input: LearningNoteCreateInput) => Promise<unknown> | unknown;
+  onPatchNote: (noteUid: string, patch: LearningNotePatch) => Promise<unknown> | unknown;
+  onDeleteNote: (noteUid: string) => Promise<unknown> | unknown;
   onOpenDate: (date: string) => void;
 }
 
-type CenterView = 'review' | 'mistakes' | 'memory' | 'library' | 'inbox';
+type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'library' | 'inbox' | 'weekly';
 type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'untracked';
 
 interface IndexedNote {
@@ -50,18 +75,46 @@ interface MistakeFilters {
   status: MistakeStatus;
 }
 
+interface ClassificationDraft {
+  subject: string;
+  knowledgePoint: string;
+  questionType: string;
+  wrongReason: string;
+}
+
+type LearningItemKind = 'knowledge' | 'mistake' | 'memory';
+
+interface NoteEditorState {
+  mode: 'create' | 'edit';
+  noteUid: string | null;
+  originalSubject: string;
+  kind: LearningItemKind;
+  title: string;
+  remark: string;
+  subject: string;
+  knowledgePoint: string;
+  questionType: string;
+  wrongReason: string;
+  tags: string;
+  isGood: boolean;
+  createCard: boolean;
+}
+
+interface CardEditorState {
+  cardId: string;
+  front: string;
+  back: string;
+}
+
 type InboxEntry =
   | { key: string; kind: 'note'; timestamp: string; entry: IndexedNote }
   | { key: string; kind: 'card'; timestamp: string; card: LearningCard };
 
-type NativeFileBridge = {
-  showItemInFolder?: (filePath: string) => Promise<unknown> | unknown;
-  openPath?: (filePath: string) => Promise<unknown> | unknown;
-};
-
 const DEFAULT_FOLDER_NAMES = new Set(['默认文件夹', '未分类', '默认']);
+const SUBJECTS_408 = ['数据结构', '计算机组成', '操作系统', '计算机网络'] as const;
 const MISTAKE_WORDS = ['错题', '易错'];
 const MEMORY_WORDS = ['背诵', '记忆', '要背', '记住'];
+const GOOD_QUESTION_WORDS = ['好题', '经典题', '典型题', '精品题'];
 const EMPTY_FILTERS: MistakeFilters = {
   subject: '',
   knowledgePoint: '',
@@ -149,21 +202,21 @@ const fileNameFromPath = (filePath: string): string => filePath.split(/[\\/]/).p
 
 const noteKnowledgePoints = (note: LearningAutoNote): string[] => uniqueText([
   ...note.knowledgePath.filter((item) => item !== note.subject),
-  ...note.items.map((item) => item.knowledgePoint),
+  ...(note.classificationSource === 'manual' ? [] : note.items.map((item) => item.knowledgePoint)),
 ]);
 
 const noteQuestionTypes = (note: LearningAutoNote): string[] => uniqueText([
   note.questionType,
-  ...note.items.map((item) => item.questionType),
-  ...note.tags
+  ...(note.classificationSource === 'manual' ? [] : note.items.map((item) => item.questionType)),
+  ...(note.classificationSource === 'manual' ? [] : note.tags)
     .filter((tag) => /^题型[:：]/.test(tag))
     .map((tag) => tag.replace(/^题型[:：]\s*/, '')),
 ]);
 
 const noteWrongReasons = (note: LearningAutoNote): string[] => uniqueText([
   note.wrongReason,
-  ...note.items.map((item) => item.wrongReason),
-  ...note.tags
+  ...(note.classificationSource === 'manual' ? [] : note.items.map((item) => item.wrongReason)),
+  ...(note.classificationSource === 'manual' ? [] : note.tags)
     .filter((tag) => /^错因[:：]/.test(tag))
     .map((tag) => tag.replace(/^错因[:：]\s*/, '')),
 ]);
@@ -195,13 +248,14 @@ const isMemoryNote = (note: LearningAutoNote): boolean => (
   || note.items.some((item) => item.intent.shouldMemorize)
 );
 
+const isGoodNote = (note: LearningAutoNote): boolean => (
+  note.noteType === 'good'
+  || noteHasTag(note, GOOD_QUESTION_WORDS)
+);
+
 const isPendingNote = (note: LearningAutoNote): boolean => (
   note.organizationStatus === 'pending'
-  && (
-    DEFAULT_FOLDER_NAMES.has(note.subject.trim())
-    || note.confidence === null
-    || (typeof note.confidence === 'number' && note.confidence < 0.82)
-  )
+  && DEFAULT_FOLDER_NAMES.has(note.subject.trim())
 );
 
 const matchesQuery = (entry: IndexedNote, query: string): boolean => {
@@ -219,7 +273,7 @@ const mistakeStatus = (note: LearningAutoNote, cards: LearningCard[], today: str
 };
 
 const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
-  confirm: '待确认',
+  confirm: '卡片草稿',
   due: '待重做',
   reviewing: '复习中',
   mastered: '已掌握',
@@ -229,14 +283,24 @@ const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
 const initialView = (): CenterView => {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get('view');
-  if (requested === 'mistakes' || requested === 'memory' || requested === 'inbox') return requested;
+  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'inbox' || requested === 'weekly') return requested;
   if (requested === 'knowledge' || params.has('q')) return 'library';
   if (params.get('filter') === 'draft') return 'inbox';
   return 'review';
 };
 
-export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate }: LearningCenterProps) {
+export function LearningCenter({
+  snapshot,
+  scheduleDays,
+  onPatchCard,
+  onDeleteCard,
+  onCreateNote,
+  onPatchNote,
+  onDeleteNote,
+  onOpenDate,
+}: LearningCenterProps) {
   const today = localDate();
+  const currentWeekStart = getWeekStart(today);
   const [view, setView] = useState<CenterView>(initialView);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [selectedNoteUid, setSelectedNoteUid] = useState<string | null>(null);
@@ -247,8 +311,16 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   const [feedback, setFeedback] = useState('');
   const [sourceFeedback, setSourceFeedback] = useState('');
   const [failedImagePath, setFailedImagePath] = useState('');
+  const [editingClassificationUid, setEditingClassificationUid] = useState<string | null>(null);
+  const [classificationDraft, setClassificationDraft] = useState<ClassificationDraft | null>(null);
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
   const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>(EMPTY_FILTERS);
+  const [selectedWeekStart, setSelectedWeekStart] = useState(currentWeekStart);
+  const [weeklyFeedback, setWeeklyFeedback] = useState('');
+  const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
+  const [cardEditor, setCardEditor] = useState<CardEditorState | null>(null);
+  const [imageLightbox, setImageLightbox] = useState<{ src: string; alt: string } | null>(null);
+  const [editorSaving, setEditorSaving] = useState(false);
 
   const activeCards = useMemo(() => snapshot.cards.filter((card) => card.status === 'active'), [snapshot.cards]);
   const dueCards = useMemo(() => activeCards
@@ -265,7 +337,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   const currentCardIndex = currentCard ? dueCards.findIndex((card) => card.id === currentCard.id) : -1;
 
   const indexedNotes = useMemo<IndexedNote[]>(() => Object.entries(snapshot.days)
-    .flatMap(([date, day]) => day.autoNotes.map((note) => {
+    .flatMap(([date, day]) => day.autoNotes.filter((note) => note.organizationStatus !== 'ignored').map((note) => {
       const capturedDate = /^\d{4}-\d{2}-\d{2}$/.test(note.capturedDate) ? note.capturedDate : date;
       return {
         date: capturedDate,
@@ -275,9 +347,21 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
     }))
     .sort((left, right) => right.date.localeCompare(left.date) || right.note.updatedAt.localeCompare(left.note.updatedAt)), [snapshot.days]);
 
+  const subjectOptions = useMemo(() => uniqueText([
+    ...SUBJECTS_408,
+  ]).sort((left, right) => left.localeCompare(right, 'zh-CN')), []);
+  const knowledgePointOptions = useMemo(() => uniqueText(
+    indexedNotes.flatMap(({ note }) => noteKnowledgePoints(note)),
+  ).sort((left, right) => left.localeCompare(right, 'zh-CN')), [indexedNotes]);
+
   const mistakeNotes = useMemo(() => indexedNotes.filter(({ note }) => isMistakeNote(note)), [indexedNotes]);
+  const goodNotes = useMemo(() => indexedNotes.filter(({ note }) => isGoodNote(note)), [indexedNotes]);
   const memoryNotes = useMemo(() => indexedNotes.filter(({ note }) => isMemoryNote(note)), [indexedNotes]);
   const pendingNotes = useMemo(() => indexedNotes.filter(({ note }) => isPendingNote(note)), [indexedNotes]);
+  const weeklyPackage = useMemo(
+    () => buildWeeklyReviewPackage(snapshot, scheduleDays, selectedWeekStart, today),
+    [scheduleDays, selectedWeekStart, snapshot, today],
+  );
 
   const mistakeFacets = useMemo(() => ({
     subjects: uniqueText(mistakeNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
@@ -297,6 +381,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   }), [mistakeFilters, mistakeNotes, query, snapshot.cards, today]);
 
   const visibleMemory = useMemo(() => memoryNotes.filter((entry) => matchesQuery(entry, query)), [memoryNotes, query]);
+  const visibleGood = useMemo(() => goodNotes.filter((entry) => matchesQuery(entry, query)), [goodNotes, query]);
   const visibleLibrary = useMemo(() => indexedNotes.filter((entry) => matchesQuery(entry, query)), [indexedNotes, query]);
 
   const groupedLibrary = useMemo(() => {
@@ -326,6 +411,8 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
 
   const noteListForView = view === 'mistakes'
     ? visibleMistakes
+    : view === 'good'
+      ? visibleGood
     : view === 'memory'
       ? visibleMemory
       : visibleLibrary;
@@ -365,7 +452,19 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   useEffect(() => {
     setSourceFeedback('');
     setFailedImagePath('');
+    setImageLightbox(null);
   }, [selectedNoteUid, selectedInboxKey, selectedCardId, view]);
+
+  useEffect(() => {
+    if (!imageLightbox) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setImageLightbox(null);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [imageLightbox]);
 
   const stepCard = (direction: -1 | 1) => {
     if (dueCards.length < 2 || currentCardIndex < 0) return;
@@ -428,7 +527,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
       setSourceFeedback('这条记录还没有原图路径。');
       return;
     }
-    const bridge = window.kaoyanDesktop as (typeof window.kaoyanDesktop & NativeFileBridge) | undefined;
+    const bridge = window.kaoyanDesktop;
     try {
       if (typeof bridge?.showItemInFolder === 'function') {
         await bridge.showItemInFolder(filePath);
@@ -449,11 +548,15 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
         setSourceFeedback('已在资源管理器中定位原图。');
         return;
       }
-      throw new Error(`Reveal failed: ${response.status}`);
-    } catch {
+      const payload = await response.json().catch(() => null);
+      throw new Error(payload && typeof payload.error === 'string' ? payload.error : `资源管理器返回 ${response.status}`);
+    } catch (error) {
       try {
         await navigator.clipboard.writeText(filePath);
-        setSourceFeedback('资源管理器暂时不可用，原图路径已复制。');
+        const serviceOffline = error instanceof TypeError || /fetch|network|连接|断开/i.test(error instanceof Error ? error.message : '');
+        setSourceFeedback(serviceOffline
+          ? '本地笔记服务已断开，原图路径已复制。'
+          : '资源管理器暂时不可用，原图路径已复制。');
       } catch {
         setSourceFeedback('无法调用资源管理器，请复制上方原图路径。');
       }
@@ -470,22 +573,234 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
     }
   };
 
-  const updateNoteOrganization = async (noteUid: string, organizationStatus: 'confirmed' | 'ignored') => {
+  const copyWeeklyPackage = async () => {
+    try {
+      await navigator.clipboard.writeText(weeklyPackage.markdown);
+      setWeeklyFeedback('资料包已复制，可以直接粘贴给 GPT。');
+    } catch {
+      setWeeklyFeedback('复制失败，请在下方内容框中全选复制。');
+    }
+  };
+
+  const downloadWeeklyPackage = () => {
+    const blob = new Blob([weeklyPackage.markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = weeklyReviewFilename(weeklyPackage.weekStart);
+    link.click();
+    URL.revokeObjectURL(url);
+    setWeeklyFeedback('周复盘 Markdown 已导出。');
+  };
+
+  const ignorePendingNote = async (noteUid: string) => {
     if (pendingNoteUid) return;
     try {
       setPendingNoteUid(noteUid);
       setFeedback('');
-      await onPatchNote(noteUid, organizationStatus);
+      await onPatchNote(noteUid, { organizationStatus: 'ignored' });
       setSelectedInboxKey(null);
-      setFeedback(organizationStatus === 'confirmed' ? '已确认当前分类。' : '已从待确认中移除。');
+      setFeedback('已从收件箱移除。');
     } catch {
-      setFeedback('暂时无法更新，笔记仍保留在待确认中。');
+      setFeedback('暂时无法更新，笔记仍保留在收件箱中。');
     } finally {
       setPendingNoteUid(null);
     }
   };
 
-  const renderSearch = (count: number, placeholder: string) => (
+  const beginClassificationEdit = (note: LearningAutoNote) => {
+    setEditingClassificationUid(note.noteUid);
+    setClassificationDraft({
+      subject: DEFAULT_FOLDER_NAMES.has(note.subject) ? '' : note.subject,
+      knowledgePoint: noteKnowledgePoints(note)[0] ?? '',
+      questionType: noteQuestionTypes(note)[0] ?? '',
+      wrongReason: noteWrongReasons(note)[0] ?? '',
+    });
+    setFeedback('');
+  };
+
+  const saveClassification = async (note: LearningAutoNote) => {
+    if (!classificationDraft || pendingNoteUid) return;
+    const subject = classificationDraft.subject.trim();
+    if (!SUBJECTS_408.includes(subject as typeof SUBJECTS_408[number])) {
+      setFeedback('一级分类只能选择 408 科目。');
+      return;
+    }
+    const knowledgePoint = classificationDraft.knowledgePoint.trim();
+    try {
+      setPendingNoteUid(note.noteUid);
+      setFeedback('');
+      await onPatchNote(note.noteUid, {
+        subject,
+        knowledgePath: [subject, knowledgePoint].filter(Boolean),
+        questionType: classificationDraft.questionType.trim(),
+        wrongReason: classificationDraft.wrongReason.trim(),
+        organizationStatus: 'confirmed',
+      });
+      setEditingClassificationUid(null);
+      setClassificationDraft(null);
+      setSelectedInboxKey(null);
+      setFeedback('分类已修改，后续 AI 整理会保留你的更正。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '分类没有保存，请稍后重试。');
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
+
+  const splitEditorTags = (value: string): string[] => uniqueText(
+    value.split(/[#，,；;\n]+/u),
+  ).slice(0, 20);
+
+  const beginCreateNote = (kind: LearningItemKind, isGood = false) => {
+    setNoteEditor({
+      mode: 'create',
+      noteUid: null,
+      originalSubject: '',
+      kind,
+      title: '',
+      remark: '',
+      subject: SUBJECTS_408[0],
+      knowledgePoint: '',
+      questionType: '',
+      wrongReason: '',
+      tags: [kind === 'mistake' ? '错题' : kind === 'memory' ? '背诵' : '', isGood ? '好题' : ''].filter(Boolean).join('，'),
+      isGood,
+      createCard: kind !== 'knowledge',
+    });
+    setFeedback('');
+  };
+
+  const beginEditNote = (note: LearningAutoNote) => {
+    const kind: LearningItemKind = isMistakeNote(note) ? 'mistake' : isMemoryNote(note) ? 'memory' : 'knowledge';
+    setNoteEditor({
+      mode: 'edit',
+      noteUid: note.noteUid,
+      originalSubject: note.subject,
+      kind,
+      title: note.title,
+      remark: note.remark,
+      subject: note.subject,
+      knowledgePoint: noteKnowledgePoints(note)[0] ?? '',
+      questionType: noteQuestionTypes(note)[0] ?? '',
+      wrongReason: noteWrongReasons(note)[0] ?? '',
+      tags: note.tags.join('，'),
+      isGood: isGoodNote(note),
+      createCard: false,
+    });
+    setFeedback('');
+  };
+
+  const saveNoteEditor = async () => {
+    if (!noteEditor || editorSaving) return;
+    const title = noteEditor.title.trim();
+    const subject = noteEditor.subject.trim();
+    if (!title) {
+      setFeedback('请填写标题。');
+      return;
+    }
+    const keepsExistingSubject = noteEditor.mode === 'edit' && subject === noteEditor.originalSubject;
+    if (!keepsExistingSubject && !SUBJECTS_408.includes(subject as typeof SUBJECTS_408[number])) {
+      setFeedback('一级分类只能选择数据结构、计算机组成、操作系统或计算机网络。');
+      return;
+    }
+    const knowledgePoint = noteEditor.knowledgePoint.trim();
+    const tags = splitEditorTags(noteEditor.tags).filter((tag) => tag !== '好题');
+    if (noteEditor.kind === 'mistake' && !tags.includes('错题')) tags.push('错题');
+    if (noteEditor.kind === 'memory' && !tags.includes('背诵')) tags.push('背诵');
+    if (noteEditor.isGood) tags.push('好题');
+    const noteType = noteEditor.kind === 'knowledge' ? 'knowledge' : noteEditor.kind;
+    const common = {
+      title,
+      remark: noteEditor.remark.trim(),
+      subject,
+      knowledgePath: [subject, knowledgePoint].filter(Boolean),
+      questionType: noteEditor.questionType.trim(),
+      wrongReason: noteEditor.wrongReason.trim(),
+      noteType,
+      tags,
+    };
+    try {
+      setEditorSaving(true);
+      setFeedback('');
+      if (noteEditor.mode === 'create') {
+        await onCreateNote({
+          ...common,
+          capturedDate: today,
+          createCard: noteEditor.createCard,
+        });
+        setFeedback('新内容已加入学习中心。');
+      } else if (noteEditor.noteUid) {
+        await onPatchNote(noteEditor.noteUid, common);
+        setFeedback('内容修改已保存。');
+      }
+      setNoteEditor(null);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '内容没有保存，请稍后重试。');
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  const deleteNote = async (note: LearningAutoNote) => {
+    if (editorSaving || !window.confirm(`确定从学习中心删除“${note.title || '未命名笔记'}”吗？原始图片不会被删除。`)) return;
+    try {
+      setEditorSaving(true);
+      await onDeleteNote(note.noteUid);
+      setSelectedNoteUid(null);
+      setSelectedInboxKey(null);
+      setFeedback('已从学习中心移除；原始图片仍然保留。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '删除失败，请稍后重试。');
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  const beginEditCard = (card: LearningCard) => {
+    setCardEditor({ cardId: card.id, front: card.front, back: card.back });
+    setFeedback('');
+  };
+
+  const saveCardEditor = async () => {
+    if (!cardEditor || editorSaving) return;
+    if (!cardEditor.front.trim() || !cardEditor.back.trim()) {
+      setFeedback('卡片的正面和答案都要填写。');
+      return;
+    }
+    try {
+      setEditorSaving(true);
+      await onPatchCard(cardEditor.cardId, {
+        front: cardEditor.front.trim(),
+        back: cardEditor.back.trim(),
+        userEdited: true,
+      });
+      setCardEditor(null);
+      setFeedback('卡片内容已保存。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '卡片没有保存，请稍后重试。');
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  const deleteCard = async (card: LearningCard) => {
+    if (editorSaving || !window.confirm(`确定删除卡片“${card.front || card.sourceTitle || '未命名卡片'}”吗？`)) return;
+    try {
+      setEditorSaving(true);
+      await onDeleteCard(card.id);
+      setSelectedCardId(null);
+      setSelectedInboxKey(null);
+      setCardEditor(null);
+      setFeedback('卡片已删除。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '卡片删除失败，请稍后重试。');
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  const renderSearch = (count: number, placeholder: string, addLabel?: string, onAdd?: () => void) => (
     <div className="lc-searchbar">
       <Search size={17} aria-hidden="true" />
       <input
@@ -496,10 +811,11 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
       />
       {query && <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"><X size={15} /></button>}
       <strong>{count}</strong>
+      {addLabel && onAdd && <button className="lc-add-button" type="button" onClick={onAdd}><Plus size={15} />{addLabel}</button>}
     </div>
   );
 
-  const renderNoteButton = (entry: IndexedNote, context: 'mistake' | 'memory' | 'library' | 'inbox') => {
+  const renderNoteButton = (entry: IndexedNote, context: 'mistake' | 'good' | 'memory' | 'library' | 'inbox') => {
     const { date, note } = entry;
     const knowledge = noteKnowledgePoints(note)[0];
     const pages = pageRefText(note);
@@ -533,7 +849,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
     );
   };
 
-  const renderNoteDetail = (entry: IndexedNote | null, context: 'mistake' | 'memory' | 'library' | 'inbox') => {
+  const renderNoteDetail = (entry: IndexedNote | null, context: 'mistake' | 'good' | 'memory' | 'library' | 'inbox') => {
     if (!entry) {
       return (
         <div className="lc-detail-empty">
@@ -548,8 +864,36 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
     const questionTypes = noteQuestionTypes(note);
     const wrongReasons = noteWrongReasons(note);
     const itemSummary = note.items.slice(0, 8);
-    const contextLabel = context === 'mistake' ? '错题' : context === 'memory' ? '背诵' : context === 'inbox' ? '待确认' : '知识笔记';
+    const contextLabel = context === 'mistake' ? '错题' : context === 'good' ? '好题' : context === 'memory' ? '背诵' : context === 'inbox' ? '未识别' : '知识笔记';
+    const isEditingClassification = editingClassificationUid === note.noteUid && classificationDraft;
     const imageUrl = note.filePath ? `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(note.filePath)}` : '';
+    const showQuestionFirst = context === 'mistake' || context === 'good';
+    const sourcePreview = (
+      <figure className={`lc-source-preview ${showQuestionFirst ? 'is-question-first' : ''}`}>
+        {imageUrl && failedImagePath !== note.filePath ? (
+          <button
+            className="lc-source-preview-open"
+            type="button"
+            onClick={() => setImageLightbox({ src: imageUrl, alt: `${note.title || '题目'}原图` })}
+            aria-label="放大查看题目原图"
+          >
+            <img src={imageUrl} alt={`${note.title || '笔记'}原图`} onError={() => setFailedImagePath(note.filePath)} />
+            <span><ZoomIn size={16} />点开放大</span>
+          </button>
+        ) : (
+          <div>
+            <FileImage size={28} />
+            <strong>{note.filePath ? '原图暂时无法预览' : '原图路径尚未同步'}</strong>
+            {note.filePath && failedImagePath === note.filePath && (
+              <button type="button" onClick={() => {
+                setSourceFeedback('正在重新连接原图服务…');
+                setFailedImagePath('');
+              }}>重新加载</button>
+            )}
+          </div>
+        )}
+      </figure>
+    );
     return (
       <article className="lc-note-detail">
         <header className="lc-detail-heading">
@@ -557,16 +901,39 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
             <span className={`lc-detail-kind is-${context}`}>{contextLabel}</span>
             <h2>{note.title || '未命名笔记'}</h2>
           </div>
-          <time>{formatRecordDate(date)}</time>
+          <div className="lc-heading-actions">
+            <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
+            <button className="danger" type="button" disabled={editorSaving} onClick={() => void deleteNote(note)}><Trash2 size={15} />删除</button>
+            <time>{formatRecordDate(date)}</time>
+          </div>
         </header>
+
+        {showQuestionFirst && sourcePreview}
 
         <div className="lc-detail-facts">
           <div><span>科目</span><strong>{displaySubject(note.subject)}</strong></div>
           <div><span>页码 / 题号</span><strong>{pages || '—'}</strong></div>
           <div><span>知识点</span><strong>{knowledgePoints.join('、') || '—'}</strong></div>
           <div><span>题型</span><strong>{questionTypes.join('、') || '—'}</strong></div>
-          {context === 'mistake' && <div className="lc-fact-wide"><span>错因</span><strong>{wrongReasons.join('；') || '待确认'}</strong></div>}
+          {context === 'mistake' && <div className="lc-fact-wide"><span>错因</span><strong>{wrongReasons.join('；') || '—'}</strong></div>}
         </div>
+
+        {isEditingClassification && (
+          <form className="lc-classification-editor" onSubmit={(event) => { event.preventDefault(); void saveClassification(note); }}>
+            <label>408 一级科目<select value={classificationDraft.subject} onChange={(event) => setClassificationDraft((current) => current ? { ...current, subject: event.target.value } : current)} autoFocus>
+              <option value="">请选择</option>
+              {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+            </select></label>
+            <label>知识点<input list="lc-knowledge-options" value={classificationDraft.knowledgePoint} onChange={(event) => setClassificationDraft((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>
+            <label>题型<input value={classificationDraft.questionType} onChange={(event) => setClassificationDraft((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>
+            <label>错因<input value={classificationDraft.wrongReason} onChange={(event) => setClassificationDraft((current) => current ? { ...current, wrongReason: event.target.value } : current)} /></label>
+            <div className="lc-classification-actions">
+              <button className="primary" type="submit" disabled={pendingNoteUid === note.noteUid}><Check size={15} />保存</button>
+              <button type="button" onClick={() => { setEditingClassificationUid(null); setClassificationDraft(null); }}>取消</button>
+            </div>
+            <datalist id="lc-knowledge-options">{knowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
+          </form>
+        )}
 
         {note.remark && (
           <section className="lc-detail-section">
@@ -598,13 +965,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
           <div className="lc-detail-tags"><Tag size={15} />{note.tags.slice(0, 10).map((tag) => <span key={tag}>#{tag}</span>)}</div>
         )}
 
-        <figure className="lc-source-preview">
-          {imageUrl && failedImagePath !== note.filePath ? (
-            <img src={imageUrl} alt={`${note.title || '笔记'}原图`} onError={() => setFailedImagePath(note.filePath)} />
-          ) : (
-            <div><FileImage size={28} /><strong>{note.filePath ? '原图暂时无法预览' : '原图路径尚未同步'}</strong></div>
-          )}
-        </figure>
+        {!showQuestionFirst && sourcePreview}
 
         <section className="lc-source-row">
           <FileImage size={19} aria-hidden="true" />
@@ -618,17 +979,12 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
         </section>
         {context === 'inbox' && (
           <div className="lc-inbox-actions lc-inbox-note-actions">
-            <button
-              className="primary"
-              type="button"
-              disabled={pendingNoteUid === note.noteUid}
-              onClick={() => void updateNoteOrganization(note.noteUid, 'confirmed')}
-            ><Check size={16} />确认当前分类</button>
+            <button className="primary" type="button" disabled={pendingNoteUid === note.noteUid} onClick={() => beginClassificationEdit(note)}><Pencil size={16} />修改分类</button>
             <button
               type="button"
               disabled={pendingNoteUid === note.noteUid}
-              onClick={() => void updateNoteOrganization(note.noteUid, 'ignored')}
-            ><Archive size={16} />不再提醒</button>
+              onClick={() => void ignorePendingNote(note.noteUid)}
+            ><Archive size={16} />忽略这条</button>
           </div>
         )}
         <div className={`lc-source-feedback ${feedback || sourceFeedback ? 'visible' : ''}`} role="status">
@@ -686,9 +1042,11 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
 
             <div className="lc-card-controls">
               <button type="button" onClick={() => stepCard(-1)} disabled={dueCards.length < 2} aria-label="上一张"><ChevronLeft size={18} /></button>
+              <button type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => beginEditCard(currentCard)}><Pencil size={16} />编辑</button>
               <button className="lc-action-forgot" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'forgotten' }, '明天再复习。')}><RotateCcw size={16} />忘记 <kbd>1</kbd></button>
               <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'remembered' }, '复习间隔已延长。')}><Check size={16} />记住 <kbd>2</kbd></button>
               {currentCard.sourceFilePath && <button type="button" onClick={() => void handleSourcePath(currentCard.sourceFilePath)}><FolderOpen size={16} />原图</button>}
+              <button className="danger" type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => void deleteCard(currentCard)}><Trash2 size={16} />删除</button>
               <button type="button" onClick={() => stepCard(1)} disabled={dueCards.length < 2} aria-label="下一张"><ChevronRight size={18} /></button>
             </div>
             <div className={`lc-feedback ${feedback || sourceFeedback ? 'visible' : ''}`}>{pendingCardId ? '正在保存…' : feedback || sourceFeedback || ' '}</div>
@@ -706,7 +1064,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   const renderMistakes = () => (
     <div className="lc-workspace">
       <aside className="lc-master-pane">
-        {renderSearch(visibleMistakes.length, '搜索错题、页码或备注')}
+        {renderSearch(visibleMistakes.length, '搜索错题、页码或备注', '新增错题', () => beginCreateNote('mistake'))}
         <div className="lc-filters" aria-label="错题筛选">
           <select value={mistakeFilters.subject} onChange={(event) => setMistakeFilters((current) => ({ ...current, subject: event.target.value }))} aria-label="按科目筛选">
             <option value="">全部科目</option>
@@ -728,7 +1086,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
             <option value="all">全部状态</option>
             <option value="due">待重做</option>
             <option value="reviewing">复习中</option>
-            <option value="confirm">待确认</option>
+            <option value="confirm">卡片草稿</option>
             <option value="mastered">已掌握</option>
             <option value="untracked">未加入复习</option>
           </select>
@@ -752,7 +1110,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
   const renderMemory = () => (
     <div className="lc-workspace">
       <aside className="lc-master-pane">
-        {renderSearch(visibleMemory.length, '搜索背诵内容、页码或知识点')}
+        {renderSearch(visibleMemory.length, '搜索背诵内容、页码或知识点', '新增背诵', () => beginCreateNote('memory'))}
         <div className="lc-master-list">
           {visibleMemory.map((entry) => renderNoteButton(entry, 'memory'))}
           {visibleMemory.length === 0 && <div className="lc-list-empty"><Brain size={23} /><strong>还没有背诵内容</strong></div>}
@@ -762,10 +1120,23 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
     </div>
   );
 
+  const renderGoodQuestions = () => (
+    <div className="lc-workspace">
+      <aside className="lc-master-pane">
+        {renderSearch(visibleGood.length, '搜索好题、页码或知识点', '新增好题', () => beginCreateNote('knowledge', true))}
+        <div className="lc-master-list">
+          {visibleGood.map((entry) => renderNoteButton(entry, 'good'))}
+          {visibleGood.length === 0 && <div className="lc-list-empty"><Star size={23} /><strong>还没有收藏好题</strong></div>}
+        </div>
+      </aside>
+      <section className="lc-detail-pane">{renderNoteDetail(selectedNote, 'good')}</section>
+    </div>
+  );
+
   const renderLibrary = () => (
     <div className="lc-workspace">
       <aside className="lc-master-pane">
-        {renderSearch(visibleLibrary.length, '搜索页码、题号、知识点或备注')}
+        {renderSearch(visibleLibrary.length, '搜索页码、题号、知识点或备注', '新增知识', () => beginCreateNote('knowledge'))}
         <div className="lc-master-list lc-grouped-list">
           {groupedLibrary.map(([date, entries]) => (
             <section className="lc-date-group" key={date}>
@@ -796,6 +1167,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
         <div className="lc-fact-wide"><span>知识点</span><strong>{card.knowledgePath.join(' / ') || '—'}</strong></div>
       </div>
       <div className="lc-inbox-actions">
+        <button type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => beginEditCard(card)}><Pencil size={16} />编辑正反面</button>
         <button
           className="primary"
           type="button"
@@ -808,6 +1180,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
           onClick={() => void updateCard(card, { status: 'archived' }, '卡片已归档。', () => setSelectedInboxKey(nextKey))}
         ><Archive size={16} />暂不使用</button>
         {card.sourceFilePath && <button type="button" onClick={() => void handleSourcePath(card.sourceFilePath)}><FolderOpen size={16} />原图</button>}
+        <button className="danger" type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => void deleteCard(card)}><Trash2 size={16} />删除</button>
       </div>
       <div className={`lc-feedback ${feedback || sourceFeedback ? 'visible' : ''}`}>{pendingCardId ? '正在保存…' : feedback || sourceFeedback || ' '}</div>
     </article>
@@ -819,7 +1192,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
       <div className="lc-workspace">
         <aside className="lc-master-pane">
           <div className="lc-inbox-summary">
-            <span>分类待确认 <strong>{pendingNotes.length}</strong></span>
+            <span>未识别分类 <strong>{pendingNotes.length}</strong></span>
             <span>卡片草稿 <strong>{draftCards.length}</strong></span>
           </div>
           <div className="lc-master-list">
@@ -835,7 +1208,7 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
                 <span className="lc-note-button-foot"><em>卡片草稿</em></span>
               </button>
             ))}
-            {inboxEntries.length === 0 && <div className="lc-list-empty"><ClipboardCheck size={23} /><strong>待确认内容已处理完</strong></div>}
+            {inboxEntries.length === 0 && <div className="lc-list-empty"><ClipboardCheck size={23} /><strong>收件箱已清空</strong></div>}
           </div>
         </aside>
         <section className="lc-detail-pane">
@@ -843,18 +1216,55 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
             ? renderNoteDetail(selectedInbox.entry, 'inbox')
             : selectedInbox?.kind === 'card'
               ? renderInboxCardDetail(selectedInbox.card, nextEntry?.key ?? null)
-              : <div className="lc-detail-empty"><Check size={28} /><h3>没有待确认内容</h3></div>}
+              : <div className="lc-detail-empty"><Check size={28} /><h3>收件箱里没有内容</h3></div>}
         </section>
       </div>
     );
   };
 
+  const renderWeeklyReview = () => (
+    <section className="lc-weekly-review">
+      <header className="lc-weekly-heading">
+        <div>
+          <h2>GPT 周复盘资料包</h2>
+          <strong>{weeklyPackage.rangeLabel}</strong>
+        </div>
+        <div className="lc-weekly-controls">
+          <div className="lc-week-stepper" aria-label="选择复盘周">
+            <button type="button" onClick={() => { setSelectedWeekStart((value) => shiftWeek(value, -1)); setWeeklyFeedback(''); }} aria-label="上一周"><ChevronLeft size={17} /></button>
+            <button type="button" onClick={() => { setSelectedWeekStart(currentWeekStart); setWeeklyFeedback(''); }} disabled={selectedWeekStart === currentWeekStart}>本周</button>
+            <button type="button" onClick={() => { setSelectedWeekStart((value) => shiftWeek(value, 1)); setWeeklyFeedback(''); }} disabled={selectedWeekStart >= currentWeekStart} aria-label="下一周"><ChevronRight size={17} /></button>
+          </div>
+          <button className="primary" type="button" onClick={() => void copyWeeklyPackage()}><Copy size={16} />复制给 GPT</button>
+          <button type="button" onClick={downloadWeeklyPackage}><FileDown size={16} />导出 Markdown</button>
+        </div>
+      </header>
+
+      <div className="lc-weekly-stats">
+        <div><span>已记录完成</span><strong>{weeklyPackage.stats.completedTasks}/{weeklyPackage.stats.plannedTasks}</strong><em>{weeklyPackage.stats.completionRate}%</em></div>
+        <div><span>新增笔记</span><strong>{weeklyPackage.stats.noteCount}</strong></div>
+        <div><span>错题</span><strong>{weeklyPackage.stats.mistakeCount}</strong></div>
+        <div><span>需记忆</span><strong>{weeklyPackage.stats.memoryCount}</strong></div>
+        <div><span>复习卡片</span><strong>{weeklyPackage.stats.reviewedCards}</strong></div>
+        <div><span>当前到期</span><strong>{weeklyPackage.stats.dueCards}</strong></div>
+      </div>
+
+      <div className="lc-weekly-document">
+        <header><FileText size={18} /><strong>提示词与学习资料</strong></header>
+        <textarea aria-label="周复盘资料包内容" readOnly spellCheck={false} value={weeklyPackage.markdown} />
+      </div>
+      <div className={`lc-weekly-feedback ${weeklyFeedback ? 'visible' : ''}`} role="status">{weeklyFeedback || ' '}</div>
+    </section>
+  );
+
   const views: Array<{ id: CenterView; label: string; icon: typeof CalendarClock; count: number }> = [
     { id: 'review', label: '今日复习', icon: CalendarClock, count: dueCards.length },
     { id: 'mistakes', label: '错题', icon: TriangleAlert, count: mistakeNotes.length },
+    { id: 'good', label: '好题', icon: Star, count: goodNotes.length },
     { id: 'memory', label: '背诵', icon: Brain, count: memoryNotes.length },
     { id: 'library', label: '知识库', icon: BookOpenText, count: indexedNotes.length },
-    { id: 'inbox', label: '待确认', icon: Inbox, count: inboxEntries.length },
+    { id: 'weekly', label: '周复盘', icon: FileText, count: weeklyPackage.stats.noteCount },
+    { id: 'inbox', label: '收件箱', icon: Inbox, count: inboxEntries.length },
   ];
 
   return (
@@ -881,10 +1291,89 @@ export function LearningCenter({ snapshot, onPatchCard, onPatchNote, onOpenDate 
       <div className="lc-body">
         {view === 'review' && renderReview()}
         {view === 'mistakes' && renderMistakes()}
+        {view === 'good' && renderGoodQuestions()}
         {view === 'memory' && renderMemory()}
         {view === 'library' && renderLibrary()}
+        {view === 'weekly' && renderWeeklyReview()}
         {view === 'inbox' && renderInbox()}
       </div>
+
+      {imageLightbox && (
+        <div className="lc-image-lightbox" role="presentation" onPointerDown={(event) => {
+          if (event.target === event.currentTarget) setImageLightbox(null);
+        }}>
+          <div className="lc-image-lightbox-dialog" role="dialog" aria-modal="true" aria-label="题目原图大图">
+            <button type="button" onClick={() => setImageLightbox(null)} aria-label="关闭大图"><X size={22} /></button>
+            <img src={imageLightbox.src} alt={imageLightbox.alt} />
+          </div>
+        </div>
+      )}
+
+      {noteEditor && (
+        <div className="lc-editor-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !editorSaving) setNoteEditor(null);
+        }}>
+          <form className="lc-content-editor" role="dialog" aria-modal="true" aria-label={noteEditor.mode === 'create' ? '新增学习内容' : '编辑学习内容'} onSubmit={(event) => { event.preventDefault(); void saveNoteEditor(); }}>
+            <header>
+              <div><span>{noteEditor.mode === 'create' ? '新增' : '编辑'}</span><h2>学习内容</h2></div>
+              <button type="button" aria-label="关闭编辑器" disabled={editorSaving} onClick={() => setNoteEditor(null)}><X size={18} /></button>
+            </header>
+            <div className="lc-editor-grid">
+              <label>类型<select value={noteEditor.kind} onChange={(event) => setNoteEditor((current) => current ? { ...current, kind: event.target.value as LearningItemKind, createCard: event.target.value !== 'knowledge' && current.createCard } : current)}>
+                <option value="knowledge">知识</option>
+                <option value="mistake">错题</option>
+                <option value="memory">背诵</option>
+              </select></label>
+              <label>一级科目<select value={noteEditor.subject} onChange={(event) => setNoteEditor((current) => current ? { ...current, subject: event.target.value } : current)}>
+                <option value="">请选择</option>
+                {noteEditor.mode === 'edit'
+                  && noteEditor.originalSubject
+                  && !SUBJECTS_408.includes(noteEditor.originalSubject as typeof SUBJECTS_408[number])
+                  && <option value={noteEditor.originalSubject}>{noteEditor.originalSubject}（保留现有）</option>}
+                {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+              </select></label>
+              <label className="wide">标题<input value={noteEditor.title} maxLength={120} autoFocus onChange={(event) => setNoteEditor((current) => current ? { ...current, title: event.target.value } : current)} placeholder="例如：进程与线程的区别" /></label>
+              <label>知识点<input list="lc-knowledge-options" value={noteEditor.knowledgePoint} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>
+              <label>题型<input value={noteEditor.questionType} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>
+              {noteEditor.kind === 'mistake' && <label className="wide">错因<input value={noteEditor.wrongReason} maxLength={500} onChange={(event) => setNoteEditor((current) => current ? { ...current, wrongReason: event.target.value } : current)} placeholder="例如：混淆阻塞与就绪状态" /></label>}
+              <label className="wide">内容<textarea value={noteEditor.remark} maxLength={4000} onChange={(event) => setNoteEditor((current) => current ? { ...current, remark: event.target.value } : current)} placeholder="写下题目、结论、易错点或需要记住的内容" /></label>
+              <label className="wide">标签<input value={noteEditor.tags} onChange={(event) => setNoteEditor((current) => current ? { ...current, tags: event.target.value } : current)} placeholder="用逗号分隔" /></label>
+              <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.isGood} onChange={(event) => setNoteEditor((current) => current ? { ...current, isGood: event.target.checked } : current)} />收藏到“好题”（可同时保留为错题）</label>
+              {noteEditor.mode === 'create' && noteEditor.kind !== 'knowledge' && (
+                <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.createCard} onChange={(event) => setNoteEditor((current) => current ? { ...current, createCard: event.target.checked } : current)} />同时建立一张今日复习卡</label>
+              )}
+            </div>
+            <datalist id="lc-knowledge-options">{knowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
+            <footer>
+              <span>{feedback}</span>
+              <button type="button" disabled={editorSaving} onClick={() => setNoteEditor(null)}>取消</button>
+              <button className="primary" type="submit" disabled={editorSaving}><Save size={16} />{editorSaving ? '保存中' : '保存'}</button>
+            </footer>
+          </form>
+        </div>
+      )}
+
+      {cardEditor && (
+        <div className="lc-editor-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !editorSaving) setCardEditor(null);
+        }}>
+          <form className="lc-content-editor lc-card-editor" role="dialog" aria-modal="true" aria-label="编辑复习卡片" onSubmit={(event) => { event.preventDefault(); void saveCardEditor(); }}>
+            <header>
+              <div><span>编辑</span><h2>复习卡片</h2></div>
+              <button type="button" aria-label="关闭编辑器" disabled={editorSaving} onClick={() => setCardEditor(null)}><X size={18} /></button>
+            </header>
+            <div className="lc-editor-grid single">
+              <label className="wide">正面<textarea value={cardEditor.front} maxLength={500} autoFocus onChange={(event) => setCardEditor((current) => current ? { ...current, front: event.target.value } : current)} /></label>
+              <label className="wide">答案<textarea value={cardEditor.back} maxLength={2000} onChange={(event) => setCardEditor((current) => current ? { ...current, back: event.target.value } : current)} /></label>
+            </div>
+            <footer>
+              <span>{feedback}</span>
+              <button type="button" disabled={editorSaving} onClick={() => setCardEditor(null)}>取消</button>
+              <button className="primary" type="submit" disabled={editorSaving}><Save size={16} />{editorSaving ? '保存中' : '保存'}</button>
+            </footer>
+          </form>
+        </div>
+      )}
     </section>
   );
 }

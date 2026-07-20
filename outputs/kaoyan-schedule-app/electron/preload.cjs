@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('kaoyanDesktop', {
   setNoteAppDirty: (dirty, saving) => ipcRenderer.invoke('note-app:set-dirty', Boolean(dirty), Boolean(saving)),
   setNoteAppMode: (mode) => ipcRenderer.invoke('note-app:set-mode', mode),
   openNoteCanvas: () => ipcRenderer.invoke('note-canvas:open'),
+  showItemInFolder: (filePath) => ipcRenderer.invoke('file:show-item-in-folder', filePath),
+  openPath: (filePath) => ipcRenderer.invoke('file:open-path', filePath),
   minimize: () => ipcRenderer.send('window:minimize'),
   hide: () => ipcRenderer.send('window:hide'),
   close: () => ipcRenderer.send('window:close'),

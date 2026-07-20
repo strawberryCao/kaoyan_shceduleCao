@@ -23,10 +23,10 @@ function makeImageFixture(t, extension = '.png') {
 
 function baseAiResult(overrides = {}) {
   return {
-    subject: '高等数学',
+    subject: '数据结构',
     knowledgePoint: '函数极限',
     aliases: {
-      subject: ['高数'],
+      subject: ['数据结构与算法'],
       knowledgePoint: ['极限'],
     },
     title: '函数极限定义错题',
@@ -64,11 +64,11 @@ function makeContext(imagePath, overrides = {}) {
       revision: 3,
       subjects: [
         {
-          name: '高等数学',
-          aliases: ['高数'],
+          name: '数据结构',
+          aliases: ['数据结构与算法'],
           knowledgePoints: [{ name: '函数极限', aliases: ['极限'] }],
         },
-        { name: '线性代数', aliases: ['线代'], knowledgePoints: [] },
+        { name: '操作系统', aliases: ['OS'], knowledgePoints: [] },
       ],
     },
   };
@@ -154,7 +154,7 @@ test('sends image, local parsing, current category and compact taxonomy through 
 
   assert.equal(result.provider, 'gemini');
   assert.equal(result.model, 'gemini-test-model');
-  assert.deepEqual(result.subjectAliases, ['高数']);
+  assert.deepEqual(result.subjectAliases, ['数据结构与算法']);
   assert.deepEqual(result.knowledgePointAliases, ['极限']);
   assert.equal(result.intent.isMistake, true);
   assert.equal(result.intent.shouldMemorize, true);
@@ -163,6 +163,49 @@ test('sends image, local parsing, current category and compact taxonomy through 
   assert.equal(result.cards.length, 1);
   assert.equal(result.cards[0].status, 'draft');
   assert.equal(result.cards[0].sourceKey, 'ai:root:0');
+});
+
+test('hides legacy unknown subjects from the prompt and rejects them from model output', async (t) => {
+  const imagePath = makeImageFixture(t);
+  let prompt = '';
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      async complete(request) {
+        prompt = request.messages[0].content[0].text;
+        return {
+          json: baseAiResult({
+            subject: '计算机视觉',
+            knowledgePoint: '卷积神经网络',
+            aliases: { subject: ['CV'], knowledgePoint: ['CNN'] },
+            title: '图像分类模型',
+            summary: '使用卷积神经网络识别图像。',
+          }),
+          provider: 'test',
+          model: 'test-model',
+        };
+      },
+    },
+  });
+  const result = await analyzer(makeContext(imagePath, {
+    taxonomy: {
+      revision: 4,
+      subjects: [
+        { name: '数据结构', aliases: [], knowledgePoints: [] },
+        { name: '计算机组成', aliases: ['计组'], knowledgePoints: [] },
+        { name: '操作系统', aliases: ['OS'], knowledgePoints: [] },
+        { name: '计算机网络', aliases: ['计网'], knowledgePoints: [] },
+        { name: '默认文件夹', aliases: ['未分类'], knowledgePoints: [] },
+        { name: '计算机视觉', aliases: ['CV'], knowledgePoints: [] },
+      ],
+    },
+  }));
+
+  assert.match(prompt, /subject 只能从 existingTaxonomy 中已有的 408 一级科目选择/);
+  assert.doesNotMatch(prompt, /"name":"计算机视觉"/);
+  assert.equal(result.subject, '默认文件夹');
+  assert.deepEqual(result.subjectAliases, []);
+  assert.deepEqual(result.aliases.subject, []);
+  assert.deepEqual(result.subjectPolicy, { fallback: true, reason: 'unknown' });
 });
 
 test('does not create cards for an ordinary note without mistake or memory intent', async (t) => {

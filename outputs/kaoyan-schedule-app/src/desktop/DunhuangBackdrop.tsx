@@ -212,6 +212,10 @@ export function DunhuangBackdrop() {
     };
 
     const draw = (now: number) => {
+      animationId = 0;
+      if (document.hidden) {
+        return;
+      }
       const delta = clamp((now - previous) / (1000 / 60), 0.25, 2.5);
       previous = now;
       context.clearRect(0, 0, width, height);
@@ -222,8 +226,7 @@ export function DunhuangBackdrop() {
       }
       pointer.energy *= Math.pow(0.9, delta);
 
-      if (!document.hidden) {
-        for (let index = particles.length - 1; index >= 0; index -= 1) {
+      for (let index = particles.length - 1; index >= 0; index -= 1) {
           const particle = particles[index];
           particle.phase += particle.phaseSpeed * delta;
 
@@ -271,10 +274,24 @@ export function DunhuangBackdrop() {
           context.beginPath();
           context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
           context.fill();
-        }
       }
 
       animationId = window.requestAnimationFrame(draw);
+    };
+
+    const startAnimation = () => {
+      if (document.hidden || animationId !== 0) return;
+      previous = performance.now();
+      animationId = window.requestAnimationFrame(draw);
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (animationId !== 0) window.cancelAnimationFrame(animationId);
+        animationId = 0;
+      } else {
+        startAnimation();
+      }
     };
 
     resize();
@@ -283,7 +300,8 @@ export function DunhuangBackdrop() {
     window.addEventListener('pointermove', onPointerMove, { passive: true });
     window.addEventListener('blur', deactivatePointer);
     document.addEventListener('mouseleave', deactivatePointer);
-    animationId = window.requestAnimationFrame(draw);
+    document.addEventListener('visibilitychange', handleVisibility);
+    startAnimation();
 
     return () => {
       window.cancelAnimationFrame(animationId);
@@ -291,6 +309,7 @@ export function DunhuangBackdrop() {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('blur', deactivatePointer);
       document.removeEventListener('mouseleave', deactivatePointer);
+      document.removeEventListener('visibilitychange', handleVisibility);
     };
   }, []);
 

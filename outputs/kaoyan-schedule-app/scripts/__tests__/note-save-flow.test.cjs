@@ -269,6 +269,32 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
     assert.equal(metadataIndex.filter((item) => item.noteUid === payload.noteUid).length, 1);
     const learningData = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'learning-data.json'), 'utf8'));
     assert.equal(learningData.cards.filter((card) => card.noteUid === payload.noteUid && card.kind === 'mistake').length, 1);
+
+    const correctionResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patch: {
+          subject: '线性代数',
+          knowledgePath: ['线性代数', '矩阵秩'],
+          questionType: '计算题',
+          wrongReason: '初等变换出错',
+          organizationStatus: 'confirmed',
+        },
+      }),
+    });
+    const correctedSnapshot = await correctionResponse.json();
+    assert.equal(correctionResponse.status, 200);
+    const correctedNote = Object.values(correctedSnapshot.days)
+      .flatMap((day) => day.autoNotes)
+      .find((note) => note.noteUid === payload.noteUid);
+    assert.equal(correctedNote.subject, '线性代数');
+    assert.deepEqual(correctedNote.knowledgePath, ['线性代数', '矩阵秩']);
+    assert.equal(correctedNote.classificationSource, 'manual');
+    assert.equal(path.basename(path.dirname(correctedNote.filePath)), '线性代数');
+    assert.ok(fs.existsSync(correctedNote.filePath));
+    assert.equal(fs.existsSync(completed.filePath), false);
+    assert.equal(correctedSnapshot.cards.find((card) => card.noteUid === payload.noteUid).subject, '线性代数');
   } finally {
     await stopChild(child);
     await new Promise((resolve) => fakeAi.close(resolve));

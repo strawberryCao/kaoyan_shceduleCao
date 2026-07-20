@@ -14,6 +14,13 @@ const {
   sanitizeCategoryName,
   saveTaxonomyAtomic,
 } = require('./note-taxonomy.cjs');
+const {
+  AI_FALLBACK_SUBJECT,
+  canonicalAiSubject,
+  isDefaultBucket,
+  pruneUnknownAiSubjects,
+  resolveAiSubject,
+} = require('./ai-subject-policy.cjs');
 const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
 
 const ORGANIZER_VERSION = 1;
@@ -582,23 +589,29 @@ function makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, tags,
 }
 
 function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledgePoint) {
+  const previousLearning = metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {};
+  const keepsManualClassification = previousLearning.classificationSource === 'manual';
   const tags = [
     ...(metadata.tags?.manual || []),
     ...(metadata.tags?.explicit || []),
     ...(metadata.tags?.inferred || []),
   ];
   const uniqueTags = [...new Set(tags)];
-  const knowledgePath = [subject.name, ...(knowledgePoint ? [knowledgePoint.name] : [])];
+  const knowledgePath = keepsManualClassification && Array.isArray(previousLearning.knowledgePath)
+    ? previousLearning.knowledgePath
+    : [subject.name, ...(knowledgePoint ? [knowledgePoint.name] : [])];
   const pageRefs = makeLearningPageRefs(parsed);
   const intent = combinedIntent(parsed, analysis);
   if (intent.isMistake && !uniqueTags.includes('错题')) uniqueTags.push('错题');
   if (intent.shouldMemorize && !uniqueTags.includes('背诵')) uniqueTags.push('背诵');
-  if (analysis.questionType) {
-    const questionTypeTag = `题型:${analysis.questionType}`.slice(0, 40);
+  const questionType = keepsManualClassification ? previousLearning.questionType || null : analysis.questionType;
+  const wrongReason = keepsManualClassification ? previousLearning.wrongReason || null : analysis.wrongReason;
+  if (questionType) {
+    const questionTypeTag = `题型:${questionType}`.slice(0, 40);
     if (!uniqueTags.includes(questionTypeTag)) uniqueTags.push(questionTypeTag);
   }
-  if (analysis.wrongReason) {
-    const wrongReasonTag = `错因:${analysis.wrongReason}`.slice(0, 40);
+  if (wrongReason) {
+    const wrongReasonTag = `错因:${wrongReason}`.slice(0, 40);
     if (!uniqueTags.includes(wrongReasonTag)) uniqueTags.push(wrongReasonTag);
   }
   const noteType = intent.isMistake ? 'mistake' : intent.shouldMemorize ? 'memory' : intent.isQuestion ? 'question' : 'note';
@@ -613,8 +626,11 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     tags: uniqueTags,
     knowledgePath,
     noteType,
-    questionType: analysis.questionType,
-    wrongReason: analysis.wrongReason,
+    questionType,
+    wrongReason,
+    organizationStatus: keepsManualClassification || !isDefaultBucket(subject.name) ? 'confirmed' : 'pending',
+    classificationSource: keepsManualClassification ? 'manual' : 'ai',
+    pendingAiOrganization: false,
     intent,
     items: analysis.items,
     confidence: analysis.confidence,
@@ -649,9 +665,6 @@ async function organizeNotes(options = {}) {
   const statePath = path.resolve(options.statePath || path.join(assistantRoot, 'note-organizer-state.json'));
   const analyzer = options.analyzeNote || defaultAnalyzeNote;
   const analyzerVersion = String(options.analyzerVersion || analyzer.analyzerVersion || analyzer.name || 'injected-v1');
-  const minAutoCreateConfidence = Number.isFinite(Number(options.minAutoCreateConfidence))
-    ? Number(options.minAutoCreateConfidence)
-    : 0.82;
   const autoCreateCategories = options.autoCreateCategories !== false;
   const dryRun = options.dryRun === true;
   const cadenceMs = Number.isFinite(Number(options.cadenceMs)) ? Number(options.cadenceMs) : 72 * 60 * 60 * 1000;
@@ -732,50 +745,73 @@ async function organizeNotes(options = {}) {
           notesRoot,
         });
         const analysis = normalizeAnalysis(rawAnalysis, currentCategory);
-        const currentSubject = ensureSubject(taxonomy, currentCategory.subject, { createdBy: 'user' });
-        const currentPoint = currentCategory.knowledgePoint
-          ? ensureKnowledgePoint(taxonomy, currentSubject, currentCategory.knowledgePoint, { createdBy: 'user' })
-          : null;
-
-        let subject = resolveSubject(taxonomy, analysis.subject);
-        let needsReview = false;
-        const lowConfidenceCategoryChange = analysis.confidence < minAutoCreateConfidence
-          && (!subject || subject.id !== currentSubject.id);
-        if (lowConfidenceCategoryChange) {
-          subject = currentSubject;
-          needsReview = true;
-        } else if (!subject) {
-          if (autoCreateCategories && analysis.confidence >= minAutoCreateConfidence) {
-            subject = ensureSubject(taxonomy, analysis.subject, {
-              aliases: analysis.subjectAliases,
-              createdBy: 'ai',
-            });
-          } else {
-            subject = currentSubject;
-            needsReview = true;
+        const keepsManualClassification = metadata.learning?.classificationSource === 'manual';
+        let currentSubject = resolveSubject(taxonomy, currentCategory.subject);
+        if (keepsManualClassification) {
+          currentSubject = ensureSubject(taxonomy, currentCategory.subject, { createdBy: 'user' });
+          // A user choosing a legacy AI-created root takes ownership of it, so
+          // the end-of-run AI cleanup must not remove their manual category.
+          if (currentSubject.createdBy === 'ai') {
+            const timestamp = new Date().toISOString();
+            currentSubject.createdBy = 'user';
+            currentSubject.updatedAt = timestamp;
+            taxonomy.updatedAt = timestamp;
+          }
+        }
+        const currentSubjectIs408 = Boolean(canonicalAiSubject(currentSubject?.name));
+        const preservesUserOwnedPhysicalSubject = Boolean(
+          currentSubject
+          && currentSubject.createdBy === 'user'
+          && !currentSubjectIs408
+          && !isDefaultBucket(currentSubject.name)
+        );
+        let currentPoint = null;
+        if (currentSubject && currentCategory.knowledgePoint) {
+          if (keepsManualClassification || currentSubjectIs408 || isDefaultBucket(currentSubject.name)) {
+            currentPoint = ensureKnowledgePoint(taxonomy, currentSubject, currentCategory.knowledgePoint, { createdBy: 'user' });
+          } else if (preservesUserOwnedPhysicalSubject) {
+            // Compatibility-only roots keep an existing point but never gain a
+            // new AI-created point during organization.
+            currentPoint = resolveKnowledgePoint(currentSubject, currentCategory.knowledgePoint);
           }
         }
 
+        const subjectDecision = resolveAiSubject(taxonomy, {
+          requestedSubject: analysis.subject,
+          subjectAliases: analysis.subjectAliases,
+          currentSubject: currentCategory.subject,
+          knowledgePoint: analysis.knowledgePoint,
+          questionType: analysis.questionType,
+          title: analysis.title,
+          summary: analysis.summary,
+          tags: analysis.tags,
+          items: analysis.items,
+        });
+        const fallbackSubject = subjectDecision.node
+          || resolveSubject(taxonomy, AI_FALLBACK_SUBJECT)
+          || ensureSubject(taxonomy, AI_FALLBACK_SUBJECT, { createdBy: 'user' });
+        // Manual classifications may use any user-owned subject. AI output is
+        // restricted to an already-existing 408 subject or the fallback bucket;
+        // autoCreateCategories applies only to knowledge points below it.
+        const subject = keepsManualClassification || preservesUserOwnedPhysicalSubject
+          ? currentSubject
+          : fallbackSubject;
+        let needsReview = !keepsManualClassification && isDefaultBucket(subject.name);
+
         let knowledgePoint = null;
-        if (analysis.knowledgePoint) {
+        if (keepsManualClassification || preservesUserOwnedPhysicalSubject) {
+          knowledgePoint = currentPoint;
+        } else if (analysis.knowledgePoint && !isDefaultBucket(subject.name)) {
           knowledgePoint = resolveKnowledgePoint(subject, analysis.knowledgePoint);
-          const lowConfidencePointChange = analysis.confidence < minAutoCreateConfidence
-            && (!knowledgePoint || knowledgePoint.id !== currentPoint?.id);
-          if (lowConfidencePointChange) {
-            knowledgePoint = subject.id === currentSubject.id ? currentPoint : null;
-            needsReview = true;
-          } else if (!knowledgePoint) {
-            if (autoCreateCategories && analysis.confidence >= minAutoCreateConfidence) {
-              knowledgePoint = ensureKnowledgePoint(taxonomy, subject, analysis.knowledgePoint, {
-                aliases: analysis.knowledgePointAliases,
-                createdBy: 'ai',
-              });
-            } else {
-              knowledgePoint = subject.id === currentSubject.id ? currentPoint : null;
-              needsReview = true;
-            }
+          if (!knowledgePoint && autoCreateCategories) {
+            knowledgePoint = ensureKnowledgePoint(taxonomy, subject, analysis.knowledgePoint, {
+              aliases: analysis.knowledgePointAliases,
+              createdBy: 'ai',
+            });
+          } else if (!knowledgePoint && currentSubject && subject.id === currentSubject.id) {
+            knowledgePoint = currentPoint;
           }
-        } else if (!analysis.clearKnowledgePoint && subject.id === currentSubject.id) {
+        } else if (!analysis.clearKnowledgePoint && currentSubject && subject.id === currentSubject.id) {
           knowledgePoint = currentPoint;
         }
 
@@ -814,6 +850,13 @@ async function organizeNotes(options = {}) {
             memoryCard: analysis.memoryCard,
             intent: combinedIntent(parsed, analysis),
             items: analysis.items,
+            subjectPolicy: {
+              requested: analysis.subject,
+              resolved: subject.name,
+              reason: keepsManualClassification
+                ? 'manual'
+                : preservesUserOwnedPhysicalSubject ? 'current-user' : subjectDecision.reason,
+            },
             proposed: needsReview ? {
               subject: analysis.subject,
               knowledgePoint: analysis.knowledgePoint,
@@ -902,6 +945,7 @@ async function organizeNotes(options = {}) {
       }
     }
 
+    if (!dryRun) pruneUnknownAiSubjects(taxonomy);
     if (!dryRun && JSON.stringify(taxonomy.subjects) !== taxonomyBefore) {
       taxonomy = saveTaxonomyAtomic(taxonomyPath, taxonomy);
     }

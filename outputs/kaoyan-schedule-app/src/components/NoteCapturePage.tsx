@@ -5,6 +5,7 @@ import {
   Plus,
   RefreshCw,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { CanvasWorkspace, renderCanvasPreview, type CanvasWorkspaceHandle } from './CanvasWorkspace';
 import {
@@ -12,11 +13,18 @@ import {
   getCanvasCompletionIssues,
   parseCanvasDocument,
   type CanvasDocument,
+  type CanvasInkStroke,
 } from '../utils/canvasDocument';
 import {
+  CanvasSyncConflictError,
+  deleteCanvasProject,
+  getCanvasClientId,
   listCanvasProjects,
   loadCanvasProject,
   saveCanvasProject,
+  sendCanvasLiveStroke,
+  subscribeCanvasProjectEvents,
+  type CanvasProjectEvent,
   type CanvasProjectSummary,
 } from '../utils/canvasProjects';
 import { createNoteUid, saveNoteImage } from '../utils/notes';
@@ -29,6 +37,10 @@ const SAFE_CANVAS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 interface InitialCanvasState {
   document: CanvasDocument;
   restoredDraft: boolean;
+}
+
+interface CanvasSyncConflict {
+  actualRevision: number;
 }
 
 const createInitialCanvasState = (): InitialCanvasState => {
@@ -68,7 +80,11 @@ const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, rej
 });
 
 const hasCanvasContent = (document: CanvasDocument): boolean => (
-  document.images.length > 0 || document.texts.length > 0 || document.annotations.length > 0
+  document.images.length > 0
+  || document.texts.length > 0
+  || document.annotations.length > 0
+  || document.relations.length > 0
+  || document.strokes.length > 0
 );
 
 const canvasSemanticFingerprint = (document: CanvasDocument, publishRemark: string): string => JSON.stringify({
@@ -82,6 +98,8 @@ const canvasSemanticFingerprint = (document: CanvasDocument, publishRemark: stri
   texts: document.texts,
   anchors: document.anchors,
   annotations: document.annotations,
+  relations: document.relations ?? [],
+  strokes: document.strokes ?? [],
 });
 
 const formatProjectTime = (value: string): string => {
@@ -105,8 +123,12 @@ export function NoteCapturePage() {
   const changeSequenceRef = useRef(0);
   const publishingRef = useRef(false);
   const persistInFlightRef = useRef(false);
+  const projectsRefreshInFlightRef = useRef(false);
   const activeCanvasIdRef = useRef(initialCanvasStateRef.current.document.id);
   const openRequestSequenceRef = useRef(0);
+  const canvasClientIdRef = useRef(getCanvasClientId());
+  const syncedRevisionRef = useRef(initialCanvasStateRef.current.document.syncRevision);
+  const canvasDirtyRef = useRef(initialCanvasStateRef.current.restoredDraft);
 
   const [canvasDocument, setCanvasDocument] = useState<CanvasDocument>(() => initialCanvasStateRef.current!.document);
   const [workspaceRevision, setWorkspaceRevision] = useState(0);
@@ -114,11 +136,18 @@ export function NoteCapturePage() {
   const [canvasMessage, setCanvasMessage] = useState('');
   const [canvasDirty, setCanvasDirty] = useState(() => initialCanvasStateRef.current!.restoredDraft);
   const [canvasSaving, setCanvasSaving] = useState(false);
+  const [canvasDeleting, setCanvasDeleting] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>('saved');
   const [projects, setProjects] = useState<CanvasProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectsError, setProjectsError] = useState('');
   const [selectedProjectId, setSelectedProjectId] = useState('');
+  const [syncConflict, setSyncConflict] = useState<CanvasSyncConflict | null>(null);
+
+  useEffect(() => {
+    canvasDirtyRef.current = canvasDirty;
+  }, [canvasDirty]);
 
   const updateLocation = useCallback((target?: { projectId?: string; draftId?: string }) => {
     const url = new URL(window.location.href);
@@ -132,12 +161,17 @@ export function NoteCapturePage() {
   }, []);
 
   const refreshProjects = useCallback(async () => {
+    if (projectsRefreshInFlightRef.current) return;
+    projectsRefreshInFlightRef.current = true;
     setProjectsLoading(true);
     try {
       setProjects(await listCanvasProjects());
+      setProjectsError('');
+      setCanvasMessage((current) => /^(failed to fetch|networkerror\b)/i.test(current.trim()) ? '' : current);
     } catch (error) {
-      setCanvasMessage(error instanceof Error ? error.message : '读取画布列表失败。');
+      setProjectsError(error instanceof Error ? error.message : '读取画布列表失败，正在自动重试。');
     } finally {
+      projectsRefreshInFlightRef.current = false;
       setProjectsLoading(false);
     }
   }, []);
@@ -145,33 +179,51 @@ export function NoteCapturePage() {
   const installCanvasDocument = useCallback((serverDocument: CanvasDocument) => {
     let document = serverDocument;
     let restoredLocalChanges = false;
+    let conflictingRevision: number | null = null;
+    const serverRemark = serverDocument.publishRemark ?? '';
     try {
       const savedDraft = localStorage.getItem(`kaoyan.canvas.draft.v1.${serverDocument.id}`);
       if (savedDraft) {
         const localDraft = parseCanvasDocument(savedDraft);
-        if (localDraft.id === serverDocument.id && localDraft.updatedAt > serverDocument.updatedAt) {
+        const localRemark = localStorage.getItem(`${CANVAS_REMARK_KEY_PREFIX}${serverDocument.id}`)
+          ?? localDraft.publishRemark
+          ?? '';
+        const localHasUnsavedContent = canvasSemanticFingerprint(localDraft, localRemark)
+          !== canvasSemanticFingerprint(serverDocument, serverRemark);
+        if (localDraft.id === serverDocument.id && localHasUnsavedContent) {
           document = localDraft;
           restoredLocalChanges = true;
+          if (localDraft.syncRevision !== serverDocument.syncRevision) {
+            conflictingRevision = serverDocument.syncRevision;
+          }
         }
       }
     } catch {
       // Ignore an invalid local copy and keep the server project usable.
     }
-    const serverRemark = serverDocument.publishRemark ?? '';
     const localRemark = localStorage.getItem(`${CANVAS_REMARK_KEY_PREFIX}${serverDocument.id}`);
-    const remark = localRemark ?? document.publishRemark ?? serverRemark;
-    if (localRemark !== null && localRemark !== serverRemark) restoredLocalChanges = true;
+    const remark = document === serverDocument
+      ? serverRemark
+      : (localRemark ?? document.publishRemark ?? serverRemark);
+    if (
+      document !== serverDocument
+      && localRemark !== null
+      && localRemark !== serverRemark
+    ) restoredLocalChanges = true;
 
     changeSequenceRef.current += 1;
     activeCanvasIdRef.current = document.id;
+    syncedRevisionRef.current = serverDocument.syncRevision;
+    canvasDirtyRef.current = restoredLocalChanges;
     setCanvasDocument(document);
     setCanvasRemark(remark);
     setSelectedProjectId(document.id);
     setCanvasDirty(restoredLocalChanges);
+    setSyncConflict(conflictingRevision === null ? null : { actualRevision: conflictingRevision });
     setWorkspaceRevision((value) => value + 1);
     localStorage.removeItem(LAST_CANVAS_DRAFT_KEY);
     updateLocation({ projectId: document.id });
-    return { document, restoredLocalChanges };
+    return { document, restoredLocalChanges, syncConflict: conflictingRevision !== null };
   }, [updateLocation]);
 
   const openCanvasProject = useCallback(async (projectId: string, confirmDiscard = true) => {
@@ -185,8 +237,10 @@ export function NoteCapturePage() {
       const document = await loadCanvasProject(projectId);
       if (requestSequence !== openRequestSequenceRef.current) return;
       const installed = installCanvasDocument(document);
-      setCanvasMessage(installed.restoredLocalChanges
-        ? `已打开“${installed.document.title || '未命名画布'}”，并恢复了本机未保存修改。`
+      setCanvasMessage(installed.syncConflict
+        ? `已恢复“${installed.document.title || '未命名画布'}”的本机修改；另一台设备也有新版本，请选择保留哪一份。`
+        : installed.restoredLocalChanges
+          ? `已打开“${installed.document.title || '未命名画布'}”，并恢复了本机未保存修改。`
         : `已打开“${installed.document.title || '未命名画布'}”，可以继续编辑。`);
     } catch (error) {
       if (requestSequence !== openRequestSequenceRef.current) return;
@@ -199,10 +253,13 @@ export function NoteCapturePage() {
             if (fallback.id !== projectId) throw new Error('草稿编号不一致。');
             changeSequenceRef.current += 1;
             activeCanvasIdRef.current = fallback.id;
+            syncedRevisionRef.current = fallback.syncRevision;
+            canvasDirtyRef.current = true;
             setCanvasDocument(fallback);
             setCanvasRemark(readCanvasRemark(fallback));
             setSelectedProjectId('');
             setCanvasDirty(true);
+            setSyncConflict(null);
             setWorkspaceRevision((value) => value + 1);
             localStorage.setItem(LAST_CANVAS_DRAFT_KEY, projectId);
             updateLocation({ draftId: projectId });
@@ -220,6 +277,14 @@ export function NoteCapturePage() {
   useEffect(() => {
     void refreshProjects();
   }, [refreshProjects]);
+
+  useEffect(() => {
+    if (!projectsError) return undefined;
+    const timer = window.setInterval(() => {
+      void refreshProjects();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [projectsError, refreshProjects]);
 
   useEffect(() => {
     if (initialProjectAttemptedRef.current) return;
@@ -243,12 +308,15 @@ export function NoteCapturePage() {
     if (persistInFlightRef.current) throw new Error('画布工程正在保存，请稍候。');
     const expectedSequence = options?.expectedSequence ?? changeSequenceRef.current;
     const remark = options?.remark ?? canvasRemark;
-    const snapshot: CanvasDocument = { ...document, publishRemark: remark };
+    const expectedRevision = syncedRevisionRef.current;
+    const snapshot: CanvasDocument = { ...document, publishRemark: remark, syncRevision: expectedRevision };
     try {
       persistInFlightRef.current = true;
       setCanvasSaving(true);
-      const result = await saveCanvasProject(snapshot);
+      const result = await saveCanvasProject(snapshot, expectedRevision, canvasClientIdRef.current);
       const savedDocument = result.document!;
+      syncedRevisionRef.current = savedDocument.syncRevision;
+      workspaceRef.current?.acknowledgeSyncRevision(savedDocument.syncRevision);
       localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${savedDocument.id}`, remark);
       const changedWhileSaving = changeSequenceRef.current !== expectedSequence;
       const sameWorkspace = activeCanvasIdRef.current === savedDocument.id;
@@ -259,12 +327,15 @@ export function NoteCapturePage() {
         }
         updateLocation({ projectId: savedDocument.id });
         if (!changedWhileSaving) {
+          canvasDirtyRef.current = false;
           setCanvasDocument(savedDocument);
           setCanvasDirty(false);
         } else {
+          canvasDirtyRef.current = true;
           setCanvasDirty(true);
         }
       }
+      setSyncConflict(null);
       if (announce && sameWorkspace) setCanvasMessage(changedWhileSaving
           ? '请求开始时的版本已保存；保存期间的新修改仍待 Ctrl+S 保存。'
           : `可编辑工程“${savedDocument.title || '未命名画布'}”已保存；没有调用 AI。`);
@@ -272,7 +343,16 @@ export function NoteCapturePage() {
       return savedDocument;
     } catch (error) {
       if (activeCanvasIdRef.current === snapshot.id) {
-        setCanvasMessage(error instanceof Error ? error.message : '保存画布工程失败。');
+        if (error instanceof CanvasSyncConflictError) {
+          setSyncConflict((current) => ({
+            actualRevision: Math.max(current?.actualRevision ?? 0, error.actualRevision),
+          }));
+          canvasDirtyRef.current = true;
+          setCanvasDirty(true);
+          setCanvasMessage('另一台设备已更新这个画布。为避免覆盖，自动同步已暂停，请选择要保留的版本。');
+        } else {
+          setCanvasMessage(error instanceof Error ? error.message : '保存画布工程失败。');
+        }
       }
       throw error;
     } finally {
@@ -281,23 +361,187 @@ export function NoteCapturePage() {
     }
   }, [canvasRemark, refreshProjects, updateLocation]);
 
-  const createNewCanvas = () => {
-    if (canvasDirty && !window.confirm('当前画布有未保存修改。建议先按 Ctrl+S 保存工程；仍要新建并离开这些修改吗？')) {
-      return;
+  const applyRemoteProjectRevision = useCallback(async (
+    projectId: string,
+    announcedRevision: number,
+    discardLocalChanges = false,
+  ): Promise<boolean> => {
+    if (!projectId || activeCanvasIdRef.current !== projectId) return false;
+    if (
+      persistInFlightRef.current
+      || workspaceRef.current?.isInteractionActive()
+      || (!discardLocalChanges && canvasDirtyRef.current)
+    ) {
+      setSyncConflict((current) => ({
+        actualRevision: Math.max(current?.actualRevision ?? 0, announcedRevision),
+      }));
+      setCanvasMessage('另一台设备已更新这个画布。当前设备也有操作，自动同步已暂停以免覆盖。');
+      return false;
     }
+
+    try {
+      const remoteDocument = await loadCanvasProject(projectId);
+      if (activeCanvasIdRef.current !== projectId) return false;
+      if (remoteDocument.syncRevision < announcedRevision) return false;
+      if (!discardLocalChanges && remoteDocument.syncRevision <= syncedRevisionRef.current) return true;
+      if (!workspaceRef.current?.applyRemoteDocument(remoteDocument)) {
+        setSyncConflict((current) => ({
+          actualRevision: Math.max(current?.actualRevision ?? 0, remoteDocument.syncRevision),
+        }));
+        setCanvasMessage('检测到另一台设备的新版本；请先抬起 Apple Pencil 或结束文字编辑，再选择同步版本。');
+        return false;
+      }
+
+      const remoteRemark = remoteDocument.publishRemark ?? '';
+      changeSequenceRef.current += 1;
+      syncedRevisionRef.current = remoteDocument.syncRevision;
+      canvasDirtyRef.current = false;
+      setCanvasDocument(remoteDocument);
+      setCanvasRemark(remoteRemark);
+      setCanvasDirty(false);
+      setSyncConflict(null);
+      setSelectedProjectId(remoteDocument.id);
+      localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${remoteDocument.id}`, remoteRemark);
+      setCanvasMessage('已实时同步另一台设备上的最新修改。');
+      void refreshProjects();
+      return true;
+    } catch (error) {
+      setCanvasMessage(error instanceof Error ? error.message : '同步另一台设备的修改失败。');
+      return false;
+    }
+  }, [refreshProjects]);
+
+  const relayLiveInkStroke = useCallback((stroke: CanvasInkStroke) => {
+    void sendCanvasLiveStroke(activeCanvasIdRef.current, stroke, canvasClientIdRef.current).catch(() => {
+      // The revisioned full-document autosave remains the reliable fallback.
+    });
+  }, []);
+
+  useEffect(() => subscribeCanvasProjectEvents(
+    (event: CanvasProjectEvent) => {
+      if (event.sourceClientId === canvasClientIdRef.current) return;
+      if (event.projectId !== activeCanvasIdRef.current) return;
+      if (event.type === 'deleted') {
+        canvasDirtyRef.current = false;
+        setCanvasDirty(false);
+        setSelectedProjectId('');
+        setSyncConflict(null);
+        localStorage.setItem(LAST_CANVAS_DRAFT_KEY, event.projectId);
+        updateLocation({ draftId: event.projectId });
+        setCanvasMessage('另一台设备删除了这个工程；当前内容暂留为本机草稿，可继续编辑或删除。');
+        void refreshProjects();
+        return;
+      }
+      if (event.type === 'live-stroke') {
+        if (canvasDirtyRef.current || persistInFlightRef.current) return;
+        workspaceRef.current?.applyRemoteInkStroke(event.stroke);
+        return;
+      }
+      void refreshProjects();
+      if (event.revision <= syncedRevisionRef.current) return;
+      void applyRemoteProjectRevision(event.projectId, event.revision);
+    },
+    (connected) => {
+      if (!connected || !selectedProjectId || canvasDirtyRef.current || persistInFlightRef.current) return;
+      void loadCanvasProject(selectedProjectId).then((remoteDocument) => {
+        if (remoteDocument.syncRevision <= syncedRevisionRef.current) return;
+        return applyRemoteProjectRevision(selectedProjectId, remoteDocument.syncRevision);
+      }).catch(() => undefined);
+    },
+  ), [applyRemoteProjectRevision, refreshProjects, selectedProjectId, updateLocation]);
+
+  useEffect(() => {
+    if (!canvasDirty || syncConflict || publishing || canvasDeleting) return undefined;
+    const requestedProjectId = new URLSearchParams(window.location.search).get('canvasProject');
+    if (requestedProjectId && selectedProjectId !== requestedProjectId) return undefined;
+    const timer = window.setTimeout(() => {
+      if (persistInFlightRef.current || publishingRef.current) return;
+      const document = workspaceRef.current?.getDocument();
+      if (!document || document.id !== activeCanvasIdRef.current) return;
+      const expectedSequence = changeSequenceRef.current;
+      void persistCanvasDocument(document, false, { expectedSequence, remark: canvasRemark }).catch(() => undefined);
+    }, canvasSaving ? 650 : 180);
+    return () => window.clearTimeout(timer);
+  }, [canvasDeleting, canvasDirty, canvasDocument, canvasRemark, canvasSaving, persistCanvasDocument, publishing, selectedProjectId, syncConflict]);
+
+  const useRemoteCanvasVersion = useCallback(() => {
+    if (!syncConflict) return;
+    void applyRemoteProjectRevision(activeCanvasIdRef.current, syncConflict.actualRevision, true);
+  }, [applyRemoteProjectRevision, syncConflict]);
+
+  const keepLocalCanvasVersion = useCallback(() => {
+    if (!syncConflict) return;
+    syncedRevisionRef.current = syncConflict.actualRevision;
+    workspaceRef.current?.acknowledgeSyncRevision(syncConflict.actualRevision);
+    canvasDirtyRef.current = true;
+    setCanvasDirty(true);
+    setSyncConflict(null);
+    setCanvasMessage('将保留本机版本；正在把它同步到其他设备。');
+  }, [syncConflict]);
+
+  const removeLocalCanvasData = (canvasId: string) => {
+    localStorage.removeItem(`kaoyan.canvas.draft.v1.${canvasId}`);
+    localStorage.removeItem(`${CANVAS_REMARK_KEY_PREFIX}${canvasId}`);
+    if (localStorage.getItem(LAST_CANVAS_DRAFT_KEY) === canvasId) {
+      localStorage.removeItem(LAST_CANVAS_DRAFT_KEY);
+    }
+  };
+
+  const resetToBlankCanvas = (message: string) => {
     openRequestSequenceRef.current += 1;
     const document = createEmptyCanvasDocument('未命名画布');
     changeSequenceRef.current += 1;
     activeCanvasIdRef.current = document.id;
+    syncedRevisionRef.current = document.syncRevision;
+    canvasDirtyRef.current = false;
+    lastPublishedFingerprintRef.current = null;
+    publishOperationRef.current = null;
     setCanvasDocument(document);
     setSelectedProjectId('');
     setCanvasDirty(false);
+    setSyncConflict(null);
     setCanvasRemark('');
     setWorkspaceRevision((value) => value + 1);
-    setCanvasMessage('已新建空白画布。拖入图片，或按 I 选择图片。');
+    setCanvasMessage(message);
     localStorage.setItem(LAST_CANVAS_DRAFT_KEY, document.id);
     localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${document.id}`, '');
     updateLocation({ draftId: document.id });
+  };
+
+  const createNewCanvas = () => {
+    if (canvasDirty && !window.confirm('当前画布有未保存修改。建议先按 Ctrl+S 保存工程；仍要新建并离开这些修改吗？')) {
+      return;
+    }
+    resetToBlankCanvas('已新建空白画布。拖入图片，或按 I 选择图片。');
+  };
+
+  const deleteCurrentCanvas = async () => {
+    if (canvasDeleting || canvasSaving || publishing) return;
+    const document = workspaceRef.current?.getDocument() ?? canvasDocument;
+    const label = document.title || '未命名画布';
+    if (selectedProjectId) {
+      if (!window.confirm(`确定删除画布工程“${label}”吗？删除后不会再出现在“我的画布”中。`)) return;
+      const wasDirty = canvasDirtyRef.current;
+      try {
+        setCanvasDeleting(true);
+        canvasDirtyRef.current = false;
+        setCanvasDirty(false);
+        await deleteCanvasProject(selectedProjectId, syncedRevisionRef.current, canvasClientIdRef.current);
+        removeLocalCanvasData(selectedProjectId);
+        resetToBlankCanvas(`已删除“${label}”。工程已移到本机回收目录，需要时仍可恢复。`);
+        await refreshProjects();
+      } catch (error) {
+        canvasDirtyRef.current = wasDirty;
+        setCanvasDirty(wasDirty);
+        setCanvasMessage(error instanceof Error ? error.message : '删除画布工程失败。');
+      } finally {
+        setCanvasDeleting(false);
+      }
+      return;
+    }
+    if (!window.confirm(`确定删除未保存画布“${label}”吗？这会清除这台设备上的草稿。`)) return;
+    removeLocalCanvasData(document.id);
+    resetToBlankCanvas(`已删除未保存画布“${label}”。`);
   };
 
   const publishCanvas = async () => {
@@ -359,6 +603,7 @@ export function NoteCapturePage() {
   const updateCanvasRemark = (value: string) => {
     changeSequenceRef.current += 1;
     setCanvasRemark(value);
+    canvasDirtyRef.current = true;
     setCanvasDirty(true);
     localStorage.setItem(`${CANVAS_REMARK_KEY_PREFIX}${canvasDocument.id}`, value);
   };
@@ -377,6 +622,7 @@ export function NoteCapturePage() {
   };
 
   const selectedMissingFromList = selectedProjectId && !projects.some((project) => project.id === selectedProjectId);
+  const visibleMessage = projectsError || canvasMessage;
   return (
     <main
       className="note-capture-page canvas-mode"
@@ -384,19 +630,19 @@ export function NoteCapturePage() {
     >
       <header className="note-app-bar">
         <div className="note-app-identity"><Clipboard size={16} aria-hidden="true" /><strong>画布</strong></div>
-        {canvasMessage && <p className="note-app-status" title={canvasMessage} aria-live="polite">{canvasMessage}</p>}
+        {visibleMessage && <p className="note-app-status" title={visibleMessage} aria-live="polite">{visibleMessage}</p>}
       </header>
 
       <section className="note-capture-layout is-canvas">
           <section className="canvas-project-shell">
             <div className="canvas-project-bar">
-              <button type="button" onClick={createNewCanvas} disabled={canvasSaving || publishing}><Plus size={15} /> 新建画布</button>
+              <button type="button" onClick={createNewCanvas} disabled={canvasSaving || canvasDeleting || publishing}><Plus size={15} /> 新建画布</button>
               <label className="canvas-project-picker">
                 <FolderOpen size={16} />
                 <select
                   aria-label="打开我的画布"
                   value={selectedProjectId}
-                  disabled={projectsLoading || canvasSaving || publishing}
+                  disabled={projectsLoading || canvasSaving || canvasDeleting || publishing}
                   onChange={(event) => {
                     const projectId = event.target.value;
                     if (projectId) void openCanvasProject(projectId);
@@ -407,7 +653,7 @@ export function NoteCapturePage() {
                   {selectedMissingFromList && <option value={selectedProjectId}>当前工程</option>}
                   {projects.map((project) => (
                     <option key={project.id} value={project.id}>
-                      {project.title || '未命名画布'} · {project.imageCount} 图 · {formatProjectTime(project.updatedAt)}
+                      {project.title || '未命名画布'} · {project.strokeCount ?? 0} 笔 · {project.imageCount} 图 · {formatProjectTime(project.updatedAt)}
                     </option>
                   ))}
                 </select>
@@ -415,11 +661,26 @@ export function NoteCapturePage() {
               <button type="button" onClick={() => void refreshProjects()} disabled={projectsLoading} title="刷新我的画布">
                 <RefreshCw size={15} className={projectsLoading ? 'is-spinning' : ''} /> 刷新
               </button>
+              <button className="canvas-delete-button" type="button" onClick={() => void deleteCurrentCanvas()} disabled={canvasSaving || canvasDeleting || publishing} title={selectedProjectId ? '删除当前工程' : '删除当前未保存草稿'}>
+                <Trash2 size={15} /> {canvasDeleting ? '删除中' : '删除'}
+              </button>
               <div className="canvas-project-state" aria-live="polite">
                 {selectedProjectId && (
-                  <span className={canvasDirty ? 'is-dirty' : ''}>
-                    {canvasSaving ? '工程保存中' : canvasDirty ? '有未保存修改' : '工程已同步'}
+                  <span className={canvasDirty || syncConflict ? 'is-dirty' : ''}>
+                    {canvasSaving
+                      ? '工程保存中'
+                      : syncConflict
+                        ? '检测到跨设备冲突'
+                        : canvasDirty
+                          ? '等待自动同步'
+                          : '工程已实时同步'}
                   </span>
+                )}
+                {syncConflict && (
+                  <>
+                    <button type="button" onClick={useRemoteCanvasVersion} disabled={canvasSaving}>载入另一设备</button>
+                    <button type="button" onClick={keepLocalCanvasVersion} disabled={canvasSaving}>保留本机版本</button>
+                  </>
                 )}
                 {draftStatus === 'failed' && <span className="is-error">本机草稿空间不足，请按 Ctrl+S 保存工程</span>}
               </div>
@@ -430,6 +691,8 @@ export function NoteCapturePage() {
               ref={workspaceRef}
               initialDocument={canvasDocument}
               draftKey={`kaoyan.canvas.draft.v1.${canvasDocument.id}`}
+              onInkStrokePreview={relayLiveInkStroke}
+              onInkStrokeCommit={relayLiveInkStroke}
               onChange={(document) => {
                 changeSequenceRef.current += 1;
                 if (activeCanvasIdRef.current !== document.id) {
@@ -440,6 +703,7 @@ export function NoteCapturePage() {
                   updateLocation({ draftId: document.id });
                 }
                 setCanvasDocument(document);
+                canvasDirtyRef.current = true;
                 setCanvasDirty(true);
                 if (!selectedProjectId) localStorage.setItem(LAST_CANVAS_DRAFT_KEY, document.id);
               }}

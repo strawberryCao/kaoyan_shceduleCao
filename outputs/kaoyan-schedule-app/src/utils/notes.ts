@@ -28,7 +28,16 @@ export interface SaveNoteResult {
   error?: string;
 }
 
-export const NOTE_SERVER_URL = 'http://127.0.0.1:5174';
+const resolveNoteServerUrl = (): string => {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:5174';
+  const hostname = window.location.hostname.toLowerCase();
+  const loopback = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
+  return loopback || window.location.protocol === 'file:'
+    ? 'http://127.0.0.1:5174'
+    : `${window.location.origin}/api`;
+};
+
+export const NOTE_SERVER_URL = resolveNoteServerUrl();
 const NOTE_SAVE_TIMEOUT_MS = 15_000;
 
 export const createNoteUid = () => {
