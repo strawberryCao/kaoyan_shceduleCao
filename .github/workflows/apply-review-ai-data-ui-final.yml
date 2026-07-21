@@ -1,0 +1,68 @@
+name: Apply final review AI data UI
+
+on:
+  pull_request:
+    branches:
+      - fix/learning-detail-title-latex
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-final-review-ai-data-ui
+  cancel-in-progress: false
+
+jobs:
+  patch-build-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: chore/review-ai-data-ui-final
+          fetch-depth: 0
+
+      - name: Apply data and UI improvements
+        run: |
+          if ! (python3 .github/scripts/apply-review-ai-data-final.py && python3 .github/scripts/apply-review-ai-frontend-final.py) > /tmp/review-ai-final.log 2>&1; then
+            cat /tmp/review-ai-final.log
+            exit 1
+          fi
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-ai-final-diagnostics
+          path: /tmp/review-ai-final.log
+          if-no-files-found: ignore
+
+      - name: Syntax checks
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node --check scripts/organize-notes.cjs
+          node --check scripts/learning-data-store.cjs
+          node --check scripts/note-server.cjs
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Type-check and build
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit validated implementation
+        run: |
+          rm -f .github/scripts/apply-review-ai-data-final.py
+          rm -f .github/scripts/apply-review-ai-frontend-final.py
+          rm -f .github/workflows/apply-review-ai-data-ui-final.yml
+          rm -f .github/review-ai-trigger.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/kaoyan-schedule-app .github
+          git commit -m "feat: add editable AI wrong-reason analysis"
+          git push origin HEAD:fix/learning-detail-title-latex
