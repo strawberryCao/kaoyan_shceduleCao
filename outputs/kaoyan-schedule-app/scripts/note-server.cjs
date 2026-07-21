@@ -4,13 +4,24 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createAiRouter } = require('./ai-router.cjs');
+const {
+  AI_TASK_DEFINITIONS,
+  TASK_PARAMETER_DEFINITIONS,
+  TASK_PROFILES,
+  createAiRouter,
+  loadAiProviderConfigs,
+  normalizeTaskConfigurations,
+} = require('./ai-router.cjs');
 const {
   CanvasDocumentStoreError,
   CanvasDocumentValidationError,
   assertCanvasId,
   createCanvasDocumentStore,
 } = require('./canvas-document-store.cjs');
+const {
+  analyzeCanvasOrganization,
+  applyCanvasOrganization,
+} = require('./canvas-ai-organizer.cjs');
 const { createLearningDataStore, formatDateInTimeZone, LearningDataConflictError } = require('./learning-data-store.cjs');
 const { resolveNoteImage, revealNoteImage } = require('./note-file-access.cjs');
 const {
@@ -32,6 +43,8 @@ const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
 const AI_PROVIDER_CONFIG_PATH = process.env.KAOYAN_AI_CONFIG_PATH || path.join(ASSISTANT_ROOT, 'ai-providers.json');
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
 const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
+const ACTIVE_CANVAS_MAX_BODY_BYTES = 16 * 1024;
+const CANVAS_AI_MAX_BODY_BYTES = 9 * 1024 * 1024;
 const LIVE_STROKE_MAX_POINTS = 4096;
 const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
@@ -45,12 +58,16 @@ const canvasProjects = createCanvasDocumentStore({
 const canvasEventClients = new Set();
 const layoutEventClients = new Set();
 const learningEventClients = new Set();
+let activeCanvasSelection = null;
+let activeCanvasSelectionRevision = 0;
 let noteAppReadyAt = null;
 let aiRouter = null;
 let aiRouterInitError = null;
 let aiRouterConfigStamp = null;
 let aiNamingQueue = Promise.resolve();
 const aiNamingJobs = new Map();
+let canvasOrganizationQueue = Promise.resolve();
+const canvasOrganizationJobs = new Map();
 
 function getFileStamp(filePath) {
   try {
@@ -77,6 +94,105 @@ function getAiRouter() {
 
 getAiRouter();
 
+function readAiConfigFile() {
+  if (!fs.existsSync(AI_PROVIDER_CONFIG_PATH)) return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(AI_PROVIDER_CONFIG_PATH, 'utf8'));
+  } catch (error) {
+    const configError = new SyntaxError(`AI 配置文件不是有效 JSON：${error instanceof Error ? error.message : String(error)}`);
+    configError.code = 'AI_CONFIG_INVALID';
+    throw configError;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    const configError = new SyntaxError('AI 配置文件的根节点必须是对象');
+    configError.code = 'AI_CONFIG_INVALID';
+    throw configError;
+  }
+  return parsed;
+}
+
+function getAiConfigurationSnapshot() {
+  const loaded = loadAiProviderConfigs({
+    configPath: AI_PROVIDER_CONFIG_PATH,
+    legacyQwenConfig: qwen,
+  });
+  const currentRouter = getAiRouter();
+  const status = currentRouter ? currentRouter.getStatus() : { providers: [], tasks: loaded.tasks };
+  let updatedAt = null;
+  try {
+    updatedAt = fs.statSync(AI_PROVIDER_CONFIG_PATH).mtime.toISOString();
+  } catch {
+    // A missing task configuration is a valid default state.
+  }
+  return {
+    ok: true,
+    updatedAt,
+    taskDefinitions: Object.entries(AI_TASK_DEFINITIONS).map(([id, definition]) => ({
+      id,
+      ...definition,
+      defaults: {
+        difficulty: TASK_PROFILES[id]?.difficulty || TASK_PROFILES.custom.difficulty,
+        capabilities: [...(TASK_PROFILES[id]?.capabilities || TASK_PROFILES.custom.capabilities)],
+      },
+      parameters: (TASK_PARAMETER_DEFINITIONS[id] || []).map((parameter) => ({
+        ...parameter,
+        ...(Array.isArray(parameter.options) ? { options: parameter.options.map((option) => ({ ...option })) } : {}),
+      })),
+    })),
+    tasks: normalizeTaskConfigurations(loaded.tasks),
+    providers: status.providers || [],
+    routing: loaded.routing,
+    error: currentRouter ? null : aiRouterInitError,
+  };
+}
+
+function validateTaskModelSelections(tasks, providers) {
+  const providerMap = new Map(providers.map((provider) => [provider.id, provider]));
+  for (const [taskId, task] of Object.entries(tasks)) {
+    if (!task.providerId && !task.modelId) continue;
+    const matchingProviders = task.providerId
+      ? [providerMap.get(task.providerId)].filter(Boolean)
+      : providers;
+    if (matchingProviders.length === 0) {
+      throw new SyntaxError(`${AI_TASK_DEFINITIONS[taskId]?.label || taskId} 选择的 AI 供应商当前不可用`);
+    }
+    if (task.modelId && !matchingProviders.some((provider) => provider.models.some((model) => model.id === task.modelId))) {
+      throw new SyntaxError(`${AI_TASK_DEFINITIONS[taskId]?.label || taskId} 选择的模型当前不可用`);
+    }
+  }
+}
+
+function saveAiTaskConfigurations(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new SyntaxError('AI 任务配置必须是对象');
+  }
+  const tasks = normalizeTaskConfigurations(input);
+  const current = readAiConfigFile();
+  const next = { ...current, tasks };
+  const loaded = loadAiProviderConfigs({
+    configPath: AI_PROVIDER_CONFIG_PATH,
+    localConfig: next,
+    legacyQwenConfig: qwen,
+  });
+  validateTaskModelSelections(tasks, loaded.providers);
+  createAiRouter({ config: loaded });
+
+  fs.mkdirSync(path.dirname(AI_PROVIDER_CONFIG_PATH), { recursive: true });
+  const temporaryPath = `${AI_PROVIDER_CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+    fs.renameSync(temporaryPath, AI_PROVIDER_CONFIG_PATH);
+  } finally {
+    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  }
+  aiRouter = null;
+  aiRouterInitError = null;
+  aiRouterConfigStamp = null;
+  getAiRouter();
+  return getAiConfigurationSnapshot();
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
@@ -100,7 +216,9 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (queryKeys.length > 0) return false;
   if (method === 'GET' && pathname === '/canvas-projects') return true;
   if (method === 'GET' && pathname === '/canvas-projects/events') return true;
+  if (method === 'POST' && pathname === '/canvas-projects/active') return true;
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
+  if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
   if (method === 'POST' && pathname === '/save-note') return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
@@ -582,6 +700,7 @@ function guessSubjectFromText(text) {
     ['操作系统', ['操作系统', '进程', '线程', '死锁', '分页', '段页', '文件系统', '调度']],
     ['计算机网络', ['计算机网络', '计网', '网络', 'TCP', 'UDP', 'IP', 'HTTP', 'DNS', '路由', '拥塞', '流量控制']],
     ['英语', ['英语', '单词', '阅读', '翻译', '作文', '长难句']],
+    ['政治', ['政治', '考研政治', '思想政治', '马克思主义', '马原', '毛中特', '史纲', '思修', '时政']],
   ];
   for (const [subject, keywords] of rules) {
     if (keywords.some((keyword) => content.toLowerCase().includes(String(keyword).toLowerCase()))) {
@@ -602,22 +721,60 @@ function makeFallbackName({ kind, remark, subject }) {
   };
 }
 
+function applyNamingRuleTemplate(rule, value, subject, aiTitle) {
+  const template = String(rule?.titleTemplate || '{value}').slice(0, 240);
+  const rendered = template
+    .replace(/\{value\}/g, value)
+    .replace(/\{subject\}/g, subject)
+    .replace(/\{aiTitle\}/g, aiTitle);
+  return sanitizeSegment(rendered, value || aiTitle, 80);
+}
+
+function namingRulesForPrompt(rules) {
+  return rules.filter((rule) => rule.enabled !== false).map((rule) => ({
+    id: rule.id,
+    name: rule.name,
+    when: rule.when,
+    extract: rule.extract,
+    titleTemplate: rule.titleTemplate,
+    validationHint: rule.validationHint || '',
+  }));
+}
+
 async function generateNameWithAi({ imageDataUrl, kind, remark }) {
+  const router = getAiRouter();
+  const options = router?.getTaskOptions('note_naming') || {};
+  const titleMinLength = Math.max(4, Math.min(40, Number(options.titleMinLength) || 8));
+  const titleMaxLength = Math.max(titleMinLength, Math.min(80, Number(options.titleMaxLength) || 22));
+  const effectiveRemark = options.useRemark === false ? '' : remark;
+  const titleStyleText = {
+    knowledge_point: '优先使用知识点或核心概念名称',
+    question_type: '优先体现题型与考查动作',
+    source_wording: '优先贴近原图中的准确措辞',
+  }[options.titleStyle] || '优先使用知识点或核心概念名称';
+  const namingRules = namingRulesForPrompt(router?.getStatus()?.tasks?.note_naming?.namingRules || []);
   const prompt = [
     '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
     '要求：',
-    '1. 识别所属科目，只能从：高等数学、线性代数、概率论、数据结构、计算机组成、操作系统、计算机网络、英语、默认文件夹 中选择。',
-    '1.1 只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。不要因为不完全确定就退回默认。',
-    '2. title 用 8 到 22 个中文字符概括图片核心内容，不要出现“截图”“图片”“笔记”这类空泛词。',
+    '1. 识别所属科目，只能从：高等数学、线性代数、概率论、数据结构、计算机组成、操作系统、计算机网络、英语、政治、默认文件夹 中选择。',
+    options.preferSpecificSubject === false
+      ? '1.1 按图片内容选择科目；确实不清晰或跨科时可选择“默认文件夹”。'
+      : '1.1 只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。不要因为不完全确定就退回默认。',
+    `2. title 目标长度为 ${titleMinLength} 到 ${titleMaxLength} 个字符，${titleStyleText}。`,
     '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
     '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
-    '5. 只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据"}',
+    '5. 先逐条检查“字段命名规则”。只有图片中能直接看到规则要求的标签及对应值时才算匹配，严禁用相似编号、日期或其他字段猜测。',
+    '6. 如果匹配规则：ruleId 填规则 id，ruleValue 填原图中提取到的字段值，ruleEvidence 简述标签和值的位置；title 仍给出普通内容标题。程序会根据模板生成最终标题。',
+    options.rejectGenericTitle === false
+      ? '7. 如果没有规则匹配：ruleId、ruleValue、ruleEvidence 都输出空字符串；title 应尽量给出具体可见主题。'
+      : '7. 如果没有规则匹配：ruleId、ruleValue、ruleEvidence 都输出空字符串。禁止输出“待识别”“无法识别”“未知内容”“截图”“图片笔记”作为 title；应给出图片中最具体的可见主题。',
+    '8. 只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据","ruleId":"匹配规则id或空字符串","ruleValue":"提取值或空字符串","ruleEvidence":"原图证据或空字符串"}',
     `保存类型：${kind === 'canvas' ? '多图画布' : '单图'}`,
-    `用户备注：${remark || '无'}`,
+    `用户备注：${effectiveRemark || '无'}`,
+    `字段命名规则：${namingRules.length ? JSON.stringify(namingRules) : '无'}`,
   ].join('\n');
 
   try {
-    const router = getAiRouter();
     if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
     const response = await router.complete({
       task: 'note_naming',
@@ -637,30 +794,52 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
           subject: { type: 'string' },
           title: { type: 'string' },
           reason: { type: 'string' },
+          ruleId: { type: 'string' },
+          ruleValue: { type: 'string' },
+          ruleEvidence: { type: 'string' },
         },
       },
       temperature: 0.15,
+      maxTokens: Number(options.maxTokens) || 900,
     });
 
     const parsed = response.json;
 
-    const subject = sanitizeSegment(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${remark || ''}`), DEFAULT_SUBJECT, 24);
-    const allowedSubjects = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
-    const title = sanitizeSegment(parsed.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+    const subject = sanitizeSegment(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${effectiveRemark || ''}`), DEFAULT_SUBJECT, 24);
+    const allowedSubjects = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治', DEFAULT_SUBJECT];
+    const aiTitle = sanitizeSegment(parsed.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', titleMaxLength);
+    const matchedRule = namingRules.find((rule) => rule.id === String(parsed.ruleId || '').trim()) || null;
+    const ruleValue = matchedRule ? sanitizeSegment(parsed.ruleValue, '', 100) : '';
+    const title = matchedRule && ruleValue
+      ? applyNamingRuleTemplate(matchedRule, ruleValue, subject, aiTitle)
+      : aiTitle;
+    if (options.rejectGenericTitle !== false && /^(?:待识别|无法识别|未知(?:内容)?|未命名(?:内容)?|图片笔记|截图)$/u.test(title)) {
+      const error = new Error('AI 没有返回可用标题或规则字段值');
+      error.code = 'AI_NAMING_EMPTY';
+      throw error;
+    }
 
     return {
-      subject: allowedSubjects.includes(subject) ? subject : guessSubjectFromText(`${subject} ${title} ${remark || ''}`),
+      subject: allowedSubjects.includes(subject) ? subject : guessSubjectFromText(`${subject} ${title} ${effectiveRemark || ''}`),
       title,
       reason: String(parsed.reason || '').slice(0, 120),
       providerUsed: response.provider,
       modelUsed: response.model,
+      ruleId: matchedRule && ruleValue ? matchedRule.id : null,
+      ruleName: matchedRule && ruleValue ? matchedRule.name : null,
+      ruleValue: matchedRule && ruleValue ? ruleValue : null,
+      ruleEvidence: matchedRule && ruleValue ? String(parsed.ruleEvidence || '').slice(0, 300) : null,
       error: null,
     };
   } catch (error) {
     return {
-      ...makeFallbackName({ kind, remark }),
+      ...makeFallbackName({ kind, remark: effectiveRemark }),
       providerUsed: null,
       modelUsed: null,
+      ruleId: null,
+      ruleName: null,
+      ruleValue: null,
+      ruleEvidence: null,
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -669,6 +848,19 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
 async function generateWidgetWithAi(userPrompt) {
   const router = getAiRouter();
   if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const options = router.getTaskOptions('widget_generation');
+  const defaultWidth = clampNumber(options.defaultWidth, 360, 240, 720);
+  const defaultHeight = clampNumber(options.defaultHeight, 260, 150, 620);
+  const visualStyle = {
+    dark_translucent: '深色半透明桌面卡片',
+    light_clean: '明亮、简洁、低阴影界面',
+    follow_request: '优先遵循用户需求中描述的视觉风格',
+  }[options.visualStyle] || '深色半透明桌面卡片';
+  const interactionLevel = {
+    static: '静态展示，不生成需要 JavaScript 的交互',
+    standard: '只生成必要的常规交互，状态清晰且可恢复',
+    advanced: '可以生成较复杂的本地交互，但仍必须遵守安全限制',
+  }[options.interactionLevel] || '只生成必要的常规交互';
   const prompt = [
     '你是“考研桌面助手”的前端模块生成器。根据用户需求生成一个可独立运行的小组件。',
     '只输出一个 JSON 对象，不要 Markdown，不要解释。',
@@ -678,9 +870,11 @@ async function generateWidgetWithAi(userPrompt) {
     '1. 只使用原生 HTML、CSS、JavaScript，不引用外部库、网址、字体或图片。',
     '2. 禁止 fetch、XMLHttpRequest、WebSocket、EventSource、window.open、跳转、表单提交和跨页面通信。',
     '3. 不访问 cookie、localStorage、sessionStorage、indexedDB、父页面或顶层窗口。',
-    '4. 所有交互仅操作当前模块 DOM；按钮必须可用，界面适合深色半透明桌面卡片。',
+    `4. 所有交互仅操作当前模块 DOM；交互要求：${interactionLevel}。`,
+    `4.1 视觉要求：${visualStyle}。`,
     '5. HTML 不包含 script/style 标签；CSS 和 JS 分别放入对应字段。',
-    '6. width 取 240-720，height 取 150-620。内容精简，中文界面。',
+    `6. width 取 240-720，height 取 150-620；用户未指定时优先使用 ${defaultWidth}×${defaultHeight}。内容精简，中文界面。`,
+    options.allowJavaScript === false ? '7. 不生成 JavaScript，js 必须是空字符串。' : '7. 可以使用安全的原生 JavaScript 实现所需交互。',
     `用户需求：${userPrompt}`,
   ].join('\n');
 
@@ -704,6 +898,7 @@ async function generateWidgetWithAi(userPrompt) {
     },
     timeoutMs: 45_000,
     temperature: 0.35,
+    maxTokens: Number(options.maxTokens) || 5000,
   });
 
   const parsed = response.json;
@@ -718,11 +913,11 @@ async function generateWidgetWithAi(userPrompt) {
     model: response.model,
     widget: {
       title: String(parsed.title || 'AI 代码模块').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 30) || 'AI 代码模块',
-      width: clampNumber(parsed.width, 360, 240, 720),
-      height: clampNumber(parsed.height, 260, 150, 620),
+      width: clampNumber(parsed.width, defaultWidth, 240, 720),
+      height: clampNumber(parsed.height, defaultHeight, 150, 620),
       html,
       css: String(parsed.css || '').slice(0, 30000),
-      js: String(parsed.js || '').slice(0, 30000),
+      js: options.allowJavaScript === false ? '' : String(parsed.js || '').slice(0, 30000),
     },
   };
 }
@@ -787,6 +982,9 @@ function handleCanvasEvents(req, res) {
   res.socket?.setKeepAlive(true);
   res.write('retry: 1500\n: connected\n\n');
   canvasEventClients.add(res);
+  if (activeCanvasSelection) {
+    sendCanvasEvent(res, activeCanvasSelection);
+  }
   const heartbeat = setInterval(() => {
     try {
       res.write(': keepalive\n\n');
@@ -930,8 +1128,10 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
   const intent = {
     isQuestion: (parsed.questions || []).length > 0,
     isMistake: parsed.flags?.isMistake === true,
+    isGood: parsed.flags?.isClassic === true,
     shouldMemorize: parsed.flags?.shouldMemorize === true,
   };
+  if (intent.isGood && !tags.includes('好题')) tags.push('好题');
   const noteType = parsed.flags?.isMistake
     ? 'mistake'
     : parsed.flags?.shouldMemorize
@@ -943,25 +1143,26 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
   const back = String(details.remark || details.title || '').trim();
   const knowledgePath = details.subject && details.subject !== DEFAULT_SUBJECT ? [details.subject] : [];
   const cards = [];
-  if (intent.shouldMemorize && back) {
+  const learningCardsAllowed = knowledgePath.length > 0;
+  if (learningCardsAllowed && intent.shouldMemorize && back.length >= 6 && details.title !== back) {
     cards.push({
       sourceKey: 'remark-memory:0',
       kind: 'memory',
       front: details.title || '回忆这条笔记的核心内容',
       back,
-      status: 'draft',
+      status: 'active',
       knowledgePath,
       tags,
       pageRefs,
     });
   }
-  if (intent.isMistake && back) {
+  if (learningCardsAllowed && intent.isMistake && back.length >= 6) {
     cards.push({
       sourceKey: 'remark-mistake:0',
       kind: 'mistake',
       front: details.title ? `重做：${details.title}` : '重新说明这道错题的正确思路',
       back: parsed.wrongReasons?.[0] || back,
-      status: 'draft',
+      status: 'active',
       knowledgePath,
       tags,
       pageRefs,
@@ -1086,6 +1287,10 @@ async function runAiNamingJob(noteUid) {
       provider: naming.providerUsed,
       model: naming.modelUsed,
       reason: naming.reason,
+      ruleId: naming.ruleId,
+      ruleName: naming.ruleName,
+      ruleValue: naming.ruleValue,
+      ruleEvidence: naming.ruleEvidence,
       error: null,
       completedAt,
     },
@@ -1295,6 +1500,152 @@ async function handleSave(req, res) {
   queueAiNamingJob(noteUid);
 }
 
+function publicCanvasOrganizationJob(job) {
+  if (!job) return null;
+  const { previewDataUrl: _previewDataUrl, ...safe } = job;
+  return safe;
+}
+
+function updateCanvasOrganizationJob(projectId, changes) {
+  const current = canvasOrganizationJobs.get(projectId);
+  if (!current) return null;
+  const next = { ...current, ...changes, updatedAt: new Date().toISOString() };
+  canvasOrganizationJobs.set(projectId, next);
+  return next;
+}
+
+function queueCanvasOrganization(projectId, previewDataUrl, sourceClientId) {
+  const active = canvasOrganizationJobs.get(projectId);
+  if (active && ['queued', 'analyzing', 'applying'].includes(active.status)) {
+    const error = new Error('这个画布已经在由 AI 整理，请等待当前任务完成');
+    error.code = 'CANVAS_AI_ALREADY_RUNNING';
+    throw error;
+  }
+  const existing = canvasProjects.readDocument(projectId);
+  if (!existing) {
+    const error = new Error('找不到这个画布工程');
+    error.code = 'CANVAS_AI_PROJECT_NOT_FOUND';
+    throw error;
+  }
+  const movableCount = (existing.images?.length || 0) + (existing.texts?.length || 0) + (existing.annotations?.length || 0);
+  if (movableCount === 0) {
+    const error = new Error('画布里还没有可由 AI 整理的图片、文字或批注');
+    error.code = 'CANVAS_AI_EMPTY';
+    throw error;
+  }
+  const timestamp = new Date().toISOString();
+  const job = {
+    id: `canvas-ai-${crypto.randomUUID()}`,
+    projectId,
+    status: 'queued',
+    progress: 12,
+    message: '画布已保存，AI 整理任务已进入后台队列。',
+    sourceClientId,
+    requestedRevision: existing.syncRevision || 0,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    previewDataUrl,
+  };
+  canvasOrganizationJobs.set(projectId, job);
+
+  canvasOrganizationQueue = canvasOrganizationQueue.catch(() => undefined).then(async () => {
+    const analysisStartedAt = Date.now();
+    let activeAttempt = null;
+    const progressTimer = setInterval(() => {
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - analysisStartedAt) / 1000));
+      const attemptText = activeAttempt
+        ? `${activeAttempt.provider}/${activeAttempt.model}`
+        : 'AI 模型';
+      updateCanvasOrganizationJob(projectId, {
+        progress: Math.min(76, 40 + Math.floor(elapsedSeconds / 4)),
+        message: `${attemptText} 正在分析画布（已用 ${elapsedSeconds} 秒）；单次最多等待 90 秒，超时会自动切换模型。`,
+      });
+    }, 4_000);
+    updateCanvasOrganizationJob(projectId, {
+      status: 'analyzing',
+      progress: 38,
+      message: 'AI 正在理解图片、文字、批注和内容关系。',
+      startedAt: new Date().toISOString(),
+    });
+    try {
+      const router = getAiRouter();
+      if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+      const baseDocument = canvasProjects.readDocument(projectId);
+      if (!baseDocument) throw new Error('画布在整理过程中被删除');
+      const plan = await analyzeCanvasOrganization({
+        document: baseDocument,
+        previewDataUrl,
+        router,
+        onAttempt(attempt) {
+          activeAttempt = attempt;
+          const phaseText = attempt.phase === 'json_repair' ? '修复返回格式' : '分析画布';
+          updateCanvasOrganizationJob(projectId, {
+            progress: Math.max(40, canvasOrganizationJobs.get(projectId)?.progress || 40),
+            message: `${attempt.provider}/${attempt.model} 正在${phaseText}；单次最多等待 ${Math.round(attempt.timeoutMs / 1000)} 秒，超时会自动切换模型。`,
+            provider: attempt.provider,
+            model: attempt.model,
+          });
+        },
+      });
+      clearInterval(progressTimer);
+      updateCanvasOrganizationJob(projectId, {
+        status: 'applying',
+        progress: 82,
+        message: 'AI 已给出布局，正在安全应用到最新画布版本。',
+        provider: plan.provider,
+        model: plan.model,
+      });
+      const latest = canvasProjects.readDocument(projectId);
+      if (!latest) throw new Error('画布在整理过程中被删除');
+      const applied = applyCanvasOrganization(latest, plan);
+      const updatedAt = new Date().toISOString();
+      const actualRevision = Number.isInteger(latest.syncRevision) && latest.syncRevision >= 0 ? latest.syncRevision : 0;
+      const document = canvasProjects.saveDocument({
+        ...applied.document,
+        id: projectId,
+        syncRevision: actualRevision + 1,
+        updatedAt,
+        aiOrganization: {
+          jobId: job.id,
+          provider: plan.provider,
+          model: plan.model,
+          summary: plan.summary,
+          movedCount: applied.movedCount,
+          completedAt: updatedAt,
+        },
+      }, { canvasId: projectId });
+      updateCanvasOrganizationJob(projectId, {
+        status: 'complete',
+        progress: 100,
+        message: `AI 整理完成，已重新布局 ${applied.movedCount} 项内容。`,
+        summary: plan.summary,
+        movedCount: applied.movedCount,
+        revision: document.syncRevision,
+        completedAt: updatedAt,
+        previewDataUrl: undefined,
+      });
+      broadcastCanvasProject({
+        type: 'saved',
+        projectId,
+        revision: document.syncRevision,
+        updatedAt: document.updatedAt,
+      });
+    } catch (error) {
+      updateCanvasOrganizationJob(projectId, {
+        status: 'failed',
+        progress: 100,
+        message: error instanceof Error ? error.message : String(error),
+        error: error instanceof Error ? error.message : String(error),
+        failedAt: new Date().toISOString(),
+        previewDataUrl: undefined,
+      });
+    } finally {
+      clearInterval(progressTimer);
+    }
+  });
+  return publicCanvasOrganizationJob(job);
+}
+
 async function handleCanvasProjectRoute(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/canvas-projects/events') {
     handleCanvasEvents(req, res);
@@ -1319,6 +1670,28 @@ async function handleCanvasProjectRoute(req, res, pathname) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/canvas-projects/active') {
+    const payload = JSON.parse((await readBody(req, ACTIVE_CANVAS_MAX_BODY_BYTES)) || '{}');
+    const projectId = typeof payload.projectId === 'string' ? payload.projectId.trim() : '';
+    assertCanvasId(projectId);
+    if (!canvasProjects.readDocument(projectId, { validate: false })) {
+      sendJson(res, 404, { ok: false, error: '找不到这个画布工程' });
+      return true;
+    }
+    const sourceClientId = requireLiveStrokeString(payload.clientId, 'clientId', 128);
+    activeCanvasSelectionRevision += 1;
+    activeCanvasSelection = {
+      type: 'active',
+      projectId,
+      sourceClientId,
+      selectionRevision: activeCanvasSelectionRevision,
+      selectedAt: new Date().toISOString(),
+    };
+    broadcastCanvasProject(activeCanvasSelection);
+    sendJson(res, 200, { ok: true, active: activeCanvasSelection });
+    return true;
+  }
+
   const liveStrokeMatch = /^\/canvas-projects\/([^/]+)\/live-stroke$/.exec(pathname);
   if (req.method === 'POST' && liveStrokeMatch) {
     const projectId = decodeURIComponent(liveStrokeMatch[1]);
@@ -1333,6 +1706,29 @@ async function handleCanvasProjectRoute(req, res, pathname) {
     });
     sendJson(res, 202, { ok: true });
     return true;
+  }
+
+  const aiOrganizeMatch = /^\/canvas-projects\/([^/]+)\/ai-organize$/.exec(pathname);
+  if (aiOrganizeMatch) {
+    const projectId = decodeURIComponent(aiOrganizeMatch[1]);
+    assertCanvasId(projectId);
+    if (req.method === 'GET') {
+      const job = publicCanvasOrganizationJob(canvasOrganizationJobs.get(projectId));
+      sendJson(res, 200, { ok: true, job });
+      return true;
+    }
+    if (req.method === 'POST') {
+      const payload = JSON.parse((await readBody(req, CANVAS_AI_MAX_BODY_BYTES)) || '{}');
+      const previewDataUrl = typeof payload.previewDataUrl === 'string' ? payload.previewDataUrl : '';
+      if (!previewDataUrl.startsWith('data:image/') || previewDataUrl.length > CANVAS_AI_MAX_BODY_BYTES - 64 * 1024) {
+        throw new SyntaxError('previewDataUrl must be a supported image data URL within the request limit');
+      }
+      const sourceClientId = requireLiveStrokeString(payload.clientId, 'clientId', 128);
+      const job = queueCanvasOrganization(projectId, previewDataUrl, sourceClientId);
+      sendJson(res, 202, { ok: true, job });
+      return true;
+    }
+    return false;
   }
 
   const projectMatch = /^\/canvas-projects\/([^/]+)$/.exec(pathname);
@@ -1436,6 +1832,9 @@ async function handleCanvasProjectRoute(req, res, pathname) {
       return true;
     }
     const deleted = canvasProjects.deleteDocument(projectId);
+    if (activeCanvasSelection?.projectId === projectId) {
+      activeCanvasSelection = null;
+    }
     broadcastCanvasProject({
       type: 'deleted',
       projectId,
@@ -1696,6 +2095,26 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/ai/config') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'AI 配置只能在运行服务的 Windows 主机上查看。' });
+        return;
+      }
+      sendJson(res, 200, getAiConfigurationSnapshot());
+      return;
+    }
+
+    if (req.method === 'PUT' && pathname === '/ai/config') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'AI 配置只能在运行服务的 Windows 主机上修改。' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 128 * 1024)) || '{}');
+      const snapshot = saveAiTaskConfigurations(payload.tasks);
+      sendJson(res, 200, snapshot);
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/health') {
       const currentRouter = getAiRouter();
       sendJson(res, 200, {
@@ -1800,6 +2219,9 @@ const server = http.createServer(async (req, res) => {
       : error instanceof LearningDataConflictError
       ? 409
       : ['NOTE_ALREADY_EXISTS', 'CARD_ALREADY_EXISTS', 'NOTE_DELETED'].includes(error?.code) ? 409
+      : error?.code === 'CANVAS_AI_ALREADY_RUNNING' ? 409
+      : error?.code === 'CANVAS_AI_PROJECT_NOT_FOUND' ? 404
+      : error?.code === 'CANVAS_AI_EMPTY' ? 400
       : ['INVALID_LEARNING_NOTE', 'INVALID_LEARNING_CARD'].includes(error?.code) ? 400
       : error?.code === 'LEARNING_DATA_BUSY' ? 503
       : error?.code === 'NOTE_PATH_FORBIDDEN' ? 403

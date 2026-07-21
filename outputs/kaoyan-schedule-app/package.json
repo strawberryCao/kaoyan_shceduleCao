@@ -1,22 +1,26 @@
 {
   "name": "kaoyan-schedule-app",
   "version": "1.0.0",
-  "description": "考研学习课表桌面组件",
+  "description": "考研学习课表的置顶小笔记窗",
   "author": "Codex",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --config vite.config.mjs",
+    "runtime:build": "node scripts/ensure-web-build.cjs",
+    "runtime:serve": "node scripts/web-server.cjs",
     "note:server": "node scripts/note-server.cjs",
     "notes:organize": "node scripts/organize-notes.cjs --force",
     "notes:organize:preview": "node scripts/organize-notes.cjs --dry-run",
     "notes:index": "node scripts/rebuild-note-index.cjs --apply",
     "notes:index:preview": "node scripts/rebuild-note-index.cjs",
+    "test:gemini": "node scripts/test-gemini.cjs",
+    "test:kimi": "node scripts/test-kimi.cjs",
     "build": "tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs",
     "build:wallpaper": "npm run build",
-    "electron:dev": "concurrently -k \"vite --config vite.config.mjs --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "desktop:start": "npm run build && electron .",
+    "electron:dev": "concurrently -k \"vite --config vite.config.mjs --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && electron . --note-app\"",
+    "desktop:start": "npm run build && electron . --note-app",
     "desktop:build": "npm run build && electron-builder --win --dir",
     "preview": "vite preview --config vite.config.mjs"
   },
@@ -39,7 +43,7 @@
   },
   "build": {
     "appId": "com.local.kaoyan.schedule",
-    "productName": "考研学习课表",
+    "productName": "考研置顶笔记台",
     "directories": {
       "output": "desktop-dist"
     },

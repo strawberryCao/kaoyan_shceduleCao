@@ -11,7 +11,7 @@ const DEFAULT_SUBJECT = '默认文件夹';
 const DEFAULT_DIR = path.join(NOTES_ROOT, DEFAULT_SUBJECT);
 const LOG_PATH = path.join(ASSISTANT_ROOT, 'classify-notes.log');
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
-const SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', DEFAULT_SUBJECT];
+const SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治', DEFAULT_SUBJECT];
 const SUBJECT_ALIASES = new Map([
   ['高数', '高等数学'],
   ['数学', '高等数学'],
@@ -21,6 +21,11 @@ const SUBJECT_ALIASES = new Map([
   ['计网', '计算机网络'],
   ['网络', '计算机网络'],
   ['OS', '操作系统'],
+  ['考研英语', '英语'],
+  ['英语一', '英语'],
+  ['英语二', '英语'],
+  ['考研政治', '政治'],
+  ['思想政治理论', '政治'],
   ['默认', DEFAULT_SUBJECT],
 ]);
 

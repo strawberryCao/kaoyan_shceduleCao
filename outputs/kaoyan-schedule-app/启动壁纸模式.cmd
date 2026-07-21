@@ -52,13 +52,8 @@ echo Do NOT use this URL as a normal browser wallpaper window.
 echo Add the wallpaper URL inside Lively Wallpaper instead.
 echo.
 
-netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
-if not errorlevel 1 (
-  echo Port 5173 is already running. Add the wallpaper URL in Lively Wallpaper.
-  pause
-  exit /b 0
-)
+call "%~dp0scripts\start-note-app.cmd" --services-only
+if errorlevel 1 exit /b 1
 
-call npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
-
+echo Optimized wallpaper service is ready. Add the wallpaper URL in Lively Wallpaper.
 pause

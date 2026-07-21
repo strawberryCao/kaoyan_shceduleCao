@@ -206,18 +206,18 @@ test('blocks an unknown AI first-level subject, prunes its legacy AI root and pr
   assert.equal(reloaded.subjects.find((subject) => subject.name === '自定义专题').id, userSubjectId);
 });
 
-test('keeps an old AI-organized note inside its user-owned non-408 subject', async (t) => {
+test('keeps an old AI-organized note inside its user-owned custom subject', async (t) => {
   const fixture = makeFixture('kaoyan-organizer-user-owned-legacy-');
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
   fs.mkdirSync(fixture.assistantRoot, { recursive: true });
   const taxonomyPath = path.join(fixture.assistantRoot, 'note-taxonomy.json');
   let taxonomy = loadTaxonomy(taxonomyPath);
-  const mathSubject = ensureSubject(taxonomy, '高等数学', { createdBy: 'user' });
-  const oldPoint = ensureKnowledgePoint(taxonomy, mathSubject, '函数极限', { createdBy: 'user' });
+  const customSubject = ensureSubject(taxonomy, '自定义专题', { createdBy: 'user' });
+  const oldPoint = ensureKnowledgePoint(taxonomy, customSubject, '自定义知识点', { createdBy: 'user' });
   taxonomy = saveTaxonomyAtomic(taxonomyPath, taxonomy);
-  const relocated = moveFixtureToSubject(fixture, '高等数学', {
-    subject: '高等数学',
-    knowledgePath: ['高等数学', '函数极限'],
+  const relocated = moveFixtureToSubject(fixture, '自定义专题', {
+    subject: '自定义专题',
+    knowledgePath: ['自定义专题', '自定义知识点'],
     classificationSource: 'ai',
     organizationStatus: 'confirmed',
   });
@@ -232,15 +232,15 @@ test('keeps an old AI-organized note inside its user-owned non-408 subject', asy
   });
   assert.equal(report.moved, 0);
   const metadata = JSON.parse(fs.readFileSync(relocated.sidecarPath, 'utf8'));
-  assert.equal(metadata.subject, '高等数学');
+  assert.equal(metadata.subject, '自定义专题');
   assert.equal(metadata.classification.knowledgePointId, oldPoint.id);
-  assert.equal(metadata.classification.knowledgePointName, '函数极限');
+  assert.equal(metadata.classification.knowledgePointName, '自定义知识点');
   assert.equal(metadata.organizer.subjectPolicy.reason, 'current-user');
   assert.equal(metadata.learning.classificationSource, 'ai');
   const reloaded = loadTaxonomy(taxonomyPath);
-  const reloadedMath = reloaded.subjects.find((subject) => subject.name === '高等数学');
-  assert.equal(reloadedMath.knowledgePoints.some((point) => point.name === '函数极限'), true);
-  assert.equal(reloadedMath.knowledgePoints.some((point) => point.name === '二叉树'), false);
+  const reloadedCustom = reloaded.subjects.find((subject) => subject.name === '自定义专题');
+  assert.equal(reloadedCustom.knowledgePoints.some((point) => point.name === '自定义知识点'), true);
+  assert.equal(reloadedCustom.knowledgePoints.some((point) => point.name === '二叉树'), false);
 });
 
 test('treats every compatible default bucket name as pending review', async (t) => {
@@ -362,7 +362,8 @@ test('uses the learning data store when available and skips a successful run for
   const learningData = JSON.parse(fs.readFileSync(path.join(fixture.assistantRoot, 'learning-data.json'), 'utf8'));
   const day = learningData.days['2026-07-17'];
   assert.equal(day.autoNotes.length, 1);
-  assert.equal(learningData.cards.length, 2);
+  assert.equal(learningData.cards.length, 1);
+  assert.equal(learningData.cards[0].status, 'active');
 
   const second = await organizeNotes({
     notesRoot: fixture.notesRoot,
@@ -401,7 +402,13 @@ test('persists AI items and combines semantic AI intent with local flags', async
     }),
   });
   assert.equal(report.processed, 1);
-  const metadata = JSON.parse(fs.readFileSync(fixture.sidecarPath, 'utf8'));
+  const movedSidecar = path.join(
+    fixture.notesRoot,
+    '高等数学',
+    '.metadata',
+    path.basename(fixture.sidecarPath),
+  );
+  const metadata = JSON.parse(fs.readFileSync(movedSidecar, 'utf8'));
   assert.equal(metadata.items.length, 1);
   assert.equal(metadata.organizer.intent.shouldMemorize, true);
   assert.equal(metadata.learning.intent.shouldMemorize, true);
@@ -409,6 +416,7 @@ test('persists AI items and combines semantic AI intent with local flags', async
   assert.equal(metadata.learning.items[0].title, '量词顺序');
   assert.equal(metadata.learning.tags.includes('背诵'), true);
   assert.equal(metadata.learning.cards.length, 1);
+  assert.equal(metadata.learning.cards[0].status, 'active');
 });
 
 test('recovers a planned move after interruption', (t) => {

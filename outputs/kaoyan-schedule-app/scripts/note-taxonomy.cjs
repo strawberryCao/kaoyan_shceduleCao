@@ -13,6 +13,7 @@ const DEFAULT_SUBJECTS = [
   '操作系统',
   '计算机网络',
   '英语',
+  '政治',
   '默认文件夹',
 ];
 
@@ -23,6 +24,8 @@ const DEFAULT_ALIASES = {
   计算机组成: ['组成原理', '计组'],
   计算机网络: ['计网', '网络'],
   操作系统: ['OS'],
+  英语: ['考研英语', '英语一', '英语二'],
+  政治: ['考研政治', '思想政治理论'],
   默认文件夹: ['默认', '未分类'],
 };
 
@@ -194,7 +197,21 @@ function loadTaxonomy(filePath, options = {}) {
     return options.createIfMissing === false ? taxonomy : saveTaxonomyAtomic(filePath, taxonomy, options);
   }
   const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  return normalizeTaxonomy(parsed, options);
+  const taxonomy = normalizeTaxonomy(parsed, options);
+  // Older installations may have been created while only part of the exam
+  // subject list was available. Add missing standard roots in memory without
+  // disturbing ids, aliases or user-created roots; the next normal save will
+  // persist the migrated list atomically.
+  for (const name of DEFAULT_SUBJECTS) {
+    if (!resolveSubject(taxonomy, name)) {
+      ensureSubject(taxonomy, name, {
+        aliases: DEFAULT_ALIASES[name] || [],
+        createdBy: 'user',
+        now: options.now,
+      });
+    }
+  }
+  return taxonomy;
 }
 
 function matchesNode(node, value) {

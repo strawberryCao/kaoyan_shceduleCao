@@ -28,15 +28,7 @@ if not exist node_modules (
   )
 )
 
-netstat -ano | findstr /R /C:":5174 .*LISTENING" >nul 2>nul
-if errorlevel 1 (
-  start "Kaoyan Note Server" /min node "%~dp0scripts\note-server.cjs"
-)
-
-netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
-if errorlevel 1 (
-  start "Kaoyan Wallpaper Server" /min npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
-  timeout /t 3 >nul
-)
+call "%~dp0scripts\start-note-app.cmd" --services-only
+if errorlevel 1 exit /b 1
 
 start "" "http://127.0.0.1:5173/?console=1"

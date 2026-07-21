@@ -111,6 +111,13 @@ test('does not rewrite and redispatch an identical learning snapshot', () => {
   assert.equal(dispatchedEvents, 2);
 });
 
+test('reuses one normalized in-memory snapshot while local storage is unchanged', () => {
+  const first = learningData.readLearningDataCache();
+  const second = learningData.readLearningDataCache();
+
+  assert.strictEqual(second, first);
+});
+
 test('client normalization keeps an explicit manual default classification', () => {
   const snapshot = learningData.normalizeLearningData({
     version: 1,

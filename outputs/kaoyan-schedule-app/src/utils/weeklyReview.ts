@@ -8,6 +8,7 @@ export interface WeeklyReviewStats {
   noteCount: number;
   mistakeCount: number;
   memoryCount: number;
+  uncategorizedCount: number;
   completedTasks: number;
   plannedTasks: number;
   completionRate: number;
@@ -94,6 +95,9 @@ const isMemory = (note: LearningAutoNote): boolean => note.noteType === 'memory'
   || note.items.some((item) => item.intent.shouldMemorize)
   || /(?:要记住|需要记|必须记|背下来|需要背|必须背|熟记)/.test(note.remark);
 
+const isGood = (note: LearningAutoNote): boolean => note.noteType === 'good'
+  || note.tags.some((tag) => /好题|经典题|典型题|精品题/.test(tag));
+
 const isLikelyLearning = (note: LearningAutoNote): boolean => !DEFAULT_SUBJECTS.has(note.subject)
   || isMistake(note)
   || isMemory(note)
@@ -114,7 +118,9 @@ const topText = (values: string[], limit = 8): string => {
 };
 
 const allNotes = (snapshot: LearningDataSnapshot): Array<{ date: string; note: LearningAutoNote }> => {
-  const entries = Object.entries(snapshot.days).flatMap(([date, day]) => day.autoNotes.map((note) => ({
+  const entries = Object.entries(snapshot.days).flatMap(([date, day]) => day.autoNotes
+    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_SUBJECTS.has(note.subject.trim()))
+    .map((note) => ({
     date: /^\d{4}-\d{2}-\d{2}$/.test(note.capturedDate) ? note.capturedDate : date,
     note,
   })));
@@ -139,9 +145,10 @@ const allNotes = (snapshot: LearningDataSnapshot): Array<{ date: string; note: L
 };
 
 const noteLine = ({ date, note }: { date: string; note: LearningAutoNote }): string => {
-  const labels = [isMistake(note) ? '错题' : '', isMemory(note) ? '需记忆' : ''].filter(Boolean).join('+')
+  const labels = [isMistake(note) ? '错题' : '', isGood(note) ? '好题' : '', isMemory(note) ? '需记忆' : ''].filter(Boolean).join('+')
     || (isLikelyLearning(note) ? '普通学习笔记' : '疑似非学习内容');
   const summaries = unique(note.items.map((item) => item.summary)).slice(0, 3).join('；');
+  const recentThoughts = note.studyNotes.slice(-5).map((thought) => clean(thought.text, 500));
   return [
     `- [${date}] ${clean(DEFAULT_SUBJECTS.has(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
     pageText(note) ? `页码/题号：${pageText(note)}` : '',
@@ -149,10 +156,18 @@ const noteLine = ({ date, note }: { date: string; note: LearningAutoNote }): str
     questionTypes(note).length ? `题型：${questionTypes(note).join('、')}` : '',
     wrongReasons(note).length ? `错因：${wrongReasons(note).join('；')}` : '',
     note.remark ? `我的备注：${clean(note.remark, 420)}` : '',
+    recentThoughts.length ? `历次学习想法（共 ${note.studyNotes.length} 条，最近优先）：${recentThoughts.reverse().join('｜')}` : '',
     summaries ? `内容摘要：${clean(summaries, 600)}` : '',
     `性质：${labels}`,
   ].filter(Boolean).join('；');
 };
+
+const thoughtDate = (value: string): string => /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : '';
+
+const thoughtLine = ({ date, note, text }: { date: string; note: LearningAutoNote; text: string }): string => [
+  `- [${date}] ${clean(DEFAULT_SUBJECTS.has(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
+  `我的新想法：${clean(text, 700)}`,
+].join('；');
 
 const cardSubject = (card: LearningCard): string => {
   if (card.subject && !DEFAULT_SUBJECTS.has(card.subject)) return card.subject;
@@ -182,10 +197,18 @@ export function buildWeeklyReviewPackage(
   const dates = weekDates(weekStart);
   const scheduleByDate = new Map(scheduleDays.map((day) => [day.date, day]));
   const notes = allNotes(snapshot);
+  const eligibleNoteUids = new Set(notes.map(({ note }) => note.noteUid));
   const currentNotes = notes.filter((entry) => inRange(entry.date, weekStart, weekEnd));
   const historyStart = addDays(weekStart, -28);
   const historyEnd = addDays(weekStart, -1);
   const historyNotes = notes.filter((entry) => inRange(entry.date, historyStart, historyEnd));
+  const thoughtEntries = notes.flatMap(({ note }) => note.studyNotes.map((thought) => ({
+    note,
+    date: thoughtDate(thought.updatedAt || thought.createdAt),
+    text: thought.text,
+  }))).filter((entry) => entry.date);
+  const currentThoughts = thoughtEntries.filter((entry) => inRange(entry.date, weekStart, weekEnd));
+  const historicalThoughts = thoughtEntries.filter((entry) => inRange(entry.date, historyStart, historyEnd));
 
   let completedTasks = 0;
   let plannedTasks = 0;
@@ -222,7 +245,7 @@ export function buildWeeklyReviewPackage(
     return `- ${date}｜${detail}`;
   });
 
-  const uniqueCards = [...new Map(snapshot.cards.map((card) => [[
+  const uniqueCards = [...new Map(snapshot.cards.filter((card) => eligibleNoteUids.has(card.noteUid)).map((card) => [[
     card.kind,
     clean(card.front, 500),
     clean(card.back, 800),
@@ -244,11 +267,13 @@ export function buildWeeklyReviewPackage(
 
   const mistakeNotes = currentNotes.filter(({ note }) => isMistake(note));
   const memoryNotes = currentNotes.filter(({ note }) => isMemory(note));
+  const uncategorizedNotes = currentNotes.filter(({ note }) => !isMistake(note) && !isGood(note) && !isMemory(note));
   const completionRate = plannedTasks ? Math.round((completedTasks / plannedTasks) * 100) : 0;
   const stats: WeeklyReviewStats = {
     noteCount: currentNotes.length,
     mistakeCount: mistakeNotes.length,
     memoryCount: memoryNotes.length,
+    uncategorizedCount: uncategorizedNotes.length,
     completedTasks,
     plannedTasks,
     completionRate,
@@ -275,6 +300,12 @@ export function buildWeeklyReviewPackage(
     : ['- 本周没有自动笔记记录。'];
   if (currentNotes.length > 80) currentLines.push(`- 另有 ${currentNotes.length - 80} 条笔记因长度限制未展开。`);
   const cardLines = relevantCards.length ? relevantCards.map(cardLine) : ['- 本周没有相关卡片。'];
+  const currentThoughtLines = currentThoughts.length
+    ? currentThoughts.slice(-60).map(thoughtLine)
+    : ['- 本周没有新增学习想法。'];
+  const historicalThoughtLines = historicalThoughts.length
+    ? historicalThoughts.slice(-60).map(thoughtLine)
+    : ['- 过去四周没有新增学习想法。'];
 
   const markdown = [
     '# 考研学习周复盘：交给 GPT 的资料包',
@@ -293,6 +324,7 @@ export function buildWeeklyReviewPackage(
     '4. 输出“需要强化记忆”清单，最多 12 项。每项包含：要记什么、为什么、来源、推荐的主动回忆问题。',
     '5. 输出“下周需要注意”清单，区分知识问题、做题习惯、时间安排和复习机制。',
     '6. 给出最多 5 条下周行动建议，必须具体、可执行、能检查是否完成，并与现有课表兼容。',
+    '7. 把“我的学习想法”视为用户在重做或回看后的高优先级证据；综合同一笔记的历次想法，指出理解如何变化，不要覆盖或改写用户原话。',
     '',
     '分析约束：',
     '- 事实与推断分开写；引用证据时标注日期和笔记标题。',
@@ -323,6 +355,7 @@ export function buildWeeklyReviewPackage(
     `- 新增笔记：${currentNotes.length}`,
     `- 错题笔记：${mistakeNotes.length}`,
     `- 需记忆笔记：${memoryNotes.length}`,
+    `- 未归入错题/好题/背诵：${uncategorizedNotes.length}（已列入“未分类笔记”栏目）`,
     `- 本周复习过的卡片：${reviewedCards.length}`,
     `- 当前到期卡片：${dueCards.length}`,
     '',
@@ -337,6 +370,14 @@ export function buildWeeklyReviewPackage(
     '## 本周相关复习卡片',
     '',
     ...cardLines,
+    '',
+    '## 本周新增或修改的学习想法',
+    '',
+    ...currentThoughtLines,
+    '',
+    '## 过去四周的学习想法',
+    '',
+    ...historicalThoughtLines,
     '',
     '## 过去四周压缩趋势',
     '',

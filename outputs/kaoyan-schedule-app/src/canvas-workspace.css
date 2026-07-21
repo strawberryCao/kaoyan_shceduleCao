@@ -150,6 +150,34 @@
   padding: 0 26px 0 9px;
 }
 
+.cw-toolbar .cw-relation-type-select {
+  width: 112px;
+  flex: 0 0 112px;
+  color: #fff8ef;
+  font-weight: 850;
+}
+
+.cw-toolbar .cw-relation-type-input {
+  width: 190px;
+  min-height: 32px;
+  border: 1px solid rgba(242, 202, 151, 0.52);
+  border-radius: 10px;
+  outline: none;
+  background: rgba(255, 252, 247, 0.13);
+  color: #fff;
+  padding: 0 9px;
+  font: 800 12px/1 "Microsoft YaHei", system-ui, sans-serif;
+}
+
+.cw-toolbar .cw-relation-type-input:focus {
+  border-color: rgba(242, 202, 151, 0.5);
+  box-shadow: 0 0 0 2px rgba(242, 202, 151, 0.12);
+}
+
+.cw-toolbar .cw-relation-type-input::placeholder {
+  color: rgba(255, 255, 255, 0.43);
+}
+
 .cw-toolbar select option {
   background: #211b28;
   color: white;
@@ -295,12 +323,12 @@
 }
 
 .cw-arrow-label {
-  fill: var(--arrow-color, #8b4a24);
-  stroke: rgba(255, 252, 245, 0.98);
-  stroke-width: 4px;
+  fill: #54240c;
+  stroke: rgba(255, 252, 245, 1);
+  stroke-width: 7px;
   paint-order: stroke fill;
-  font-size: 13px;
-  font-weight: 750;
+  font-size: 24px;
+  font-weight: 900;
   font-family: "Microsoft YaHei", sans-serif;
   pointer-events: none;
   user-select: none;
@@ -1619,7 +1647,7 @@
 }
 
 .cw-world {
-  will-change: transform;
+  contain: layout paint style;
   -webkit-user-select: none;
   user-select: none;
 }
@@ -1629,6 +1657,53 @@
 .cw-world [contenteditable='true'] {
   -webkit-user-select: text;
   user-select: text;
+}
+
+/* Paper-native text editing: no opaque card, no visible textarea chrome. */
+.canvas-workspace .cw-text-node {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  padding: 8px 9px;
+}
+
+.canvas-workspace .cw-text-node.selected {
+  border-color: rgba(169, 120, 60, 0.62);
+  background: rgba(255, 252, 244, 0.12);
+  box-shadow: 0 0 0 2px rgba(169, 120, 60, 0.09);
+}
+
+.canvas-workspace .cw-text-node textarea,
+.canvas-workspace .cw-annotation-node textarea {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.canvas-workspace textarea,
+.canvas-workspace .cw-text-node p,
+.canvas-workspace .cw-annotation-node p,
+.note-capture-page.canvas-mode textarea {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.canvas-workspace textarea::-webkit-scrollbar,
+.canvas-workspace .cw-text-node p::-webkit-scrollbar,
+.canvas-workspace .cw-annotation-node p::-webkit-scrollbar,
+.note-capture-page.canvas-mode textarea::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.canvas-workspace.is-panning .cw-viewport,
+.canvas-workspace.is-panning .cw-world,
+.canvas-workspace.is-panning .cw-image-node,
+.canvas-workspace.is-panning .cw-text-node,
+.canvas-workspace.is-panning .cw-annotation-node {
+  cursor: grabbing !important;
 }
 
 .cw-cursor-pen .cw-world,

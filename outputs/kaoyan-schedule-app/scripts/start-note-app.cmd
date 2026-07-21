@@ -34,6 +34,15 @@ if not exist node_modules (
   )
 )
 
+node "scripts\local-services-ready.cjs" >nul 2>nul
+if not errorlevel 1 (
+  if /i "%~1"=="--services-only" exit /b 0
+  if exist node_modules\electron\dist\electron.exe (
+    start "" "node_modules\electron\dist\electron.exe" "." --note-app
+    exit /b 0
+  )
+)
+
 if not exist node_modules\electron\dist\electron.exe (
   echo Electron is missing. Installing dependencies, please wait...
   call npm.cmd install
@@ -54,17 +63,21 @@ if not exist node_modules\.bin\wait-on.cmd (
   )
 )
 
+echo Checking optimized production assets...
+node "scripts\ensure-web-build.cjs"
+if errorlevel 1 (
+  echo Production build failed.
+  pause
+  exit /b 1
+)
+
 set "KAOYAN_LAN_IP="
 for /f "delims=" %%i in ('node "scripts\lan-address.cjs"') do set "KAOYAN_LAN_IP=%%i"
 
-netstat -ano | findstr /R /C:":5174 .*LISTENING" >nul 2>nul
+powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "scripts\start-local-services-hidden.ps1"
 if errorlevel 1 (
-  start "Kaoyan Note Server" /min node "scripts\note-server.cjs"
-)
-
-netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
-if errorlevel 1 (
-  start "Kaoyan Wallpaper Server" /min npm.cmd run dev -- --host 0.0.0.0 --port 5173 --strictPort
+  echo Failed to start local services.
+  exit /b 1
 )
 
 echo Waiting for local services...

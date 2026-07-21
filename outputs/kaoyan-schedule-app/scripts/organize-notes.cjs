@@ -257,6 +257,7 @@ function normalizeAnalysis(result, fallback) {
   const normalizeIntent = (intent) => ({
     isQuestion: intent?.isQuestion === true,
     isMistake: intent?.isMistake === true,
+    isGood: intent?.isGood === true,
     shouldMemorize: intent?.shouldMemorize === true,
   });
   const intent = normalizeIntent(source.intent);
@@ -552,13 +553,26 @@ function combinedIntent(parsed, analysis) {
   return {
     isQuestion: analysis.intent.isQuestion || parsed.questions.length > 0,
     isMistake: analysis.intent.isMistake || parsed.flags.isMistake,
+    isGood: analysis.intent.isGood || parsed.flags.isClassic,
     shouldMemorize: analysis.intent.shouldMemorize || parsed.flags.shouldMemorize,
   };
 }
 
 function makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, tags, pageRefs) {
-  if (analysis.cards.length > 0) return analysis.cards;
-  if (analysis.memoryCard) return [{ ...analysis.memoryCard, sourceKey: analysis.memoryCard.sourceKey || 'ai-memory:0' }];
+  if (!knowledgePath[0] || isDefaultBucket(knowledgePath[0])) return [];
+  const finalize = (input) => {
+    const seen = new Set();
+    return input.filter((card) => {
+      const front = String(card?.front || '').trim();
+      const back = String(card?.back || '').trim();
+      const key = front.toLocaleLowerCase('zh-CN').replace(/[\s，。！？、；：,.!?;:]+/gu, '');
+      if (front.length < 4 || back.length < 6 || !key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 2).map((card) => ({ ...card, status: 'active' }));
+  };
+  if (analysis.cards.length > 0) return finalize(analysis.cards);
+  if (analysis.memoryCard) return finalize([{ ...analysis.memoryCard, sourceKey: analysis.memoryCard.sourceKey || 'ai-memory:0' }]);
   const cards = [];
   const back = analysis.summary || metadata.remark || metadata.title || '';
   if (intent.shouldMemorize && back) {
@@ -567,7 +581,7 @@ function makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, tags,
       kind: 'memory',
       front: metadata.title || '回忆这条笔记的核心内容',
       back,
-      status: 'draft',
+      status: 'active',
       knowledgePath,
       tags,
       pageRefs,
@@ -579,13 +593,13 @@ function makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, tags,
       kind: 'mistake',
       front: metadata.title ? `重做：${metadata.title}` : '重新说明这道错题的正确思路',
       back: analysis.wrongReason || parsed.wrongReasons[0] || back,
-      status: 'draft',
+      status: 'active',
       knowledgePath,
       tags,
       pageRefs,
     });
   }
-  return cards;
+  return finalize(cards);
 }
 
 function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledgePoint) {
@@ -758,16 +772,16 @@ async function organizeNotes(options = {}) {
             taxonomy.updatedAt = timestamp;
           }
         }
-        const currentSubjectIs408 = Boolean(canonicalAiSubject(currentSubject?.name));
+        const currentSubjectIsSupported = Boolean(canonicalAiSubject(currentSubject?.name));
         const preservesUserOwnedPhysicalSubject = Boolean(
           currentSubject
           && currentSubject.createdBy === 'user'
-          && !currentSubjectIs408
+          && !currentSubjectIsSupported
           && !isDefaultBucket(currentSubject.name)
         );
         let currentPoint = null;
         if (currentSubject && currentCategory.knowledgePoint) {
-          if (keepsManualClassification || currentSubjectIs408 || isDefaultBucket(currentSubject.name)) {
+          if (keepsManualClassification || currentSubjectIsSupported || isDefaultBucket(currentSubject.name)) {
             currentPoint = ensureKnowledgePoint(taxonomy, currentSubject, currentCategory.knowledgePoint, { createdBy: 'user' });
           } else if (preservesUserOwnedPhysicalSubject) {
             // Compatibility-only roots keep an existing point but never gain a
@@ -791,7 +805,7 @@ async function organizeNotes(options = {}) {
           || resolveSubject(taxonomy, AI_FALLBACK_SUBJECT)
           || ensureSubject(taxonomy, AI_FALLBACK_SUBJECT, { createdBy: 'user' });
         // Manual classifications may use any user-owned subject. AI output is
-        // restricted to an already-existing 408 subject or the fallback bucket;
+        // restricted to an already-existing supported exam subject or the fallback bucket;
         // autoCreateCategories applies only to knowledge points below it.
         const subject = keepsManualClassification || preservesUserOwnedPhysicalSubject
           ? currentSubject

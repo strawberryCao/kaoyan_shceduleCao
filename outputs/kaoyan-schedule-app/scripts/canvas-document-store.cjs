@@ -14,7 +14,6 @@ const CANVAS_RELATION_TYPES = Object.freeze([
   '前后步骤',
   '自定义',
 ]);
-const CANVAS_RELATION_TYPE_SET = new Set(CANVAS_RELATION_TYPES);
 const DOCUMENTS_DIRECTORY = '.canvas-documents';
 const DOCUMENT_FILE = 'document.json';
 
@@ -259,6 +258,12 @@ function validateCanvasDocument(document, options = {}) {
   const anchorIds = new Set();
   const annotationIds = new Set();
   const addressableIds = new Set();
+  const connectableTargets = new Map([
+    ...images.map((item) => [item?.id, 'image']),
+    ...nodes.map((item) => [item?.id, 'image']),
+    ...texts.map((item) => [item?.id, 'text']),
+    ...annotations.map((item) => [item?.id, 'annotation']),
+  ].filter(([id]) => typeof id === 'string' && id.trim()));
 
   const validateImage = (image, index, collection) => {
     const field = `${collection}[${index}]`;
@@ -309,9 +314,20 @@ function validateCanvasDocument(document, options = {}) {
       anchorIds.add(anchor.id);
       addressableIds.add(anchor.id);
     }
-    checkEntityId(issues, anchor.imageId, `${field}.imageId`, limits);
-    if (typeof anchor.imageId === 'string') {
+    const hasImageTarget = typeof anchor.imageId === 'string' && anchor.imageId.trim();
+    const hasNodeTarget = typeof anchor.nodeId === 'string' && anchor.nodeId.trim();
+    addIssue(issues, Boolean(hasImageTarget) !== Boolean(hasNodeTarget), `${field} must reference exactly one imageId or nodeId`);
+    if (hasImageTarget) {
+      checkEntityId(issues, anchor.imageId, `${field}.imageId`, limits);
       addIssue(issues, imageIds.has(anchor.imageId), `${field}.imageId references a missing image (${anchor.imageId})`);
+    }
+    if (hasNodeTarget) {
+      checkEntityId(issues, anchor.nodeId, `${field}.nodeId`, limits);
+      addIssue(issues, ['image', 'text', 'annotation'].includes(anchor.nodeKind), `${field}.nodeKind must be image, text or annotation`);
+      addIssue(issues, connectableTargets.has(anchor.nodeId), `${field}.nodeId references a missing node (${anchor.nodeId})`);
+      if (connectableTargets.has(anchor.nodeId) && typeof anchor.nodeKind === 'string') {
+        addIssue(issues, connectableTargets.get(anchor.nodeId) === anchor.nodeKind, `${field}.nodeKind does not match nodeId (${anchor.nodeId})`);
+      }
     }
     addIssue(issues, anchor.shape === 'point' || anchor.shape === 'rect', `${field}.shape must be point or rect`);
     checkPosition(issues, anchor, field, limits, { normalized: true });
@@ -350,6 +366,7 @@ function validateCanvasDocument(document, options = {}) {
     checkPosition(issues, annotation, field, limits);
     checkSize(issues, annotation, field, limits, { optional: true });
     checkString(issues, annotation.relationType, `${field}.relationType`, limits.maxLabelLength, { optional: true, allowEmpty: true });
+    checkString(issues, annotation.relationLabel, `${field}.relationLabel`, limits.maxLabelLength, { optional: true, allowEmpty: true });
     checkString(issues, annotation.color, `${field}.color`, limits.maxLabelLength, { optional: true, allowEmpty: true });
     if (!Array.isArray(annotation.anchorIds)) {
       issues.push(`${field}.anchorIds must be an array`);
@@ -399,14 +416,9 @@ function validateCanvasDocument(document, options = {}) {
           `${field}.fromAnchorId and ${field}.toAnchorId must be different`,
         );
       }
-      checkString(issues, relation.relationType, `${field}.relationType`, limits.maxLabelLength);
-      if (typeof relation.relationType === 'string') {
-        addIssue(
-          issues,
-          CANVAS_RELATION_TYPE_SET.has(relation.relationType),
-          `${field}.relationType must be one of the supported canvas relation types`,
-        );
-      }
+      // Presets are suggestions only. A short user-entered label is valid too.
+      checkString(issues, relation.relationType, `${field}.relationType`, limits.maxLabelLength, { allowEmpty: true });
+      checkString(issues, relation.relationLabel, `${field}.relationLabel`, limits.maxLabelLength, { optional: true, allowEmpty: true });
     }
     for (const key of ['fromId', 'toId', 'sourceId', 'targetId', 'fromAnchorId', 'toAnchorId', 'fromAnnotationId', 'toAnnotationId']) {
       if (relation.kind === 'arrow' && (key === 'fromAnchorId' || key === 'toAnchorId')) continue;

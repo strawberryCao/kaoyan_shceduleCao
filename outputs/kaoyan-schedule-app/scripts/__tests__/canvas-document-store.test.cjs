@@ -129,7 +129,32 @@ test('saves top-level arrow direction and relation type without creating a relat
   assert.deepEqual(store.readDocument(document.id).relations, [arrow]);
 });
 
-test('strictly validates arrow endpoints and relation type while preserving unknown legacy relations', () => {
+test('accepts arrow anchors attached to text and annotation nodes', (t) => {
+  const store = makeStore(t);
+  const document = makeDocument({
+    annotations: makeDocument().annotations.map((item) => ({ ...item, anchorIds: [] })),
+    anchors: [
+      { id: 'anchor-text', nodeId: 'text-a', nodeKind: 'text', shape: 'point', x: 0.9, y: 0.5, width: 0, height: 0, label: '文字' },
+      { id: 'anchor-note', nodeId: 'note-a', nodeKind: 'annotation', shape: 'point', x: 0.1, y: 0.5, width: 0, height: 0, label: '批注' },
+    ],
+    relations: [{
+      id: 'arrow-text-note',
+      kind: 'arrow',
+      fromAnchorId: 'anchor-text',
+      toAnchorId: 'anchor-note',
+      relationType: '解释',
+      color: '#a35d30',
+      z: 8,
+    }],
+  });
+
+  const saved = store.saveDocument(document);
+  assert.equal(saved.anchors[0].nodeKind, 'text');
+  assert.equal(saved.anchors[1].nodeKind, 'annotation');
+  assert.equal(saved.relations[0].fromAnchorId, 'anchor-text');
+});
+
+test('strictly validates arrow endpoints while allowing custom relation text and preserving unknown legacy relations', () => {
   const base = makeDocument({
     annotations: makeDocument().annotations.filter((annotation) => annotation.kind !== 'relation'),
   });
@@ -145,10 +170,6 @@ test('strictly validates arrow endpoints and relation type while preserving unkn
     {
       relation: makeArrowRelation({ toAnchorId: 'anchor-a' }),
       issue: 'must be different',
-    },
-    {
-      relation: makeArrowRelation({ relationType: '包含' }),
-      issue: 'relationType must be one of the supported canvas relation types',
     },
     {
       relation: makeArrowRelation({ relationType: undefined }),
@@ -168,6 +189,11 @@ test('strictly validates arrow endpoints and relation type while preserving unkn
       issue,
     );
   }
+
+  assert.doesNotThrow(() => validateCanvasDocument({
+    ...base,
+    relations: [makeArrowRelation({ relationType: '我的自定义箭头说明' })],
+  }));
 
   assert.doesNotThrow(() => validateCanvasDocument({
     ...base,

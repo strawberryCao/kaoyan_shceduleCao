@@ -7,6 +7,25 @@ export type LearningCardKind = 'memory' | 'mistake';
 export type LearningNoteOrganizationStatus = 'pending' | 'confirmed' | 'ignored';
 export type LearningNoteClassificationSource = 'ai' | 'local' | 'manual';
 
+export interface LearningStudyThought {
+  id: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LearningReviewEntry {
+  id: string;
+  reviewedAt: string;
+  result: 'remembered' | 'forgotten';
+  thought: string;
+}
+
+export type LearningThoughtAction =
+  | { action: 'add'; text: string }
+  | { action: 'update'; id: string; text: string }
+  | { action: 'delete'; id: string };
+
 export interface LearningNotePatch {
   title?: string;
   remark?: string;
@@ -17,6 +36,8 @@ export interface LearningNotePatch {
   questionType?: string;
   wrongReason?: string;
   organizationStatus?: LearningNoteOrganizationStatus;
+  goodQuestion?: boolean;
+  thoughtAction?: LearningThoughtAction;
 }
 
 export interface LearningNoteCreateInput {
@@ -33,6 +54,7 @@ export interface LearningNoteCreateInput {
   pageRefs?: LearningPageRef[];
   items?: LearningAutoNote['items'];
   createCard?: boolean;
+  goodQuestion?: boolean;
 }
 
 export interface LearningPageRef {
@@ -61,6 +83,7 @@ export interface LearningAutoNote {
   classificationSource: LearningNoteClassificationSource;
   manualCreated: boolean;
   userEditedFields: string[];
+  goodQuestion: boolean | null;
   items: Array<{
     title: string;
     knowledgePoint: string;
@@ -71,9 +94,11 @@ export interface LearningAutoNote {
     intent: {
       isQuestion: boolean;
       isMistake: boolean;
+      isGood: boolean;
       shouldMemorize: boolean;
     };
   }>;
+  studyNotes: LearningStudyThought[];
   confidence: number | null;
   cardIds: string[];
 }
@@ -97,6 +122,11 @@ export interface LearningCard {
   reviewCount: number;
   lastReviewedAt: string;
   lastReviewResult: '' | 'remembered' | 'forgotten';
+  correctCount: number;
+  incorrectCount: number;
+  correctStreak: number;
+  masteredAt: string;
+  reviewHistory: LearningReviewEntry[];
   createdAt: string;
   updatedAt: string;
   userEdited: boolean;
@@ -147,6 +177,8 @@ let learningDataEventSubscribers = 0;
 let learningDataPollSubscribers = 0;
 let learningDataPollTimer: number | null = null;
 let learningDataPollInFlight: Promise<unknown> | null = null;
+let learningDataMemoryCache: LearningDataSnapshot | null = null;
+let learningDataMemoryRaw: string | null = null;
 
 const emptyRecord = (): DayRecord => ({
   completedTaskIds: [],
@@ -188,6 +220,24 @@ const normalizePageRefs = (value: unknown): LearningPageRef[] => Array.isArray(v
     }))
   : [];
 
+const normalizeStudyNotes = (value: unknown): LearningStudyThought[] => Array.isArray(value)
+  ? value.filter(isObject).slice(-200).map((item, index) => ({
+      id: typeof item.id === 'string' && item.id ? item.id : `thought-${index}`,
+      text: typeof item.text === 'string' ? item.text.slice(0, 4000) : '',
+      createdAt: typeof item.createdAt === 'string' ? item.createdAt : '',
+      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : '',
+    })).filter((item) => item.text.trim())
+  : [];
+
+const normalizeReviewHistory = (value: unknown): LearningReviewEntry[] => Array.isArray(value)
+  ? value.filter(isObject).slice(-200).map((item, index) => ({
+      id: typeof item.id === 'string' && item.id ? item.id : `review-${index}`,
+      reviewedAt: typeof item.reviewedAt === 'string' ? item.reviewedAt : '',
+      result: item.result === 'forgotten' ? 'forgotten' as const : 'remembered' as const,
+      thought: typeof item.thought === 'string' ? item.thought.slice(0, 4000) : '',
+    }))
+  : [];
+
 const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
   if (!isObject(value) || typeof value.noteUid !== 'string' || !value.noteUid) {
     return null;
@@ -216,9 +266,10 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     tags: strings(item.tags),
     wrongReason: typeof item.wrongReason === 'string' ? item.wrongReason : '',
     intent: {
-      isQuestion: isObject(item.intent) && item.intent.isQuestion === true,
-      isMistake: isObject(item.intent) && item.intent.isMistake === true,
-      shouldMemorize: isObject(item.intent) && item.intent.shouldMemorize === true,
+       isQuestion: isObject(item.intent) && item.intent.isQuestion === true,
+       isMistake: isObject(item.intent) && item.intent.isMistake === true,
+       isGood: isObject(item.intent) && item.intent.isGood === true,
+       shouldMemorize: isObject(item.intent) && item.intent.shouldMemorize === true,
     },
   })) : [];
   return {
@@ -249,7 +300,9 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
       : 'ai',
     manualCreated: value.manualCreated === true,
     userEditedFields: strings(value.userEditedFields),
+    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
     items,
+    studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: strings(value.cardIds),
   };
@@ -259,19 +312,32 @@ const normalizeCard = (value: unknown): LearningCard | null => {
   if (!isObject(value) || typeof value.id !== 'string' || typeof value.noteUid !== 'string') {
     return null;
   }
-  const status: LearningCardStatus = ['draft', 'active', 'archived'].includes(String(value.status))
+  const storedStatus: LearningCardStatus = ['draft', 'active', 'archived'].includes(String(value.status))
     ? value.status as LearningCardStatus
-    : 'draft';
+    : 'active';
   const reviewStep = Number(value.reviewStep);
   const reviewCount = Number(value.reviewCount);
+  const reviewHistory = normalizeReviewHistory(value.reviewHistory);
+  const storedCorrectCount = Number(value.correctCount);
+  const storedIncorrectCount = Number(value.incorrectCount);
+  const storedCorrectStreak = Number(value.correctStreak);
+  const front = typeof value.front === 'string' ? value.front : '';
+  const back = typeof value.back === 'string' ? value.back : '';
+  const subject = typeof value.subject === 'string' ? value.subject : '';
+  const status: LearningCardStatus = storedStatus === 'draft'
+    && front.trim()
+    && back.trim()
+    && !DEFAULT_SUBJECT_NAMES.has(subject.trim())
+    ? 'active'
+    : storedStatus;
   return {
     id: value.id,
     noteUid: value.noteUid,
     sourceKey: typeof value.sourceKey === 'string' ? value.sourceKey : '',
     kind: value.kind === 'mistake' ? 'mistake' : 'memory',
-    front: typeof value.front === 'string' ? value.front : '',
-    back: typeof value.back === 'string' ? value.back : '',
-    subject: typeof value.subject === 'string' ? value.subject : '',
+    front,
+    back,
+    subject,
     knowledgePath: strings(value.knowledgePath),
     tags: strings(value.tags),
     pageRefs: normalizePageRefs(value.pageRefs),
@@ -279,12 +345,21 @@ const normalizeCard = (value: unknown): LearningCard | null => {
     sourceFilePath: typeof value.sourceFilePath === 'string' ? value.sourceFilePath : '',
     status,
     dueDate: typeof value.dueDate === 'string' ? value.dueDate : '',
-    reviewStep: Number.isInteger(reviewStep) ? Math.min(3, Math.max(0, reviewStep)) : 0,
+    reviewStep: Number.isInteger(reviewStep) ? Math.min(5, Math.max(0, reviewStep)) : 0,
     reviewCount: Number.isInteger(reviewCount) && reviewCount >= 0 ? reviewCount : 0,
     lastReviewedAt: typeof value.lastReviewedAt === 'string' ? value.lastReviewedAt : '',
     lastReviewResult: value.lastReviewResult === 'remembered' || value.lastReviewResult === 'forgotten'
       ? value.lastReviewResult
       : '',
+    correctCount: Number.isInteger(storedCorrectCount) && storedCorrectCount >= 0
+      ? storedCorrectCount
+      : reviewHistory.filter((entry) => entry.result === 'remembered').length,
+    incorrectCount: Number.isInteger(storedIncorrectCount) && storedIncorrectCount >= 0
+      ? storedIncorrectCount
+      : reviewHistory.filter((entry) => entry.result === 'forgotten').length,
+    correctStreak: Number.isInteger(storedCorrectStreak) && storedCorrectStreak >= 0 ? storedCorrectStreak : 0,
+    masteredAt: typeof value.masteredAt === 'string' ? value.masteredAt : '',
+    reviewHistory,
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : '',
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
     userEdited: Boolean(value.userEdited),
@@ -451,6 +526,7 @@ export const patchLearningCard = (
   cardId: string,
   patch: Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
     reviewResult?: 'remembered' | 'forgotten';
+    reviewThought?: string;
   },
   expectedRevision?: number,
 ): Promise<LearningDataSnapshot> => requestSnapshot(`${NOTE_SERVER_URL}/learning-data/cards/${encodeURIComponent(cardId)}`, {
@@ -489,12 +565,21 @@ export const hasLearningContent = (snapshot: LearningDataSnapshot): boolean => s
   || Object.values(snapshot.days).some((day) => day.autoNotes.length > 0 || hasRecordContent(day.manual));
 
 export const readLearningDataCache = (): LearningDataSnapshot => {
+  const raw = window.localStorage.getItem(LEARNING_DATA_CACHE_KEY);
+  if (learningDataMemoryCache && raw === learningDataMemoryRaw) {
+    lastLearningDataCacheKey = learningDataCacheKey(learningDataMemoryCache);
+    return learningDataMemoryCache;
+  }
   try {
-    const snapshot = normalizeLearningData(JSON.parse(window.localStorage.getItem(LEARNING_DATA_CACHE_KEY) ?? 'null'));
+    const snapshot = normalizeLearningData(JSON.parse(raw ?? 'null'));
+    learningDataMemoryCache = snapshot;
+    learningDataMemoryRaw = raw;
     lastLearningDataCacheKey = learningDataCacheKey(snapshot);
     return snapshot;
   } catch {
     const snapshot = emptyLearningData();
+    learningDataMemoryCache = snapshot;
+    learningDataMemoryRaw = raw;
     lastLearningDataCacheKey = learningDataCacheKey(snapshot);
     return snapshot;
   }
@@ -507,21 +592,30 @@ export const saveLearningDataCache = (snapshot: LearningDataSnapshot) => {
     return;
   }
   lastLearningDataCacheKey = cacheKey;
-  window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, JSON.stringify(normalized));
+  const raw = JSON.stringify(normalized);
+  learningDataMemoryCache = normalized;
+  learningDataMemoryRaw = raw;
+  window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
   window.dispatchEvent(new CustomEvent(LEARNING_DATA_EVENT, { detail: normalized }));
 };
 
 export const subscribeLearningDataCache = (callback: (snapshot: LearningDataSnapshot) => void) => {
   const handleCustom = (event: Event) => {
     const detail = (event as CustomEvent<unknown>).detail;
-    callback(normalizeLearningData(detail));
+    callback(detail === learningDataMemoryCache && learningDataMemoryCache
+      ? learningDataMemoryCache
+      : normalizeLearningData(detail));
   };
   const handleStorage = (event: StorageEvent) => {
     if (event.key !== LEARNING_DATA_CACHE_KEY || !event.newValue) {
       return;
     }
     try {
-      const snapshot = normalizeLearningData(JSON.parse(event.newValue));
+      const snapshot = event.newValue === learningDataMemoryRaw && learningDataMemoryCache
+        ? learningDataMemoryCache
+        : normalizeLearningData(JSON.parse(event.newValue));
+      learningDataMemoryCache = snapshot;
+      learningDataMemoryRaw = event.newValue;
       lastLearningDataCacheKey = learningDataCacheKey(snapshot);
       callback(snapshot);
     } catch {

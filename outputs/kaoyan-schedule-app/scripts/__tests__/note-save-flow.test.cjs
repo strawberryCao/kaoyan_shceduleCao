@@ -145,7 +145,8 @@ test('saves locally before a slow AI response and replays the same noteUid witho
       .filter((entry) => entry.isFile() && /\.(?:png|jpe?g|webp)$/i.test(entry.name));
     assert.equal(imageFiles.length, 1);
     const learningData = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'learning-data.json'), 'utf8'));
-    assert.equal(learningData.cards.filter((card) => card.noteUid === noteUid && card.kind === 'mistake').length, 1);
+    assert.equal(learningData.cards.filter((card) => card.noteUid === noteUid).length, 0);
+    assert.equal(learningData.days[Object.keys(learningData.days)[0]].autoNotes[0].subject, '默认文件夹');
   } finally {
     await stopChild(child);
     await new Promise((resolve) => slowAi.close(resolve));
@@ -172,6 +173,9 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
               subject: '高等数学',
               title: '导数切线经典错题',
               reason: '测试后台命名',
+              ruleId: 'tank-number',
+              ruleValue: '250626-088',
+              ruleEvidence: '缸号字段右侧',
             }),
           },
         }],
@@ -199,6 +203,19 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
       },
     },
     routing: { timeoutMs: 2_000, networkRetries: 0, jsonRepairRetries: 0 },
+    tasks: {
+      note_naming: {
+        namingRules: [{
+          id: 'tank-number',
+          name: '缸号命名',
+          enabled: true,
+          when: '图片中出现缸号字段',
+          extract: '提取缸号字段值',
+          titleTemplate: '{value}',
+          validationHint: '格式如 250626-088',
+        }],
+      },
+    },
   }, null, 2));
 
   const child = spawn(process.execPath, [serverScript], {
@@ -257,6 +274,10 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
     assert.ok(completed, 'background naming did not complete');
     assert.equal(completed.idempotentReplay, true);
     assert.equal(completed.metadata.naming.model, 'successful-test-model');
+    assert.equal(completed.metadata.naming.ruleId, 'tank-number');
+    assert.equal(completed.metadata.naming.ruleValue, '250626-088');
+    assert.equal(completed.metadata.title, '250626-088');
+    assert.match(path.basename(completed.filePath), /250626-088/);
     assert.notEqual(completed.filePath, first.filePath);
     assert.ok(fs.existsSync(completed.filePath));
     assert.equal(fs.existsSync(first.filePath), false);

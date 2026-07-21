@@ -39,6 +39,7 @@ import {
 } from '../utils/scheduleRecords';
 
 type ServiceState = 'checking' | 'online' | 'offline';
+const DEFAULT_NOTE_FOLDERS = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 const go = (path: string) => {
   window.location.assign(`${window.location.origin}/${path}`);
@@ -127,10 +128,19 @@ export function AppHub() {
 
   const todayRecord = records[todayDay.date] ?? getDefaultRecord();
   const progress = getDayProgress(todayDay, todayRecord);
-  const todayNotes = learningData.days[todayDay.date]?.autoNotes.length ?? 0;
+  const todayNotes = learningData.days[todayDay.date]?.autoNotes.filter((note) => (
+    note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim())
+  )).length ?? 0;
+  const eligibleNoteUids = new Set(Object.values(learningData.days).flatMap((day) => day.autoNotes)
+    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim()))
+    .map((note) => note.noteUid));
   const today = localDate();
-  const dueCards = learningData.cards.filter((card) => card.status === 'active' && (!card.dueDate || card.dueDate <= today)).length;
-  const draftCards = learningData.cards.filter((card) => card.status === 'draft').length;
+  const dueCards = learningData.cards.filter((card) => (
+    eligibleNoteUids.has(card.noteUid) && card.status === 'active' && (!card.dueDate || card.dueDate <= today)
+  )).length;
+  const uncertainClassifications = Object.values(learningData.days).flatMap((day) => day.autoNotes).filter((note) => (
+    note.organizationStatus === 'pending' && DEFAULT_NOTE_FOLDERS.has(note.subject.trim())
+  )).length;
   const completedTaskIds = new Set(todayRecord.completedTaskIds);
   const currentTaskId = getCurrentTaskId(todayDay.tasks, now);
 
@@ -196,10 +206,10 @@ export function AppHub() {
                 <b>{dueCards} 张</b>
                 <ArrowRight size={17} />
               </button>
-              <button type="button" onClick={() => go('?panel=learning&filter=draft')}>
+              <button type="button" onClick={() => go('?panel=learning&view=inbox')}>
                 <span><Sparkles size={20} /></span>
-                <strong>确认 AI 草稿</strong>
-                <b>{draftCards} 张</b>
+                <strong>不确定分类</strong>
+                <b>{uncertainClassifications} 条</b>
                 <ArrowRight size={17} />
               </button>
               <button type="button" onClick={() => go('?panel=learning&view=knowledge')}>

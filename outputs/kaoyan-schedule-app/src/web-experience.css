@@ -23,6 +23,7 @@
 .app-shell button,
 .note-capture-page button,
 .desktop-console-shell button,
+.ai-config-page button,
 .command-palette button,
 .command-launcher {
   -webkit-tap-highlight-color: transparent;
@@ -32,6 +33,7 @@
 .app-shell :is(button, input, textarea, select):focus-visible,
 .note-capture-page :is(button, input, textarea, select):focus-visible,
 .desktop-console-shell :is(button, input, textarea, select):focus-visible,
+.ai-config-page :is(button, input, textarea, select):focus-visible,
 .command-palette :is(button, input):focus-visible,
 .command-launcher:focus-visible {
   outline: 3px solid rgba(184, 121, 66, 0.24);

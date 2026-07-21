@@ -29,6 +29,43 @@ test('returns an empty versioned snapshot before the first write', (t) => {
   });
 });
 
+test('keeps editable study thoughts attached to a note across classification changes', (t) => {
+  const store = makeFixture(t);
+  let snapshot = store.createNote({
+    noteUid: 'thought-timeline-note',
+    capturedDate: '2026-07-10',
+    title: '页表地址转换',
+    subject: '操作系统',
+    noteType: 'mistake',
+  });
+
+  snapshot = store.updateNote('thought-timeline-note', {
+    thoughtAction: { action: 'add', text: '第一次重做：页内偏移位数只由页面大小决定。' },
+  }, { expectedRevision: snapshot.revision });
+  let note = snapshot.days['2026-07-10'].autoNotes[0];
+  assert.equal(note.studyNotes.length, 1);
+  assert.equal(note.studyNotes[0].text, '第一次重做：页内偏移位数只由页面大小决定。');
+  const thoughtId = note.studyNotes[0].id;
+
+  snapshot = store.updateNote('thought-timeline-note', {
+    subject: '计算机组成',
+    knowledgePath: ['计算机组成', '存储系统'],
+  }, { expectedRevision: snapshot.revision });
+  note = snapshot.days['2026-07-10'].autoNotes[0];
+  assert.equal(note.studyNotes[0].id, thoughtId);
+
+  snapshot = store.updateNote('thought-timeline-note', {
+    thoughtAction: { action: 'update', id: thoughtId, text: '第二次理解：先拆页号与页内偏移，再查页表。' },
+  }, { expectedRevision: snapshot.revision });
+  note = snapshot.days['2026-07-10'].autoNotes[0];
+  assert.equal(note.studyNotes[0].text, '第二次理解：先拆页号与页内偏移，再查页表。');
+
+  snapshot = store.updateNote('thought-timeline-note', {
+    thoughtAction: { action: 'delete', id: thoughtId },
+  }, { expectedRevision: snapshot.revision });
+  assert.deepEqual(snapshot.days['2026-07-10'].autoNotes[0].studyNotes, []);
+});
+
 test('supports note and card CRUD with recoverable tombstones that survive sync and rebuild', (t) => {
   const store = makeFixture(t);
   let snapshot = store.createNote({
@@ -131,6 +168,44 @@ test('supports note and card CRUD with recoverable tombstones that survive sync 
   assert.equal(note.remark, '检查递归出口和访问顺序');
   assert.deepEqual(note.tags, ['错题', '递归']);
   assert.equal(note.noteType, 'mistake');
+});
+
+test('keeps manual good-question membership across AI resyncs', (t) => {
+  const store = makeFixture(t);
+  const metadata = {
+    noteUid: 'good-question-membership',
+    title: '链表错题',
+    subject: '数据结构',
+    remark: '指针更新顺序写反了',
+    createdAt: '2026-07-16T04:00:00.000Z',
+  };
+  let snapshot = store.syncNote(metadata, {
+    enrichment: { capturedDate: '2026-07-16', noteType: 'mistake', tags: ['错题'] },
+  });
+
+  snapshot = store.updateNote('good-question-membership', {
+    goodQuestion: true,
+    tags: ['错题', '好题'],
+  }, { expectedRevision: snapshot.revision });
+  let note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.goodQuestion, true);
+  assert.equal(note.userEditedFields.includes('goodQuestion'), true);
+
+  snapshot = store.syncNote({ ...metadata, title: 'AI 再次分析的标题' }, {
+    enrichment: { capturedDate: '2026-07-16', noteType: 'mistake', tags: ['错题'] },
+  });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.goodQuestion, true);
+
+  snapshot = store.updateNote('good-question-membership', { goodQuestion: false }, {
+    expectedRevision: snapshot.revision,
+  });
+  note = snapshot.days['2026-07-16'].autoNotes[0];
+  assert.equal(note.goodQuestion, false);
+  assert.throws(
+    () => store.updateNote('good-question-membership', { goodQuestion: null }),
+    (error) => error?.code === 'INVALID_LEARNING_NOTE',
+  );
 });
 
 test('removes a stale write lock without blocking the service', (t) => {
@@ -382,6 +457,7 @@ test('manual classification updates notes and cards and survives later AI syncs'
     },
     cards: [{ sourceKey: 'mistake:0', kind: 'mistake', front: '重做这道题', back: '答案' }],
   });
+  assert.equal(snapshot.cards[0].status, 'draft');
 
   snapshot = store.updateNote('note-manual-classification', {
     subject: '高等数学',
@@ -396,6 +472,7 @@ test('manual classification updates notes and cards and survives later AI syncs'
   assert.equal(corrected.classificationSource, 'manual');
   assert.equal(snapshot.cards[0].subject, '高等数学');
   assert.deepEqual(snapshot.cards[0].knowledgePath, ['高等数学', '数列极限']);
+  assert.equal(snapshot.cards[0].status, 'active');
 
   snapshot = store.syncNote({ ...metadata, subject: '概率论' }, {
     enrichment: {
@@ -509,7 +586,7 @@ test('restoreSnapshot restores a normalized recovery payload without lowering th
   assert.equal(restored.days['2026-07-18'], undefined);
 });
 
-test('keeps activation state across AI reruns and schedules 1/3/7/14 day reviews', (t) => {
+test('auto-activates cards and retires a card after three consecutive correct reviews', (t) => {
   const store = makeFixture(t);
   const metadata = {
     noteUid: 'note-review',
@@ -520,7 +597,6 @@ test('keeps activation state across AI reruns and schedules 1/3/7/14 day reviews
     cards: [{ sourceKey: 'review', front: '问题', back: '答案' }],
   });
   const cardId = snapshot.cards[0].id;
-  snapshot = store.updateCard(cardId, { status: 'active' });
   assert.equal(snapshot.cards[0].status, 'active');
 
   snapshot = store.syncNote(metadata, {
@@ -528,15 +604,21 @@ test('keeps activation state across AI reruns and schedules 1/3/7/14 day reviews
   });
   assert.equal(snapshot.cards[0].status, 'active');
 
-  const expectedDates = ['2026-07-18', '2026-07-20', '2026-07-24', '2026-07-31'];
+  const expectedDates = ['2026-07-18', '2026-07-20'];
   for (const expectedDate of expectedDates) {
     snapshot = store.updateCard(cardId, { reviewResult: 'remembered' });
     assert.equal(snapshot.cards[0].dueDate, expectedDate);
+    assert.equal(snapshot.cards[0].status, 'active');
   }
-  assert.equal(snapshot.cards[0].reviewCount, 4);
+  snapshot = store.updateCard(cardId, { reviewResult: 'remembered' });
+  assert.equal(snapshot.cards[0].dueDate, '');
+  assert.equal(snapshot.cards[0].status, 'archived');
+  assert.equal(snapshot.cards[0].reviewCount, 3);
+  assert.equal(snapshot.cards[0].correctStreak, 3);
 
   snapshot = store.updateCard(cardId, { reviewResult: 'forgotten' });
   assert.equal(snapshot.cards[0].dueDate, '2026-07-18');
+  assert.equal(snapshot.cards[0].status, 'active');
   assert.equal(snapshot.cards[0].reviewStep, 0);
   assert.equal(snapshot.cards[0].lastReviewResult, 'forgotten');
 });

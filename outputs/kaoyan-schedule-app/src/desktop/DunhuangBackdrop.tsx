@@ -39,6 +39,7 @@ const VIDEO_CANDIDATES: VideoCandidate[] = [
 const BASE_DUST = 96;
 const MAX_DUST = 240;
 const POINTER_RADIUS = 230;
+const FRAME_INTERVAL = 1000 / 30;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -139,7 +140,7 @@ export function DunhuangBackdrop() {
       return;
     }
 
-    const context = canvas.getContext('2d', { alpha: true });
+    const context = canvas.getContext('2d', { alpha: true, desynchronized: true });
     if (!context) {
       return;
     }
@@ -152,7 +153,9 @@ export function DunhuangBackdrop() {
 
     const resize = () => {
       const rect = root.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+      // The dust is deliberately soft, so a smaller backing buffer looks the
+      // same while avoiding a large full-screen GPU allocation on high-DPI PCs.
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.35);
       width = Math.max(1, rect.width);
       height = Math.max(1, rect.height);
       canvas.width = Math.max(1, Math.round(width * dpr));
@@ -214,6 +217,10 @@ export function DunhuangBackdrop() {
     const draw = (now: number) => {
       animationId = 0;
       if (document.hidden) {
+        return;
+      }
+      if (now - previous < FRAME_INTERVAL) {
+        animationId = window.requestAnimationFrame(draw);
         return;
       }
       const delta = clamp((now - previous) / (1000 / 60), 0.25, 2.5);
@@ -289,7 +296,10 @@ export function DunhuangBackdrop() {
       if (document.hidden) {
         if (animationId !== 0) window.cancelAnimationFrame(animationId);
         animationId = 0;
+        canvas.width = 1;
+        canvas.height = 1;
       } else {
+        resize();
         startAnimation();
       }
     };
@@ -321,6 +331,11 @@ export function DunhuangBackdrop() {
 
     const start = async () => {
       try {
+        const source = video.querySelector('source');
+        if (source && !source.getAttribute('src')) {
+          source.setAttribute('src', videoSource.src);
+          video.load();
+        }
         await video.play();
       } catch {
         // Chromium or Lively may delay autoplay until the page becomes visible.
@@ -331,6 +346,11 @@ export function DunhuangBackdrop() {
     const handleVisibility = () => {
       if (document.hidden) {
         video.pause();
+        // Releasing the source tears down Chromium's decoder and frame pool
+        // while an Electron window or browser tab is hidden.
+        const source = video.querySelector('source');
+        source?.removeAttribute('src');
+        video.load();
       } else {
         void start();
       }
@@ -360,7 +380,7 @@ export function DunhuangBackdrop() {
           muted
           loop
           playsInline
-          preload="auto"
+          preload="metadata"
           poster="/dunhuang-wallpaper.png"
         >
           <source src={videoSource.src} type={videoSource.type} />

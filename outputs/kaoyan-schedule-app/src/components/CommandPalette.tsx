@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpenCheck,
+  BrainCircuit,
   CalendarDays,
   Clipboard,
   FileImage,
@@ -17,6 +18,7 @@ import {
   subscribeLearningDataCache,
   type LearningDataSnapshot,
 } from '../utils/learningData';
+import { fuzzySearchScore } from '../utils/fuzzySearch';
 
 type PaletteCommand = {
   id: string;
@@ -32,8 +34,6 @@ const navigate = (path: string) => {
   window.location.assign(`${window.location.origin}/${path}`);
 };
 
-const normalize = (value: string) => value.trim().toLocaleLowerCase('zh-CN');
-
 const pageReferenceText = (pageRefs: Array<{ raw: string; page?: number; question?: string }>) => pageRefs
   .map((item) => item.raw || [item.page ? `p${item.page}` : '', item.question ?? ''].filter(Boolean).join(' '))
   .filter(Boolean)
@@ -43,10 +43,17 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
-  const [learningData, setLearningData] = useState<LearningDataSnapshot>(() => readLearningDataCache());
+  const [learningData, setLearningData] = useState<LearningDataSnapshot | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => subscribeLearningDataCache(setLearningData), []);
+  useEffect(() => {
+    if (!open) {
+      setLearningData(null);
+      return undefined;
+    }
+    setLearningData(readLearningDataCache());
+    return subscribeLearningDataCache(setLearningData);
+  }, [open]);
 
   const baseCommands = useMemo<PaletteCommand[]>(() => [
     {
@@ -105,70 +112,87 @@ export function CommandPalette() {
       icon: Settings,
       run: () => window.open('http://127.0.0.1:5174/health', '_blank', 'noopener,noreferrer'),
     },
+    {
+      id: 'ai-config',
+      label: 'AI 任务配置',
+      description: '为命名、分类和生成任务选择模型与自定义规则',
+      keywords: 'ai 人工智能 模型 提示词 规则 命名 分类 配置 settings',
+      icon: BrainCircuit,
+      run: () => navigate('?aiConfig=1'),
+    },
   ], []);
 
   const resultCommands = useMemo<PaletteCommand[]>(() => {
-    const normalizedQuery = normalize(query);
-    if (!normalizedQuery) return [];
-    const results: PaletteCommand[] = [];
+    if (!query.trim() || !learningData) return [];
+    const results: Array<PaletteCommand & { searchScore: number }> = [];
+    const defaultFolders = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
+    const eligibleNotes = Object.values(learningData.days).flatMap((day) => day.autoNotes).filter((note) => (
+      note.organizationStatus !== 'ignored' && !defaultFolders.has(note.subject.trim())
+    ));
+    const eligibleNoteUids = new Set(eligibleNotes.map((note) => note.noteUid));
 
-    learningData.cards.forEach((card) => {
-      const haystack = normalize([
-        card.front,
-        card.back,
-        card.subject,
-        card.sourceTitle,
-        card.kind,
-        card.status,
-        card.knowledgePath.join(' '),
-        card.tags.join(' '),
-        pageReferenceText(card.pageRefs),
-      ].join(' '));
-      if (!haystack.includes(normalizedQuery)) return;
+    learningData.cards.filter((card) => card.status === 'active' && eligibleNoteUids.has(card.noteUid)).forEach((card) => {
+      const score = fuzzySearchScore(query, [
+        { text: card.front, weight: 10 },
+        { text: card.sourceTitle, weight: 8 },
+        { text: card.back, weight: 6 },
+        { text: card.knowledgePath.join(' '), weight: 7 },
+        { text: card.tags.join(' '), weight: 5 },
+        { text: card.subject, weight: 4 },
+        { text: pageReferenceText(card.pageRefs), weight: 3 },
+      ]);
+      if (score <= 0) return;
       results.push({
         id: `card:${card.id}`,
         label: card.front || card.sourceTitle || '未命名复习卡',
         description: [card.subject, pageReferenceText(card.pageRefs), card.knowledgePath.join(' / ')].filter(Boolean).join(' · ') || '复习卡片',
-        keywords: haystack,
+        keywords: [card.front, card.back, card.subject, card.sourceTitle].join(' '),
         icon: BookOpenCheck,
-        meta: card.status === 'draft' ? '待确认' : card.kind === 'mistake' ? '错题卡' : '背诵卡',
+        meta: card.kind === 'mistake' ? '错题卡' : '背诵卡',
         run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}`),
+        searchScore: score,
       });
     });
 
-    Object.values(learningData.days).flatMap((day) => day.autoNotes).forEach((note) => {
+    eligibleNotes.forEach((note) => {
       const itemText = note.items.flatMap((item) => [item.title, item.knowledgePoint, item.summary, item.wrongReason, ...item.tags]).join(' ');
-      const haystack = normalize([
-        note.title,
-        note.subject,
-        note.remark,
-        note.noteType,
-        note.questionType,
-        note.wrongReason,
-        note.knowledgePath.join(' '),
-        note.tags.join(' '),
-        pageReferenceText(note.pageRefs),
-        itemText,
-      ].join(' '));
-      if (!haystack.includes(normalizedQuery)) return;
+      const score = fuzzySearchScore(query, [
+        { text: note.title, weight: 10 },
+        { text: note.knowledgePath.join(' '), weight: 8 },
+        { text: note.wrongReason, weight: 8 },
+        { text: note.remark, weight: 7 },
+        { text: note.studyNotes.map((thought) => thought.text).join(' '), weight: 7 },
+        { text: itemText, weight: 6 },
+        { text: note.tags.join(' '), weight: 5 },
+        { text: `${note.subject} ${note.questionType}`, weight: 4 },
+        { text: `${note.capturedDate} ${pageReferenceText(note.pageRefs)}`, weight: 3 },
+      ]);
+      if (score <= 0) return;
       results.push({
         id: `note:${note.noteUid}`,
         label: note.title || note.remark || '未命名知识笔记',
         description: [note.capturedDate, note.subject, pageReferenceText(note.pageRefs)].filter(Boolean).join(' · '),
-        keywords: haystack,
+        keywords: [note.title, note.subject, note.remark, itemText].join(' '),
         icon: FileImage,
         meta: '知识笔记',
         run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}`),
+        searchScore: score,
       });
     });
 
-    return results.slice(0, 6);
+    return results.sort((left, right) => right.searchScore - left.searchScore).slice(0, 6);
   }, [learningData, query]);
 
   const visibleCommands = useMemo(() => {
-    const normalizedQuery = normalize(query);
-    const filteredBase = normalizedQuery
-      ? baseCommands.filter((command) => normalize(`${command.label} ${command.description} ${command.keywords}`).includes(normalizedQuery))
+    const filteredBase = query.trim()
+      ? baseCommands.map((command) => ({
+        command,
+        score: fuzzySearchScore(query, [
+          { text: command.label, weight: 8 },
+          { text: command.description, weight: 4 },
+          { text: command.keywords, weight: 5 },
+        ]),
+      })).filter(({ score }) => score > 0).sort((left, right) => right.score - left.score).map(({ command }) => command)
       : baseCommands;
     return [...resultCommands, ...filteredBase].slice(0, 10);
   }, [baseCommands, query, resultCommands]);

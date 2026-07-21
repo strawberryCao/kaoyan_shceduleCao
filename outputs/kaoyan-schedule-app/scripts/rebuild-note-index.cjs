@@ -198,12 +198,24 @@ function resolveSidecarImage(notesRoot, sidecarPath, metadata) {
 }
 
 function makeGeneratedCards(metadata, enrichment, intent) {
+  if (!enrichment.subject || enrichment.subject === DEFAULT_SUBJECT) return [];
+  const finalize = (input) => {
+    const seen = new Set();
+    return input.filter((card) => {
+      const front = String(card?.front || '').trim();
+      const back = String(card?.back || '').trim();
+      const key = front.toLocaleLowerCase('zh-CN').replace(/[\s，。！？、；：,.!?;:]+/gu, '');
+      if (front.length < 4 || back.length < 6 || !key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 2).map((card) => ({ ...card, status: 'active' }));
+  };
   const existing = Array.isArray(metadata?.learning?.cards) ? metadata.learning.cards : [];
   if (existing.length > 0) {
-    return existing.map((card, index) => ({
+    return finalize(existing.map((card, index) => ({
       ...card,
       sourceKey: card?.sourceKey || card?.cardKey || `rebuild:${card?.kind === 'mistake' ? 'mistake' : 'memory'}:${index}`,
-    }));
+    })));
   }
   const back = enrichment.wrongReason || metadata.remark || metadata.title || '';
   if (!back) return [];
@@ -214,7 +226,7 @@ function makeGeneratedCards(metadata, enrichment, intent) {
       kind: 'memory',
       front: metadata.title || '回忆这条笔记的核心内容',
       back: metadata.remark || metadata.title || back,
-      status: 'draft',
+      status: 'active',
       knowledgePath: enrichment.knowledgePath,
       tags: enrichment.tags,
       pageRefs: enrichment.pageRefs,
@@ -226,13 +238,13 @@ function makeGeneratedCards(metadata, enrichment, intent) {
       kind: 'mistake',
       front: metadata.title ? `重做：${metadata.title}` : '重新说明这道错题的正确思路',
       back,
-      status: 'draft',
+      status: 'active',
       knowledgePath: enrichment.knowledgePath,
       tags: enrichment.tags,
       pageRefs: enrichment.pageRefs,
     });
   }
-  return cards;
+  return finalize(cards);
 }
 
 function buildIndexEntry({ notesRoot, imagePath, sidecarPath, metadata = {}, filePathMatched = false, now = () => new Date() }) {
@@ -256,10 +268,12 @@ function buildIndexEntry({ notesRoot, imagePath, sidecarPath, metadata = {}, fil
   const intent = {
     isQuestion: storedIntent.isQuestion === true || (parsed.questions || []).length > 0,
     isMistake: storedIntent.isMistake === true || parsed.flags?.isMistake === true,
+    isGood: storedIntent.isGood === true || parsed.flags?.isClassic === true,
     shouldMemorize: storedIntent.shouldMemorize === true || parsed.flags?.shouldMemorize === true,
   };
   const tags = flattenTags(metadata, parsed);
   if (intent.isMistake && !tags.includes('错题')) tags.push('错题');
+  if (intent.isGood && !tags.includes('好题')) tags.push('好题');
   if (intent.shouldMemorize && !tags.includes('背诵')) tags.push('背诵');
   const capturedAt = resolveCapturedAt(metadata, imageStat, sidecarStat, now);
   const capturedDate = formatDateInTimeZone(capturedAt, 'Asia/Shanghai');

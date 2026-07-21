@@ -161,7 +161,7 @@ test('sends image, local parsing, current category and compact taxonomy through 
   assert.ok(result.tags.includes('错题'));
   assert.ok(result.tags.includes('背诵'));
   assert.equal(result.cards.length, 1);
-  assert.equal(result.cards[0].status, 'draft');
+  assert.equal(result.cards[0].status, 'active');
   assert.equal(result.cards[0].sourceKey, 'ai:root:0');
 });
 
@@ -200,7 +200,7 @@ test('hides legacy unknown subjects from the prompt and rejects them from model 
     },
   }));
 
-  assert.match(prompt, /subject 只能从 existingTaxonomy 中已有的 408 一级科目选择/);
+  assert.match(prompt, /subject 只能从 existingTaxonomy 中已有的标准考研一级科目选择/);
   assert.doesNotMatch(prompt, /"name":"计算机视觉"/);
   assert.equal(result.subject, '默认文件夹');
   assert.deepEqual(result.subjectAliases, []);
@@ -234,7 +234,81 @@ test('does not create cards for an ordinary note without mistake or memory inten
   assert.equal(result.intent.shouldMemorize, false);
 });
 
-test('semantic AI memory intent can create a draft card without fixed memory words', async (t) => {
+test('does not let AI automatically promote an ordinary question into good questions', async (t) => {
+  const imagePath = makeImageFixture(t);
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      async complete() {
+        return {
+          json: baseAiResult({
+            tags: ['例题', '好题'],
+            intent: { isQuestion: true, isMistake: true, isGood: true, shouldMemorize: false },
+          }),
+          provider: 'qwen',
+          model: 'qwen-test',
+        };
+      },
+    },
+  });
+
+  const result = await analyzer(makeContext(imagePath, {
+    metadata: { remark: '这道题做错了，留作错题。' },
+  }));
+  assert.equal(result.intent.isMistake, true);
+  assert.equal(result.intent.isGood, false);
+  assert.equal(result.tags.includes('好题'), false);
+});
+
+test('applies note-enrichment task parameters to prompt, schema and post-processing', async (t) => {
+  const imagePath = makeImageFixture(t);
+  let request;
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      getTaskOptions() {
+        return {
+          summaryDetail: 'detailed',
+          maxItems: 1,
+          mistakePolicy: 'semantic',
+          goodQuestionPolicy: 'ai_high_value',
+          memorizePolicy: 'semantic',
+          cardPolicy: 'high_value',
+          maxCards: 1,
+          taxonomyContextChars: 4000,
+          maxTokens: 6100,
+        };
+      },
+      async complete(input) {
+        request = input;
+        return {
+          json: baseAiResult({
+            intent: { isQuestion: true, isMistake: false, isGood: true, shouldMemorize: false },
+            items: [
+              { title: '第一项', knowledgePoint: '栈', summary: '一', tags: [], wrongReason: null, intent: { isQuestion: true, isMistake: false, isGood: true, shouldMemorize: false } },
+              { title: '第二项', knowledgePoint: '队列', summary: '二', tags: [], wrongReason: null, intent: { isQuestion: true, isMistake: false, isGood: false, shouldMemorize: false } },
+            ],
+            cards: [
+              { front: '第一张高价值卡片？', back: '保留这一张卡片。', kind: 'memory', itemIndex: 0 },
+              { front: '第二张高价值卡片？', back: '受到任务上限过滤。', kind: 'memory', itemIndex: 0 },
+            ],
+          }),
+          provider: 'kimi',
+          model: 'kimi-k3',
+        };
+      },
+    },
+  });
+
+  const result = await analyzer(makeContext(imagePath));
+  assert.equal(request.responseSchema.properties.items.maxItems, 1);
+  assert.equal(request.responseSchema.properties.cards.maxItems, 1);
+  assert.equal(request.maxTokens, 6100);
+  assert.match(request.messages[0].content[0].text, /必要推导/);
+  assert.equal(result.intent.isGood, true);
+  assert.equal(result.items.length, 1);
+  assert.equal(result.cards.length, 1);
+});
+
+test('semantic AI memory intent can create an active card without fixed memory words', async (t) => {
   const imagePath = makeImageFixture(t);
   const analyzer = createNoteAiAnalyzer({
     router: {
@@ -257,7 +331,7 @@ test('semantic AI memory intent can create a draft card without fixed memory wor
   assert.equal(result.intent.shouldMemorize, true);
   assert.ok(result.tags.includes('背诵'));
   assert.equal(result.cards.length, 1);
-  assert.equal(result.cards[0].status, 'draft');
+  assert.equal(result.cards[0].status, 'active');
 });
 
 test('standalone 记/背 language is treated as a strong hint without matching 笔记', () => {
@@ -269,7 +343,7 @@ test('standalone 记/背 language is treated as a strong hint without matching �
   assert.equal(noteWord.shouldMemorize, false);
 });
 
-test('canvas analysis preserves multiple items and only their intent-backed draft cards', async (t) => {
+test('canvas analysis preserves multiple items and only their highest-value active cards', async (t) => {
   const imagePath = makeImageFixture(t, '.webp');
   let capturedRequest;
   const analyzer = createNoteAiAnalyzer({
@@ -320,7 +394,8 @@ test('canvas analysis preserves multiple items and only their intent-backed draf
   assert.equal(result.items.length, 2);
   assert.equal(result.cards.length, 2);
   assert.deepEqual(result.cards.map((card) => card.itemIndex), [0, 1]);
-  assert.ok(result.cards.every((card) => card.status === 'draft'));
+  assert.ok(result.cards.length <= 2);
+  assert.ok(result.cards.every((card) => card.status === 'active'));
 });
 
 test('taxonomy compaction is valid, bounded and marks truncation', () => {

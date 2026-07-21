@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  memo,
   useCallback,
   useEffect,
   useId,
@@ -78,8 +79,25 @@ const PALM_REJECTION_MS = 700;
 const PEN_WIDTHS = [2, 4, 6, 9, 13] as const;
 const HIGHLIGHTER_WIDTHS = [12, 20, 30, 42] as const;
 const TEXT_SIZES = [12, 14, 17, 20, 24, 32, 40, 56] as const;
-const INK_COLORS = ['#272522', '#315f9c', '#a1483f', '#2f7a5a', '#8a5b2f'] as const;
+const INK_COLORS = ['#272522', '#1478ff', '#f04444', '#2f8f62', '#9a632d'] as const;
 const HIGHLIGHTER_COLORS = ['#f1c84b', '#f09a77', '#78c9ae', '#83b6e6', '#c6a3dc'] as const;
+
+const CUSTOM_RELATION_TYPE = '自定义';
+
+function isPresetRelationType(value: string | undefined): boolean {
+  return Boolean(value && CANVAS_RELATION_TYPES.includes(value as (typeof CANVAS_RELATION_TYPES)[number]));
+}
+
+function relationDisplayLabel(item: { relationType?: string; relationLabel?: string }): string {
+  if (item.relationType === CUSTOM_RELATION_TYPE) return item.relationLabel?.trim() || CUSTOM_RELATION_TYPE;
+  return item.relationType?.trim() || '解释';
+}
+
+function relationEditorValue(item: { relationType?: string; relationLabel?: string } | null | undefined): string {
+  if (!item) return '';
+  if (item.relationType === CUSTOM_RELATION_TYPE) return item.relationLabel || '';
+  return isPresetRelationType(item.relationType) ? '' : (item.relationType || '');
+}
 
 type CanvasTool = 'select' | 'pen' | 'highlighter' | 'eraser' | 'text' | 'annotation' | 'relation' | 'arrow';
 type InkCanvasTool = Extract<CanvasTool, 'pen' | 'highlighter'>;
@@ -138,10 +156,18 @@ type Gesture =
   | {
       type: 'arrow';
       pointerId: number;
-      sourceImageId: string;
+      sourceNode: { kind: 'image' | 'text' | 'annotation'; id: string };
       source: CanvasPoint;
       current: CanvasPoint;
       relationType: CanvasRelationType;
+      relationLabel?: string;
+    }
+  | {
+      type: 'viewport-pan';
+      pointerId: number;
+      startClient: CanvasPoint;
+      scrollLeft: number;
+      scrollTop: number;
     }
   | {
       type: 'ink';
@@ -246,7 +272,7 @@ const normalizedPressure = (pressure: number, pointerType: string): number => {
 const pressureStrokeWidth = (stroke: CanvasInkStroke, pressure: number): number => (
   stroke.tool === 'highlighter'
     ? stroke.width
-    : stroke.width * (0.38 + clamp(pressure, 0, 1) * 0.9)
+    : stroke.width * (0.58 + clamp(pressure, 0, 1) * 0.68)
 );
 
 interface InkCurveSegment {
@@ -270,11 +296,11 @@ const appendSmoothedInkPoint = (
     return true;
   }
   const screenDistance = Math.hypot(rawPoint.x - previous.x, rawPoint.y - previous.y) * zoom;
-  if (!finalPoint && screenDistance < 0.35) return false;
+  if (!finalPoint && screenDistance < 0.45) return false;
   const positionAlpha = finalPoint
-    ? clamp(0.7 + screenDistance / 30, 0.7, 0.92)
-    : clamp(0.2 + screenDistance / 12, 0.2, 0.78);
-  const pressureAlpha = finalPoint ? 0.62 : clamp(0.22 + screenDistance / 24, 0.22, 0.55);
+    ? clamp(0.78 + screenDistance / 36, 0.78, 0.94)
+    : clamp(0.34 + screenDistance / 11, 0.34, 0.84);
+  const pressureAlpha = finalPoint ? 0.68 : clamp(0.28 + screenDistance / 22, 0.28, 0.62);
   const next = {
     x: previous.x + (rawPoint.x - previous.x) * positionAlpha,
     y: previous.y + (rawPoint.y - previous.y) * positionAlpha,
@@ -309,6 +335,74 @@ const makeInkCurveSegments = (points: CanvasInkPoint[]): InkCurveSegment[] => {
     };
   });
 };
+
+interface InkPathRun {
+  d: string;
+  pressure: number;
+}
+
+/**
+ * Keep pressure variation without mounting one SVG node per sample. A typical
+ * handwritten character now uses a handful of continuous, round-joined paths
+ * instead of dozens of tiny capped segments.
+ */
+const makeInkPathRuns = (points: CanvasInkPoint[]): InkPathRun[] => {
+  const segments = makeInkCurveSegments(points);
+  if (segments.length === 0) return [];
+  const runs: InkPathRun[] = [];
+  let path = '';
+  let pressureTotal = 0;
+  let segmentCount = 0;
+
+  const flush = () => {
+    if (!path || segmentCount === 0) return;
+    runs.push({ d: path, pressure: pressureTotal / segmentCount });
+    path = '';
+    pressureTotal = 0;
+    segmentCount = 0;
+  };
+
+  segments.forEach((segment) => {
+    const averagePressure = segmentCount > 0 ? pressureTotal / segmentCount : segment.pressure;
+    if (segmentCount >= 8 || (segmentCount >= 2 && Math.abs(segment.pressure - averagePressure) > 0.13)) flush();
+    if (segmentCount === 0) path = `M ${segment.start.x} ${segment.start.y}`;
+    path += ` C ${segment.control1.x} ${segment.control1.y}, ${segment.control2.x} ${segment.control2.y}, ${segment.end.x} ${segment.end.y}`;
+    pressureTotal += segment.pressure;
+    segmentCount += 1;
+  });
+  flush();
+  return runs;
+};
+
+const InkStrokeShape = memo(function InkStrokeShape({ stroke }: { stroke: CanvasInkStroke }) {
+  const runs = useMemo(() => makeInkPathRuns(stroke.points), [stroke]);
+  return (
+    <g
+      opacity={stroke.opacity}
+      style={{ mixBlendMode: stroke.tool === 'highlighter' ? 'multiply' : 'normal' }}
+    >
+      {stroke.points.length === 1 && (
+        <circle
+          cx={stroke.points[0].x}
+          cy={stroke.points[0].y}
+          r={pressureStrokeWidth(stroke, stroke.points[0].pressure) / 2}
+          fill={stroke.color}
+        />
+      )}
+      {runs.map((run, index) => (
+        <path
+          key={`${stroke.id}:${index}`}
+          d={run.d}
+          fill="none"
+          stroke={stroke.color}
+          strokeWidth={pressureStrokeWidth(stroke, run.pressure)}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ))}
+    </g>
+  );
+});
 
 const distanceToSegment = (point: CanvasPoint, start: CanvasPoint, end: CanvasPoint): number => {
   const dx = end.x - start.x;
@@ -521,6 +615,44 @@ const lightweightDocumentSignature = (document: CanvasDocument): string => {
   });
 };
 
+/** Existing ink strokes are immutable (new strokes append, erasing filters). */
+const cloneCanvasDocumentForEditing = (document: CanvasDocument): CanvasDocument => ({
+  ...document,
+  images: document.images.map((item) => ({ ...item })),
+  texts: document.texts.map((item) => ({ ...item })),
+  anchors: document.anchors.map((item) => ({ ...item })),
+  annotations: document.annotations.map((item) => ({ ...item, anchorIds: [...item.anchorIds] })),
+  relations: document.relations.map((item) => ({ ...item })),
+  // Sharing immutable point arrays across undo snapshots avoids quadratic
+  // memory growth on handwriting-heavy canvases.
+  strokes: [...document.strokes],
+  viewport: { ...document.viewport },
+});
+
+const hasDocumentContent = (document: CanvasDocument): boolean => (
+  document.images.length > 0
+  || document.texts.length > 0
+  || document.annotations.length > 0
+  || document.relations.length > 0
+  || document.strokes.length > 0
+);
+
+const getStableStrokeRange = (points: CanvasInkPoint[]): { start: number; end: number } => {
+  if (points.length < 4) return { start: 0, end: points.length };
+  const distances: number[] = [];
+  for (let index = 1; index < points.length; index += 1) {
+    distances.push(Math.hypot(points[index].x - points[index - 1].x, points[index].y - points[index - 1].y));
+  }
+  const ordered = [...distances].sort((left, right) => left - right);
+  const median = ordered[Math.floor(ordered.length / 2)] || 1;
+  const implausibleJump = Math.max(120, median * 12);
+  let start = 0;
+  let end = points.length;
+  if (distances[0] > implausibleJump) start = 1;
+  if (distances[distances.length - 1] > implausibleJump) end -= 1;
+  return end > start ? { start, end } : { start: 0, end: points.length };
+};
+
 const getContentBounds = (document: CanvasDocument) => {
   const boxes: Array<{ left: number; top: number; right: number; bottom: number }> = [];
   document.images.forEach((item) => boxes.push({ left: item.x, top: item.y, right: item.x + item.width, bottom: item.y + item.height }));
@@ -539,18 +671,34 @@ const getContentBounds = (document: CanvasDocument) => {
   document.strokes.forEach((stroke) => {
     if (stroke.points.length === 0) return;
     const padding = stroke.width / 2 + 2;
+    const range = getStableStrokeRange(stroke.points);
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    for (let index = range.start; index < range.end; index += 1) {
+      const point = stroke.points[index];
+      left = Math.min(left, point.x);
+      top = Math.min(top, point.y);
+      right = Math.max(right, point.x);
+      bottom = Math.max(bottom, point.y);
+    }
     boxes.push({
-      left: Math.min(...stroke.points.map((point) => point.x)) - padding,
-      top: Math.min(...stroke.points.map((point) => point.y)) - padding,
-      right: Math.max(...stroke.points.map((point) => point.x)) + padding,
-      bottom: Math.max(...stroke.points.map((point) => point.y)) + padding,
+      left: left - padding,
+      top: top - padding,
+      right: right + padding,
+      bottom: bottom + padding,
     });
   });
-  if (boxes.length === 0) return { left: 120, top: 120, right: 1080, bottom: 760, width: 960, height: 640 };
-  const left = Math.min(...boxes.map((box) => box.left));
-  const top = Math.min(...boxes.map((box) => box.top));
-  const right = Math.max(...boxes.map((box) => box.right));
-  const bottom = Math.max(...boxes.map((box) => box.bottom));
+  if (boxes.length === 0) {
+    const left = WORLD_WIDTH / 2 - 480;
+    const top = WORLD_HEIGHT / 2 - 320;
+    return { left, top, right: left + 960, bottom: top + 640, width: 960, height: 640 };
+  }
+  const left = clamp(Math.min(...boxes.map((box) => box.left)), 0, WORLD_WIDTH - 1);
+  const top = clamp(Math.min(...boxes.map((box) => box.top)), 0, WORLD_HEIGHT - 1);
+  const right = clamp(Math.max(...boxes.map((box) => box.right)), left + 1, WORLD_WIDTH);
+  const bottom = clamp(Math.max(...boxes.map((box) => box.bottom)), top + 1, WORLD_HEIGHT);
   return { left, top, right, bottom, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
 };
 
@@ -595,14 +743,60 @@ const drawWrappedText = (
   }
 };
 
-const getAnchorBoardRect = (document: CanvasDocument, anchor: CanvasAnchor) => {
-  const image = document.images.find((item) => item.id === anchor.imageId);
-  if (!image) return null;
+type ConnectableNodeKind = 'image' | 'text' | 'annotation';
+type ConnectableNode = { kind: ConnectableNodeKind; id: string; z: number };
+type BoardRect = { x: number; y: number; width: number; height: number };
+
+const getConnectableNodeRect = (
+  document: CanvasDocument,
+  kind: ConnectableNodeKind,
+  id: string,
+): BoardRect | null => {
+  if (kind === 'image') {
+    const item = document.images.find((entry) => entry.id === id);
+    return item ? { x: item.x, y: item.y, width: item.width, height: item.height } : null;
+  }
+  if (kind === 'text') {
+    const item = document.texts.find((entry) => entry.id === id);
+    return item ? { x: item.x, y: item.y, width: item.width, height: getCardHeight(item, 56) } : null;
+  }
+  const item = document.annotations.find((entry) => entry.id === id);
+  return item ? { x: item.x, y: item.y, width: item.width, height: getCardHeight(item) } : null;
+};
+
+const getConnectableNodeAtPoint = (document: CanvasDocument, point: CanvasPoint): ConnectableNode | null => {
+  const nodes: ConnectableNode[] = [
+    ...document.images.map((item) => ({ kind: 'image' as const, id: item.id, z: item.z })),
+    ...document.texts.map((item) => ({ kind: 'text' as const, id: item.id, z: item.z })),
+    ...document.annotations.map((item) => ({ kind: 'annotation' as const, id: item.id, z: item.z })),
+  ];
+  return nodes.sort((left, right) => right.z - left.z).find((node) => {
+    const rect = getConnectableNodeRect(document, node.kind, node.id);
+    return !!rect
+      && point.x >= rect.x
+      && point.x <= rect.x + rect.width
+      && point.y >= rect.y
+      && point.y <= rect.y + rect.height;
+  }) ?? null;
+};
+
+const normalizedPointInRect = (point: CanvasPoint, rect: BoardRect): CanvasPoint => ({
+  x: clamp((point.x - rect.x) / Math.max(1, rect.width), 0, 1),
+  y: clamp((point.y - rect.y) / Math.max(1, rect.height), 0, 1),
+});
+
+const getAnchorBoardRect = (document: CanvasDocument, anchor: CanvasAnchor): BoardRect | null => {
+  const targetRect = anchor.imageId
+    ? getConnectableNodeRect(document, 'image', anchor.imageId)
+    : anchor.nodeId && anchor.nodeKind
+      ? getConnectableNodeRect(document, anchor.nodeKind, anchor.nodeId)
+      : null;
+  if (!targetRect) return null;
   return {
-    x: image.x + anchor.x * image.width,
-    y: image.y + anchor.y * image.height,
-    width: anchor.width * image.width,
-    height: anchor.height * image.height,
+    x: targetRect.x + anchor.x * targetRect.width,
+    y: targetRect.y + anchor.y * targetRect.height,
+    width: anchor.width * targetRect.width,
+    height: anchor.height * targetRect.height,
   };
 };
 
@@ -853,7 +1047,7 @@ export async function renderCanvasPreview(document: CanvasDocument, options: Can
     context.stroke();
     context.fillStyle = item.kind === 'relation' ? '#a35d30' : '#8a5a28';
     context.font = '800 13px "Microsoft YaHei", sans-serif';
-    context.fillText(item.kind === 'relation' ? item.relationType : '批注', item.x + 16, item.y + 24);
+    context.fillText(item.kind === 'relation' ? relationDisplayLabel(item) : '批注', item.x + 16, item.y + 24);
     context.fillStyle = '#403329';
     context.font = '700 15px "Microsoft YaHei", sans-serif';
     drawWrappedText(context, item.text, item.x + 16, item.y + 52, item.width - 32, 24, item.y + height - 12);
@@ -905,9 +1099,9 @@ export async function renderCanvasPreview(document: CanvasDocument, options: Can
     context.lineJoin = 'round';
     context.lineWidth = 5;
     context.strokeStyle = 'rgba(255, 252, 245, 0.96)';
-    context.strokeText(relation.relationType, arrow.label.x, arrow.label.y - 7);
+    context.strokeText(relationDisplayLabel(relation), arrow.label.x, arrow.label.y - 7);
     context.fillStyle = relation.color || '#a35d30';
-    context.fillText(relation.relationType, arrow.label.x, arrow.label.y - 7);
+    context.fillText(relationDisplayLabel(relation), arrow.label.x, arrow.label.y - 7);
     context.restore();
   });
 
@@ -1036,12 +1230,14 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const lastLiveInkSentAtRef = useRef(0);
   const [linkingAnnotationId, setLinkingAnnotationId] = useState<string | null>(null);
   const [relationType, setRelationType] = useState<CanvasRelationType>('解释');
+  const [customRelationLabel, setCustomRelationLabel] = useState('');
   const [zoom, setZoomState] = useState(() => clamp(documentState.viewport.zoom || 0.72, MIN_ZOOM, MAX_ZOOM));
   const [directoryOpen, setDirectoryOpen] = useState(() => directoryInitiallyOpen && !isCoarsePointerDevice());
   const [helpOpen, setHelpOpen] = useState(false);
   const [status, setStatus] = useState('Apple Pencil 已进入钢笔模式；双指移动或缩放画布。');
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const spacePressedRef = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const worldSpacerRef = useRef<HTMLDivElement>(null);
@@ -1063,17 +1259,17 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     documentRef.current = next;
     draftRevisionRef.current += 1;
     setDocumentState(next);
-    if (notify) onChange?.(cloneCanvasDocument(next));
+    if (notify) onChange?.(cloneCanvasDocumentForEditing(next));
   }, [onChange]);
 
   const pushOriginToHistory = useCallback((origin: CanvasDocument) => {
-    setPast((items) => [...items.slice(-(HISTORY_LIMIT - 1)), cloneCanvasDocument(origin)]);
+    setPast((items) => [...items.slice(-(HISTORY_LIMIT - 1)), cloneCanvasDocumentForEditing(origin)]);
     setFuture([]);
   }, []);
 
   const commit = useCallback((mutate: (draft: CanvasDocument) => void) => {
-    const origin = cloneCanvasDocument(documentRef.current);
-    const next = cloneCanvasDocument(documentRef.current);
+    const origin = documentRef.current;
+    const next = cloneCanvasDocumentForEditing(documentRef.current);
     mutate(next);
     next.updatedAt = new Date().toISOString();
     pushOriginToHistory(origin);
@@ -1082,10 +1278,11 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     return next;
   }, [pushOriginToHistory, setCurrentDocument]);
 
-  const replaceTransient = useCallback((mutate: (draft: CanvasDocument) => void) => {
-    const next = cloneCanvasDocument(documentRef.current);
+  const replaceTransient = useCallback((mutate: (draft: CanvasDocument) => void, notify = false) => {
+    const next = cloneCanvasDocumentForEditing(documentRef.current);
     mutate(next);
-    setCurrentDocument(next, false);
+    if (notify) next.updatedAt = new Date().toISOString();
+    setCurrentDocument(next, notify);
     setRemoteInkPreviews([]);
   }, [setCurrentDocument]);
 
@@ -1093,7 +1290,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     const current = documentRef.current;
     if (lightweightDocumentSignature(origin) === lightweightDocumentSignature(current)) return;
     pushOriginToHistory(origin);
-    const next = cloneCanvasDocument(current);
+    const next = cloneCanvasDocumentForEditing(current);
     next.updatedAt = new Date().toISOString();
     setCurrentDocument(next);
   }, [pushOriginToHistory, setCurrentDocument]);
@@ -1118,7 +1315,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     if (!active) return false;
     setActiveGesture(null);
     if ('originDocument' in active) {
-      setCurrentDocument(cloneCanvasDocument(active.originDocument), false);
+      setCurrentDocument(cloneCanvasDocumentForEditing(active.originDocument), false);
     } else if (active.type === 'marquee') {
       setSelection(active.baseSelection);
     }
@@ -1129,7 +1326,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const setZoom = useCallback((nextZoom: number) => {
     const next = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
     setZoomState(next);
-    const updated = cloneCanvasDocument(documentRef.current);
+    const updated = cloneCanvasDocumentForEditing(documentRef.current);
     updated.viewport.zoom = next;
     setCurrentDocument(updated, false);
   }, [setCurrentDocument]);
@@ -1147,18 +1344,58 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     };
   }, [zoom]);
 
+  const getInkWorldPoint = useCallback((clientX: number, clientY: number): CanvasPoint | null => {
+    const rect = worldRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const safeMargin = 28;
+    if (
+      clientX < rect.left - safeMargin
+      || clientX > rect.right + safeMargin
+      || clientY < rect.top - safeMargin
+      || clientY > rect.bottom + safeMargin
+    ) return null;
+    return {
+      x: clamp((clientX - rect.left) / zoom, 0, WORLD_WIDTH),
+      y: clamp((clientY - rect.top) / zoom, 0, WORLD_HEIGHT),
+    };
+  }, [zoom]);
+
+  const getViewportCenterWorld = useCallback((): CanvasPoint => {
+    const viewport = viewportRef.current;
+    if (!viewport) return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+    return {
+      x: clamp((viewport.scrollLeft + viewport.clientWidth / 2) / zoom, 0, WORLD_WIDTH),
+      y: clamp((viewport.scrollTop + viewport.clientHeight / 2) / zoom, 0, WORLD_HEIGHT),
+    };
+  }, [zoom]);
+
   const fitToContent = useCallback(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
+    if (!hasDocumentContent(documentRef.current)) {
+      const nextZoom = 0.9;
+      setZoom(nextZoom);
+      requestAnimationFrame(() => {
+        viewport.scrollTo({
+          left: Math.max(0, WORLD_WIDTH * nextZoom / 2 - viewport.clientWidth / 2),
+          top: Math.max(0, WORLD_HEIGHT * nextZoom / 2 - viewport.clientHeight / 2),
+          behavior: 'smooth',
+        });
+      });
+      return;
+    }
     const bounds = getContentBounds(documentRef.current);
-    const usableWidth = Math.max(240, viewport.clientWidth - 96);
-    const usableHeight = Math.max(220, viewport.clientHeight - 96);
-    const nextZoom = clamp(Math.min(usableWidth / bounds.width, usableHeight / bounds.height, 1.15), MIN_ZOOM, MAX_ZOOM);
+    const screenPadding = clamp(Math.min(viewport.clientWidth, viewport.clientHeight) * 0.09, 44, 88);
+    const usableWidth = Math.max(240, viewport.clientWidth - screenPadding * 2);
+    const usableHeight = Math.max(220, viewport.clientHeight - screenPadding * 2);
+    const nextZoom = clamp(Math.min(usableWidth / bounds.width, usableHeight / bounds.height, 1.08), MIN_ZOOM, MAX_ZOOM);
     setZoom(nextZoom);
     requestAnimationFrame(() => {
+      const maxLeft = Math.max(0, WORLD_WIDTH * nextZoom - viewport.clientWidth);
+      const maxTop = Math.max(0, WORLD_HEIGHT * nextZoom - viewport.clientHeight);
       viewport.scrollTo({
-        left: Math.max(0, (bounds.left + bounds.width / 2) * nextZoom - viewport.clientWidth / 2),
-        top: Math.max(0, (bounds.top + bounds.height / 2) * nextZoom - viewport.clientHeight / 2),
+        left: clamp((bounds.left + bounds.width / 2) * nextZoom - viewport.clientWidth / 2, 0, maxLeft),
+        top: clamp((bounds.top + bounds.height / 2) * nextZoom - viewport.clientHeight / 2, 0, maxTop),
         behavior: 'smooth',
       });
     });
@@ -1214,6 +1451,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         );
       }
       const baseZ = nextZ(documentRef.current);
+      const visibleCenter = at ?? getViewportCenterWorld();
       const prepared: Array<{ node: CanvasImageNode; bytes: number; compressed: boolean }> = [];
       let newBytes = 0;
       for (const [index, file] of files.entries()) {
@@ -1239,7 +1477,10 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         const ratio = Math.min(1, maxWidth / optimized.naturalWidth);
         const width = Math.max(160, Math.round(optimized.naturalWidth * ratio));
         const height = Math.max(100, Math.round(optimized.naturalHeight * ratio));
-        const base = at ?? { x: 180, y: 160 };
+        const base = at ?? {
+          x: visibleCenter.x - width / 2,
+          y: visibleCenter.y - height / 2,
+        };
         const node = {
           id: createCanvasId('image'),
           kind: 'image' as const,
@@ -1264,10 +1505,10 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     } catch (error) {
       reportError(error);
     }
-  }, [commit, reportError]);
+  }, [commit, getViewportCenterWorld, reportError]);
 
   const beginEditing = useCallback((next: EditingNode) => {
-    editOriginRef.current = cloneCanvasDocument(documentRef.current);
+    editOriginRef.current = cloneCanvasDocumentForEditing(documentRef.current);
     setEditing(next);
     requestAnimationFrame(() => {
       const selector = `[data-edit-id="${next?.id ?? ''}"]`;
@@ -1324,6 +1565,9 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         height: 120,
         anchorIds: [],
         relationType,
+        ...(relationType === CUSTOM_RELATION_TYPE && customRelationLabel.trim()
+          ? { relationLabel: customRelationLabel.trim().slice(0, 80) }
+          : {}),
         color: '#eca76d',
         z: nextZ(draft),
       } as CanvasDocument['annotations'][number] & { height: number });
@@ -1332,7 +1576,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     setLinkingAnnotationId(id);
     beginEditing({ kind: 'annotation', id });
     setStatus('关系卡已放置。填写文字后，在图片上点击或框选多个位置。');
-  }, [beginEditing, commit, relationType]);
+  }, [beginEditing, commit, customRelationLabel, relationType]);
 
   const deleteSelected = useCallback(() => {
     if (selection.length === 0) return;
@@ -1347,12 +1591,17 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           .filter((item) => annotationIds.has(item.id))
           .flatMap((item) => item.anchorIds),
       );
-      const deletedImageAnchorIds = new Set(
-        draft.anchors.filter((anchor) => imageIds.has(anchor.imageId)).map((anchor) => anchor.id),
+      const deletedNodeAnchorIds = new Set(
+        draft.anchors.filter((anchor) => (
+          (typeof anchor.imageId === 'string' && imageIds.has(anchor.imageId))
+          || (anchor.nodeKind === 'image' && typeof anchor.nodeId === 'string' && imageIds.has(anchor.nodeId))
+          || (anchor.nodeKind === 'text' && typeof anchor.nodeId === 'string' && textIds.has(anchor.nodeId))
+          || (anchor.nodeKind === 'annotation' && typeof anchor.nodeId === 'string' && annotationIds.has(anchor.nodeId))
+        )).map((anchor) => anchor.id),
       );
       const relationIds = new Set(selectedRelationIds);
       draft.relations.forEach((relation) => {
-        if (deletedImageAnchorIds.has(relation.fromAnchorId) || deletedImageAnchorIds.has(relation.toAnchorId)) {
+        if (deletedNodeAnchorIds.has(relation.fromAnchorId) || deletedNodeAnchorIds.has(relation.toAnchorId)) {
           relationIds.add(relation.id);
         }
       });
@@ -1371,7 +1620,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         ...draft.relations.flatMap((item) => [item.fromAnchorId, item.toAnchorId]),
       ]);
       const removedAnchorIds = new Set([
-        ...deletedImageAnchorIds,
+        ...deletedNodeAnchorIds,
         ...[...deletedAnnotationAnchorIds].filter((id) => !anchorsStillReferenced.has(id)),
         ...[...deletedRelationAnchorIds].filter((id) => !anchorsStillReferenced.has(id)),
       ]);
@@ -1393,8 +1642,8 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     if (past.length === 0) return;
     const previous = past[past.length - 1];
     setPast(past.slice(0, -1));
-    setFuture([cloneCanvasDocument(documentRef.current), ...future].slice(0, HISTORY_LIMIT));
-    setCurrentDocument(cloneCanvasDocument(previous));
+    setFuture([cloneCanvasDocumentForEditing(documentRef.current), ...future].slice(0, HISTORY_LIMIT));
+    setCurrentDocument(cloneCanvasDocumentForEditing(previous));
     setSelected(null);
     setEditing(null);
   }, [future, past, setCurrentDocument, setSelected]);
@@ -1403,8 +1652,8 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     if (future.length === 0) return;
     const next = future[0];
     setFuture(future.slice(1));
-    setPast([...past.slice(-(HISTORY_LIMIT - 1)), cloneCanvasDocument(documentRef.current)]);
-    setCurrentDocument(cloneCanvasDocument(next));
+    setPast([...past.slice(-(HISTORY_LIMIT - 1)), cloneCanvasDocumentForEditing(documentRef.current)]);
+    setCurrentDocument(cloneCanvasDocumentForEditing(next));
     setSelected(null);
     setEditing(null);
   }, [future, past, setCurrentDocument, setSelected]);
@@ -1412,7 +1661,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const importDocument = useCallback((input: string | CanvasDocument) => {
     try {
       const parsed = parseCanvasDocument(input);
-      pushOriginToHistory(cloneCanvasDocument(documentRef.current));
+      pushOriginToHistory(documentRef.current);
       setCurrentDocument(parsed);
       setZoomState(clamp(parsed.viewport.zoom || 0.72, MIN_ZOOM, MAX_ZOOM));
       setSelected(null);
@@ -1458,6 +1707,8 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       scrollTop: viewport?.scrollTop ?? documentRef.current.viewport.scrollTop,
     };
     const next = cloneCanvasDocument(remoteDocument);
+    const localStrokes = new Map(documentRef.current.strokes.map((stroke) => [stroke.id, stroke]));
+    next.strokes = next.strokes.map((stroke) => localStrokes.get(stroke.id) ?? stroke);
     next.viewport = localViewport;
     initialIdRef.current = next.id;
     setCurrentDocument(next, false);
@@ -1496,7 +1747,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const acknowledgeSyncRevision = useCallback((revision: number) => {
     if (!Number.isInteger(revision) || revision < documentRef.current.syncRevision) return;
     if (revision === documentRef.current.syncRevision) return;
-    const next = cloneCanvasDocument(documentRef.current);
+    const next = cloneCanvasDocumentForEditing(documentRef.current);
     next.syncRevision = revision;
     setCurrentDocument(next, false);
   }, [setCurrentDocument]);
@@ -1629,9 +1880,17 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     const viewport = viewportRef.current;
     if (!viewport) return undefined;
     const frame = requestAnimationFrame(() => {
+      const savedViewport = documentRef.current.viewport;
+      const shouldCenterBlank = !hasDocumentContent(documentRef.current)
+        && Math.abs(savedViewport.scrollLeft) < 1
+        && Math.abs(savedViewport.scrollTop) < 1;
       viewport.scrollTo({
-        left: documentRef.current.viewport.scrollLeft || 0,
-        top: documentRef.current.viewport.scrollTop || 0,
+        left: shouldCenterBlank
+          ? Math.max(0, WORLD_WIDTH * savedViewport.zoom / 2 - viewport.clientWidth / 2)
+          : savedViewport.scrollLeft || 0,
+        top: shouldCenterBlank
+          ? Math.max(0, WORLD_HEIGHT * savedViewport.zoom / 2 - viewport.clientHeight / 2)
+          : savedViewport.scrollTop || 0,
       });
     });
     return () => cancelAnimationFrame(frame);
@@ -1684,13 +1943,12 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         const coalesced = typeof event.getCoalescedEvents === 'function' ? event.getCoalescedEvents() : [];
         const samples = coalesced.length > 0 ? coalesced : [event];
         const points = current.stroke.points;
-        const rect = worldRef.current?.getBoundingClientRect();
-        if (!rect) return;
         let changed = false;
         samples.forEach((sample) => {
+          const point = getInkWorldPoint(sample.clientX, sample.clientY);
+          if (!point) return;
           changed = appendSmoothedInkPoint(points, {
-            x: clamp((sample.clientX - rect.left) / zoom, 0, WORLD_WIDTH),
-            y: clamp((sample.clientY - rect.top) / zoom, 0, WORLD_HEIGHT),
+            ...point,
             pressure: normalizedPressure(sample.pressure, sample.pointerType || event.pointerType),
           }, zoom) || changed;
         });
@@ -1698,7 +1956,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           const nextStroke = { ...current.stroke, points };
           setActiveGesture({ ...current, stroke: nextStroke });
           const now = performance.now();
-          if (onInkStrokePreview && now - lastLiveInkSentAtRef.current >= 55) {
+          if (onInkStrokePreview && now - lastLiveInkSentAtRef.current >= 95) {
             lastLiveInkSentAtRef.current = now;
             onInkStrokePreview({
               ...nextStroke,
@@ -1718,6 +1976,16 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           draft.strokes = draft.strokes.filter((stroke) => !eraserPoints.some((point) => strokeTouchesEraser(stroke, point)));
         });
         setActiveGesture({ ...current, current: eraserPoints[eraserPoints.length - 1] ?? current.current });
+        return;
+      }
+      if (current.type === 'viewport-pan') {
+        const viewport = viewportRef.current;
+        if (!viewport) return;
+        if (event.cancelable) event.preventDefault();
+        viewport.scrollTo({
+          left: current.scrollLeft - (event.clientX - current.startClient.x),
+          top: current.scrollTop - (event.clientY - current.startClient.y),
+        });
         return;
       }
       const point = getWorldPoint(event.clientX, event.clientY);
@@ -1804,10 +2072,13 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         if (event.cancelable) event.preventDefault();
         lastPenInputAtRef.current = performance.now();
         const points = [...current.stroke.points];
-        appendSmoothedInkPoint(points, {
-          ...getWorldPoint(event.clientX, event.clientY),
-          pressure: normalizedPressure(event.pressure, event.pointerType),
-        }, zoom, true);
+        const finalPoint = getInkWorldPoint(event.clientX, event.clientY);
+        if (finalPoint) {
+          appendSmoothedInkPoint(points, {
+            ...finalPoint,
+            pressure: normalizedPressure(event.pressure, event.pointerType),
+          }, zoom, true);
+        }
         const stroke = { ...current.stroke, points };
         if (stroke.points.length > 0) {
           commit((draft) => { draft.strokes.push(stroke); });
@@ -1823,61 +2094,63 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         setStatus('已擦除触碰到的整条笔迹。');
         return;
       }
+      if (current.type === 'viewport-pan') {
+        const viewport = viewportRef.current;
+        if (viewport) commitTouchViewport(viewport);
+        setStatus('画布位置已调整。');
+        return;
+      }
       if (current.type === 'arrow') {
-        const sourceImage = documentRef.current.images.find((item) => item.id === current.sourceImageId);
-        if (!sourceImage) return;
+        const sourceRect = getConnectableNodeRect(documentRef.current, current.sourceNode.kind, current.sourceNode.id);
+        if (!sourceRect) return;
         const releasePoint = getWorldPoint(event.clientX, event.clientY);
         const sourcePoint = {
-          x: sourceImage.x + current.source.x * sourceImage.width,
-          y: sourceImage.y + current.source.y * sourceImage.height,
+          x: sourceRect.x + current.source.x * sourceRect.width,
+          y: sourceRect.y + current.source.y * sourceRect.height,
         };
         const screenDistance = Math.hypot(releasePoint.x - sourcePoint.x, releasePoint.y - sourcePoint.y) * zoom;
-        const targetImage = [...documentRef.current.images]
-          .sort((left, right) => right.z - left.z)
-          .find((item) => (
-            releasePoint.x >= item.x
-            && releasePoint.x <= item.x + item.width
-            && releasePoint.y >= item.y
-            && releasePoint.y <= item.y + item.height
-          ));
-        if (!targetImage || screenDistance < 10) {
-          setStatus('箭头已取消。请从一张图片按住拖到另一张图片。');
+        const targetNode = getConnectableNodeAtPoint(documentRef.current, releasePoint);
+        if (
+          !targetNode
+          || screenDistance < 10
+          || (targetNode.kind === current.sourceNode.kind && targetNode.id === current.sourceNode.id)
+        ) {
+          setStatus('箭头已取消。请拖到另一个图片、普通文字或批注卡。');
           return;
         }
-        const targetPoint = {
-          x: clamp((releasePoint.x - targetImage.x) / targetImage.width, 0, 1),
-          y: clamp((releasePoint.y - targetImage.y) / targetImage.height, 0, 1),
-        };
+        const targetRect = getConnectableNodeRect(documentRef.current, targetNode.kind, targetNode.id);
+        if (!targetRect) return;
+        const targetPoint = normalizedPointInRect(releasePoint, targetRect);
         const sourceAnchorId = createCanvasId('anchor');
         const targetAnchorId = createCanvasId('anchor');
         const relationId = createCanvasId('relation');
-        const sourceImageIndex = documentRef.current.images.findIndex((item) => item.id === sourceImage.id);
-        const targetImageIndex = documentRef.current.images.findIndex((item) => item.id === targetImage.id);
-        const sourceAnchorCount = documentRef.current.anchors.filter((item) => item.imageId === sourceImage.id).length;
-        const targetAnchorCount = documentRef.current.anchors.filter((item) => item.imageId === targetImage.id).length
-          + (sourceImage.id === targetImage.id ? 1 : 0);
+        const labelFor = (node: { kind: ConnectableNodeKind; id: string }): string => {
+          if (node.kind === 'image') {
+            const index = documentRef.current.images.findIndex((item) => item.id === node.id);
+            return index >= 0 ? `图 ${imageLetter(index)}` : '图片';
+          }
+          if (node.kind === 'text') return '文字';
+          const annotation = documentRef.current.annotations.find((item) => item.id === node.id);
+          return annotation?.kind === 'relation' ? '关系卡' : '批注';
+        };
+        const makeAnchor = (
+          id: string,
+          node: { kind: ConnectableNodeKind; id: string },
+          point: CanvasPoint,
+        ): CanvasAnchor => ({
+          id,
+          ...(node.kind === 'image' ? { imageId: node.id } : { nodeId: node.id, nodeKind: node.kind }),
+          shape: 'point',
+          x: point.x,
+          y: point.y,
+          width: 0,
+          height: 0,
+          label: labelFor(node),
+        });
         commit((draft) => {
           draft.anchors.push(
-            {
-              id: sourceAnchorId,
-              imageId: sourceImage.id,
-              shape: 'point',
-              x: current.source.x,
-              y: current.source.y,
-              width: 0,
-              height: 0,
-              label: `${imageLetter(sourceImageIndex)}·${sourceAnchorCount + 1}`,
-            },
-            {
-              id: targetAnchorId,
-              imageId: targetImage.id,
-              shape: 'point',
-              x: targetPoint.x,
-              y: targetPoint.y,
-              width: 0,
-              height: 0,
-              label: `${imageLetter(targetImageIndex)}·${targetAnchorCount + 1}`,
-            },
+            makeAnchor(sourceAnchorId, current.sourceNode, current.source),
+            makeAnchor(targetAnchorId, targetNode, targetPoint),
           );
           draft.relations.push({
             id: relationId,
@@ -1885,12 +2158,15 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
             fromAnchorId: sourceAnchorId,
             toAnchorId: targetAnchorId,
             relationType: current.relationType,
+            ...(current.relationType === CUSTOM_RELATION_TYPE && current.relationLabel?.trim()
+              ? { relationLabel: current.relationLabel.trim().slice(0, 80) }
+              : {}),
             color: '#a35d30',
             z: nextZ(draft),
           });
         });
         setSelected({ kind: 'relation', id: relationId });
-        setStatus(`已创建 ${imageLetter(sourceImageIndex)} → ${imageLetter(targetImageIndex)} 箭头。`);
+        setStatus(`已创建“${labelFor(current.sourceNode)} → ${labelFor(targetNode)}”箭头。`);
         return;
       }
       if (current.type === 'move' || current.type === 'resize-image' || current.type === 'resize-card') {
@@ -1964,6 +2240,9 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           height: current.annotationKind === 'relation' ? 120 : 96,
           anchorIds: [anchorId],
           relationType,
+          ...(relationType === CUSTOM_RELATION_TYPE && customRelationLabel.trim()
+            ? { relationLabel: customRelationLabel.trim().slice(0, 80) }
+            : {}),
           color: current.annotationKind === 'relation' ? '#eca76d' : '#f2ca97',
           z: nextZ(draft),
         } as CanvasDocument['annotations'][number] & { height: number });
@@ -2000,7 +2279,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       window.removeEventListener('pointercancel', handleCancel);
       window.removeEventListener('blur', handleWindowBlur);
     };
-  }, [beginEditing, cancelActiveGesture, commit, finalizeTransient, getWorldPoint, onInkStrokeCommit, onInkStrokePreview, relationType, replaceTransient, setActiveGesture, zoom]);
+  }, [beginEditing, cancelActiveGesture, commit, customRelationLabel, finalizeTransient, getInkWorldPoint, getWorldPoint, onInkStrokeCommit, onInkStrokePreview, relationType, replaceTransient, setActiveGesture, zoom]);
 
   const cancelTouchMomentum = () => {
     if (touchMomentumFrameRef.current !== null) {
@@ -2011,7 +2290,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
 
   const commitTouchViewport = (viewport: HTMLDivElement) => {
     const nextZoom = clamp(documentRef.current.viewport.zoom || zoom, MIN_ZOOM, MAX_ZOOM);
-    const next = cloneCanvasDocument(documentRef.current);
+    const next = cloneCanvasDocumentForEditing(documentRef.current);
     next.viewport = {
       zoom: nextZoom,
       scrollLeft: viewport.scrollLeft,
@@ -2172,6 +2451,26 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       && event.clientY <= rect.bottom;
     if (!insideViewport) return;
 
+    if (
+      event.pointerType !== 'touch'
+      && (event.button === 1 || (event.button === 0 && spacePressedRef.current))
+      && !gestureRef.current
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelTouchMomentum();
+      rootRef.current?.focus({ preventScroll: true });
+      setActiveGesture({
+        type: 'viewport-pan',
+        pointerId: event.pointerId,
+        startClient: { x: event.clientX, y: event.clientY },
+        scrollLeft: viewport.scrollLeft,
+        scrollTop: viewport.scrollTop,
+      });
+      setStatus('正在拖动画布…');
+      return;
+    }
+
     if (event.pointerType === 'touch') {
       cancelTouchMomentum();
       const penActive = gestureRef.current?.type === 'ink' || gestureRef.current?.type === 'erase';
@@ -2202,7 +2501,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     touchNavigationRef.current = null;
     lastPenInputAtRef.current = performance.now();
     const point = getWorldPoint(event.clientX, event.clientY);
-    const originDocument = cloneCanvasDocument(documentRef.current);
+    const originDocument = cloneCanvasDocumentForEditing(documentRef.current);
     if (tool === 'eraser') {
       setActiveGesture({ type: 'erase', pointerId: event.pointerId, current: point, originDocument });
       replaceTransient((draft) => {
@@ -2322,7 +2621,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       nodes,
       pointerId: event.pointerId,
       start: getWorldPoint(event.clientX, event.clientY),
-      originDocument: cloneCanvasDocument(documentRef.current),
+      originDocument: cloneCanvasDocumentForEditing(documentRef.current),
     });
   };
 
@@ -2350,31 +2649,41 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       originY: y,
       originWidth: width,
       originHeight: height,
-      originDocument: cloneCanvasDocument(documentRef.current),
+      originDocument: cloneCanvasDocumentForEditing(documentRef.current),
     });
+  };
+
+  const beginArrowFromNode = (
+    event: ReactPointerEvent,
+    sourceNode: { kind: ConnectableNodeKind; id: string },
+  ): boolean => {
+    if (tool !== 'arrow' || event.button !== 0) return false;
+    const sourceRect = getConnectableNodeRect(documentRef.current, sourceNode.kind, sourceNode.id);
+    if (!sourceRect) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    rootRef.current?.focus({ preventScroll: true });
+    const point = getWorldPoint(event.clientX, event.clientY);
+    setActiveGesture({
+      type: 'arrow',
+      pointerId: event.pointerId,
+      sourceNode,
+      source: normalizedPointInRect(point, sourceRect),
+      current: point,
+      relationType,
+      ...(relationType === CUSTOM_RELATION_TYPE && customRelationLabel.trim()
+        ? { relationLabel: customRelationLabel.trim().slice(0, 80) }
+        : {}),
+    });
+    setStatus('继续拖到图片、普通文字或批注卡，松开后生成箭头。');
+    return true;
   };
 
   const beginImageInteraction = (event: ReactPointerEvent, image: CanvasImageNode) => {
     if (event.button !== 0) return;
     event.stopPropagation();
     rootRef.current?.focus({ preventScroll: true });
-    if (tool === 'arrow') {
-      event.preventDefault();
-      const point = getWorldPoint(event.clientX, event.clientY);
-      setActiveGesture({
-        type: 'arrow',
-        pointerId: event.pointerId,
-        sourceImageId: image.id,
-        source: {
-          x: clamp((point.x - image.x) / image.width, 0, 1),
-          y: clamp((point.y - image.y) / image.height, 0, 1),
-        },
-        current: point,
-        relationType,
-      });
-      setStatus('继续按住并拖到目标图片，松开后生成箭头。');
-      return;
-    }
+    if (beginArrowFromNode(event, { kind: 'image', id: image.id })) return;
     if (tool === 'annotation' || tool === 'relation' || linkingAnnotationId) {
       event.preventDefault();
       const point = getWorldPoint(event.clientX, event.clientY);
@@ -2406,7 +2715,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     const point = getWorldPoint(event.clientX, event.clientY);
     if (tool === 'text') createTextAt(point);
     else if (tool === 'relation') createRelationAt(point);
-    else if (tool === 'arrow') setStatus('请从图片上的起点按住，拖到目标图片后松开。');
+    else if (tool === 'arrow') setStatus('请从图片、普通文字或批注卡上按住，再拖到另一对象。');
     else if (tool === 'annotation') setStatus('请在图片上点击一个点，或拖出一个区域。');
     else {
       event.preventDefault();
@@ -2426,6 +2735,66 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     const point = getWorldPoint(event.clientX, event.clientY);
     await addImages(event.dataTransfer.files, point);
   };
+
+  const handleViewportWheel = useCallback((event: WheelEvent) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('textarea, input, select, .cw-directory')) return;
+    if (event.ctrlKey || event.metaKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = viewport.getBoundingClientRect();
+      const pointerX = event.clientX - rect.left;
+      const pointerY = event.clientY - rect.top;
+      const anchorWorld = {
+        x: (viewport.scrollLeft + pointerX) / zoom,
+        y: (viewport.scrollTop + pointerY) / zoom,
+      };
+      const nextZoom = clamp(zoom * Math.exp(-event.deltaY * 0.0018), MIN_ZOOM, MAX_ZOOM);
+      if (Math.abs(nextZoom - zoom) < 0.0001) return;
+      setZoomState(nextZoom);
+      const next = cloneCanvasDocumentForEditing(documentRef.current);
+      next.viewport.zoom = nextZoom;
+      setCurrentDocument(next, false);
+      requestAnimationFrame(() => {
+        viewport.scrollTo({
+          left: anchorWorld.x * nextZoom - pointerX,
+          top: anchorWorld.y * nextZoom - pointerY,
+        });
+        documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
+        documentRef.current.viewport.scrollTop = viewport.scrollTop;
+      });
+      setStatus(`画布缩放 ${Math.round(nextZoom * 100)}% · 已阻止浏览器页面缩放`);
+      return;
+    }
+    event.preventDefault();
+    const horizontal = event.shiftKey ? event.deltaY : event.deltaX;
+    const vertical = event.shiftKey ? 0 : event.deltaY;
+    viewport.scrollBy({ left: horizontal, top: vertical });
+    documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
+    documentRef.current.viewport.scrollTop = viewport.scrollTop;
+  }, [setCurrentDocument, zoom]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    viewport.addEventListener('wheel', handleViewportWheel, { passive: false });
+    return () => viewport.removeEventListener('wheel', handleViewportWheel);
+  }, [handleViewportWheel]);
+
+  useEffect(() => {
+    const releaseSpace = (event: globalThis.KeyboardEvent) => {
+      if (event.code === 'Space') spacePressedRef.current = false;
+    };
+    const releaseAll = () => { spacePressedRef.current = false; };
+    window.addEventListener('keyup', releaseSpace);
+    window.addEventListener('blur', releaseAll);
+    return () => {
+      window.removeEventListener('keyup', releaseSpace);
+      window.removeEventListener('blur', releaseAll);
+    };
+  }, []);
 
   const handlePaste = async (event: React.ClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.items)
@@ -2450,7 +2819,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       text: '自由文字：点击画布任意位置放置文字卡。',
       annotation: '批注模式：在图片上点击定位，或拖框圈出区域。',
       relation: '关系模式：先放关系卡或指向图片，再连续关联多个位置。',
-      arrow: '箭头模式：从图片 A 按住拖到图片 B，松开生成 A → B。',
+      arrow: '箭头模式：从图片、普通文字或批注卡按住，拖到任意另一对象。',
     };
     setStatus(messages[next]);
   };
@@ -2474,6 +2843,12 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       return;
     }
     const key = event.key.toLowerCase();
+    if (event.code === 'Space') {
+      event.preventDefault();
+      spacePressedRef.current = true;
+      setStatus('按住空格拖动画布；松开后恢复当前工具。');
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && key === 'z') {
       event.preventDefault();
       if (cancelActiveGesture('未完成的拖动已撤销。')) return;
@@ -2509,6 +2884,12 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     else if (key === 'i') imageInputRef.current?.click();
     else if (key === '0') fitToContent();
     else if (event.key === '?') setHelpOpen(true);
+  };
+
+  const handleKeyUp = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.code !== 'Space') return;
+    spacePressedRef.current = false;
+    if (gestureRef.current?.type !== 'viewport-pan') setStatus('已退出画布拖动。');
   };
 
   const handleJsonImport = async (file?: File) => {
@@ -2568,6 +2949,14 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const selectedArrow = selected?.kind === 'relation'
     ? documentState.relations.find((item) => item.id === selected.id)
     : null;
+  const activeRelation = selectedArrow ?? selectedRelationCard;
+  const activeRelationType = activeRelation?.relationType ?? relationType;
+  const activeRelationSelectValue = isPresetRelationType(activeRelationType)
+    ? activeRelationType
+    : CUSTOM_RELATION_TYPE;
+  const activeCustomRelationLabel = activeRelation
+    ? relationEditorValue(activeRelation)
+    : customRelationLabel;
   const selectedText = selected?.kind === 'text'
     ? documentState.texts.find((item) => item.id === selected.id)
     : null;
@@ -2624,17 +3013,17 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
 
   const draftArrowGeometry = useMemo(() => {
     if (gesture?.type !== 'arrow') return null;
-    const sourceImage = documentState.images.find((item) => item.id === gesture.sourceImageId);
-    if (!sourceImage) return null;
+    const sourceRect = getConnectableNodeRect(documentState, gesture.sourceNode.kind, gesture.sourceNode.id);
+    if (!sourceRect) return null;
     const start = {
-      x: sourceImage.x + gesture.source.x * sourceImage.width,
-      y: sourceImage.y + gesture.source.y * sourceImage.height,
+      x: sourceRect.x + gesture.source.x * sourceRect.width,
+      y: sourceRect.y + gesture.source.y * sourceRect.height,
     };
     return makeArrowGeometry(
       { ...start, width: 0, height: 0 },
       { ...gesture.current, width: 0, height: 0 },
     );
-  }, [documentState.images, gesture]);
+  }, [documentState, gesture]);
 
   const visibleInkStrokes = useMemo(() => {
     const strokes = new Map(documentState.strokes.map((stroke) => [stroke.id, stroke]));
@@ -2686,9 +3075,10 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   return (
     <div
       ref={rootRef}
-      className={`canvas-workspace ${linkingAnnotationId ? 'has-linking-banner' : ''} ${focusMode ? 'is-focus-mode' : ''} ${tool === 'pen' || tool === 'highlighter' || tool === 'eraser' ? 'is-inking' : ''} ${className}`.trim()}
+      className={`canvas-workspace ${linkingAnnotationId ? 'has-linking-banner' : ''} ${focusMode ? 'is-focus-mode' : ''} ${gesture?.type === 'viewport-pan' ? 'is-panning' : ''} ${tool === 'pen' || tool === 'highlighter' || tool === 'eraser' ? 'is-inking' : ''} ${className}`.trim()}
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      onKeyUp={handleKeyUp}
       onPaste={handlePaste}
       onPointerDownCapture={handleCanvasPointerDownCapture}
       onPointerMoveCapture={handleCanvasPointerMoveCapture}
@@ -2740,29 +3130,69 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           <button className={tool === 'text' ? 'active' : ''} onClick={() => chooseTool('text')} title="自由文字（T）"><Type size={17} /><span>文字</span></button>
           <button className={tool === 'annotation' ? 'active' : ''} onClick={() => chooseTool('annotation')} title="精确批注（A）"><MessageSquareText size={17} /><span>批注</span></button>
           <button className={tool === 'relation' ? 'active' : ''} onClick={() => chooseTool('relation')} title="多图关系（R）"><Link2 size={17} /><span>关系</span></button>
-          <button className={tool === 'arrow' ? 'active' : ''} onClick={() => chooseTool('arrow')} title="从图 A 拖到图 B（D）"><ArrowRight size={17} /><span>箭头</span></button>
+          <button className={tool === 'arrow' ? 'active' : ''} onClick={() => chooseTool('arrow')} title="在图片、文字、批注之间画箭头（D）"><ArrowRight size={17} /><span>箭头</span></button>
           {(tool === 'relation' || tool === 'arrow' || selectedRelationCard || selectedArrow) && (
+            <>
             <select
-              value={selectedArrow?.relationType ?? selectedRelationCard?.relationType ?? relationType}
+              className="cw-relation-type-select"
+              value={activeRelationSelectValue}
               aria-label="关系类型"
               onChange={(event) => {
                 const next = event.target.value as CanvasRelationType;
                 setRelationType(next);
+                if (next !== CUSTOM_RELATION_TYPE) setCustomRelationLabel('');
                 if (selectedRelationCard) {
                   commit((draft) => {
                     const item = draft.annotations.find((entry) => entry.id === selectedRelationCard.id);
-                    if (item?.kind === 'relation') item.relationType = next;
+                    if (item?.kind === 'relation') {
+                      item.relationType = next;
+                      if (next !== CUSTOM_RELATION_TYPE) delete item.relationLabel;
+                    }
                   });
                 } else if (selectedArrow) {
                   commit((draft) => {
                     const item = draft.relations.find((entry) => entry.id === selectedArrow.id);
-                    if (item) item.relationType = next;
+                    if (item) {
+                      item.relationType = next;
+                      if (next !== CUSTOM_RELATION_TYPE) delete item.relationLabel;
+                    }
                   });
                 }
               }}
             >
-              {CANVAS_RELATION_TYPES.map((item) => <option key={item}>{item}</option>)}
+              {CANVAS_RELATION_TYPES.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
+            {activeRelationSelectValue === CUSTOM_RELATION_TYPE && (
+              <input
+                className="cw-relation-type-input"
+                maxLength={80}
+                value={activeCustomRelationLabel}
+                aria-label="自定义关系描述"
+                placeholder="输入箭头说明"
+                onChange={(event) => {
+                  const next = event.target.value.slice(0, 80);
+                  setCustomRelationLabel(next);
+                  if (selectedRelationCard) {
+                    replaceTransient((draft) => {
+                      const item = draft.annotations.find((entry) => entry.id === selectedRelationCard.id);
+                      if (item?.kind === 'relation') {
+                        item.relationType = CUSTOM_RELATION_TYPE;
+                        item.relationLabel = next;
+                      }
+                    }, true);
+                  } else if (selectedArrow) {
+                    replaceTransient((draft) => {
+                      const item = draft.relations.find((entry) => entry.id === selectedArrow.id);
+                      if (item) {
+                        item.relationType = CUSTOM_RELATION_TYPE;
+                        item.relationLabel = next;
+                      }
+                    }, true);
+                  }
+                }}
+              />
+            )}
+            </>
           )}
         </div>
 
@@ -2907,7 +3337,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                     >
                       <path className="cw-arrow-outline" d={geometry.d} />
                       <path className="cw-arrow-line" d={geometry.d} markerEnd={`url(#${arrowMarkerId})`} />
-                      <text className="cw-arrow-label" x={geometry.label.x} y={geometry.label.y - 8} textAnchor="middle">{relation.relationType}</text>
+                      <text className="cw-arrow-label" x={geometry.label.x} y={geometry.label.y - 8} textAnchor="middle">{relationDisplayLabel(relation)}</text>
                       {tool === 'select' && (
                         <path
                           className="cw-arrow-hit"
@@ -2928,33 +3358,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
               </svg>
 
               <svg className="cw-ink-layer" width={WORLD_WIDTH} height={WORLD_HEIGHT} aria-hidden="true">
-                {visibleInkStrokes.map((stroke) => (
-                  <g
-                    key={stroke.id}
-                    opacity={stroke.opacity}
-                    style={{ mixBlendMode: stroke.tool === 'highlighter' ? 'multiply' : 'normal' }}
-                  >
-                    {stroke.points.length === 1 && (
-                      <circle
-                        cx={stroke.points[0].x}
-                        cy={stroke.points[0].y}
-                        r={pressureStrokeWidth(stroke, stroke.points[0].pressure) / 2}
-                        fill={stroke.color}
-                      />
-                    )}
-                    {makeInkCurveSegments(stroke.points).map((segment, index) => (
-                      <path
-                        key={`${stroke.id}:${index}`}
-                        d={segment.d}
-                        fill="none"
-                        stroke={stroke.color}
-                        strokeWidth={pressureStrokeWidth(stroke, segment.pressure)}
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    ))}
-                  </g>
-                ))}
+                {visibleInkStrokes.map((stroke) => <InkStrokeShape key={stroke.id} stroke={stroke} />)}
                 {gesture?.type === 'erase' && (
                   <circle className="cw-eraser-cursor" cx={gesture.current.x} cy={gesture.current.y} r={ERASER_RADIUS} />
                 )}
@@ -3034,7 +3438,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                             originY: image.y,
                             originWidth: image.width,
                             originHeight: image.height,
-                            originDocument: cloneCanvasDocument(documentRef.current),
+                            originDocument: cloneCanvasDocumentForEditing(documentRef.current),
                           });
                         }}
                       />
@@ -3053,7 +3457,11 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                     key={textNode.id}
                     className={`cw-text-node ${isSelected ? 'selected' : ''}`}
                     style={{ left: textNode.x, top: textNode.y, width: textNode.width, height: textHeight, color: textNode.color, fontSize: textNode.fontSize, zIndex: textNode.z }}
-                    onPointerDown={(event) => beginNodeMove(event, 'text', textNode.id, textNode.x, textNode.y)}
+                    onPointerDown={(event) => {
+                      if (!beginArrowFromNode(event, { kind: 'text', id: textNode.id })) {
+                        beginNodeMove(event, 'text', textNode.id, textNode.x, textNode.y);
+                      }
+                    }}
                     onDoubleClick={(event) => { event.stopPropagation(); setSelected({ kind: 'text', id: textNode.id }); beginEditing({ kind: 'text', id: textNode.id }); }}
                   >
                     {isEditing ? (
@@ -3065,7 +3473,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                         onChange={(event) => replaceTransient((draft) => {
                           const item = draft.texts.find((entry) => entry.id === textNode.id);
                           if (item) item.text = event.target.value;
-                        })}
+                        }, true)}
                         onBlur={() => finishEditing()}
                       />
                     ) : <p>{textNode.text || '双击输入文字'}</p>}
@@ -3098,11 +3506,15 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                     key={annotation.id}
                     className={`cw-annotation-node ${annotation.kind === 'relation' ? 'relation' : 'plain'} ${isSelected ? 'selected' : ''} ${linked ? 'linking' : ''}`.trim()}
                     style={{ left: annotation.x, top: annotation.y, width: annotation.width, height: annotationHeight, zIndex: annotation.z, '--annotation-color': annotation.color } as CSSProperties}
-                    onPointerDown={(event) => beginNodeMove(event, 'annotation', annotation.id, annotation.x, annotation.y)}
+                    onPointerDown={(event) => {
+                      if (!beginArrowFromNode(event, { kind: 'annotation', id: annotation.id })) {
+                        beginNodeMove(event, 'annotation', annotation.id, annotation.x, annotation.y);
+                      }
+                    }}
                     onDoubleClick={(event) => { event.stopPropagation(); setSelected({ kind: 'annotation', id: annotation.id }); beginEditing({ kind: 'annotation', id: annotation.id }); }}
                   >
                     <header>
-                      <span>{annotation.kind === 'relation' ? annotation.relationType : `批注 ${annotationNumber}`}</span>
+                      <span>{annotation.kind === 'relation' ? relationDisplayLabel(annotation) : `批注 ${annotationNumber}`}</span>
                       {annotation.kind === 'relation' && <small>{annotation.anchorIds.length} 个指向</small>}
                     </header>
                     {isEditing ? (
@@ -3114,7 +3526,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                         onChange={(event) => replaceTransient((draft) => {
                           const item = draft.annotations.find((entry) => entry.id === annotation.id);
                           if (item) item.text = event.target.value;
-                        })}
+                        }, true)}
                         onBlur={() => finishEditing()}
                       />
                     ) : <p>{annotation.text || '双击填写说明'}</p>}
@@ -3167,7 +3579,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                       className={selectionKeys.has(`annotation:${annotation.id}`) ? 'active' : ''}
                       onClick={() => focusNode({ kind: 'annotation', id: annotation.id })}
                     >
-                      <b>{annotation.kind === 'relation' ? annotation.relationType : `批注 ${plainAnnotationNumberById.get(annotation.id) ?? 1}`}</b>
+                      <b>{annotation.kind === 'relation' ? relationDisplayLabel(annotation) : `批注 ${plainAnnotationNumberById.get(annotation.id) ?? 1}`}</b>
                       <span>{annotation.text || '未填写说明'}</span>
                       <small>{annotation.anchorIds.map((id) => documentState.anchors.find((item) => item.id === id)?.label).filter(Boolean).join('、') || '尚未指向'}</small>
                     </button>
@@ -3181,7 +3593,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
                         className={selectionKeys.has(`relation:${relation.id}`) ? 'active' : ''}
                         onClick={() => focusNode({ kind: 'relation', id: relation.id })}
                       >
-                        <b>{relation.relationType}</b>
+                        <b>{relationDisplayLabel(relation)}</b>
                         <span>{sourceLabel} → {targetLabel}</span>
                         <small>箭头</small>
                       </button>
@@ -3219,7 +3631,10 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
               <div><dt>T</dt><dd>在任意位置放自由文字</dd></div>
               <div><dt>A</dt><dd>点锚或拖框精确批注</dd></div>
               <div><dt>R</dt><dd>关联多个位置并描述关系</dd></div>
-              <div><dt>D</dt><dd>从图 A 按住拖到图 B，直接生成箭头</dd></div>
+              <div><dt>D</dt><dd>在图片、文字、批注之间任意拖出箭头</dd></div>
+              <div><dt>Ctrl + 滚轮</dt><dd>围绕鼠标位置缩放画布，不触发浏览器缩放</dd></div>
+              <div><dt>滚轮 / 触控板</dt><dd>直接平移画布；Shift + 滚轮横向移动</dd></div>
+              <div><dt>空格 + 拖动</dt><dd>临时抓手移动画布；鼠标中键拖动也可用</dd></div>
               <div><dt>I</dt><dd>添加图片</dd></div>
               <div><dt>Shift + 点击</dt><dd>追加或移出当前选择</dd></div>
               <div><dt>Delete</dt><dd>批量删除全部所选内容</dd></div>

@@ -38,6 +38,7 @@ import type { WidgetLayout } from './types';
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
 
 const widgetStoreKey = (name: string) => `kaoyan-widget-${name}`;
+const DEFAULT_NOTE_FOLDERS = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 const usePersistentText = (key: string, fallback: string) => {
   const [value, setValue] = useState(() => window.localStorage.getItem(key) ?? fallback);
@@ -320,18 +321,16 @@ function MemoryCardWidget() {
     window.localStorage.setItem(widgetStoreKey('memory-images'), JSON.stringify(images));
   }, [images]);
 
+  const eligibleNoteUids = useMemo(() => new Set(Object.values(learningData.days)
+    .flatMap((day) => day.autoNotes)
+    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim()))
+    .map((note) => note.noteUid)), [learningData.days]);
   const cards = useMemo(() => learningData.cards
-    .filter((card) => card.status !== 'archived')
+    .filter((card) => card.status === 'active' && eligibleNoteUids.has(card.noteUid))
     .sort((left, right) => {
-      const statusOrder = (status: string) => status === 'draft' ? 0 : 1;
-      return statusOrder(left.status) - statusOrder(right.status)
+      return (left.dueDate || '').localeCompare(right.dueDate || '')
         || right.createdAt.localeCompare(left.createdAt);
-    }), [learningData.cards]);
-  const cardCounts = useMemo(() => ({
-    draft: learningData.cards.filter((card) => card.status === 'draft').length,
-    active: learningData.cards.filter((card) => card.status === 'active').length,
-    archived: learningData.cards.filter((card) => card.status === 'archived').length,
-  }), [learningData.cards]);
+    }), [eligibleNoteUids, learningData.cards]);
   const currentCard = cards[cardIndex] ?? null;
 
   useEffect(() => {
@@ -401,8 +400,8 @@ function MemoryCardWidget() {
       }}
     >
       <div className="memory-modebar">
-        <span title={`草稿 ${cardCounts.draft} / 启用 ${cardCounts.active} / 忽略 ${cardCounts.archived}`}>
-          <Sparkles size={13} /> 草稿 {cardCounts.draft} · 启用 {cardCounts.active} · 忽略 {cardCounts.archived}
+        <span title="高价值卡片会自动进入遗忘曲线复习计划">
+          <Sparkles size={13} /> 自动复习 {cards.length} 张
         </span>
         <button type="button" disabled={cards.length === 0} onClick={() => setManualMode((value) => !value)}>
           {manualMode || cards.length === 0 ? <BookOpenCheck size={13} /> : <ImagePlus size={13} />}
@@ -413,8 +412,8 @@ function MemoryCardWidget() {
       {!manualMode && currentCard ? (
         <section className="structured-memory-card" aria-label={`AI 背诵卡 ${cardIndex + 1}`}>
           <header>
-            <span className={currentCard.status === 'draft' ? 'is-draft' : 'is-active'}>
-              {currentCard.status === 'draft' ? '草稿' : '已启用'}
+            <span className="is-active">
+              复习中
             </span>
             <strong>{currentCard.subject || currentCard.sourceTitle || '背诵卡片'}</strong>
             <small>{cardIndex + 1}/{cards.length}</small>
@@ -442,18 +441,9 @@ function MemoryCardWidget() {
                 </small>
               )}
               <div className="structured-memory-actions">
-                {currentCard.status === 'draft' ? (
-                  <>
-                    <button type="button" onClick={() => void updateCurrentCard({ status: 'active' })}><Check size={12} /> 启用</button>
-                    <button type="button" onClick={() => void updateCurrentCard({ status: 'archived' })}><X size={12} /> 忽略</button>
-                  </>
-                ) : (
-                  <>
-                    <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'forgotten' })}><RotateCcw size={12} /> 忘记</button>
-                    <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'remembered' })}><Check size={12} /> 记住</button>
-                    <button type="button" onClick={() => void updateCurrentCard({ status: 'archived' })}><X size={12} /> 忽略</button>
-                  </>
-                )}
+                <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'forgotten' })}><RotateCcw size={12} /> 忘记</button>
+                <button type="button" onClick={() => void updateCurrentCard({ reviewResult: 'remembered' })}><Check size={12} /> 记住</button>
+                <button type="button" onClick={() => void updateCurrentCard({ status: 'archived' })}><X size={12} /> 忽略</button>
               </div>
             </div>
           )}

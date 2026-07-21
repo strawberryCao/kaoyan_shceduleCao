@@ -33,3 +33,24 @@ test('keeps stable ids across aliases, rename and atomic reload', (t) => {
   assert.equal(resolveKnowledgePoint(reloadedSubject, '拥塞控制').id, pointId);
   assert.deepEqual(categorySegments(reloadedSubject, resolveKnowledgePoint(reloadedSubject, '拥塞控制')), ['计算机网络', 'TCP 拥塞控制机制']);
 });
+
+test('migrates missing standard subjects without removing custom roots', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-taxonomy-migration-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const filePath = path.join(root, 'taxonomy.json');
+  fs.writeFileSync(filePath, JSON.stringify({
+    schemaVersion: 1,
+    revision: 2,
+    subjects: [
+      { name: '数据结构', aliases: [], knowledgePoints: [] },
+      { name: '自定义专题', aliases: [], knowledgePoints: [] },
+      { name: '默认文件夹', aliases: [], knowledgePoints: [] },
+    ],
+  }), 'utf8');
+
+  const taxonomy = loadTaxonomy(filePath);
+  assert.ok(resolveSubject(taxonomy, '高等数学'));
+  assert.ok(resolveSubject(taxonomy, '英语一'));
+  assert.ok(resolveSubject(taxonomy, '考研政治'));
+  assert.ok(resolveSubject(taxonomy, '自定义专题'));
+});

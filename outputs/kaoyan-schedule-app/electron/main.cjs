@@ -7,7 +7,6 @@ const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
 const noteAppFlag = '--note-app';
 const noteAppCloseFlag = '--close-note-app';
-const launchAsNoteApp = process.argv.includes(noteAppFlag);
 const launchAsNoteAppClose = process.argv.includes(noteAppCloseFlag);
 const noteCompactSize = { width: 300, height: 132 };
 const noteRemarkSize = { width: 400, height: 440 };
@@ -229,14 +228,25 @@ function showWindow() {
   mainWindow.focus();
 }
 
+function enforceNoteWindowOnTop() {
+  if (!noteWindow || noteWindow.isDestroyed()) {
+    return;
+  }
+  // Reasserting the stronger level matters on Windows after another Chromium
+  // window is created or activated. It changes z-order without taking focus.
+  noteWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+}
+
 function showNoteWindow() {
   if (!noteWindow || noteWindow.isDestroyed()) {
     return;
   }
+  enforceNoteWindowOnTop();
   if (noteWindow.isMinimized()) {
     noteWindow.restore();
   }
   noteWindow.show();
+  enforceNoteWindowOnTop();
   noteWindow.focus();
 }
 
@@ -357,57 +367,10 @@ function loadRendererRoute(targetWindow, search = '') {
 }
 
 function createWindow() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    showWindow();
-    return mainWindow;
-  }
-
-  const bounds = readSavedBounds() ?? getDefaultBounds();
-
-  mainWindow = new BrowserWindow({
-    ...bounds,
-    minWidth: 720,
-    minHeight: 540,
-    frame: true,
-    show: false,
-    skipTaskbar: false,
-    alwaysOnTop: false,
-    transparent: false,
-    hasShadow: true,
-    resizable: true,
-    movable: true,
-    title: '考研学习课表',
-    backgroundColor: '#f2ede4',
-    icon: createTrayIcon(),
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      sandbox: false,
-    },
-  });
-
-  loadRendererRoute(mainWindow);
-
-  mainWindow.once('ready-to-show', () => {
-    showWindow();
-  });
-
-  mainWindow.on('move', queueSaveCurrentBounds);
-  mainWindow.on('resize', queueSaveCurrentBounds);
-
-  mainWindow.on('close', (event) => {
-    if (!quitting && tray) {
-      event.preventDefault();
-      mainWindow.hide();
-    }
-  });
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
-
-  return mainWindow;
+  // Electron is reserved for the tiny always-on-top note window. Keeping this
+  // compatibility entry point prevents old shortcuts and packaged executables
+  // from ever creating a second full-page Chromium renderer.
+  return createNoteWindow();
 }
 
 function createNoteWindow() {
@@ -444,8 +407,15 @@ function createNoteWindow() {
   loadRendererRoute(noteWindow, '?noteApp=1');
 
   noteWindow.once('ready-to-show', () => {
-    noteWindow?.setAlwaysOnTop(true, 'floating');
+    enforceNoteWindowOnTop();
     showNoteWindow();
+  });
+
+  noteWindow.on('show', enforceNoteWindowOnTop);
+  noteWindow.on('restore', enforceNoteWindowOnTop);
+  noteWindow.on('focus', enforceNoteWindowOnTop);
+  noteWindow.on('blur', () => {
+    setImmediate(enforceNoteWindowOnTop);
   });
 
   noteWindow.on('close', (event) => {
@@ -489,9 +459,7 @@ function ensureTray() {
 }
 
 function ensureMainExperience() {
-  createWindow();
-  ensureTray();
-  showWindow();
+  return createNoteWindow();
 }
 
 function registerIpcHandlers() {
@@ -594,11 +562,7 @@ if (!hasSingleInstanceLock) {
       void closeNoteWindow();
       return;
     }
-    if (argv.includes(noteAppFlag)) {
-      createNoteWindow();
-      return;
-    }
-    ensureMainExperience();
+    createNoteWindow();
   });
 
   app.whenReady().then(() => {
@@ -611,29 +575,18 @@ if (!hasSingleInstanceLock) {
       return;
     }
 
-    if (launchAsNoteApp) {
-      createNoteWindow();
-      return;
-    }
-
+    // Remove any legacy full-desktop auto-start shortcut. Electron now owns
+    // only the compact note window; full pages stay in the system browser.
     setAutoLaunch(false);
-    ensureMainExperience();
+    createNoteWindow();
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length > 0) {
-      if (noteWindow) {
-        showNoteWindow();
-      } else {
-        showWindow();
-      }
+    if (noteWindow && !noteWindow.isDestroyed()) {
+      showNoteWindow();
       return;
     }
-    if (launchAsNoteApp) {
-      createNoteWindow();
-    } else {
-      ensureMainExperience();
-    }
+    createNoteWindow();
   });
 
   app.on('before-quit', (event) => {

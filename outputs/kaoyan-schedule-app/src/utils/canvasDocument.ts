@@ -11,7 +11,7 @@ export const CANVAS_RELATION_TYPES = [
   '自定义',
 ] as const;
 
-export type CanvasRelationType = (typeof CANVAS_RELATION_TYPES)[number];
+export type CanvasRelationType = string;
 
 export interface CanvasPoint {
   x: number;
@@ -77,7 +77,11 @@ export type CanvasAnchorShape = 'point' | 'rect';
  */
 export interface CanvasAnchor {
   id: string;
-  imageId: string;
+  /** Legacy image target used by existing projects and precise image annotations. */
+  imageId?: string;
+  /** Generic node target used by arrows between images, text and annotation cards. */
+  nodeId?: string;
+  nodeKind?: 'image' | 'text' | 'annotation';
   shape: CanvasAnchorShape;
   x: number;
   y: number;
@@ -96,6 +100,7 @@ export interface CanvasAnnotationNode {
   height?: number;
   anchorIds: string[];
   relationType: CanvasRelationType;
+  relationLabel?: string;
   color: string;
   z: number;
 }
@@ -106,6 +111,7 @@ export interface CanvasArrowRelation {
   fromAnchorId: string;
   toAnchorId: string;
   relationType: CanvasRelationType;
+  relationLabel?: string;
   color: string;
   z: number;
 }

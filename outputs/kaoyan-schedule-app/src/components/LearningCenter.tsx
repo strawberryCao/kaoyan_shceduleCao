@@ -35,7 +35,9 @@ import type {
   LearningNotePatch,
 } from '../utils/learningData';
 import { NOTE_SERVER_URL } from '../utils/notes';
+import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import {
+  addDays,
   buildWeeklyReviewPackage,
   getWeekStart,
   shiftWeek,
@@ -45,6 +47,7 @@ import '../learning-center.css';
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
   reviewResult?: 'remembered' | 'forgotten';
+  reviewThought?: string;
 };
 
 export interface LearningCenterProps {
@@ -58,13 +61,12 @@ export interface LearningCenterProps {
   onOpenDate: (date: string) => void;
 }
 
-type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'library' | 'inbox' | 'weekly';
+type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'library' | 'uncategorized' | 'inbox' | 'weekly';
 type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'untracked';
 
 interface IndexedNote {
   date: string;
   note: LearningAutoNote;
-  searchText: string;
 }
 
 interface MistakeFilters {
@@ -106,12 +108,26 @@ interface CardEditorState {
   back: string;
 }
 
-type InboxEntry =
-  | { key: string; kind: 'note'; timestamp: string; entry: IndexedNote }
-  | { key: string; kind: 'card'; timestamp: string; card: LearningCard };
+interface ThoughtEditorState {
+  noteUid: string;
+  thoughtId: string;
+  text: string;
+}
+
+type InboxEntry = { key: string; kind: 'note'; timestamp: string; entry: IndexedNote };
 
 const DEFAULT_FOLDER_NAMES = new Set(['默认文件夹', '未分类', '默认']);
-const SUBJECTS_408 = ['数据结构', '计算机组成', '操作系统', '计算机网络'] as const;
+const STANDARD_EXAM_SUBJECTS = [
+  '高等数学',
+  '线性代数',
+  '概率论',
+  '英语',
+  '政治',
+  '数据结构',
+  '计算机组成',
+  '操作系统',
+  '计算机网络',
+] as const;
 const MISTAKE_WORDS = ['错题', '易错'];
 const MEMORY_WORDS = ['背诵', '记忆', '要背', '记住'];
 const GOOD_QUESTION_WORDS = ['好题', '经典题', '典型题', '精品题'];
@@ -162,28 +178,17 @@ const cardSubtitle = (card: LearningCard): string => [
   cardPageText(card),
 ].filter(Boolean).join(' · ');
 
-const noteSearchText = (date: string, note: LearningAutoNote): string => [
-  date,
-  note.capturedDate,
-  note.title,
-  note.subject,
-  displaySubject(note.subject),
-  note.remark,
-  note.noteType,
-  note.questionType,
-  note.wrongReason,
-  pageRefText(note),
-  ...note.tags,
-  ...note.knowledgePath,
-  ...note.items.flatMap((item) => [
-    item.title,
-    item.knowledgePoint,
-    item.questionType,
-    item.summary,
-    item.wrongReason,
-    ...item.tags,
-  ]),
-].filter(Boolean).join(' ').toLocaleLowerCase('zh-CN');
+const noteSearchFields = (date: string, note: LearningAutoNote): WeightedSearchField[] => [
+  { text: note.title, weight: 10 },
+  { text: note.knowledgePath.join(' '), weight: 8 },
+  { text: note.wrongReason, weight: 8 },
+  { text: note.remark, weight: 7 },
+  { text: note.studyNotes.map((thought) => thought.text).join(' '), weight: 7 },
+  { text: note.items.map((item) => [item.title, item.knowledgePoint, item.summary, item.wrongReason, ...item.tags].join(' ')).join(' '), weight: 6 },
+  { text: note.tags.join(' '), weight: 5 },
+  { text: `${note.subject} ${displaySubject(note.subject)} ${note.questionType}`, weight: 4 },
+  { text: `${date} ${note.capturedDate} ${pageRefText(note)}`, weight: 3 },
+];
 
 const formatShortDate = (value: string): string => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return value || '日期未知';
@@ -233,6 +238,8 @@ const remarkSignalsMemory = (remark: string): boolean => {
     || /(?:要记住|需要记|必须记|背下来|需要背|必须背|重点背|熟记)/u.test(normalized);
 };
 
+const remarkSignalsGood = (remark: string): boolean => /(?:^|[\s#【\[，,。；;：:])(?:好题|经典题|典型题|精品题)(?=$|[\s#】\]，,。；;：:])/u.test(remark.normalize('NFKC'));
+
 const isMistakeNote = (note: LearningAutoNote): boolean => (
   note.noteType === 'mistake'
   || noteHasTag(note, MISTAKE_WORDS)
@@ -248,19 +255,33 @@ const isMemoryNote = (note: LearningAutoNote): boolean => (
   || note.items.some((item) => item.intent.shouldMemorize)
 );
 
-const isGoodNote = (note: LearningAutoNote): boolean => (
-  note.noteType === 'good'
-  || noteHasTag(note, GOOD_QUESTION_WORDS)
-);
+const isGoodNote = (note: LearningAutoNote): boolean => {
+  if (note.goodQuestion !== null) return note.goodQuestion;
+  const hasUserOwnedGoodTag = (note.manualCreated || note.userEditedFields.includes('tags'))
+    && noteHasTag(note, GOOD_QUESTION_WORDS);
+  return note.noteType === 'good' || hasUserOwnedGoodTag || remarkSignalsGood(note.remark);
+};
 
 const isPendingNote = (note: LearningAutoNote): boolean => (
   note.organizationStatus === 'pending'
   && DEFAULT_FOLDER_NAMES.has(note.subject.trim())
 );
 
-const matchesQuery = (entry: IndexedNote, query: string): boolean => {
-  const terms = query.trim().toLocaleLowerCase('zh-CN').split(/\s+/).filter(Boolean);
-  return terms.length === 0 || terms.every((term) => entry.searchText.includes(term));
+const isKnowledgeEligibleNote = (note: LearningAutoNote): boolean => (
+  note.organizationStatus !== 'ignored'
+  && !DEFAULT_FOLDER_NAMES.has(note.subject.trim())
+);
+
+const rankNotesForQuery = (entries: IndexedNote[], query: string): IndexedNote[] => {
+  if (!query.trim()) return entries;
+  return entries.map((entry, index) => ({
+    entry,
+    index,
+    score: fuzzySearchScore(query, noteSearchFields(entry.date, entry.note)),
+  }))
+    .filter(({ score }) => score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .map(({ entry }) => entry);
 };
 
 const mistakeStatus = (note: LearningAutoNote, cards: LearningCard[], today: string): Exclude<MistakeStatus, 'all'> => {
@@ -273,7 +294,7 @@ const mistakeStatus = (note: LearningAutoNote, cards: LearningCard[], today: str
 };
 
 const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
-  confirm: '卡片草稿',
+  confirm: '待完善',
   due: '待重做',
   reviewing: '复习中',
   mastered: '已掌握',
@@ -283,7 +304,7 @@ const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
 const initialView = (): CenterView => {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get('view');
-  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'inbox' || requested === 'weekly') return requested;
+  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'uncategorized' || requested === 'inbox' || requested === 'weekly') return requested;
   if (requested === 'knowledge' || params.has('q')) return 'library';
   if (params.get('filter') === 'draft') return 'inbox';
   return 'review';
@@ -319,45 +340,86 @@ export function LearningCenter({
   const [weeklyFeedback, setWeeklyFeedback] = useState('');
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
   const [cardEditor, setCardEditor] = useState<CardEditorState | null>(null);
+  const [goodImportOpen, setGoodImportOpen] = useState(false);
+  const [goodImportQuery, setGoodImportQuery] = useState('');
+  const [goodImportSelection, setGoodImportSelection] = useState<string[]>([]);
   const [imageLightbox, setImageLightbox] = useState<{ src: string; alt: string } | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
+  const [thoughtDraft, setThoughtDraft] = useState('');
+  const [thoughtEditor, setThoughtEditor] = useState<ThoughtEditorState | null>(null);
+  const [thoughtSaving, setThoughtSaving] = useState(false);
 
-  const activeCards = useMemo(() => snapshot.cards.filter((card) => card.status === 'active'), [snapshot.cards]);
+  const knowledgeEligibleNoteUids = useMemo(() => new Set(
+    Object.values(snapshot.days)
+      .flatMap((day) => day.autoNotes)
+      .filter(isKnowledgeEligibleNote)
+      .map((note) => note.noteUid),
+  ), [snapshot.days]);
+  const activeCards = useMemo(() => snapshot.cards.filter((card) => (
+    card.status === 'active' && knowledgeEligibleNoteUids.has(card.noteUid)
+  )), [knowledgeEligibleNoteUids, snapshot.cards]);
   const dueCards = useMemo(() => activeCards
     .filter((card) => !card.dueDate || card.dueDate <= today)
     .sort((left, right) => {
       const dueOrder = (left.dueDate || today).localeCompare(right.dueDate || today);
       return dueOrder || right.updatedAt.localeCompare(left.updatedAt);
     }), [activeCards, today]);
-  const draftCards = useMemo(() => snapshot.cards
-    .filter((card) => card.status === 'draft')
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)), [snapshot.cards]);
+  const upcomingCards = useMemo(() => activeCards
+    .filter((card) => card.dueDate && card.dueDate > today)
+    .sort((left, right) => left.dueDate.localeCompare(right.dueDate) || right.updatedAt.localeCompare(left.updatedAt)), [activeCards, today]);
+  const reviewCards = useMemo(() => [...dueCards, ...upcomingCards], [dueCards, upcomingCards]);
+  const currentCard = reviewCards.find((card) => card.id === selectedCardId) ?? reviewCards[0] ?? null;
+  const currentCardIndex = currentCard ? reviewCards.findIndex((card) => card.id === currentCard.id) : -1;
+  const currentCardIsDue = Boolean(currentCard && (!currentCard.dueDate || currentCard.dueDate <= today));
 
-  const currentCard = dueCards.find((card) => card.id === selectedCardId) ?? dueCards[0] ?? null;
-  const currentCardIndex = currentCard ? dueCards.findIndex((card) => card.id === currentCard.id) : -1;
-
-  const indexedNotes = useMemo<IndexedNote[]>(() => Object.entries(snapshot.days)
+  const allNotes = useMemo<IndexedNote[]>(() => Object.entries(snapshot.days)
     .flatMap(([date, day]) => day.autoNotes.filter((note) => note.organizationStatus !== 'ignored').map((note) => {
       const capturedDate = /^\d{4}-\d{2}-\d{2}$/.test(note.capturedDate) ? note.capturedDate : date;
       return {
         date: capturedDate,
         note,
-        searchText: noteSearchText(capturedDate, note),
       };
     }))
     .sort((left, right) => right.date.localeCompare(left.date) || right.note.updatedAt.localeCompare(left.note.updatedAt)), [snapshot.days]);
+  const indexedNotes = useMemo(() => allNotes.filter(({ note }) => isKnowledgeEligibleNote(note)), [allNotes]);
 
-  const subjectOptions = useMemo(() => uniqueText([
-    ...SUBJECTS_408,
-  ]).sort((left, right) => left.localeCompare(right, 'zh-CN')), []);
+  const subjectOptions = useMemo(() => {
+    const standardOrder = new Map<string, number>(STANDARD_EXAM_SUBJECTS.map((subject, index) => [subject, index]));
+    return uniqueText([
+      ...STANDARD_EXAM_SUBJECTS,
+      ...allNotes.map(({ note }) => note.subject).filter((subject) => !DEFAULT_FOLDER_NAMES.has(subject.trim())),
+    ]).sort((left, right) => {
+      const leftOrder = standardOrder.get(left) ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = standardOrder.get(right) ?? Number.MAX_SAFE_INTEGER;
+      return leftOrder - rightOrder || left.localeCompare(right, 'zh-CN');
+    });
+  }, [allNotes]);
   const knowledgePointOptions = useMemo(() => uniqueText(
     indexedNotes.flatMap(({ note }) => noteKnowledgePoints(note)),
   ).sort((left, right) => left.localeCompare(right, 'zh-CN')), [indexedNotes]);
 
   const mistakeNotes = useMemo(() => indexedNotes.filter(({ note }) => isMistakeNote(note)), [indexedNotes]);
   const goodNotes = useMemo(() => indexedNotes.filter(({ note }) => isGoodNote(note)), [indexedNotes]);
+  const importableMistakes = useMemo(() => mistakeNotes.filter(({ note }) => !isGoodNote(note)), [mistakeNotes]);
+  const visibleGoodImport = useMemo(
+    () => rankNotesForQuery(importableMistakes, goodImportQuery),
+    [goodImportQuery, importableMistakes],
+  );
+  const visibleGoodImportIds = useMemo(
+    () => visibleGoodImport.map(({ note }) => note.noteUid),
+    [visibleGoodImport],
+  );
+  const allVisibleGoodImportSelected = visibleGoodImportIds.length > 0
+    && visibleGoodImportIds.every((noteUid) => goodImportSelection.includes(noteUid));
   const memoryNotes = useMemo(() => indexedNotes.filter(({ note }) => isMemoryNote(note)), [indexedNotes]);
-  const pendingNotes = useMemo(() => indexedNotes.filter(({ note }) => isPendingNote(note)), [indexedNotes]);
+  const uncategorizedNotes = useMemo(() => indexedNotes.filter(({ note }) => (
+    !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
+  )), [indexedNotes]);
+  const currentWeekUncategorizedCount = useMemo(() => {
+    const weekEnd = addDays(currentWeekStart, 6);
+    return uncategorizedNotes.filter((entry) => entry.date >= currentWeekStart && entry.date <= weekEnd).length;
+  }, [currentWeekStart, uncategorizedNotes]);
+  const pendingNotes = useMemo(() => allNotes.filter(({ note }) => isPendingNote(note)), [allNotes]);
   const weeklyPackage = useMemo(
     () => buildWeeklyReviewPackage(snapshot, scheduleDays, selectedWeekStart, today),
     [scheduleDays, selectedWeekStart, snapshot, today],
@@ -370,19 +432,19 @@ export function LearningCenter({
     wrongReasons: uniqueText(mistakeNotes.flatMap(({ note }) => noteWrongReasons(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
   }), [mistakeNotes]);
 
-  const visibleMistakes = useMemo(() => mistakeNotes.filter((entry) => {
+  const visibleMistakes = useMemo(() => rankNotesForQuery(mistakeNotes.filter((entry) => {
     const { note } = entry;
-    if (!matchesQuery(entry, query)) return false;
     if (mistakeFilters.subject && note.subject !== mistakeFilters.subject) return false;
     if (mistakeFilters.knowledgePoint && !noteKnowledgePoints(note).includes(mistakeFilters.knowledgePoint)) return false;
     if (mistakeFilters.questionType && !noteQuestionTypes(note).includes(mistakeFilters.questionType)) return false;
     if (mistakeFilters.wrongReason && !noteWrongReasons(note).includes(mistakeFilters.wrongReason)) return false;
     return mistakeFilters.status === 'all' || mistakeStatus(note, snapshot.cards, today) === mistakeFilters.status;
-  }), [mistakeFilters, mistakeNotes, query, snapshot.cards, today]);
+  }), query), [mistakeFilters, mistakeNotes, query, snapshot.cards, today]);
 
-  const visibleMemory = useMemo(() => memoryNotes.filter((entry) => matchesQuery(entry, query)), [memoryNotes, query]);
-  const visibleGood = useMemo(() => goodNotes.filter((entry) => matchesQuery(entry, query)), [goodNotes, query]);
-  const visibleLibrary = useMemo(() => indexedNotes.filter((entry) => matchesQuery(entry, query)), [indexedNotes, query]);
+  const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes, query), [memoryNotes, query]);
+  const visibleGood = useMemo(() => rankNotesForQuery(goodNotes, query), [goodNotes, query]);
+  const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes, query), [indexedNotes, query]);
+  const visibleUncategorized = useMemo(() => rankNotesForQuery(uncategorizedNotes, query), [query, uncategorizedNotes]);
 
   const groupedLibrary = useMemo(() => {
     const groups = new Map<string, IndexedNote[]>();
@@ -401,13 +463,7 @@ export function LearningCenter({
       timestamp: entry.note.updatedAt || entry.date,
       entry,
     })),
-    ...draftCards.map((card): InboxEntry => ({
-      key: `card:${card.id}`,
-      kind: 'card',
-      timestamp: card.updatedAt,
-      card,
-    })),
-  ].sort((left, right) => right.timestamp.localeCompare(left.timestamp)), [draftCards, pendingNotes]);
+  ].sort((left, right) => right.timestamp.localeCompare(left.timestamp)), [pendingNotes]);
 
   const noteListForView = view === 'mistakes'
     ? visibleMistakes
@@ -415,6 +471,8 @@ export function LearningCenter({
       ? visibleGood
     : view === 'memory'
       ? visibleMemory
+      : view === 'uncategorized'
+        ? visibleUncategorized
       : visibleLibrary;
   const selectedNote = noteListForView.find(({ note }) => note.noteUid === selectedNoteUid) ?? noteListForView[0] ?? null;
   const selectedInbox = inboxEntries.find((entry) => entry.key === selectedInboxKey) ?? inboxEntries[0] ?? null;
@@ -453,6 +511,8 @@ export function LearningCenter({
     setSourceFeedback('');
     setFailedImagePath('');
     setImageLightbox(null);
+    setThoughtDraft('');
+    setThoughtEditor(null);
   }, [selectedNoteUid, selectedInboxKey, selectedCardId, view]);
 
   useEffect(() => {
@@ -467,9 +527,9 @@ export function LearningCenter({
   }, [imageLightbox]);
 
   const stepCard = (direction: -1 | 1) => {
-    if (dueCards.length < 2 || currentCardIndex < 0) return;
-    const nextIndex = (currentCardIndex + direction + dueCards.length) % dueCards.length;
-    setSelectedCardId(dueCards[nextIndex].id);
+    if (reviewCards.length < 2 || currentCardIndex < 0) return;
+    const nextIndex = (currentCardIndex + direction + reviewCards.length) % reviewCards.length;
+    setSelectedCardId(reviewCards[nextIndex].id);
     setRevealed(false);
     setFeedback('');
   };
@@ -497,7 +557,7 @@ export function LearningCenter({
 
   const patchCurrentCard = (patch: LearningCardPatch, successText: string) => {
     if (!currentCard) return;
-    const nextCard = dueCards.find((card) => card.id !== currentCard.id) ?? null;
+    const nextCard = reviewCards.find((card) => card.id !== currentCard.id) ?? null;
     void updateCard(currentCard, patch, successText, () => setSelectedCardId(nextCard?.id ?? null));
   };
 
@@ -510,17 +570,17 @@ export function LearningCenter({
       } else if (event.key === 'Escape') {
         if (revealed) setRevealed(false);
         else setFeedback('');
-      } else if (event.key === '1') {
+      } else if (event.key === '1' && currentCardIsDue) {
         event.preventDefault();
         patchCurrentCard({ reviewResult: 'forgotten' }, '已标记为忘记，明天再复习。');
-      } else if (event.key === '2') {
+      } else if (event.key === '2' && currentCardIsDue) {
         event.preventDefault();
         patchCurrentCard({ reviewResult: 'remembered' }, '已记住，复习间隔已延长。');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentCard, pendingCardId, revealed, view]);
+  }, [currentCard, currentCardIsDue, pendingCardId, revealed, view]);
 
   const handleSourcePath = async (filePath: string) => {
     if (!filePath) {
@@ -622,8 +682,8 @@ export function LearningCenter({
   const saveClassification = async (note: LearningAutoNote) => {
     if (!classificationDraft || pendingNoteUid) return;
     const subject = classificationDraft.subject.trim();
-    if (!SUBJECTS_408.includes(subject as typeof SUBJECTS_408[number])) {
-      setFeedback('一级分类只能选择 408 科目。');
+    if (!subjectOptions.includes(subject)) {
+      setFeedback('请选择已有的一级科目。');
       return;
     }
     const knowledgePoint = classificationDraft.knowledgePoint.trim();
@@ -660,7 +720,7 @@ export function LearningCenter({
       kind,
       title: '',
       remark: '',
-      subject: SUBJECTS_408[0],
+      subject: STANDARD_EXAM_SUBJECTS[0],
       knowledgePoint: '',
       questionType: '',
       wrongReason: '',
@@ -700,8 +760,8 @@ export function LearningCenter({
       return;
     }
     const keepsExistingSubject = noteEditor.mode === 'edit' && subject === noteEditor.originalSubject;
-    if (!keepsExistingSubject && !SUBJECTS_408.includes(subject as typeof SUBJECTS_408[number])) {
-      setFeedback('一级分类只能选择数据结构、计算机组成、操作系统或计算机网络。');
+    if (!keepsExistingSubject && !subjectOptions.includes(subject)) {
+      setFeedback('请选择已有的一级科目。');
       return;
     }
     const knowledgePoint = noteEditor.knowledgePoint.trim();
@@ -719,6 +779,7 @@ export function LearningCenter({
       wrongReason: noteEditor.wrongReason.trim(),
       noteType,
       tags,
+      goodQuestion: noteEditor.isGood,
     };
     try {
       setEditorSaving(true);
@@ -797,6 +858,111 @@ export function LearningCenter({
       setFeedback(error instanceof Error ? error.message : '卡片删除失败，请稍后重试。');
     } finally {
       setEditorSaving(false);
+    }
+  };
+
+  const toggleGoodImportSelection = (noteUid: string) => {
+    setGoodImportSelection((current) => current.includes(noteUid)
+      ? current.filter((item) => item !== noteUid)
+      : [...current, noteUid]);
+  };
+
+  const toggleAllVisibleGoodImport = () => {
+    setGoodImportSelection((current) => allVisibleGoodImportSelected
+      ? current.filter((noteUid) => !visibleGoodImportIds.includes(noteUid))
+      : uniqueText([...current, ...visibleGoodImportIds]));
+  };
+
+  const importSelectedMistakes = async () => {
+    if (editorSaving) return;
+    const selected = importableMistakes.filter(({ note }) => goodImportSelection.includes(note.noteUid));
+    if (selected.length === 0) {
+      setFeedback('请至少选择一道错题。');
+      return;
+    }
+    try {
+      setEditorSaving(true);
+      for (const { note } of selected) {
+        await onPatchNote(note.noteUid, {
+          goodQuestion: true,
+          tags: uniqueText([...note.tags, '好题']),
+        });
+      }
+      setGoodImportOpen(false);
+      setGoodImportQuery('');
+      setGoodImportSelection([]);
+      setFeedback(`已从错题导入 ${selected.length} 道好题，错题记录仍然保留。`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '导入失败，请稍后重试。');
+    } finally {
+      setEditorSaving(false);
+    }
+  };
+
+  const removeFromGoodQuestions = async (note: LearningAutoNote) => {
+    if (pendingNoteUid || editorSaving) return;
+    try {
+      setPendingNoteUid(note.noteUid);
+      await onPatchNote(note.noteUid, { goodQuestion: false });
+      setSelectedNoteUid(null);
+      setFeedback('已移出好题；如果它同时是错题，错题记录仍然保留。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '移出好题失败，请稍后重试。');
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
+
+  const addStudyThought = async (note: LearningAutoNote) => {
+    const text = thoughtDraft.trim();
+    if (!text || thoughtSaving) return;
+    try {
+      setThoughtSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { thoughtAction: { action: 'add', text } });
+      setThoughtDraft('');
+      setFeedback('想法已记录，并会纳入后续 AI 复盘。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '想法没有保存，请稍后重试。');
+    } finally {
+      setThoughtSaving(false);
+    }
+  };
+
+  const saveStudyThought = async () => {
+    if (!thoughtEditor || thoughtSaving) return;
+    const text = thoughtEditor.text.trim();
+    if (!text) {
+      setFeedback('想法内容不能为空。');
+      return;
+    }
+    try {
+      setThoughtSaving(true);
+      setFeedback('');
+      await onPatchNote(thoughtEditor.noteUid, {
+        thoughtAction: { action: 'update', id: thoughtEditor.thoughtId, text },
+      });
+      setThoughtEditor(null);
+      setFeedback('想法修改已保存。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '修改没有保存，请稍后重试。');
+    } finally {
+      setThoughtSaving(false);
+    }
+  };
+
+  const deleteStudyThought = async (note: LearningAutoNote, thoughtId: string) => {
+    if (thoughtSaving || !window.confirm('确定删除这条想法吗？')) return;
+    try {
+      setThoughtSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { thoughtAction: { action: 'delete', id: thoughtId } });
+      if (thoughtEditor?.thoughtId === thoughtId) setThoughtEditor(null);
+      setFeedback('想法已删除。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '删除失败，请稍后重试。');
+    } finally {
+      setThoughtSaving(false);
     }
   };
 
@@ -903,6 +1069,9 @@ export function LearningCenter({
           </div>
           <div className="lc-heading-actions">
             <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
+            {context === 'good' && (
+              <button type="button" disabled={pendingNoteUid === note.noteUid || editorSaving} onClick={() => void removeFromGoodQuestions(note)}><X size={15} />移出好题</button>
+            )}
             <button className="danger" type="button" disabled={editorSaving} onClick={() => void deleteNote(note)}><Trash2 size={15} />删除</button>
             <time>{formatRecordDate(date)}</time>
           </div>
@@ -920,7 +1089,7 @@ export function LearningCenter({
 
         {isEditingClassification && (
           <form className="lc-classification-editor" onSubmit={(event) => { event.preventDefault(); void saveClassification(note); }}>
-            <label>408 一级科目<select value={classificationDraft.subject} onChange={(event) => setClassificationDraft((current) => current ? { ...current, subject: event.target.value } : current)} autoFocus>
+            <label>一级科目<select value={classificationDraft.subject} onChange={(event) => setClassificationDraft((current) => current ? { ...current, subject: event.target.value } : current)} autoFocus>
               <option value="">请选择</option>
               {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select></label>
@@ -941,6 +1110,68 @@ export function LearningCenter({
             <p>{note.remark}</p>
           </section>
         )}
+
+        <section className="lc-thoughts" aria-labelledby={`thoughts-${note.noteUid}`}>
+          <div className="lc-thoughts-heading">
+            <div>
+              <h3 id={`thoughts-${note.noteUid}`}>我的学习想法</h3>
+              <p>每次回看都可以补充；这些记录会按时间保留，并交给后续 AI 综合分析。</p>
+            </div>
+            <span>{note.studyNotes.length} 条</span>
+          </div>
+          <form className="lc-thought-composer" onSubmit={(event) => { event.preventDefault(); void addStudyThought(note); }}>
+            <textarea
+              value={thoughtDraft}
+              maxLength={4000}
+              rows={3}
+              onChange={(event) => setThoughtDraft(event.target.value)}
+              placeholder="这次重做或回看，有什么新的理解、易错点、解题思路？"
+              aria-label="记录新的学习想法"
+            />
+            <div>
+              <span>{thoughtDraft.length}/4000</span>
+              <button type="submit" disabled={!thoughtDraft.trim() || thoughtSaving}><Plus size={15} />记录想法</button>
+            </div>
+          </form>
+          {note.studyNotes.length > 0 ? (
+            <ol className="lc-thought-list">
+              {[...note.studyNotes].reverse().map((thought) => {
+                const isEditing = thoughtEditor?.noteUid === note.noteUid && thoughtEditor.thoughtId === thought.id;
+                return (
+                  <li key={thought.id}>
+                    {isEditing ? (
+                      <form onSubmit={(event) => { event.preventDefault(); void saveStudyThought(); }}>
+                        <textarea
+                          value={thoughtEditor.text}
+                          maxLength={4000}
+                          rows={3}
+                          autoFocus
+                          onChange={(event) => setThoughtEditor({ ...thoughtEditor, text: event.target.value })}
+                          aria-label="修改学习想法"
+                        />
+                        <div className="lc-thought-actions">
+                          <button className="primary" type="submit" disabled={!thoughtEditor.text.trim() || thoughtSaving}><Save size={14} />保存</button>
+                          <button type="button" disabled={thoughtSaving} onClick={() => setThoughtEditor(null)}>取消</button>
+                        </div>
+                      </form>
+                    ) : (
+                      <>
+                        <p>{thought.text}</p>
+                        <footer>
+                          <time>{new Date(thought.createdAt).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })}</time>
+                          <div className="lc-thought-actions">
+                            <button type="button" disabled={thoughtSaving} onClick={() => setThoughtEditor({ noteUid: note.noteUid, thoughtId: thought.id, text: thought.text })}><Pencil size={14} />修改</button>
+                            <button className="danger" type="button" disabled={thoughtSaving} onClick={() => void deleteStudyThought(note, thought.id)}><Trash2 size={14} />删除</button>
+                          </div>
+                        </footer>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          ) : <p className="lc-thought-empty">还没有记录。第一次重做时，把新思路留在这里。</p>}
+        </section>
 
         {itemSummary.length > 0 && (
           <section className="lc-detail-section">
@@ -1013,6 +1244,18 @@ export function LearningCenter({
               <span className="lc-queue-meta"><em>{card.kind === 'mistake' ? '错题' : '背诵'}</em>{displaySubject(card.subject)}</span>
             </button>
           ))}
+          {upcomingCards.length > 0 && <div className="lc-queue-heading"><strong>遗忘曲线计划中</strong><span>{upcomingCards.length}</span></div>}
+          {upcomingCards.map((card) => (
+            <button
+              className={currentCard?.id === card.id ? 'active' : ''}
+              key={card.id}
+              type="button"
+              onClick={() => { setSelectedCardId(card.id); setRevealed(false); setFeedback(''); }}
+            >
+              <span>{card.front || card.sourceTitle || '未命名卡片'}</span>
+              <span className="lc-queue-meta"><em>{card.dueDate} 复习</em>{displaySubject(card.subject)}</span>
+            </button>
+          ))}
         </div>
       </aside>
 
@@ -1024,7 +1267,7 @@ export function LearningCenter({
                 <span className={`lc-kind lc-kind-${currentCard.kind}`}>{currentCard.kind === 'mistake' ? '错题卡' : '背诵卡'}</span>
                 <strong>{currentCard.subject || '未分类'}</strong>
               </div>
-              <span className="lc-card-count">{currentCardIndex + 1} / {dueCards.length}</span>
+              <span className="lc-card-count">{currentCardIndex + 1} / {reviewCards.length}</span>
             </header>
 
             <button className={`lc-flip-card ${revealed ? 'is-revealed' : ''}`} type="button" onClick={() => setRevealed((value) => !value)}>
@@ -1041,13 +1284,17 @@ export function LearningCenter({
             </div>
 
             <div className="lc-card-controls">
-              <button type="button" onClick={() => stepCard(-1)} disabled={dueCards.length < 2} aria-label="上一张"><ChevronLeft size={18} /></button>
+              <button type="button" onClick={() => stepCard(-1)} disabled={reviewCards.length < 2} aria-label="上一张"><ChevronLeft size={18} /></button>
               <button type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => beginEditCard(currentCard)}><Pencil size={16} />编辑</button>
-              <button className="lc-action-forgot" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'forgotten' }, '明天再复习。')}><RotateCcw size={16} />忘记 <kbd>1</kbd></button>
-              <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'remembered' }, '复习间隔已延长。')}><Check size={16} />记住 <kbd>2</kbd></button>
+              {currentCardIsDue ? (
+                <>
+                  <button className="lc-action-forgot" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'forgotten' }, '明天再复习。')}><RotateCcw size={16} />忘记 <kbd>1</kbd></button>
+                  <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'remembered' }, '复习间隔已延长。')}><Check size={16} />记住 <kbd>2</kbd></button>
+                </>
+              ) : <span className="lc-card-count">计划 {currentCard.dueDate} 复习</span>}
               {currentCard.sourceFilePath && <button type="button" onClick={() => void handleSourcePath(currentCard.sourceFilePath)}><FolderOpen size={16} />原图</button>}
               <button className="danger" type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => void deleteCard(currentCard)}><Trash2 size={16} />删除</button>
-              <button type="button" onClick={() => stepCard(1)} disabled={dueCards.length < 2} aria-label="下一张"><ChevronRight size={18} /></button>
+              <button type="button" onClick={() => stepCard(1)} disabled={reviewCards.length < 2} aria-label="下一张"><ChevronRight size={18} /></button>
             </div>
             <div className={`lc-feedback ${feedback || sourceFeedback ? 'visible' : ''}`}>{pendingCardId ? '正在保存…' : feedback || sourceFeedback || ' '}</div>
           </>
@@ -1086,7 +1333,6 @@ export function LearningCenter({
             <option value="all">全部状态</option>
             <option value="due">待重做</option>
             <option value="reviewing">复习中</option>
-            <option value="confirm">卡片草稿</option>
             <option value="mastered">已掌握</option>
             <option value="untracked">未加入复习</option>
           </select>
@@ -1124,6 +1370,19 @@ export function LearningCenter({
     <div className="lc-workspace">
       <aside className="lc-master-pane">
         {renderSearch(visibleGood.length, '搜索好题、页码或知识点', '新增好题', () => beginCreateNote('knowledge', true))}
+        <div className="lc-good-import-bar">
+          <button
+            type="button"
+            disabled={importableMistakes.length === 0}
+            onClick={() => {
+              setGoodImportQuery('');
+              setGoodImportSelection([]);
+              setGoodImportOpen(true);
+              setFeedback('');
+            }}
+          ><Plus size={15} />从错题导入</button>
+          <span>{importableMistakes.length > 0 ? `${importableMistakes.length} 道可选` : '错题已全部收录'}</span>
+        </div>
         <div className="lc-master-list">
           {visibleGood.map((entry) => renderNoteButton(entry, 'good'))}
           {visibleGood.length === 0 && <div className="lc-list-empty"><Star size={23} /><strong>还没有收藏好题</strong></div>}
@@ -1151,76 +1410,42 @@ export function LearningCenter({
     </div>
   );
 
-  const renderInboxCardDetail = (card: LearningCard, nextKey: string | null) => (
-    <article className="lc-inbox-card-detail">
-      <header className="lc-detail-heading">
-        <div><span className="lc-detail-kind is-inbox">卡片草稿</span><h2>{card.sourceTitle || card.front || '未命名卡片'}</h2></div>
-        <span>{card.kind === 'mistake' ? '错题卡' : '背诵卡'}</span>
-      </header>
-      <div className="lc-card-draft-copy">
-        <section><span>问题</span><p>{card.front || '等待补充问题'}</p></section>
-        <section><span>答案</span><p>{card.back || '等待补充答案'}</p></section>
-      </div>
-      <div className="lc-detail-facts">
-        <div><span>科目</span><strong>{displaySubject(card.subject)}</strong></div>
-        <div><span>页码 / 题号</span><strong>{cardPageText(card) || '—'}</strong></div>
-        <div className="lc-fact-wide"><span>知识点</span><strong>{card.knowledgePath.join(' / ') || '—'}</strong></div>
-      </div>
-      <div className="lc-inbox-actions">
-        <button type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => beginEditCard(card)}><Pencil size={16} />编辑正反面</button>
-        <button
-          className="primary"
-          type="button"
-          disabled={Boolean(pendingCardId)}
-          onClick={() => void updateCard(card, { status: 'active', dueDate: today }, '卡片已启用。', () => setSelectedInboxKey(nextKey))}
-        ><Check size={16} />启用卡片</button>
-        <button
-          type="button"
-          disabled={Boolean(pendingCardId)}
-          onClick={() => void updateCard(card, { status: 'archived' }, '卡片已归档。', () => setSelectedInboxKey(nextKey))}
-        ><Archive size={16} />暂不使用</button>
-        {card.sourceFilePath && <button type="button" onClick={() => void handleSourcePath(card.sourceFilePath)}><FolderOpen size={16} />原图</button>}
-        <button className="danger" type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => void deleteCard(card)}><Trash2 size={16} />删除</button>
-      </div>
-      <div className={`lc-feedback ${feedback || sourceFeedback ? 'visible' : ''}`}>{pendingCardId ? '正在保存…' : feedback || sourceFeedback || ' '}</div>
-    </article>
+  const renderUncategorized = () => (
+    <div className="lc-workspace">
+      <aside className="lc-master-pane">
+        {renderSearch(visibleUncategorized.length, '搜索尚未归入错题、好题或背诵的笔记')}
+        <div className="lc-inbox-summary">
+          <span>本周自动审查发现 <strong>{currentWeekUncategorizedCount}</strong></span>
+          <span>仅含非默认文件夹</span>
+        </div>
+        <div className="lc-master-list">
+          {visibleUncategorized.map((entry) => renderNoteButton(entry, 'library'))}
+          {visibleUncategorized.length === 0 && <div className="lc-list-empty"><ClipboardCheck size={23} /><strong>本周分类审查已通过</strong></div>}
+        </div>
+      </aside>
+      <section className="lc-detail-pane">{renderNoteDetail(selectedNote, 'library')}</section>
+    </div>
   );
 
-  const renderInbox = () => {
-    const nextEntry = selectedInbox ? inboxEntries.find((entry) => entry.key !== selectedInbox.key) ?? null : null;
-    return (
+  const renderInbox = () => (
       <div className="lc-workspace">
         <aside className="lc-master-pane">
           <div className="lc-inbox-summary">
-            <span>未识别分类 <strong>{pendingNotes.length}</strong></span>
-            <span>卡片草稿 <strong>{draftCards.length}</strong></span>
+            <span>分类确实不确定 <strong>{pendingNotes.length}</strong></span>
+            <span>已分类内容会自动归档</span>
           </div>
           <div className="lc-master-list">
-            {inboxEntries.map((entry) => entry.kind === 'note' ? renderNoteButton(entry.entry, 'inbox') : (
-              <button
-                className={`lc-note-button ${selectedInboxKey === entry.key ? 'active' : ''}`}
-                key={entry.key}
-                type="button"
-                onClick={() => setSelectedInboxKey(entry.key)}
-              >
-                <span className="lc-note-button-title">{entry.card.front || entry.card.sourceTitle || '未命名卡片'}</span>
-                <span className="lc-note-button-meta"><span>{displaySubject(entry.card.subject)}</span><span>{entry.card.kind === 'mistake' ? '错题卡' : '背诵卡'}</span></span>
-                <span className="lc-note-button-foot"><em>卡片草稿</em></span>
-              </button>
-            ))}
+            {inboxEntries.map((entry) => renderNoteButton(entry.entry, 'inbox'))}
             {inboxEntries.length === 0 && <div className="lc-list-empty"><ClipboardCheck size={23} /><strong>收件箱已清空</strong></div>}
           </div>
         </aside>
         <section className="lc-detail-pane">
-          {selectedInbox?.kind === 'note'
+          {selectedInbox
             ? renderNoteDetail(selectedInbox.entry, 'inbox')
-            : selectedInbox?.kind === 'card'
-              ? renderInboxCardDetail(selectedInbox.card, nextEntry?.key ?? null)
-              : <div className="lc-detail-empty"><Check size={28} /><h3>收件箱里没有内容</h3></div>}
+            : <div className="lc-detail-empty"><Check size={28} /><h3>收件箱里没有内容</h3></div>}
         </section>
       </div>
-    );
-  };
+  );
 
   const renderWeeklyReview = () => (
     <section className="lc-weekly-review">
@@ -1245,6 +1470,7 @@ export function LearningCenter({
         <div><span>新增笔记</span><strong>{weeklyPackage.stats.noteCount}</strong></div>
         <div><span>错题</span><strong>{weeklyPackage.stats.mistakeCount}</strong></div>
         <div><span>需记忆</span><strong>{weeklyPackage.stats.memoryCount}</strong></div>
+        <div><span>未分类笔记</span><strong>{weeklyPackage.stats.uncategorizedCount}</strong></div>
         <div><span>复习卡片</span><strong>{weeklyPackage.stats.reviewedCards}</strong></div>
         <div><span>当前到期</span><strong>{weeklyPackage.stats.dueCards}</strong></div>
       </div>
@@ -1262,6 +1488,7 @@ export function LearningCenter({
     { id: 'mistakes', label: '错题', icon: TriangleAlert, count: mistakeNotes.length },
     { id: 'good', label: '好题', icon: Star, count: goodNotes.length },
     { id: 'memory', label: '背诵', icon: Brain, count: memoryNotes.length },
+    { id: 'uncategorized', label: '未分类笔记', icon: ClipboardCheck, count: uncategorizedNotes.length },
     { id: 'library', label: '知识库', icon: BookOpenText, count: indexedNotes.length },
     { id: 'weekly', label: '周复盘', icon: FileText, count: weeklyPackage.stats.noteCount },
     { id: 'inbox', label: '收件箱', icon: Inbox, count: inboxEntries.length },
@@ -1293,6 +1520,7 @@ export function LearningCenter({
         {view === 'mistakes' && renderMistakes()}
         {view === 'good' && renderGoodQuestions()}
         {view === 'memory' && renderMemory()}
+        {view === 'uncategorized' && renderUncategorized()}
         {view === 'library' && renderLibrary()}
         {view === 'weekly' && renderWeeklyReview()}
         {view === 'inbox' && renderInbox()}
@@ -1306,6 +1534,50 @@ export function LearningCenter({
             <button type="button" onClick={() => setImageLightbox(null)} aria-label="关闭大图"><X size={22} /></button>
             <img src={imageLightbox.src} alt={imageLightbox.alt} />
           </div>
+        </div>
+      )}
+
+      {goodImportOpen && (
+        <div className="lc-editor-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !editorSaving) setGoodImportOpen(false);
+        }}>
+          <section className="lc-content-editor lc-good-import-dialog" role="dialog" aria-modal="true" aria-label="从错题导入好题">
+            <header>
+              <div><span>人工收录</span><h2>从错题导入好题</h2></div>
+              <button type="button" aria-label="关闭" disabled={editorSaving} onClick={() => setGoodImportOpen(false)}><X size={18} /></button>
+            </header>
+            <div className="lc-good-import-body">
+              <label className="lc-good-import-search">
+                <Search size={17} />
+                <input value={goodImportQuery} autoFocus onChange={(event) => setGoodImportQuery(event.target.value)} placeholder="搜索错题、页码、知识点或错因" />
+              </label>
+              <div className="lc-good-import-tools">
+                <button type="button" disabled={visibleGoodImportIds.length === 0} onClick={toggleAllVisibleGoodImport}>
+                  {allVisibleGoodImportSelected ? '取消全选' : '全选当前结果'}
+                </button>
+                <span>已选择 {goodImportSelection.length} 道</span>
+              </div>
+              <div className="lc-good-import-list">
+                {visibleGoodImport.map(({ note }) => (
+                  <label key={note.noteUid}>
+                    <input type="checkbox" checked={goodImportSelection.includes(note.noteUid)} onChange={() => toggleGoodImportSelection(note.noteUid)} />
+                    <span>
+                      <strong>{note.title || '未命名错题'}</strong>
+                      <small>{[displaySubject(note.subject), noteKnowledgePoints(note)[0], noteWrongReasons(note)[0]].filter(Boolean).join(' · ') || '暂无分类信息'}</small>
+                    </span>
+                  </label>
+                ))}
+                {visibleGoodImport.length === 0 && (
+                  <div className="lc-list-empty"><Search size={22} /><strong>没有匹配的错题</strong></div>
+                )}
+              </div>
+            </div>
+            <footer>
+              <span>导入后仍保留在错题中，不会改变复习记录。</span>
+              <button type="button" disabled={editorSaving} onClick={() => setGoodImportOpen(false)}>取消</button>
+              <button className="primary" type="button" disabled={editorSaving || goodImportSelection.length === 0} onClick={() => void importSelectedMistakes()}><Check size={16} />导入选中</button>
+            </footer>
+          </section>
         </div>
       )}
 
@@ -1326,10 +1598,6 @@ export function LearningCenter({
               </select></label>
               <label>一级科目<select value={noteEditor.subject} onChange={(event) => setNoteEditor((current) => current ? { ...current, subject: event.target.value } : current)}>
                 <option value="">请选择</option>
-                {noteEditor.mode === 'edit'
-                  && noteEditor.originalSubject
-                  && !SUBJECTS_408.includes(noteEditor.originalSubject as typeof SUBJECTS_408[number])
-                  && <option value={noteEditor.originalSubject}>{noteEditor.originalSubject}（保留现有）</option>}
                 {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
               </select></label>
               <label className="wide">标题<input value={noteEditor.title} maxLength={120} autoFocus onChange={(event) => setNoteEditor((current) => current ? { ...current, title: event.target.value } : current)} placeholder="例如：进程与线程的区别" /></label>

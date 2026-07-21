@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   BookOpenCheck,
+  BrainCircuit,
   CalendarDays,
   Clipboard,
   Home,
@@ -13,7 +14,7 @@ import {
 } from 'lucide-react';
 import { openNoteCaptureApp } from './NoteDock';
 
-export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'notes' | 'console';
+export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'notes' | 'console' | 'ai-config';
 
 interface WebAppShellProps {
   active: WebAppDestination;
@@ -32,6 +33,7 @@ const mainItems = [
   { id: 'learning' as const, label: '学习中心', icon: BookOpenCheck, action: () => go('?panel=learning') },
   { id: 'notes' as const, label: '画布', icon: PanelsTopLeft, action: () => go('?notes=1&mode=canvas') },
   { id: 'console' as const, label: '桌面控制台', icon: LayoutDashboard, action: () => go('?console=1') },
+  { id: 'ai-config' as const, label: 'AI 配置', icon: BrainCircuit, action: () => go('?aiConfig=1') },
 ];
 
 export function WebAppShell({ active, children }: WebAppShellProps) {
@@ -103,7 +105,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       <div className="web-app-content">{children}</div>
 
       <nav className="web-app-mobile-nav" aria-label="移动端导航">
-        {mainItems.map((item) => {
+        {mainItems.filter((item) => item.id !== 'ai-config').map((item) => {
           const Icon = item.icon;
           return (
             <button

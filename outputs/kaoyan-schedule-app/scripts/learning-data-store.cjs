@@ -100,6 +100,26 @@ function normalizePageRefs(value) {
     .filter((item) => item.raw || item.page || item.question);
 }
 
+function normalizeStudyNotes(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isPlainObject).slice(-200).map((item, index) => ({
+    id: (asOptionalString(item.id) || `thought-${index}`).slice(0, 160),
+    text: asString(item.text).slice(0, 4000),
+    createdAt: asString(item.createdAt),
+    updatedAt: asString(item.updatedAt),
+  })).filter((item) => item.text.trim());
+}
+
+function normalizeReviewHistory(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(isPlainObject).slice(-200).map((item, index) => ({
+    id: (asOptionalString(item.id) || `review-${index}`).slice(0, 160),
+    reviewedAt: asString(item.reviewedAt),
+    result: item.result === 'forgotten' ? 'forgotten' : 'remembered',
+    thought: asString(item.thought).slice(0, 4000),
+  }));
+}
+
 function normalizeLearningItems(value) {
   if (!Array.isArray(value)) return [];
   return value.filter(isPlainObject).slice(0, 24).map((item) => ({
@@ -112,6 +132,7 @@ function normalizeLearningItems(value) {
     intent: {
       isQuestion: item.intent?.isQuestion === true,
       isMistake: item.intent?.isMistake === true,
+      isGood: item.intent?.isGood === true,
       shouldMemorize: item.intent?.shouldMemorize === true,
     },
   }));
@@ -165,7 +186,9 @@ function normalizeAutoNote(value) {
       : inferredFromFile ? 'local' : 'ai',
     manualCreated: value.manualCreated === true,
     userEditedFields: uniqueStrings(value.userEditedFields),
+    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
     items: normalizeLearningItems(value.items),
+    studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: uniqueStrings(value.cardIds),
   };
@@ -183,25 +206,48 @@ function normalizeCard(value) {
 
   const reviewStep = Number(value.reviewStep);
   const reviewCount = Number(value.reviewCount);
+  const reviewHistory = normalizeReviewHistory(value.reviewHistory);
+  const correctCount = Number(value.correctCount);
+  const incorrectCount = Number(value.incorrectCount);
+  const correctStreak = Number(value.correctStreak);
+  const front = asString(value.front);
+  const back = asString(value.back);
+  const subject = asString(value.subject);
+  const storedStatus = CARD_STATUSES.has(value.status) ? value.status : 'active';
+  const status = storedStatus === 'draft'
+    && front.trim()
+    && back.trim()
+    && !DEFAULT_SUBJECT_NAMES.has(subject.trim())
+    ? 'active'
+    : storedStatus;
   return {
     id,
     noteUid,
     sourceKey: asString(value.sourceKey),
     kind: CARD_KINDS.has(value.kind) ? value.kind : 'memory',
-    front: asString(value.front),
-    back: asString(value.back),
-    subject: asString(value.subject),
+    front,
+    back,
+    subject,
     knowledgePath: uniqueStrings(value.knowledgePath),
     tags: uniqueStrings(value.tags),
     pageRefs: normalizePageRefs(value.pageRefs),
     sourceTitle: asString(value.sourceTitle),
     sourceFilePath: asString(value.sourceFilePath),
-    status: CARD_STATUSES.has(value.status) ? value.status : 'draft',
+    status,
     dueDate: DATE_PATTERN.test(asString(value.dueDate)) ? value.dueDate : '',
-    reviewStep: Number.isInteger(reviewStep) ? Math.min(3, Math.max(0, reviewStep)) : 0,
+    reviewStep: Number.isInteger(reviewStep) ? Math.min(5, Math.max(0, reviewStep)) : 0,
     reviewCount: Number.isInteger(reviewCount) && reviewCount >= 0 ? reviewCount : 0,
     lastReviewedAt: asString(value.lastReviewedAt),
     lastReviewResult: ['remembered', 'forgotten'].includes(value.lastReviewResult) ? value.lastReviewResult : '',
+    correctCount: Number.isInteger(correctCount) && correctCount >= 0
+      ? correctCount
+      : reviewHistory.filter((entry) => entry.result === 'remembered').length,
+    incorrectCount: Number.isInteger(incorrectCount) && incorrectCount >= 0
+      ? incorrectCount
+      : reviewHistory.filter((entry) => entry.result === 'forgotten').length,
+    correctStreak: Number.isInteger(correctStreak) && correctStreak >= 0 ? correctStreak : 0,
+    masteredAt: asString(value.masteredAt),
+    reviewHistory,
     createdAt: asString(value.createdAt),
     updatedAt: asString(value.updatedAt),
     userEdited: Boolean(value.userEdited),
@@ -522,6 +568,11 @@ function createLearningDataStore(options = {}) {
       snapshot.days[date] = day;
     }
 
+    const resolvedSubject = existingNote?.classificationSource === 'manual'
+      ? existingNote.subject
+      : enrichment.subject ?? metadata.subject ?? existingNote?.subject ?? '';
+    const cardsAreKnowledgeEligible = !DEFAULT_SUBJECT_NAMES.has(String(resolvedSubject).trim());
+    const seenCardContent = new Set();
     const generatedCards = incomingCards.map((card, index) => {
       const sourceKey = asOptionalString(card?.sourceKey)
         || asOptionalString(card?.cardKey)
@@ -542,11 +593,18 @@ function createLearningDataStore(options = {}) {
         pageRefs: card?.pageRefs ?? enrichment.pageRefs,
         sourceTitle: card?.sourceTitle ?? metadata.title,
         sourceFilePath: card?.sourceFilePath ?? metadata.filePath,
-        status: card?.status ?? 'draft',
+        status: card?.status === 'archived' ? 'archived' : cardsAreKnowledgeEligible ? 'active' : 'draft',
+        dueDate: cardsAreKnowledgeEligible ? card?.dueDate ?? capturedDate : '',
         createdAt: card?.createdAt ?? timestamp,
         updatedAt: timestamp,
       });
-    }).filter(Boolean);
+    }).filter((card) => {
+      if (!card || !card.front.trim() || !card.back.trim()) return false;
+      const contentKey = `${card.kind}|${card.front.trim().toLocaleLowerCase('zh-CN')}`;
+      if (seenCardContent.has(contentKey)) return false;
+      seenCardContent.add(contentKey);
+      return true;
+    }).slice(0, 2);
 
     const generatedCardIds = new Set(generatedCards.map((card) => card.id));
     snapshot.cards = snapshot.cards.filter((card) => (
@@ -581,6 +639,11 @@ function createLearningDataStore(options = {}) {
           reviewCount: previous?.reviewCount ?? card.reviewCount,
           lastReviewedAt: previous?.lastReviewedAt || card.lastReviewedAt,
           lastReviewResult: previous?.lastReviewResult || card.lastReviewResult,
+          correctCount: previous?.correctCount ?? card.correctCount,
+          incorrectCount: previous?.incorrectCount ?? card.incorrectCount,
+          correctStreak: previous?.correctStreak ?? card.correctStreak,
+          masteredAt: previous?.masteredAt || card.masteredAt,
+          reviewHistory: previous?.reviewHistory ?? card.reviewHistory,
         });
       }
     }
@@ -760,7 +823,14 @@ function createLearningDataStore(options = {}) {
         organizationStatus: 'confirmed',
         classificationSource: 'manual',
         manualCreated: true,
-        userEditedFields: ['title', 'remark', 'tags', 'noteType'],
+        userEditedFields: [
+          'title',
+          'remark',
+          'tags',
+          'noteType',
+          ...(typeof input.goodQuestion === 'boolean' ? ['goodQuestion'] : []),
+        ],
+        goodQuestion: typeof input.goodQuestion === 'boolean' ? input.goodQuestion : null,
         items: normalizeLearningItems(input.items),
         confidence: null,
         cardIds: [],
@@ -822,8 +892,10 @@ function createLearningDataStore(options = {}) {
         pageRefs: Array.isArray(input.pageRefs) ? input.pageRefs : entry.note.pageRefs,
         sourceTitle: asOptionalString(input.sourceTitle) || entry.note.title,
         sourceFilePath: entry.note.filePath,
-        status: CARD_STATUSES.has(input.status) ? input.status : 'draft',
-        dueDate: DATE_PATTERN.test(asString(input.dueDate)) ? input.dueDate : '',
+        status: input.status === 'archived' ? 'archived' : 'active',
+        dueDate: DATE_PATTERN.test(asString(input.dueDate))
+          ? input.dueDate
+          : formatDateInTimeZone(timestamp, timeZone),
         createdAt: timestamp,
         updatedAt: timestamp,
         userEdited: true,
@@ -853,15 +925,35 @@ function createLearningDataStore(options = {}) {
       const reviewResult = ['remembered', 'forgotten'].includes(patch.reviewResult)
         ? patch.reviewResult
         : null;
-      const intervalDays = reviewResult === 'forgotten'
-        ? 1
-        : reviewResult === 'remembered' ? [1, 3, 7, 14][current.reviewStep] : null;
-      const reviewPatch = intervalDays === null ? {} : {
-        dueDate: formatDateInTimeZone(new Date(now().getTime() + intervalDays * 86400000), timeZone),
-        reviewStep: reviewResult === 'forgotten' ? 0 : Math.min(3, current.reviewStep + 1),
+      const nextCorrectCount = current.correctCount + (reviewResult === 'remembered' ? 1 : 0);
+      const nextIncorrectCount = current.incorrectCount + (reviewResult === 'forgotten' ? 1 : 0);
+      const nextCorrectStreak = reviewResult === 'remembered' ? current.correctStreak + 1 : 0;
+      const mastered = reviewResult === 'remembered' && nextCorrectStreak >= 3;
+      const baseInterval = reviewResult === 'remembered' ? [1, 3, 7, 14, 30, 60][current.reviewStep] : 1;
+      const knownAttempts = nextCorrectCount + nextIncorrectCount;
+      const errorRate = knownAttempts > 0 ? nextIncorrectCount / knownAttempts : 0;
+      const difficultyPenalty = 1 + Math.min(3, nextIncorrectCount) * 0.45 + errorRate * 0.8;
+      const intervalDays = reviewResult === 'remembered'
+        ? Math.max(1, Math.round(baseInterval / difficultyPenalty))
+        : 1;
+      const reviewThought = asString(patch.reviewThought).trim().slice(0, 4000);
+      const reviewPatch = reviewResult === null ? {} : {
+        status: mastered ? 'archived' : 'active',
+        dueDate: mastered ? '' : formatDateInTimeZone(new Date(now().getTime() + intervalDays * 86400000), timeZone),
+        reviewStep: reviewResult === 'forgotten' ? 0 : Math.min(5, current.reviewStep + 1),
         reviewCount: current.reviewCount + 1,
         lastReviewedAt: timestamp,
         lastReviewResult: reviewResult,
+        correctCount: nextCorrectCount,
+        incorrectCount: nextIncorrectCount,
+        correctStreak: nextCorrectStreak,
+        masteredAt: mastered ? timestamp : reviewResult === 'forgotten' ? '' : current.masteredAt,
+        reviewHistory: [...current.reviewHistory, {
+          id: `review-${crypto.randomUUID()}`,
+          reviewedAt: timestamp,
+          result: reviewResult,
+          thought: reviewThought,
+        }].slice(-200),
       };
       const next = normalizeCard({
         ...current,
@@ -889,11 +981,22 @@ function createLearningDataStore(options = {}) {
       throw learningError('Invalid note organization status', 'INVALID_LEARNING_NOTE');
     }
     const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
-    const contentKeys = ['title', 'remark', 'tags', 'noteType'];
+    const contentKeys = ['title', 'remark', 'tags', 'noteType', 'goodQuestion'];
     const editableKeys = [...classificationKeys, ...contentKeys];
     const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
-    if (!hasOrganizationStatus && !editableKeys.some((key) => Object.hasOwn(patch, key))) {
+    const thoughtAction = isPlainObject(patch.thoughtAction) ? patch.thoughtAction : null;
+    const hasThoughtAction = Boolean(thoughtAction);
+    if (!hasOrganizationStatus && !hasThoughtAction && !editableKeys.some((key) => Object.hasOwn(patch, key))) {
       throw learningError('Empty note update', 'INVALID_LEARNING_NOTE');
+    }
+    if (hasThoughtAction && !['add', 'update', 'delete'].includes(thoughtAction.action)) {
+      throw learningError('Invalid study note action', 'INVALID_LEARNING_NOTE');
+    }
+    if (hasThoughtAction && thoughtAction.action !== 'add' && !asOptionalString(thoughtAction.id)) {
+      throw learningError('Study note id is required', 'INVALID_LEARNING_NOTE');
+    }
+    if (hasThoughtAction && thoughtAction.action !== 'delete' && !asOptionalString(thoughtAction.text)) {
+      throw learningError('Study note text is required', 'INVALID_LEARNING_NOTE');
     }
     const subject = Object.hasOwn(patch, 'subject') ? asOptionalString(patch.subject) : null;
     if (Object.hasOwn(patch, 'subject') && !subject) {
@@ -904,6 +1007,9 @@ function createLearningDataStore(options = {}) {
     }
     if (Object.hasOwn(patch, 'tags') && !Array.isArray(patch.tags)) {
       throw learningError('Invalid note tags', 'INVALID_LEARNING_NOTE');
+    }
+    if (Object.hasOwn(patch, 'goodQuestion') && typeof patch.goodQuestion !== 'boolean') {
+      throw learningError('Invalid good question flag', 'INVALID_LEARNING_NOTE');
     }
     return commit((snapshot) => {
       let found = false;
@@ -925,12 +1031,32 @@ function createLearningDataStore(options = {}) {
           contentKeys.forEach((key) => {
             if (Object.hasOwn(patch, key)) userEditedFields.add(key);
           });
+          let studyNotes = normalizeStudyNotes(note.studyNotes);
+          if (thoughtAction?.action === 'add') {
+            studyNotes = [...studyNotes, {
+              id: `thought-${crypto.randomUUID()}`,
+              text: asString(thoughtAction.text).trim().slice(0, 4000),
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            }].slice(-200);
+          } else if (thoughtAction?.action === 'update') {
+            const thoughtId = asString(thoughtAction.id);
+            if (!studyNotes.some((item) => item.id === thoughtId)) {
+              throw learningError(`Study note not found: ${thoughtId}`, 'STUDY_NOTE_NOT_FOUND');
+            }
+            studyNotes = studyNotes.map((item) => item.id === thoughtId
+              ? { ...item, text: asString(thoughtAction.text).trim().slice(0, 4000), updatedAt: timestamp }
+              : item);
+          } else if (thoughtAction?.action === 'delete') {
+            studyNotes = studyNotes.filter((item) => item.id !== asString(thoughtAction.id));
+          }
           return normalizeAutoNote({
             ...note,
             ...(Object.hasOwn(patch, 'title') ? { title: asString(patch.title).slice(0, 240) } : {}),
             ...(Object.hasOwn(patch, 'remark') ? { remark: asString(patch.remark).slice(0, 8000) } : {}),
             ...(Object.hasOwn(patch, 'tags') ? { tags: uniqueStrings(patch.tags) } : {}),
             ...(Object.hasOwn(patch, 'noteType') ? { noteType: asString(patch.noteType).trim().slice(0, 40) || 'note' } : {}),
+            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),
             ...(subject ? { subject } : {}),
             ...((subject || Object.hasOwn(patch, 'knowledgePath')) ? { knowledgePath: nextKnowledgePath } : {}),
             ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
@@ -940,6 +1066,7 @@ function createLearningDataStore(options = {}) {
               : editableKeys.some((key) => Object.hasOwn(patch, key)) ? 'confirmed' : note.organizationStatus,
             classificationSource: editsClassification ? 'manual' : note.classificationSource,
             userEditedFields: [...userEditedFields],
+            studyNotes,
             updatedAt: timestamp,
           });
         });

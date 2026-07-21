@@ -1,14 +1,43 @@
-const AI_408_SUBJECTS = Object.freeze([
+const AI_SUPPORTED_SUBJECTS = Object.freeze([
+  '高等数学',
+  '线性代数',
+  '概率论',
   '数据结构',
   '计算机组成',
   '操作系统',
   '计算机网络',
+  '英语',
+  '政治',
 ]);
+// Backward-compatible export for older callers. The allowlist now covers all
+// standard exam subjects, not only the four 408 subjects.
+const AI_408_SUBJECTS = AI_SUPPORTED_SUBJECTS;
 
 const AI_FALLBACK_SUBJECT = '默认文件夹';
 const DEFAULT_BUCKET_NAMES = new Set(['默认文件夹', '未分类', '默认', '收件箱', '待归类']);
 
 const SUBJECT_RULES = Object.freeze({
+  高等数学: {
+    aliases: ['高数', '数学', '数学一', '数学二', '数学三'],
+    keywords: [
+      '高等数学', '高数', '极限', '连续', '导数', '微分', '积分', '级数', '泰勒',
+      '中值定理', '多元函数', '偏导数', '重积分', '曲线积分', '曲面积分', '微分方程',
+    ],
+  },
+  线性代数: {
+    aliases: ['线代'],
+    keywords: [
+      '线性代数', '线代', '行列式', '矩阵', '向量组', '线性相关', '线性无关',
+      '线性方程组', '矩阵的秩', '特征值', '特征向量', '相似矩阵', '二次型',
+    ],
+  },
+  概率论: {
+    aliases: ['概率', '概率论与数理统计', '数理统计'],
+    keywords: [
+      '概率论', '概率', '随机变量', '分布函数', '概率密度', '数学期望', '方差',
+      '协方差', '大数定律', '中心极限定理', '参数估计', '假设检验', '数理统计',
+    ],
+  },
   数据结构: {
     aliases: ['数据结构与算法', '算法', 'DS'],
     keywords: [
@@ -40,6 +69,20 @@ const SUBJECT_RULES = Object.freeze({
       '拥塞控制', '滑动窗口', '以太网', '数据链路', '传输层',
     ],
   },
+  英语: {
+    aliases: ['考研英语', '英语一', '英语二'],
+    keywords: [
+      '英语', '单词', '词汇', '语法', '长难句', '阅读理解', '完形填空', '新题型',
+      '英译汉', '翻译', '英语作文', '写作', '同义替换',
+    ],
+  },
+  政治: {
+    aliases: ['考研政治', '思想政治理论'],
+    keywords: [
+      '考研政治', '思想政治', '马克思主义', '马原', '毛中特', '中国近现代史纲要',
+      '史纲', '思想道德与法治', '思修', '习近平新时代中国特色社会主义思想', '时政',
+    ],
+  },
 });
 
 function cleanText(value) {
@@ -55,7 +98,7 @@ function lookupKey(value) {
 function canonicalAiSubject(value) {
   const target = lookupKey(value);
   if (!target) return null;
-  for (const subject of AI_408_SUBJECTS) {
+  for (const subject of AI_SUPPORTED_SUBJECTS) {
     const candidates = [subject, ...(SUBJECT_RULES[subject]?.aliases || [])];
     if (candidates.some((candidate) => lookupKey(candidate) === target)) return subject;
   }
@@ -126,7 +169,7 @@ function resolveAiSubject(taxonomy, input = {}) {
   let bestCanonical = null;
   let bestScore = 0;
   let tied = false;
-  for (const canonical of AI_408_SUBJECTS) {
+  for (const canonical of AI_SUPPORTED_SUBJECTS) {
     const node = taxonomy ? findTaxonomySubject(taxonomy, canonical) : null;
     if (taxonomy && !node) continue;
     const keywords = SUBJECT_RULES[canonical]?.keywords || [];
@@ -205,6 +248,7 @@ function pruneUnknownAiSubjects(taxonomy) {
 
 module.exports = {
   AI_408_SUBJECTS,
+  AI_SUPPORTED_SUBJECTS,
   AI_FALLBACK_SUBJECT,
   canonicalAiSubject,
   filterTaxonomyForAi,

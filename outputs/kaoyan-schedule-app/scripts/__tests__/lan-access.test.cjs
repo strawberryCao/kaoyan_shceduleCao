@@ -91,6 +91,14 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-lan-access-'));
   const assistantRoot = path.join(tempRoot, 'assistant');
   const notesRoot = path.join(tempRoot, 'notes');
+  fs.mkdirSync(assistantRoot, { recursive: true });
+  fs.writeFileSync(path.join(assistantRoot, 'ai-providers.json'), JSON.stringify({
+    providers: {
+      gemini: { apiKey: 'lan-test-secret-key', model: 'gemini-test-model' },
+    },
+    routing: { timeoutMs: 12_345 },
+    extensionField: { preserve: true },
+  }, null, 2));
   const port = await reservePort();
   const child = spawn(process.execPath, [serverScript], {
     cwd: projectRoot,
@@ -119,6 +127,33 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   const localHealth = await fetch(`${baseUrl}/health`);
   assert.equal(localHealth.status, 200, 'loopback desktop access must keep its existing routes');
 
+  const localAiConfig = await fetch(`${baseUrl}/ai/config`);
+  assert.equal(localAiConfig.status, 200);
+  const initialAiConfig = await localAiConfig.json();
+  assert.ok(initialAiConfig.taskDefinitions.some((task) => task.id === 'note_naming'));
+  assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'note_enrichment').parameters.some((parameter) => parameter.id === 'maxCards'));
+  assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'layoutDirection'));
+  assert.doesNotMatch(JSON.stringify(initialAiConfig), /apiKey/i);
+  assert.doesNotMatch(JSON.stringify(initialAiConfig), /lan-test-secret-key/);
+  const saveAiConfig = await fetch(`${baseUrl}/ai/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tasks: {
+      note_naming: { customInstructions: '命名不超过 12 个字。', temperature: 0.2, options: { titleMaxLength: 12 } },
+      note_enrichment: { options: { maxCards: 1, goodQuestionPolicy: 'explicit_only' } },
+    } }),
+  });
+  assert.equal(saveAiConfig.status, 200);
+  const savedAiConfig = await saveAiConfig.json();
+  assert.equal(savedAiConfig.tasks.note_naming.customInstructions, '命名不超过 12 个字。');
+  assert.equal(savedAiConfig.tasks.note_naming.temperature, 0.2);
+  assert.equal(savedAiConfig.tasks.note_naming.options.titleMaxLength, 12);
+  assert.equal(savedAiConfig.tasks.note_enrichment.options.maxCards, 1);
+  const storedAiConfig = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'ai-providers.json'), 'utf8'));
+  assert.deepEqual(storedAiConfig.tasks, savedAiConfig.tasks);
+  assert.equal(storedAiConfig.providers.gemini.apiKey, 'lan-test-secret-key');
+  assert.deepEqual(storedAiConfig.extensionField, { preserve: true });
+
   const directCanvas = await fetch(`${baseUrl}/canvas-projects`, { headers: proxyHeaders });
   assert.equal(directCanvas.status, 200);
 
@@ -138,10 +173,22 @@ test('LAN access needs no device authentication and exposes canvas plus learning
     version: 1,
     title: 'iPad 手写测试',
     images: [],
-    texts: [],
-    anchors: [],
-    annotations: [],
-    relations: [],
+    texts: [{
+      id: 'text-sync-1', kind: 'text', text: 'Windows 与 iPad 都要同步这段文字',
+      x: 120, y: 160, width: 300, height: 96, fontSize: 18, color: '#403329', z: 2,
+    }],
+    anchors: [
+      { id: 'anchor-text-sync', nodeId: 'text-sync-1', nodeKind: 'text', shape: 'point', x: 1, y: 0.5, width: 0, height: 0, label: '文字' },
+      { id: 'anchor-note-sync', nodeId: 'note-sync-1', nodeKind: 'annotation', shape: 'point', x: 0, y: 0.5, width: 0, height: 0, label: '批注' },
+    ],
+    annotations: [{
+      id: 'note-sync-1', kind: 'annotation', text: '这条批注也必须同步',
+      x: 520, y: 160, width: 280, height: 110, anchorIds: [], relationType: '解释', color: '#eca76d', z: 3,
+    }],
+    relations: [{
+      id: 'arrow-sync-1', kind: 'arrow', fromAnchorId: 'anchor-text-sync', toAnchorId: 'anchor-note-sync',
+      relationType: '我的自定义箭头说明', color: '#a35d30', z: 4,
+    }],
     strokes: [{
       id: 'stroke-1',
       kind: 'ink',
@@ -164,9 +211,31 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   const savePayload = await save.json();
   assert.equal(savePayload.document.syncRevision, 1);
   assert.equal(savePayload.summary.syncRevision, 1);
+  assert.equal(savePayload.document.texts[0].text, 'Windows 与 iPad 都要同步这段文字');
+  assert.equal(savePayload.document.annotations[0].text, '这条批注也必须同步');
+  assert.equal(savePayload.document.relations[0].relationType, '我的自定义箭头说明');
+  assert.equal(savePayload.document.anchors[1].nodeId, 'note-sync-1');
 
   const events = await openCanvasEvents(baseUrl);
   t.after(() => events.close());
+  const activeSelectionPromise = fetch(`${baseUrl}/canvas-projects/active`, {
+    method: 'POST',
+    headers: { ...proxyHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: 'ipad-canvas-001', clientId: 'ipad-client' }),
+  });
+  const [activeSelection, activeSelectionEvent] = await Promise.all([activeSelectionPromise, events.nextCanvasEvent()]);
+  assert.equal(activeSelection.status, 200);
+  const activeSelectionPayload = await activeSelection.json();
+  assert.deepEqual(activeSelectionEvent, activeSelectionPayload.active);
+  assert.equal(activeSelectionEvent.type, 'active');
+  assert.equal(activeSelectionEvent.projectId, 'ipad-canvas-001');
+  assert.equal(activeSelectionEvent.sourceClientId, 'ipad-client');
+  assert.equal(activeSelectionEvent.selectionRevision, 1);
+
+  const reconnectingEvents = await openCanvasEvents(baseUrl);
+  t.after(() => reconnectingEvents.close());
+  assert.deepEqual(await reconnectingEvents.nextCanvasEvent(), activeSelectionEvent, 'new devices must receive the current canvas immediately');
+
   const liveStroke = {
     id: 'stroke_live_1',
     kind: 'ink',
@@ -260,6 +329,10 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   const currentPayload = await current.json();
   assert.equal(currentPayload.document.title, 'desktop update');
   assert.equal(currentPayload.document.syncRevision, 2);
+  assert.deepEqual(currentPayload.document.texts, savePayload.document.texts);
+  assert.deepEqual(currentPayload.document.annotations, savePayload.document.annotations);
+  assert.deepEqual(currentPayload.document.anchors, savePayload.document.anchors);
+  assert.deepEqual(currentPayload.document.relations, savePayload.document.relations);
 
   const list = await fetch(`${baseUrl}/canvas-projects`, { headers: proxyHeaders });
   assert.equal(list.status, 200);
@@ -415,6 +488,14 @@ test('LAN access needs no device authentication and exposes canvas plus learning
 
   const blockedHealth = await fetch(`${baseUrl}/health`, { headers: proxyHeaders });
   assert.equal(blockedHealth.status, 403);
+  const blockedAiConfig = await fetch(`${baseUrl}/ai/config`, { headers: proxyHeaders });
+  assert.equal(blockedAiConfig.status, 403);
+  const blockedAiConfigSave = await fetch(`${baseUrl}/ai/config`, {
+    method: 'PUT',
+    headers: { ...proxyHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tasks: {} }),
+  });
+  assert.equal(blockedAiConfigSave.status, 403);
   const blockedOrganizer = await fetch(`${baseUrl}/organizer/run`, {
     method: 'POST',
     headers: proxyHeaders,
@@ -426,9 +507,9 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.equal(learningQuerySmuggling.status, 403);
   const noteFileQuerySmuggling = await fetch(`${baseUrl}/note-file?path=${encodeURIComponent(noteImagePath)}&extra=1`, { headers: proxyHeaders });
   assert.equal(noteFileQuerySmuggling.status, 403);
-  const viteConfig = fs.readFileSync(path.join(projectRoot, 'vite.config.mjs'), 'utf8');
-  assert.match(viteConfig, /api\/learning-data/);
-  assert.match(viteConfig, /api\/note-file/);
-  assert.match(viteConfig, /api\/learning-data\/day/);
-  assert.match(viteConfig, /api\/learning-data\/manual-records/);
+  const gatewayPolicy = fs.readFileSync(path.join(projectRoot, 'scripts', 'lan-gateway-policy.cjs'), 'utf8');
+  assert.match(gatewayPolicy, /api\/learning-data/);
+  assert.match(gatewayPolicy, /api\/note-file/);
+  assert.match(gatewayPolicy, /api\/learning-data\/day/);
+  assert.match(gatewayPolicy, /api\/learning-data\/manual-records/);
 });
