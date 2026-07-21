@@ -59,7 +59,9 @@
 
   function normalizeFormulaSource(value) {
     return value
+      .replace(/^`+|`+$/g, '')
       .replace(/＼/g, '\\')
+      .replace(/\\\\(?=[A-Za-z])/g, '\\')
       .replace(/\\dfrac\b/g, '\\frac')
       .replace(/\\tfrac\b/g, '\\frac')
       .replace(/(?<![A-Za-z0-9}])([0-9]+)_([A-Za-z](?:\{[^{}]+\}|[A-Za-z0-9])*)/g, '\\frac{$1}{$2}')
