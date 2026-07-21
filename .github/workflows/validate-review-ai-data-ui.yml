@@ -8,6 +8,10 @@ on:
       - .github/scripts/apply-review-ai-data.py
       - .github/scripts/apply-review-ai-frontend.py
       - .github/workflows/validate-review-ai-data-ui.yml
+  pull_request:
+    branches:
+      - fix/learning-detail-title-latex
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
