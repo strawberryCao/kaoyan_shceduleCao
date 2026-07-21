@@ -194,6 +194,25 @@ jobs:
           if count != 1:
               raise SystemExit(f'frame-coalesced wheel zoom regex: expected one match, found {count}')
 
+          text, count = re.subn(
+              r'<span className="cw-zoom-value">',
+              '<span ref={zoomValueRef} className="cw-zoom-value">',
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit(f'live zoom value ref regex: expected one match, found {count}')
+
+          scroll_pattern = re.compile(
+              r"(          onScroll=\{\(event\) => \{\n"
+              r"            documentRef\.current\.viewport\.scrollLeft = event\.currentTarget\.scrollLeft;\n"
+              r"            documentRef\.current\.viewport\.scrollTop = event\.currentTarget\.scrollTop;\n)"
+              r"            draftRevisionRef\.current \+= 1;"
+          )
+          text, count = scroll_pattern.subn(r"\1            scheduleViewportPersistence();", text, count=1)
+          if count != 1:
+              raise SystemExit(f'lightweight scroll persistence regex: expected one match, found {count}')
+
           path.write_text(text, encoding='utf-8')
           PATCH_BLOCKS
 
@@ -210,6 +229,8 @@ jobs:
           for label in (
               "'lightweight viewport restore'",
               "'frame-coalesced wheel zoom'",
+              "'live zoom value ref'",
+              "'lightweight scroll persistence'",
           ):
               label_position = script.index(label)
               call_start = script.rfind('\nreplace_once(', 0, label_position) + 1
