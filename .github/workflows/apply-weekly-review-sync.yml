@@ -1,0 +1,682 @@
+name: Apply weekly review PDF sync
+
+on:
+  pull_request:
+    branches:
+      - feat/weekly-review-pdf-sync
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-weekly-review-pdf-sync
+  cancel-in-progress: false
+
+jobs:
+  patch-build-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/weekly-review-pdf-sync
+          fetch-depth: 0
+
+      - name: Apply narrowly scoped review integration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('outputs/kaoyan-schedule-app')
+
+          def load(path):
+              p = root / path
+              return p, p.read_text(encoding='utf-8').replace('\r\n', '\n')
+
+          def save(p, text):
+              p.write_text(text, encoding='utf-8')
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              return text.replace(old, new, 1)
+
+          # AI router task profile, parameters, task definition and string/path normalization.
+          p, text = load('scripts/ai-router.cjs')
+          text = replace_once(text,
+              "  canvas_organization: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),\n  custom: Object.freeze({ difficulty: 'medium', capabilities: ['text'] }),\n",
+              "  canvas_organization: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),\n  weekly_review_pdf: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),\n  custom: Object.freeze({ difficulty: 'medium', capabilities: ['text'] }),\n",
+              'weekly task profile')
+          text = replace_once(text,
+              "  custom: Object.freeze([]),\n});\n\nconst AI_TASK_DEFINITIONS",
+              """  weekly_review_pdf: Object.freeze([
+    Object.freeze({ id: 'repository', group: 'GitHub 同步', type: 'text', label: '公开数据仓库', description: '填写 owner/name。只会上传已经确认分类为错题或背诵的内容。', default: 'strawberryCao/Caobijidata', maxLength: 200 }),
+    Object.freeze({ id: 'branch', group: 'GitHub 同步', type: 'text', label: '数据分支', description: '保存结构化数据和最新 PDF 的分支。', default: 'main', maxLength: 100 }),
+    Object.freeze({ id: 'localOutputDir', group: 'GitHub 同步', type: 'path', label: '本地 PDF 保存目录', description: 'Windows 启动后会检查并下载仓库中的最新两份 PDF。', default: '', maxLength: 500 }),
+    Object.freeze({ id: 'autoSync', group: '自动运行', type: 'boolean', label: '启用每周同步', description: '关闭后不会自动上传数据或下载 PDF，手动按钮也会跳过。', default: true }),
+    Object.freeze({ id: 'pushOnStartup', group: '自动运行', type: 'boolean', label: '到期后自动上传', description: '每周到期后，在应用下一次启动或运行检查时补传一次。', default: true }),
+    Object.freeze({ id: 'pullOnStartup', group: '自动运行', type: 'boolean', label: '自动下载最新版', description: '应用启动及定期检查时，只在远程哈希变化后下载。', default: true }),
+    Object.freeze({ id: 'scheduleDay', group: '自动运行', type: 'select', label: '每周整理日', description: '本机到期后上传数据；仓库收到数据后立即重新生成两份 PDF。', default: 'sunday', options: [
+      { value: 'monday', label: '星期一' }, { value: 'tuesday', label: '星期二' }, { value: 'wednesday', label: '星期三' },
+      { value: 'thursday', label: '星期四' }, { value: 'friday', label: '星期五' }, { value: 'saturday', label: '星期六' }, { value: 'sunday', label: '星期日' },
+    ] }),
+    Object.freeze({ id: 'scheduleHour', group: '自动运行', type: 'number', label: '运行小时', description: '按中国标准时间设置，范围 0–23。', default: 21, min: 0, max: 23, step: 1, unit: '时' }),
+    Object.freeze({ id: 'mergeSameQuestion', group: '严格整理', type: 'boolean', label: '合并同一道题的不同材料', description: '仅高度确定是同一道题的原题、错误过程、订正或重复截图时合并。', default: true }),
+    Object.freeze({ id: 'groupSimilarTopics', group: '严格整理', type: 'boolean', label: '相似题放入同一专题', description: '不同题仍保持独立，只按相同知识点或错误模式相邻编排。', default: true }),
+    Object.freeze({ id: 'maxGroupSize', group: '严格整理', type: 'number', label: '单个专题最多来源', description: '防止 AI 把过多题目塞进一个大组。', default: 8, min: 1, max: 20, step: 1, unit: '条' }),
+    Object.freeze({ id: 'includeOriginalImages', group: 'PDF 排版', type: 'boolean', label: '保留原始图片', description: '关闭后 PDF 只排版已有标题、备注和错因，不显示原图。', default: true }),
+  ]),
+  custom: Object.freeze([]),
+});
+
+const AI_TASK_DEFINITIONS""",
+              'weekly task parameters')
+          text = replace_once(text,
+              """  flashcard_generation: Object.freeze({
+    label: '独立卡片生成',
+    description: '供独立卡片生成流程使用；当前卡片由“笔记整理与分类”一并生成。',
+    active: false,
+  }),
+  custom: Object.freeze({
+""",
+              """  flashcard_generation: Object.freeze({
+    label: '独立卡片生成',
+    description: '供独立卡片生成流程使用；当前卡片由“笔记整理与分类”一并生成。',
+    active: false,
+  }),
+  weekly_review_pdf: Object.freeze({
+    label: '综合复习 PDF',
+    description: '每周只同步已确认的错题和背诵内容到公开 GitHub 仓库，并维护两份综合 PDF。',
+    active: true,
+    defaultTimeoutMs: 90_000,
+  }),
+  custom: Object.freeze({
+""",
+              'weekly task definition')
+          text = replace_once(text,
+              """    if (definition.type === 'select') {
+      const selected = cleanString(input);
+      if (definition.options.some((option) => option.value === selected)) result[definition.id] = selected;
+    }
+""",
+              """    if (definition.type === 'text' || definition.type === 'path') {
+      const selected = cleanString(input).slice(0, Number(definition.maxLength) || 500);
+      if (selected) result[definition.id] = selected;
+      continue;
+    }
+    if (definition.type === 'select') {
+      const selected = cleanString(input);
+      if (definition.options.some((option) => option.value === selected)) result[definition.id] = selected;
+    }
+""",
+              'text path option normalization')
+          save(p, text)
+
+          # Client configuration types and review actions.
+          p, text = load('src/utils/aiConfig.ts')
+          text = replace_once(text,
+              "  type: 'boolean' | 'number' | 'select';\n",
+              "  type: 'boolean' | 'number' | 'select' | 'text' | 'path';\n",
+              'parameter type union')
+          text = replace_once(text,
+              "  unit?: string;\n  options?: Array<{ value: string; label: string }>;\n",
+              "  unit?: string;\n  maxLength?: number;\n  options?: Array<{ value: string; label: string }>;\n",
+              'parameter max length')
+          text += """
+
+export interface ReviewSyncStatus {
+  ok?: boolean;
+  running?: boolean;
+  updatedAt?: string;
+  lastPushAt?: string;
+  lastPushCount?: number;
+  lastPushResult?: string;
+  lastPullAt?: string;
+  lastPullResult?: string;
+  lastRemoteGeneratedAt?: string;
+  lastError?: string | null;
+  settings?: {
+    enabled?: boolean;
+    repository?: string;
+    branch?: string;
+    outputDirectory?: string;
+  };
+}
+
+async function readReviewResponse<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => null) as (T & { error?: string }) | null;
+  if (!response.ok || !payload) throw new Error(payload?.error || `综合复习同步请求失败（HTTP ${response.status}）`);
+  return payload;
+}
+
+export async function fetchReviewSyncStatus(): Promise<ReviewSyncStatus> {
+  return readReviewResponse<ReviewSyncStatus>(await fetch(`${NOTE_SERVER_URL}/ai/review/status`, { cache: 'no-store' }));
+}
+
+export async function pushReviewData(): Promise<{ ok: boolean; changed?: boolean; count?: number; skipped?: boolean; reason?: string }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/push`, { method: 'POST' }));
+}
+
+export async function pullReviewPdfs(): Promise<{ ok: boolean; downloaded?: number; outputDirectory?: string; skipped?: boolean; reason?: string }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/pull`, { method: 'POST' }));
+}
+
+export async function selectReviewOutputDirectory(initialPath = ''): Promise<{ ok: boolean; path: string; cancelled?: boolean }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/select-directory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initialPath }),
+  }));
+}
+"""
+          save(p, text)
+
+          # Local server integration.
+          p, text = load('scripts/note-server.cjs')
+          text = replace_once(text,
+              "const { unlinkFileIfExists } = require('./safe-file-ops.cjs');\n",
+              "const { unlinkFileIfExists } = require('./safe-file-ops.cjs');\nconst { createReviewSyncManager, selectWindowsDirectory } = require('./review-github-sync.cjs');\n",
+              'review helper import')
+          text = replace_once(text,
+              "const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });\nconst canvasProjects = createCanvasDocumentStore({\n",
+              """const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
+const reviewSync = createReviewSyncManager({
+  assistantRoot: ASSISTANT_ROOT,
+  configPath: AI_PROVIDER_CONFIG_PATH,
+  getLearningSnapshot: () => learningData.getSnapshot(),
+});
+const canvasProjects = createCanvasDocumentStore({
+""",
+              'review manager initialization')
+          text = replace_once(text,
+              "function readOrganizerStatus() {\n",
+              """async function handleReviewSyncRoute(req, res, pathname) {
+  if (!pathname.startsWith('/ai/review/')) return false;
+  if (!canControlNoteApp(req)) {
+    sendJson(res, 403, { ok: false, error: '综合复习同步只能在运行服务的 Windows 主机上操作。' });
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/ai/review/status') {
+    sendJson(res, 200, { ok: true, ...reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/push') {
+    const result = await reviewSync.push();
+    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/pull') {
+    const result = await reviewSync.pull();
+    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/select-directory') {
+    const payload = JSON.parse((await readBody(req, 16 * 1024)) || '{}');
+    const selectedPath = await selectWindowsDirectory(payload.initialPath);
+    sendJson(res, 200, { ok: true, path: selectedPath, cancelled: !selectedPath });
+    return true;
+  }
+  return false;
+}
+
+function readOrganizerStatus() {
+""",
+              'review route handler')
+          text = replace_once(text,
+              """    if (await handleCanvasProjectRoute(req, res, pathname)) return;
+    if (await handleLearningDataRoute(req, res, pathname)) return;
+""",
+              """    if (await handleReviewSyncRoute(req, res, pathname)) return;
+    if (await handleCanvasProjectRoute(req, res, pathname)) return;
+    if (await handleLearningDataRoute(req, res, pathname)) return;
+""",
+              'review route dispatch')
+          text = replace_once(text,
+              """        organizerEndpoint: '/organizer/status',
+        organizer: readOrganizerStatus(),
+        aiRouter: currentRouter ? currentRouter.getStatus() : { providers: [], error: aiRouterInitError },
+""",
+              """        organizerEndpoint: '/organizer/status',
+        organizer: readOrganizerStatus(),
+        reviewSyncEndpoint: '/ai/review/status',
+        reviewSync: reviewSync.status(),
+        aiRouter: currentRouter ? currentRouter.getStatus() : { providers: [], error: aiRouterInitError },
+""",
+              'review health status')
+          text = replace_once(text,
+              "server.listen(PORT, '127.0.0.1', () => {\n  console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);\n",
+              "server.listen(PORT, '127.0.0.1', () => {\n  reviewSync.start();\n  console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);\n",
+              'review sync startup')
+          text = replace_once(text,
+              "  console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);\n",
+              "  console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);\n  console.log(`Review sync status: http://127.0.0.1:${PORT}/ai/review/status`);\n",
+              'review sync startup log')
+          save(p, text)
+
+          # AI config page controls.
+          p, text = load('src/components/AiConfigPage.tsx')
+          text = replace_once(text,
+              """  CircleGauge,
+  LoaderCircle,
+  Plus,
+""",
+              """  CircleGauge,
+  Download,
+  FolderOpen,
+  LoaderCircle,
+  Plus,
+  RefreshCcw,
+""",
+              'review icons part one')
+          text = replace_once(text,
+              """  Trash2,
+  WandSparkles,
+""",
+              """  Trash2,
+  UploadCloud,
+  WandSparkles,
+""",
+              'review icons part two')
+          text = replace_once(text,
+              """  fetchAiConfiguration,
+  saveAiConfiguration,
+  type AiConfigurationSnapshot,
+""",
+              """  fetchAiConfiguration,
+  fetchReviewSyncStatus,
+  pullReviewPdfs,
+  pushReviewData,
+  saveAiConfiguration,
+  selectReviewOutputDirectory,
+  type AiConfigurationSnapshot,
+  type ReviewSyncStatus,
+""",
+              'review API imports')
+          text = replace_once(text,
+              "  canvas_organization: '例如：同一道题的原题、草稿、订正按从左到右排列；不同题目上下分组。',\n",
+              "  canvas_organization: '例如：同一道题的原题、草稿、订正按从左到右排列；不同题目上下分组。',\n  weekly_review_pdf: '只能分组和排序；禁止补充答案、知识讲解、例题、口诀或额外总结。',\n",
+              'weekly instruction example')
+          text = replace_once(text,
+              """  const [error, setError] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
+""",
+              """  const [error, setError] = useState('');
+  const [savedMessage, setSavedMessage] = useState('');
+  const [reviewStatus, setReviewStatus] = useState<ReviewSyncStatus | null>(null);
+  const [reviewAction, setReviewAction] = useState<'push' | 'pull' | 'directory' | 'refresh' | ''>('');
+""",
+              'review page state')
+          text = replace_once(text,
+              """  }, []);
+
+  const selectedTask = snapshot?.taskDefinitions.find((task) => task.id === selectedTaskId) || null;
+""",
+              """  }, []);
+
+  useEffect(() => {
+    if (selectedTaskId !== 'weekly_review_pdf') return undefined;
+    let cancelled = false;
+    void fetchReviewSyncStatus()
+      .then((next) => { if (!cancelled) setReviewStatus(next); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId, savedMessage]);
+
+  const selectedTask = snapshot?.taskDefinitions.find((task) => task.id === selectedTaskId) || null;
+""",
+              'review status effect')
+          text = replace_once(text,
+              """  const handleProviderChange = (providerId: string) => {
+    if (!providerId) updateTask({}, ['providerId', 'modelId']);
+    else updateTask({ providerId }, ['modelId']);
+  };
+""",
+              """  const handleProviderChange = (providerId: string) => {
+    if (!providerId) updateTask({}, ['providerId', 'modelId']);
+    else updateTask({ providerId }, ['modelId']);
+  };
+
+  const chooseReviewDirectory = async (parameter: AiTaskParameterDefinition) => {
+    setReviewAction('directory');
+    setError('');
+    try {
+      const result = await selectReviewOutputDirectory(String(parameterValue(parameter) || ''));
+      if (result.path) updateTaskParameter(parameter, result.path);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setReviewAction('');
+    }
+  };
+
+  const runReviewAction = async (action: 'push' | 'pull' | 'refresh') => {
+    setReviewAction(action);
+    setError('');
+    setSavedMessage('');
+    try {
+      if (action === 'push') {
+        const result = await pushReviewData();
+        setSavedMessage(result.skipped ? result.reason || '本次同步已跳过。' : `已同步 ${result.count ?? 0} 条已确认内容${result.changed ? '并推送到 GitHub' : '；仓库内容没有变化'}。`);
+      } else if (action === 'pull') {
+        const result = await pullReviewPdfs();
+        setSavedMessage(result.skipped ? result.reason || '本次下载已跳过。' : `已检查最新 PDF，下载 ${result.downloaded ?? 0} 个文件。`);
+      }
+      setReviewStatus(await fetchReviewSyncStatus());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setReviewAction('');
+    }
+  };
+""",
+              'review page actions')
+          old_parameter = """                       return (
+                         <label className="ai-config-field" key={parameter.id}>
+                           <span>{parameter.label}</span>
+                           <small>{parameter.description}</small>
+                           {parameter.type === 'select' ? (
+                             <select value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)}>
+                               {(parameter.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                             </select>
+                           ) : (
+                             <span className="ai-number-with-unit">
+                               <input
+                                 inputMode="decimal"
+                                 max={parameter.max}
+                                 min={parameter.min}
+                                 step={parameter.step}
+                                 type="number"
+                                 value={Number(value)}
+                                 onChange={(event) => updateTaskParameter(parameter, Number(event.target.value))}
+                               />
+                               {parameter.unit && <em>{parameter.unit}</em>}
+                             </span>
+                           )}
+                         </label>
+                       );
+"""
+          new_parameter = """                       if (parameter.type === 'path') {
+                         return (
+                           <div className="ai-config-field ai-path-parameter" key={parameter.id}>
+                             <span>{parameter.label}</span>
+                             <small>{parameter.description}</small>
+                             <div>
+                               <input maxLength={parameter.maxLength} type="text" value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)} />
+                               <button disabled={reviewAction === 'directory'} type="button" onClick={() => void chooseReviewDirectory(parameter)}>
+                                 {reviewAction === 'directory' ? <LoaderCircle className="is-spinning" size={15} /> : <FolderOpen size={15} />} 选择目录
+                               </button>
+                             </div>
+                           </div>
+                         );
+                       }
+                       return (
+                         <label className="ai-config-field" key={parameter.id}>
+                           <span>{parameter.label}</span>
+                           <small>{parameter.description}</small>
+                           {parameter.type === 'select' ? (
+                             <select value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)}>
+                               {(parameter.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                             </select>
+                           ) : parameter.type === 'text' ? (
+                             <input maxLength={parameter.maxLength} type="text" value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)} />
+                           ) : (
+                             <span className="ai-number-with-unit">
+                               <input
+                                 inputMode="decimal"
+                                 max={parameter.max}
+                                 min={parameter.min}
+                                 step={parameter.step}
+                                 type="number"
+                                 value={Number(value)}
+                                 onChange={(event) => updateTaskParameter(parameter, Number(event.target.value))}
+                               />
+                               {parameter.unit && <em>{parameter.unit}</em>}
+                             </span>
+                           )}
+                         </label>
+                       );
+"""
+          text = replace_once(text, old_parameter, new_parameter, 'path and text parameter rendering')
+          text = replace_once(text,
+              """            </section>
+
+            {selectedTaskId === 'note_naming' && (
+""",
+              """            </section>
+
+            {selectedTaskId === 'weekly_review_pdf' && (
+              <section className="ai-review-sync-panel">
+                <header>
+                  <div>
+                    <span><UploadCloud size={16} /> GitHub 综合复习流水线</span>
+                    <small>仓库是公开的。只上传已确认的错题和背诵；AI 只能分组，不生成额外正文。</small>
+                  </div>
+                  <button disabled={reviewAction !== ''} type="button" onClick={() => void runReviewAction('refresh')}>
+                    {reviewAction === 'refresh' ? <LoaderCircle className="is-spinning" size={15} /> : <RefreshCcw size={15} />} 刷新状态
+                  </button>
+                </header>
+                <div className="ai-review-public-warning">
+                  <AlertTriangle size={17} />
+                  <span>题目截图、手写过程和备注会进入公开仓库。请不要同步含姓名、账号、电话或不希望公开的信息。</span>
+                </div>
+                <div className="ai-review-status-grid">
+                  <div><small>仓库</small><strong>{reviewStatus?.settings?.repository || String(settings.options?.repository || 'strawberryCao/Caobijidata')}</strong></div>
+                  <div><small>本地目录</small><strong>{reviewStatus?.settings?.outputDirectory || String(settings.options?.localOutputDir || '桌面\\考研复习资料')}</strong></div>
+                  <div><small>最近上传</small><strong>{reviewStatus?.lastPushAt ? new Date(reviewStatus.lastPushAt).toLocaleString() : '尚未上传'}</strong></div>
+                  <div><small>最近 PDF</small><strong>{reviewStatus?.lastRemoteGeneratedAt ? new Date(reviewStatus.lastRemoteGeneratedAt).toLocaleString() : '尚未下载'}</strong></div>
+                </div>
+                {reviewStatus?.lastError && <p className="ai-review-last-error">{reviewStatus.lastError}</p>}
+                <div className="ai-review-actions">
+                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('push')}>
+                    {reviewAction === 'push' ? <LoaderCircle className="is-spinning" size={16} /> : <UploadCloud size={16} />} 立即同步已确认内容
+                  </button>
+                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('pull')}>
+                    {reviewAction === 'pull' ? <LoaderCircle className="is-spinning" size={16} /> : <Download size={16} />} 下载最新两份 PDF
+                  </button>
+                  {dirty && <small>先保存当前 AI 配置，再执行同步或下载。</small>}
+                </div>
+              </section>
+            )}
+
+            {selectedTaskId === 'note_naming' && (
+""",
+              'review sync task panel')
+          save(p, text)
+
+          # CSS additions.
+          p, text = load('src/ai-config.css')
+          text += """
+
+.ai-path-parameter > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.ai-path-parameter button,
+.ai-review-sync-panel button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid #d7dce1;
+  border-radius: 8px;
+  background: #fff;
+  color: #4c5966;
+  padding: 8px 11px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ai-path-parameter button:disabled,
+.ai-review-sync-panel button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.ai-review-sync-panel {
+  display: grid;
+  gap: 13px;
+  margin: 18px 0;
+  border: 1px solid #d8e0e5;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #f8fbfc, #fff);
+  padding: 16px;
+}
+
+.ai-review-sync-panel > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ai-review-sync-panel > header > div {
+  display: grid;
+  gap: 4px;
+}
+
+.ai-review-sync-panel > header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #315f72;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.ai-review-sync-panel > header small,
+.ai-review-actions small {
+  color: #7f8992;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ai-review-public-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: 9px;
+  background: #fff3df;
+  color: #865b24;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.ai-review-public-warning svg { flex: 0 0 auto; margin-top: 1px; }
+
+.ai-review-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ai-review-status-grid > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 1px solid #e3e7ea;
+  border-radius: 9px;
+  background: #fff;
+  padding: 10px;
+}
+
+.ai-review-status-grid small { color: #87909a; font-size: 9px; }
+.ai-review-status-grid strong { overflow-wrap: anywhere; color: #46535f; font-size: 11px; }
+
+.ai-review-last-error {
+  margin: 0;
+  border-radius: 8px;
+  background: #fff0ed;
+  color: #a0483e;
+  padding: 9px 11px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ai-review-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-review-actions button:first-child {
+  border-color: #315f72;
+  background: #315f72;
+  color: #fff;
+}
+
+@media (max-width: 760px) {
+  .ai-review-sync-panel > header { align-items: stretch; flex-direction: column; }
+  .ai-review-status-grid { grid-template-columns: minmax(0, 1fr); }
+  .ai-path-parameter > div { grid-template-columns: minmax(0, 1fr); }
+}
+"""
+          save(p, text)
+
+          # Convenience scripts only; no package dependencies changed.
+          p, text = load('package.json')
+          text = replace_once(text,
+              "    \"notes:index:preview\": \"node scripts/rebuild-note-index.cjs\",\n",
+              "    \"notes:index:preview\": \"node scripts/rebuild-note-index.cjs\",\n    \"review:push\": \"node scripts/review-github-sync.cjs push\",\n    \"review:pull\": \"node scripts/review-github-sync.cjs pull\",\n    \"review:status\": \"node scripts/review-github-sync.cjs status\",\n",
+              'review package scripts')
+          save(p, text)
+          PY
+
+      - name: Syntax checks
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node --check scripts/ai-router.cjs
+          node --check scripts/review-github-sync.cjs
+          node --check scripts/note-server.cjs
+
+      - name: Validate confirmed-only exporter
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const os = require('os');
+          const path = require('path');
+          const { exportReviewData, currentScheduleKey } = require('./scripts/review-github-sync.cjs');
+          const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-export-'));
+          fs.mkdirSync(path.join(root, 'data'), { recursive: true });
+          fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+          const snapshot = { revision: 7, days: { '2026-07-21': { autoNotes: [
+            { noteUid: 'm1', noteType: 'mistake', organizationStatus: 'confirmed', title: '错题', subject: '数学', filePath: '' },
+            { noteUid: 'r1', noteType: 'memory', organizationStatus: 'confirmed', title: '背诵', subject: '408', filePath: '' },
+            { noteUid: 'x1', noteType: 'mistake', organizationStatus: 'pending', title: '不能导出', subject: '数学', filePath: '' },
+            { noteUid: 'x2', noteType: 'note', organizationStatus: 'confirmed', title: '不能导出', subject: '数学', filePath: '' },
+          ] } } };
+          const settings = { scheduleDay: 'sunday', scheduleHour: 21, mergeSameQuestion: true, groupSimilarTopics: true, maxGroupSize: 8, includeOriginalImages: true, aiEnabled: true };
+          const notes = exportReviewData({ learningSnapshot: snapshot, repositoryRoot: root, settings, aiConfig: { providerId: '', modelId: '', baseUrl: '' } });
+          if (notes.length !== 2 || notes.some((note) => !['m1', 'r1'].includes(note.id))) throw new Error('Exporter included an unconfirmed or unrelated note');
+          if (!/^\d{4}-\d{2}-\d{2}@21$/.test(currentScheduleKey({ scheduleDay: 'sunday', scheduleHour: 21 }))) throw new Error('Invalid weekly schedule key');
+          fs.rmSync(root, { recursive: true, force: true });
+          NODE
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Type-check and build
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit validated feature and remove one-time workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-weekly-review-sync.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/kaoyan-schedule-app .github/workflows/apply-weekly-review-sync.yml
+          git commit -m "feat: sync confirmed review notes and PDFs via GitHub"
+          git push origin HEAD:feat/weekly-review-pdf-sync
