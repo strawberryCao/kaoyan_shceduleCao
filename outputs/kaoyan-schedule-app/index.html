@@ -8,7 +8,19 @@
       content="考研学习课表 App，支持 30 天计划、完成统计、备注、导入导出。"
     />
     <link rel="stylesheet" href="/learning-math.css" />
-    <script defer src="/learning-math.js"></script>
+    <script>
+      (() => {
+        const params = new URLSearchParams(window.location.search);
+        const isLearningCenter = params.get('panel') === 'learning'
+          && !['wallpaper', 'console', 'notes', 'noteApp', 'hub', 'aiConfig']
+            .some((key) => params.get(key) === '1');
+        if (!isLearningCenter) return;
+        const script = document.createElement('script');
+        script.defer = true;
+        script.src = '/learning-math.js';
+        document.head.appendChild(script);
+      })();
+    </script>
     <title>考研学习课表</title>
   </head>
   <body>
