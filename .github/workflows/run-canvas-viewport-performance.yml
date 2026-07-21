@@ -1,0 +1,61 @@
+name: Run canvas viewport performance patch
+
+on:
+  push:
+    branches:
+      - fix/learning-detail-title-latex
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canvas-viewport-performance-runner
+  cancel-in-progress: false
+
+jobs:
+  patch-build-and-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+
+      - name: Extract and run validated patch script
+        shell: bash
+        run: |
+          python3 - <<'EXTRACT'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/apply-canvas-viewport-performance.yml').read_text(encoding='utf-8')
+          start_marker = "          python3 - <<'PY'\n"
+          end_marker = "          PY\n"
+          start = workflow.index(start_marker) + len(start_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          Path('/tmp/apply_canvas_viewport_performance.py').write_text(script, encoding='utf-8')
+          EXTRACT
+          python3 /tmp/apply_canvas_viewport_performance.py
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Type-check and build
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit validated optimization and remove temporary runner
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-canvas-viewport-performance.yml
+          rm -f .github/workflows/run-canvas-viewport-performance.yml
+          rm -f .github/canvas-viewport-performance.trigger
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/kaoyan-schedule-app/src/components/CanvasWorkspace.tsx .github
+          git commit -m "perf: smooth canvas viewport interactions"
+          git push origin HEAD:fix/learning-detail-title-latex
