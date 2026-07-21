@@ -134,6 +134,7 @@ function getAiConfigurationSnapshot() {
       defaults: {
         difficulty: TASK_PROFILES[id]?.difficulty || TASK_PROFILES.custom.difficulty,
         capabilities: [...(TASK_PROFILES[id]?.capabilities || TASK_PROFILES.custom.capabilities)],
+        timeoutMs: Number(definition.defaultTimeoutMs) || loaded.routing.timeoutMs,
       },
       parameters: (TASK_PARAMETER_DEFINITIONS[id] || []).map((parameter) => ({
         ...parameter,
@@ -1556,9 +1557,18 @@ function queueCanvasOrganization(projectId, previewDataUrl, sourceClientId) {
       const attemptText = activeAttempt
         ? `${activeAttempt.provider}/${activeAttempt.model}`
         : 'AI 模型';
+      const timeoutText = activeAttempt
+        ? `；单次最多等待 ${Math.round(activeAttempt.timeoutMs / 1000)} 秒，${activeAttempt.allowFallback === false ? '超时后结束且不切换模型' : '超时会自动切换模型'}`
+        : '';
+      const budgetText = Number.isFinite(activeAttempt?.maxTokens)
+        ? `；完成 Token 预算 ${activeAttempt.maxTokens}`
+        : '';
+      const reasoningText = activeAttempt?.reasoningMode
+        ? `；${activeAttempt.reasoningMode === 'fast' ? '快速推理' : activeAttempt.reasoningMode === 'balanced' ? '均衡推理' : '深度推理'}`
+        : '';
       updateCanvasOrganizationJob(projectId, {
         progress: Math.min(76, 40 + Math.floor(elapsedSeconds / 4)),
-        message: `${attemptText} 正在分析画布（已用 ${elapsedSeconds} 秒）；单次最多等待 90 秒，超时会自动切换模型。`,
+        message: `${attemptText} 正在分析画布（已用 ${elapsedSeconds} 秒）${timeoutText}${budgetText}${reasoningText}。`,
       });
     }, 4_000);
     updateCanvasOrganizationJob(projectId, {
@@ -1578,10 +1588,10 @@ function queueCanvasOrganization(projectId, previewDataUrl, sourceClientId) {
         router,
         onAttempt(attempt) {
           activeAttempt = attempt;
-          const phaseText = attempt.phase === 'json_repair' ? '修复返回格式' : '分析画布';
+          const phaseText = attempt.phase === 'repair' ? '修复返回格式' : '分析画布';
           updateCanvasOrganizationJob(projectId, {
             progress: Math.max(40, canvasOrganizationJobs.get(projectId)?.progress || 40),
-            message: `${attempt.provider}/${attempt.model} 正在${phaseText}；单次最多等待 ${Math.round(attempt.timeoutMs / 1000)} 秒，超时会自动切换模型。`,
+            message: `${attempt.provider}/${attempt.model} 正在${phaseText}；单次最多等待 ${Math.round(attempt.timeoutMs / 1000)} 秒，${attempt.allowFallback === false ? '超时后结束且不切换模型' : '超时会自动切换模型'}${Number.isFinite(attempt.maxTokens) ? `；完成 Token 预算 ${attempt.maxTokens}` : ''}${attempt.reasoningMode ? `；${attempt.reasoningMode === 'fast' ? '快速推理' : attempt.reasoningMode === 'balanced' ? '均衡推理' : '深度推理'}` : ''}。`,
             provider: attempt.provider,
             model: attempt.model,
           });

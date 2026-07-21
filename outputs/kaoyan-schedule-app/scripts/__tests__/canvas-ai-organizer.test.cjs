@@ -5,6 +5,7 @@ const {
   analyzeCanvasOrganization,
   applyCanvasOrganization,
   compactCanvas,
+  normalizeCanvasOrganizationResult,
 } = require('../canvas-ai-organizer.cjs');
 
 function makeDocument() {
@@ -64,6 +65,22 @@ test('honors the canvas task resize policy in program post-processing', () => {
   assert.equal(result.document.images[0].height, 400);
 });
 
+test('normalizes common model layout variants and synthesizes a missing summary', () => {
+  assert.deepEqual(normalizeCanvasOrganizationResult({
+    nodes: [{ node_id: 'image-a', position: { x: '1550', y: '880' }, size: { width: '640', height: '320' }, z_index: '8', explanation: 'unused' }],
+    extra: 'ignored',
+  }), {
+    summary: '已规划 1 个画布节点的空间布局。',
+    layouts: [{ id: 'image-a', x: 1550, y: 880, width: 640, height: 320, z: 8 }],
+  });
+  assert.deepEqual(normalizeCanvasOrganizationResult({
+    result: { description: '按阅读顺序排列。', layout: [{ id: 'text-a', x: -20, y: 99999 }] },
+  }), {
+    summary: '按阅读顺序排列。',
+    layouts: [{ id: 'text-a', x: 0, y: 3000 }],
+  });
+});
+
 test('routes canvas organization as its own structured high-complexity AI task', async () => {
   let request;
   const result = await analyzeCanvasOrganization({
@@ -71,7 +88,16 @@ test('routes canvas organization as its own structured high-complexity AI task',
     previewDataUrl: 'data:image/png;base64,AAAA',
     router: {
       getTaskOptions() {
-        return { layoutDirection: 'left_to_right', nodeSpacing: 88, maxTokens: 6200, resizeMode: 'none' };
+        return {
+          layoutDirection: 'left_to_right',
+          nodeSpacing: 88,
+          maxTokens: 6200,
+          resizeMode: 'none',
+          networkRetries: 1,
+          jsonRepairRetries: 1,
+          allowStandardVisionFallback: false,
+          tokenBudgetMode: 'fixed',
+        };
       },
       async complete(input) {
         request = input;
@@ -86,10 +112,12 @@ test('routes canvas organization as its own structured high-complexity AI task',
   assert.equal(request.task, 'canvas_organization');
   assert.equal(request.messages[0].content[1].type, 'image_url');
   assert.equal(request.responseSchema.properties.layouts.maxItems, 500);
-  assert.equal(request.maxTokens, 1800);
+  assert.equal(typeof request.normalizeJson, 'function');
+  assert.equal(request.maxTokens, 6200);
   assert.equal(request.timeoutMs, 90_000);
-  assert.equal(request.networkRetries, 0);
-  assert.equal(request.jsonRepairRetries, 0);
+  assert.equal(request.networkRetries, 1);
+  assert.equal(request.jsonRepairRetries, 1);
+  assert.deepEqual(request.requiredCapabilities, ['longContext']);
   assert.match(request.messages[0].content[0].text, /从左到右/);
   assert.match(request.messages[0].content[0].text, /88 像素/);
   assert.equal(result.provider, 'kimi');

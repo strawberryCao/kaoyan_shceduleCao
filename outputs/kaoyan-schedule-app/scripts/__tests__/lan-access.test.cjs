@@ -133,6 +133,9 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.ok(initialAiConfig.taskDefinitions.some((task) => task.id === 'note_naming'));
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'note_enrichment').parameters.some((parameter) => parameter.id === 'maxCards'));
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'layoutDirection'));
+  assert.equal(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').defaults.timeoutMs, 90_000);
+  assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'networkRetries'));
+  assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'allowStandardVisionFallback'));
   assert.doesNotMatch(JSON.stringify(initialAiConfig), /apiKey/i);
   assert.doesNotMatch(JSON.stringify(initialAiConfig), /lan-test-secret-key/);
   const saveAiConfig = await fetch(`${baseUrl}/ai/config`, {

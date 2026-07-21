@@ -6,6 +6,7 @@ const {
   extractJsonValue,
   loadAiProviderConfigs,
   normalizeTaskConfigurations,
+  resolveTaskOptions,
   validateJsonAgainstSchema,
 } = require('../ai-router.cjs');
 
@@ -369,6 +370,72 @@ test('omits incompatible temperature and uses completion tokens for Kimi K3', as
   assert.equal(requestBody.max_completion_tokens, 256);
 });
 
+test('maps the canvas reasoning mode to official Kimi model parameters', async () => {
+  const bodies = [];
+  const fetchImpl = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return fakeResponse(200, '{"ok":true}');
+  };
+  const k26 = makeRouter(
+    [provider('kimi', { model: 'kimi-k2.6', costTier: 3, qualityTier: 3 })],
+    fetchImpl,
+    { tasks: { canvas_organization: { providerId: 'kimi', modelId: 'kimi-k2.6', fallback: false, options: { reasoningMode: 'fast' } } } },
+  );
+  await k26.complete({
+    task: 'canvas_organization',
+    messages: [{ role: 'user', content: 'layout' }],
+    json: true,
+  });
+  assert.deepEqual(bodies[0].thinking, { type: 'disabled' });
+
+  const k3 = makeRouter(
+    [provider('kimi', { model: 'kimi-k3', costTier: 3, qualityTier: 3 })],
+    fetchImpl,
+    { tasks: { canvas_organization: { providerId: 'kimi', modelId: 'kimi-k3', fallback: false, options: { reasoningMode: 'balanced' } } } },
+  );
+  await k3.complete({
+    task: 'canvas_organization',
+    messages: [{ role: 'user', content: 'layout' }],
+    json: true,
+  });
+  assert.equal(bodies[1].reasoning_effort, 'high');
+});
+
+test('reports when Kimi reasoning exhausts the completion budget before final content', async () => {
+  const router = makeRouter(
+    [provider('kimi', { model: 'kimi-k2.6', costTier: 3, qualityTier: 3 })],
+    async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          choices: [{ message: { content: '', reasoning_content: 'long reasoning' }, finish_reason: 'length' }],
+          usage: { completion_tokens: 2000, completion_tokens_details: { reasoning_tokens: 1980 } },
+        };
+      },
+    }),
+    { routing: { networkRetries: 0 } },
+  );
+  await assert.rejects(router.complete({
+    task: 'custom',
+    messages: [{ role: 'user', content: 'organize' }],
+    maxTokens: 2000,
+  }), (error) => {
+    assert.match(error.message, /完成 Token 2000\/2000/);
+    assert.match(error.message, /推理 Token 1980/);
+    assert.match(error.message, /耗尽了完成 Token 预算/);
+    assert.equal(error.attempts[0].code, 'AI_TOKEN_BUDGET_EXHAUSTED');
+    return true;
+  });
+});
+
+test('uses a fixed canvas completion budget by default for reasoning models', () => {
+  const options = resolveTaskOptions('canvas_organization', {});
+  assert.equal(options.tokenBudgetMode, 'fixed');
+  assert.equal(options.maxTokens, 4096);
+  assert.equal(options.reasoningMode, 'fast');
+});
+
 test('includes the provider error detail in the final router error', async () => {
   const router = makeRouter(
     [provider('kimi', { model: 'kimi-k3' })],
@@ -650,6 +717,34 @@ test('prunes harmless unknown fields before rejecting a structured response', as
   assert.equal(calls, 1);
 });
 
+test('normalizes a provider JSON result before strict schema validation', async () => {
+  const router = makeRouter(
+    [provider('qwen')],
+    async () => fakeResponse(200, '{"layouts":[{"id":"a","x":"10","y":"20"}]}'),
+  );
+  const result = await router.complete({
+    task: 'custom',
+    messages: [{ role: 'user', content: 'layout' }],
+    normalizeJson(value) {
+      return {
+        summary: value.summary || 'fallback summary',
+        layouts: value.layouts.map((item) => ({ ...item, x: Number(item.x), y: Number(item.y) })),
+      };
+    },
+    responseSchema: {
+      type: 'object',
+      required: ['summary', 'layouts'],
+      additionalProperties: false,
+      properties: {
+        summary: { type: 'string', minLength: 1 },
+        layouts: { type: 'array', minItems: 1, items: { type: 'object', required: ['id', 'x', 'y'], properties: { id: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' } } } },
+      },
+    },
+  });
+  assert.equal(result.json.summary, 'fallback summary');
+  assert.equal(result.json.layouts[0].x, 10);
+});
+
 test('lets a time-sensitive task disable same-model retries and report attempts', async () => {
   let calls = 0;
   const attempts = [];
@@ -672,4 +767,5 @@ test('lets a time-sensitive task disable same-model retries and report attempts'
   assert.equal(attempts.length, 1);
   assert.equal(attempts[0].provider, 'kimi');
   assert.equal(attempts[0].timeoutMs, 90_000);
+  assert.equal(attempts[0].allowFallback, true);
 });

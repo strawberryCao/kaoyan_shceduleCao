@@ -47,6 +47,7 @@ export interface AiTaskDefinition {
   defaults: {
     difficulty: AiTaskDifficulty;
     capabilities: string[];
+    timeoutMs?: number;
   };
   parameters: AiTaskParameterDefinition[];
 }

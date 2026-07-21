@@ -98,6 +98,49 @@ function compactCanvas(document) {
   };
 }
 
+function normalizeCanvasOrganizationResult(value) {
+  let root = value;
+  if (root && typeof root === 'object' && !Array.isArray(root)) {
+    for (const key of ['result', 'data', 'output']) {
+      const candidate = root[key];
+      if (candidate && typeof candidate === 'object'
+        && (Array.isArray(candidate) || candidate.layouts || candidate.layout || candidate.positions || candidate.nodes)) {
+        root = candidate;
+        break;
+      }
+    }
+  }
+  const rawLayouts = Array.isArray(root)
+    ? root
+    : root && typeof root === 'object'
+      ? (root.layouts || root.layout || root.positions || root.nodes)
+      : null;
+  const layouts = (Array.isArray(rawLayouts) ? rawLayouts : []).flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const id = String(item.id ?? item.nodeId ?? item.node_id ?? '').trim().slice(0, 120);
+    const position = item.position && typeof item.position === 'object' ? item.position : {};
+    const x = Number(item.x ?? position.x);
+    const y = Number(item.y ?? position.y);
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y)) return [];
+    const layout = {
+      id,
+      x: clamp(x, 0, WORLD_WIDTH),
+      y: clamp(y, 0, WORLD_HEIGHT),
+    };
+    const width = Number(item.width ?? item.size?.width);
+    const height = Number(item.height ?? item.size?.height);
+    const z = Number(item.z ?? item.zIndex ?? item.z_index);
+    if (Number.isFinite(width)) layout.width = clamp(width, 120, 1800);
+    if (Number.isFinite(height)) layout.height = clamp(height, 58, 1400);
+    if (Number.isFinite(z)) layout.z = Math.round(clamp(z, 1, 100000));
+    return [layout];
+  }).slice(0, 500);
+  const source = root && typeof root === 'object' && !Array.isArray(root) ? root : {};
+  const summary = String(source.summary ?? source.description ?? source.reason ?? '').trim().slice(0, 500)
+    || `已规划 ${layouts.length} 个画布节点的空间布局。`;
+  return { summary, layouts };
+}
+
 function buildCanvasOrganizationPrompt(document, options = {}) {
   const context = compactCanvas(document);
   const direction = {
@@ -128,7 +171,8 @@ function buildCanvasOrganizationPrompt(document, options = {}) {
     options.centerLayout === false ? '4.1 不强制围绕世界中心，可按当前内容所在区域就近整理。' : '4.1 整体布局尽量围绕世界中心。',
     options.avoidHandwriting === false ? '4.2 手写区域可作为普通背景参考，不要求强制避让。' : '4.2 必须避免覆盖 fixedHandwriting 区域。',
     '5. layouts 给出需要整理的每个节点的左上角 x/y，可按需要给 width/height/z。',
-    '6. 只输出严格 JSON，不要 Markdown。',
+    '6. 只输出严格 JSON，不要 Markdown。根对象必须且只能包含 summary 和 layouts；summary 用一句话说明布局思路，layouts 必须是数组。',
+    '7. 输出格式示例：{"summary":"按题目到结论的阅读顺序排列","layouts":[{"id":"必须复制输入节点的原始 id","x":1600,"y":900,"width":600,"height":300,"z":1}]}',
     `画布结构：${JSON.stringify(context)}`,
   ].join('\n');
 }
@@ -140,7 +184,11 @@ async function analyzeCanvasOrganization({ document, previewDataUrl, router, onA
   const configuredMaxTokens = Number(taskOptions.maxTokens) || 4096;
   // A layout response is compact. Bounding completion size prevents reasoning
   // models from occupying the queue for many minutes on a small canvas.
-  const effectiveMaxTokens = Math.min(configuredMaxTokens, Math.max(1800, 1400 + nodeCount * 100));
+  const effectiveMaxTokens = taskOptions.tokenBudgetMode === 'fixed'
+    ? configuredMaxTokens
+    : Math.min(configuredMaxTokens, Math.max(1800, 1400 + nodeCount * 100));
+  const networkRetries = Math.round(Math.min(2, Math.max(0, Number(taskOptions.networkRetries) || 0)));
+  const jsonRepairRetries = Math.round(Math.min(2, Math.max(0, Number(taskOptions.jsonRepairRetries) || 0)));
   const content = [{ type: 'text', text: buildCanvasOrganizationPrompt(document, taskOptions) }];
   if (typeof previewDataUrl === 'string' && previewDataUrl.startsWith('data:image/')) {
     content.push({ type: 'image_url', image_url: { url: previewDataUrl } });
@@ -149,15 +197,18 @@ async function analyzeCanvasOrganization({ document, previewDataUrl, router, onA
     task: 'canvas_organization',
     messages: [{ role: 'user', content }],
     responseSchema: CANVAS_ORGANIZATION_SCHEMA,
+    normalizeJson: normalizeCanvasOrganizationResult,
     timeoutMs: 90_000,
-    networkRetries: 0,
-    jsonRepairRetries: 0,
+    networkRetries,
+    jsonRepairRetries,
+    ...(taskOptions.allowStandardVisionFallback === false ? { requiredCapabilities: ['longContext'] } : {}),
     maxTokens: effectiveMaxTokens,
     onAttempt,
   });
+  const normalized = normalizeCanvasOrganizationResult(response.json);
   return {
-    summary: String(response.json.summary || '').trim().slice(0, 500),
-    layouts: response.json.layouts,
+    summary: normalized.summary,
+    layouts: normalized.layouts,
     provider: response.provider,
     model: response.model,
     taskOptions,
@@ -223,4 +274,5 @@ module.exports = {
   applyCanvasOrganization,
   buildCanvasOrganizationPrompt,
   compactCanvas,
+  normalizeCanvasOrganizationResult,
 };

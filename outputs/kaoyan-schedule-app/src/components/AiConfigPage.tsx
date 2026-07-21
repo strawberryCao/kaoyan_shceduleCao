@@ -513,7 +513,7 @@ export function AiConfigPage() {
                   inputMode="numeric"
                   max="300"
                   min="1"
-                  placeholder={`${Math.round(snapshot.routing.timeoutMs / 1000)}（系统默认）`}
+                  placeholder={`${Math.round((selectedTask.defaults.timeoutMs || snapshot.routing.timeoutMs) / 1000)}（任务默认）`}
                   type="number"
                   value={settings.timeoutMs === undefined ? '' : Math.round(settings.timeoutMs / 1000)}
                   onChange={(event) => event.target.value === ''

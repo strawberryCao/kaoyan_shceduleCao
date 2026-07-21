@@ -124,7 +124,19 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
       { value: 'text_only', label: '仅调整文字与批注' },
       { value: 'all', label: '允许调整全部节点' },
     ] }),
-    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '节点很多时可调高；节点较少时降低可加快返回。', default: 4096, min: 1800, max: 8000, step: 200, unit: 'tokens' }),
+    Object.freeze({ id: 'networkRetries', group: '运行与容错', type: 'number', label: '同模型网络重试次数', description: '建议保持 0，避免慢模型重复占用几分钟；网络偶发抖动时可设为 1。', default: 0, min: 0, max: 2, step: 1, unit: '次' }),
+    Object.freeze({ id: 'jsonRepairRetries', group: '运行与容错', type: 'number', label: '格式修复重试次数', description: '模型返回的布局 JSON 无法解析时，是否让同一模型重新修复格式。', default: 0, min: 0, max: 2, step: 1, unit: '次' }),
+    Object.freeze({ id: 'allowStandardVisionFallback', group: '运行与容错', type: 'boolean', label: '允许普通视觉模型兜底', description: '开启后 Kimi、Gemini 不可用时可尝试通义视觉模型；关闭后只使用支持超长上下文的模型。', default: true }),
+    Object.freeze({ id: 'reasoningMode', group: '运行与容错', type: 'select', label: '推理模式', description: '快速模式关闭 K2.6/K2.5 深度思考，并将 K3 调为低推理；画布布局通常无需长时间深度思考。', default: 'fast', options: [
+      { value: 'fast', label: '快速（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'deep', label: '深度' },
+    ] }),
+    Object.freeze({ id: 'tokenBudgetMode', group: '输出预算', type: 'select', label: 'Token 预算方式', description: '固定模式更适合 Kimi 等推理模型；自适应会按节点数量压缩预算，可能让长推理占满预算。', default: 'fixed', options: [
+      { value: 'fixed', label: '固定使用最大预算（推荐）' },
+      { value: 'adaptive', label: '按画布规模自适应' },
+    ] }),
+    Object.freeze({ id: 'maxTokens', group: '输出预算', type: 'number', label: '最大完成 Token（含推理）', description: 'Kimi K2.6/K3 的思考过程也会占用此预算；预算耗尽时可能出现推理完成但最终 JSON 为空。', default: 4096, min: 1800, max: 16000, step: 200, unit: 'tokens' }),
   ]),
   note_classification: Object.freeze([
     Object.freeze({ id: 'uncertainThreshold', group: '分类策略', type: 'number', label: '不确定分类阈值', description: '低于此置信度才进入待确认；已经可靠分类的不要求确认。', default: 0.58, min: 0, max: 1, step: 0.05 }),
@@ -169,6 +181,7 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     label: 'AI 自动整理画布',
     description: '理解画布图片、文字、批注和关系后，在后台重新规划清晰布局。',
     active: true,
+    defaultTimeoutMs: 90_000,
   }),
   note_classification: Object.freeze({
     label: '独立笔记分类',
@@ -986,10 +999,20 @@ function createAiRouter(options = {}) {
 
   async function requestModel(provider, model, request, messages) {
     const isKimiThinkingModel = provider.id === 'kimi' && /kimi-(?:k3|k2\.(?:5|6))/i.test(model.id);
+    const reasoningMode = ['fast', 'balanced', 'deep'].includes(request.taskOptions?.reasoningMode)
+      ? request.taskOptions.reasoningMode
+      : null;
     const payload = {
       model: model.id,
       messages,
     };
+    if (provider.id === 'kimi' && reasoningMode) {
+      if (/kimi-k2\.(?:5|6)/i.test(model.id)) {
+        payload.thinking = { type: reasoningMode === 'fast' ? 'disabled' : 'enabled' };
+      } else if (/kimi-k3/i.test(model.id)) {
+        payload.reasoning_effort = reasoningMode === 'fast' ? 'low' : reasoningMode === 'balanced' ? 'high' : 'max';
+      }
+    }
     if (!isKimiThinkingModel) {
       payload.temperature = request.temperature ?? (request.responseSchema || request.json ? 0.1 : 0.3);
     }
@@ -1039,9 +1062,24 @@ function createAiRouter(options = {}) {
         cause: error,
       });
     }
-    const text = contentToText(data?.choices?.[0]?.message?.content);
+    const choice = data?.choices?.[0] || {};
+    const text = contentToText(choice?.message?.content);
     if (!text) {
-      throw new AiRouterError('AI 服务返回了空内容', { code: 'AI_EMPTY_RESPONSE', retryable: true });
+      const finishReason = cleanString(choice?.finish_reason);
+      const completionTokens = Number(data?.usage?.completion_tokens);
+      const reasoningTokens = Number(data?.usage?.completion_tokens_details?.reasoning_tokens);
+      const tokenBudget = Number(payload.max_completion_tokens || payload.max_tokens);
+      const details = [
+        finishReason ? `结束原因 ${finishReason}` : '',
+        Number.isFinite(completionTokens) ? `完成 Token ${completionTokens}${Number.isFinite(tokenBudget) ? `/${tokenBudget}` : ''}` : '',
+        Number.isFinite(reasoningTokens) ? `其中推理 Token ${reasoningTokens}` : '',
+      ].filter(Boolean);
+      const budgetExhausted = finishReason === 'length'
+        || (Number.isFinite(completionTokens) && Number.isFinite(tokenBudget) && completionTokens >= tokenBudget * 0.95);
+      throw new AiRouterError(
+        `AI 服务返回了空内容${details.length ? `（${details.join('；')}）` : ''}${budgetExhausted ? '，可能是推理过程耗尽了完成 Token 预算' : ''}`,
+        { code: budgetExhausted ? 'AI_TOKEN_BUDGET_EXHAUSTED' : 'AI_EMPTY_RESPONSE', retryable: true },
+      );
     }
     return { text, usage: data?.usage || null };
   }
@@ -1053,6 +1091,17 @@ function createAiRouter(options = {}) {
     let json = extractJsonValue(raw.text);
     if (json === null) {
       throw new AiRouterError('AI 没有返回可解析的 JSON', { code: 'AI_JSON_INVALID', retryable: true });
+    }
+    if (typeof request.normalizeJson === 'function') {
+      try {
+        json = request.normalizeJson(json);
+      } catch (error) {
+        throw new AiRouterError(`AI JSON 规范化失败：${error instanceof Error ? error.message : String(error)}`, {
+          code: 'AI_JSON_NORMALIZE_FAILED',
+          retryable: true,
+          cause: error,
+        });
+      }
     }
     let schemaErrors = request.responseSchema
       ? validateJsonAgainstSchema(json, request.responseSchema)
@@ -1066,7 +1115,12 @@ function createAiRouter(options = {}) {
       }
     }
     if (schemaErrors.length > 0) {
-      throw new AiRouterError(`AI JSON 不符合要求：${schemaErrors.slice(0, 4).join('；')}`, {
+      const shape = Array.isArray(json)
+        ? `根节点是数组（${json.length} 项）`
+        : json && typeof json === 'object'
+          ? `返回字段：${Object.keys(json).slice(0, 12).join(', ') || '无'}`
+          : `根节点类型：${typeof json}`;
+      throw new AiRouterError(`AI JSON 不符合要求：${schemaErrors.slice(0, 4).join('；')}（${shape}）`, {
         code: 'AI_SCHEMA_INVALID',
         retryable: true,
       });
@@ -1193,6 +1247,9 @@ function createAiRouter(options = {}) {
                 attempt: networkAttempt + repairAttempt + 1,
                 phase: repairAttempt > 0 ? 'repair' : networkAttempt > 0 ? 'retry' : 'request',
                 timeoutMs: toFiniteNumber(effectiveRequest.timeoutMs, routing.timeoutMs, 1, 300_000),
+                maxTokens: Number.isFinite(effectiveRequest.maxTokens) ? effectiveRequest.maxTokens : null,
+                allowFallback: effectiveRequest.allowFallback !== false,
+                reasoningMode: effectiveRequest.taskOptions?.reasoningMode || null,
               });
             } catch {
               // Progress reporting must never interrupt the actual AI request.
@@ -1240,7 +1297,9 @@ function createAiRouter(options = {}) {
     const finalDetail = finalAttempt
       ? `${finalAttempt.provider}/${finalAttempt.model}：${finalAttempt.message || finalAttempt.code || '未知错误'}`
       : '';
-    throw new AiRouterError(`所有可用 AI 均调用失败${finalDetail ? `（${finalDetail}）` : ''}`, {
+    const attemptedModels = new Set(attempts.map((attempt) => `${attempt.provider}/${attempt.model}`));
+    const failureTitle = attemptedModels.size <= 1 ? 'AI 调用失败' : '所有可用 AI 均调用失败';
+    throw new AiRouterError(`${failureTitle}${finalDetail ? `（${finalDetail}）` : ''}`, {
       code: 'AI_ALL_PROVIDERS_FAILED',
       attempts,
     });
