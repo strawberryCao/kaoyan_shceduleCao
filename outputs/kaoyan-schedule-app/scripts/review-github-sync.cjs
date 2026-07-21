@@ -63,6 +63,35 @@ function runGit(args, options = {}) {
   return clean(result.stdout, 10000);
 }
 
+function isRemoteAdvanceError(error) {
+  return /(?:\[rejected\]|fetch first|non-fast-forward|failed to push some refs)/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+function pushWithRemoteRefresh(cwd, branch) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    if (attempt > 0) {
+      runGit(['fetch', 'origin', branch], { cwd, timeout: 180000 });
+      try {
+        runGit(['rebase', `origin/${branch}`], { cwd, timeout: 180000 });
+      } catch (error) {
+        try { runGit(['rebase', '--abort'], { cwd }); } catch {}
+        throw error;
+      }
+    }
+    try {
+      runGit(['push', 'origin', `HEAD:${branch}`], { cwd, timeout: 180000 });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRemoteAdvanceError(error) || attempt === 3) throw error;
+    }
+  }
+  throw lastError || new Error('Git 推送重试失败');
+}
+
 function taskSettings(configPath) {
   const local = readJson(configPath, {});
   const task = local.tasks?.weekly_review_pdf || {};
@@ -329,7 +358,7 @@ function createReviewSyncManager(options = {}) {
     runGit(['config', 'user.name', 'Kaoyan Review Sync'], { cwd: workingRoot });
     runGit(['config', 'user.email', 'review-sync@local.invalid'], { cwd: workingRoot });
     runGit(['commit', '-m', 'data: sync confirmed review notes'], { cwd: workingRoot });
-    runGit(['push', 'origin', `HEAD:${settings.branch}`], { cwd: workingRoot, timeout: 180000 });
+    pushWithRemoteRefresh(workingRoot, settings.branch);
     updateStatus({ lastPushAt: new Date().toISOString(), lastScheduleKey: scheduleKey, lastPushCount: notes.length, lastPushResult: 'pushed', lastError: null });
     return { ok: true, changed: true, count: notes.length };
   }
