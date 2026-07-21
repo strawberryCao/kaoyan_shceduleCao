@@ -1,0 +1,59 @@
+name: Validate review AI improvements
+
+on:
+  push:
+    branches:
+      - fix/learning-detail-title-latex
+    paths:
+      - .github/scripts/apply-review-ai-improvements.py
+      - .github/workflows/validate-review-ai-improvements.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: validate-review-ai-improvements
+  cancel-in-progress: false
+
+jobs:
+  patch-build-commit:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out target branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+
+      - name: Apply improvements
+        run: python3 .github/scripts/apply-review-ai-improvements.py
+
+      - name: Syntax checks
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node --check scripts/ai-router.cjs
+          node --check scripts/note-ai-analyzer.cjs
+          node --check scripts/organize-notes.cjs
+          node --check scripts/learning-data-store.cjs
+          node --check scripts/note-server.cjs
+          node --check scripts/review-github-sync.cjs
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Type-check and build
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit validated implementation
+        run: |
+          rm -f .github/scripts/apply-review-ai-improvements.py
+          rm -f .github/workflows/validate-review-ai-improvements.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "4189826+github-actions[bot]@users.noreply.github.com"
+          git add outputs/kaoyan-schedule-app .github
+          git commit -m "feat: improve review sync and AI wrong-reason analysis"
+          git push origin HEAD:fix/learning-detail-title-latex
