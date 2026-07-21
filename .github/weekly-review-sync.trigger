@@ -3,3 +3,4 @@ rerun after workflow registration
 rerun with valid workflow syntax
 rerun with captured diagnostics
 rerun with resilient parameter matching
+rerun with full patch diagnostics
