@@ -7,6 +7,7 @@ on:
     paths:
       - .github/scripts/apply-review-ai-data.py
       - .github/scripts/apply-review-ai-frontend.py
+      - .github/scripts/apply-review-ai-fix-data-script.py
       - .github/workflows/validate-review-ai-data-ui.yml
   pull_request:
     branches:
@@ -34,7 +35,7 @@ jobs:
 
       - name: Apply data and UI improvements
         run: |
-          if ! (python3 .github/scripts/apply-review-ai-data.py && python3 .github/scripts/apply-review-ai-frontend.py) > /tmp/review-ai-patch.log 2>&1; then
+          if ! (python3 .github/scripts/apply-review-ai-fix-data-script.py && python3 .github/scripts/apply-review-ai-data.py && python3 .github/scripts/apply-review-ai-frontend.py) > /tmp/review-ai-patch.log 2>&1; then
             cat /tmp/review-ai-patch.log
             exit 1
           fi
@@ -66,6 +67,7 @@ jobs:
         run: |
           rm -f .github/scripts/apply-review-ai-data.py
           rm -f .github/scripts/apply-review-ai-frontend.py
+          rm -f .github/scripts/apply-review-ai-fix-data-script.py
           rm -f .github/workflows/validate-review-ai-data-ui.yml
           rm -f .github/review-ai-trigger.txt
           git config user.name "github-actions[bot]"
