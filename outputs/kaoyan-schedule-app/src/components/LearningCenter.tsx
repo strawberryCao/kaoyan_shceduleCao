@@ -34,6 +34,7 @@ import type {
   LearningNoteCreateInput,
   LearningNotePatch,
 } from '../utils/learningData';
+import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
 import { NOTE_SERVER_URL } from '../utils/notes';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import {
@@ -348,6 +349,8 @@ export function LearningCenter({
   const [thoughtDraft, setThoughtDraft] = useState('');
   const [thoughtEditor, setThoughtEditor] = useState<ThoughtEditorState | null>(null);
   const [thoughtSaving, setThoughtSaving] = useState(false);
+  const [wrongReasonEditor, setWrongReasonEditor] = useState<{ noteUid: string; text: string } | null>(null);
+  const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -513,6 +516,7 @@ export function LearningCenter({
     setImageLightbox(null);
     setThoughtDraft('');
     setThoughtEditor(null);
+    setWrongReasonEditor(null);
   }, [selectedNoteUid, selectedInboxKey, selectedCardId, view]);
 
   useEffect(() => {
@@ -705,6 +709,59 @@ export function LearningCenter({
       setFeedback(error instanceof Error ? error.message : '分类没有保存，请稍后重试。');
     } finally {
       setPendingNoteUid(null);
+    }
+  };
+
+  const wrongReasonSourceLabel = (note: LearningAutoNote): string => ({
+    manual: '手动填写',
+    manual_deleted: '已手动删除',
+    explicit_remark: '从备注明确提取',
+    explicit_image: '从图片明确提取',
+    ai_inferred: 'AI 根据过程推断',
+    none: '尚未识别',
+  }[note.wrongReasonSource] || (note.wrongReason ? '已有记录' : '尚未识别'));
+
+  const saveWrongReason = async (note: LearningAutoNote) => {
+    if (!wrongReasonEditor || wrongReasonSaving) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { wrongReason: wrongReasonEditor.text.trim() });
+      setWrongReasonEditor(null);
+      setFeedback(wrongReasonEditor.text.trim() ? '错因已保存，后续 AI 不会覆盖。' : '错因已删除，后续 AI 不会自动补回。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '错因没有保存，请稍后重试。');
+    } finally {
+      setWrongReasonSaving(false);
+    }
+  };
+
+  const deleteWrongReason = async (note: LearningAutoNote) => {
+    if (wrongReasonSaving || !window.confirm('确定删除这条错因吗？删除后 AI 不会自动补回，除非你主动重新分析。')) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { wrongReason: '' });
+      setWrongReasonEditor(null);
+      setFeedback('错因已删除。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '错因删除失败，请稍后重试。');
+    } finally {
+      setWrongReasonSaving(false);
+    }
+  };
+
+  const analyzeWrongReason = async (note: LearningAutoNote) => {
+    if (wrongReasonSaving) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      const result = await analyzeLearningNoteWrongReason(note.noteUid);
+      setFeedback(result.queued ? '已转入后台分析；完成后错因会自动更新。' : '这条笔记的分析任务已在队列中。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '无法启动错因分析。');
+    } finally {
+      setWrongReasonSaving(false);
     }
   };
 
@@ -1084,7 +1141,28 @@ export function LearningCenter({
           <div><span>页码 / 题号</span><strong>{pages || '—'}</strong></div>
           <div><span>知识点</span><strong>{knowledgePoints.join('、') || '—'}</strong></div>
           <div><span>题型</span><strong>{questionTypes.join('、') || '—'}</strong></div>
-          {context === 'mistake' && <div className="lc-fact-wide"><span>错因</span><strong>{wrongReasons.join('；') || '—'}</strong></div>}
+          {context === 'mistake' && (
+            <div className="lc-fact-wide lc-wrong-reason-fact">
+              <span>错因</span>
+              {wrongReasonEditor?.noteUid === note.noteUid ? (
+                <form onSubmit={(event) => { event.preventDefault(); void saveWrongReason(note); }}>
+                  <textarea autoFocus maxLength={500} rows={3} value={wrongReasonEditor.text} onChange={(event) => setWrongReasonEditor({ noteUid: note.noteUid, text: event.target.value })} />
+                  <div><button className="primary" type="submit" disabled={wrongReasonSaving}><Save size={14} />保存</button><button type="button" disabled={wrongReasonSaving} onClick={() => setWrongReasonEditor(null)}>取消</button></div>
+                </form>
+              ) : (
+                <div className="lc-wrong-reason-view">
+                  <strong>{note.wrongReason || wrongReasons[0] || '尚未分析'}</strong>
+                  <small>{wrongReasonSourceLabel(note)}{note.wrongReasonConfidence !== null ? ` · 可信度 ${Math.round(note.wrongReasonConfidence * 100)}%` : ''}</small>
+                  <div>
+                    <button type="button" disabled={wrongReasonSaving} onClick={() => setWrongReasonEditor({ noteUid: note.noteUid, text: note.wrongReason })}><Pencil size={14} />修改</button>
+                    {note.wrongReason && <button className="danger" type="button" disabled={wrongReasonSaving} onClick={() => void deleteWrongReason(note)}><Trash2 size={14} />删除</button>}
+                    {!note.wrongReason && note.wrongReasonSource !== 'manual_deleted' && <button type="button" disabled={wrongReasonSaving} onClick={() => void analyzeWrongReason(note)}><Brain size={14} />AI 分析</button>}
+                    {note.wrongReasonSource === 'manual_deleted' && <button type="button" disabled={wrongReasonSaving} onClick={() => void analyzeWrongReason(note)}><Brain size={14} />重新分析</button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {isEditingClassification && (

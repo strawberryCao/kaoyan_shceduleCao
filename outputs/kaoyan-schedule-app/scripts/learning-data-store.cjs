@@ -180,6 +180,10 @@ function normalizeAutoNote(value) {
     noteType: asString(value.noteType),
     questionType: asString(value.questionType),
     wrongReason: asString(value.wrongReason),
+    wrongReasonSource: asString(value.wrongReasonSource),
+    wrongReasonConfidence: Number.isFinite(Number(value.wrongReasonConfidence))
+      ? Math.min(1, Math.max(0, Number(value.wrongReasonConfidence)))
+      : null,
     organizationStatus: inferredFromFile && organizationStatus === 'pending' ? 'confirmed' : organizationStatus,
     classificationSource: ['ai', 'local', 'manual'].includes(value.classificationSource)
       ? inferredFromFile && value.classificationSource !== 'manual' ? 'local' : value.classificationSource
@@ -677,9 +681,16 @@ function createLearningDataStore(options = {}) {
       questionType: existingNote?.classificationSource === 'manual'
         ? existingNote.questionType
         : enrichment.questionType ?? existingNote?.questionType,
-      wrongReason: existingNote?.classificationSource === 'manual'
-        ? existingNote.wrongReason
+      wrongReason: userEditedFields.has('wrongReason')
+        ? existingNote?.wrongReason
         : enrichment.wrongReason ?? existingNote?.wrongReason,
+      wrongReasonSource: userEditedFields.has('wrongReason')
+        ? existingNote?.wrongReasonSource || (existingNote?.wrongReason ? 'manual' : 'manual_deleted')
+        : enrichment.wrongReasonSource ?? existingNote?.wrongReasonSource,
+      wrongReasonConfidence: userEditedFields.has('wrongReason')
+        ? (existingNote?.wrongReason ? 1 : null)
+        : enrichment.wrongReasonConfidence ?? existingNote?.wrongReasonConfidence,
+      userEditedFields: [...userEditedFields],
       organizationStatus: resolveOrganizationStatus(
         enrichment.organizationStatus,
         existingNote?.organizationStatus,
@@ -828,8 +839,11 @@ function createLearningDataStore(options = {}) {
           'remark',
           'tags',
           'noteType',
+          ...(asString(input.wrongReason).trim() ? ['wrongReason'] : []),
           ...(typeof input.goodQuestion === 'boolean' ? ['goodQuestion'] : []),
         ],
+        wrongReasonSource: asString(input.wrongReason).trim() ? 'manual' : '',
+        wrongReasonConfidence: asString(input.wrongReason).trim() ? 1 : null,
         goodQuestion: typeof input.goodQuestion === 'boolean' ? input.goodQuestion : null,
         items: normalizeLearningItems(input.items),
         confidence: null,
@@ -1028,9 +1042,20 @@ function createLearningDataStore(options = {}) {
             nextKnowledgePath = [nextSubject, ...nextKnowledgePath.filter((item) => item !== note.subject && item !== nextSubject)].slice(0, 3);
           }
           const userEditedFields = new Set(note.userEditedFields);
-          contentKeys.forEach((key) => {
-            if (Object.hasOwn(patch, key)) userEditedFields.add(key);
-          });
+          const normalizedPatchValue = (key) => {
+            if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(uniqueStrings(patch[key]));
+            if (key === 'goodQuestion') return String(patch[key] === true);
+            return asString(patch[key]).trim();
+          };
+          const normalizedNoteValue = (key) => {
+            if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(note[key] || []);
+            if (key === 'goodQuestion') return String(note[key] === true);
+            return asString(note[key]).trim();
+          };
+          const changedEditableKeys = editableKeys.filter((key) => (
+            Object.hasOwn(patch, key) && normalizedPatchValue(key) !== normalizedNoteValue(key)
+          ));
+          changedEditableKeys.forEach((key) => userEditedFields.add(key));
           let studyNotes = normalizeStudyNotes(note.studyNotes);
           if (thoughtAction?.action === 'add') {
             studyNotes = [...studyNotes, {
@@ -1060,11 +1085,17 @@ function createLearningDataStore(options = {}) {
             ...(subject ? { subject } : {}),
             ...((subject || Object.hasOwn(patch, 'knowledgePath')) ? { knowledgePath: nextKnowledgePath } : {}),
             ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
-            ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
+            ...(Object.hasOwn(patch, 'wrongReason') ? {
+              wrongReason: asString(patch.wrongReason).slice(0, 500),
+              ...(changedEditableKeys.includes('wrongReason') ? {
+                wrongReasonSource: asString(patch.wrongReason).trim() ? 'manual' : 'manual_deleted',
+                wrongReasonConfidence: asString(patch.wrongReason).trim() ? 1 : null,
+              } : {}),
+            } : {}),
             organizationStatus: hasOrganizationStatus
               ? patch.organizationStatus
               : editableKeys.some((key) => Object.hasOwn(patch, key)) ? 'confirmed' : note.organizationStatus,
-            classificationSource: editsClassification ? 'manual' : note.classificationSource,
+            classificationSource: changedEditableKeys.some((key) => classificationKeys.includes(key)) ? 'manual' : note.classificationSource,
             userEditedFields: [...userEditedFields],
             studyNotes,
             updatedAt: timestamp,

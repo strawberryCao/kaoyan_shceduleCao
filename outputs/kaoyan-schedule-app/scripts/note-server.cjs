@@ -72,6 +72,8 @@ let aiRouterInitError = null;
 let aiRouterConfigStamp = null;
 let aiNamingQueue = Promise.resolve();
 const aiNamingJobs = new Map();
+let noteEnrichmentQueue = Promise.resolve();
+const noteEnrichmentJobs = new Map();
 let canvasOrganizationQueue = Promise.resolve();
 const canvasOrganizationJobs = new Map();
 
@@ -558,6 +560,18 @@ function persistManualClassification(noteUid, patch) {
     .filter((item) => item && item !== subject && item !== saved.metadata.subject)]
     .slice(0, 3);
   const knowledgePoint = knowledgePath[1] || null;
+  const previousUserEditedFields = new Set(Array.isArray(currentLearning.userEditedFields) ? currentLearning.userEditedFields : []);
+  const changedFields = [];
+  const currentQuestionType = String(currentLearning.questionType || '').trim();
+  const currentWrongReason = String(currentLearning.wrongReason || '').trim();
+  if (Object.hasOwn(patch, 'subject') && subject !== String(currentLearning.subject || saved.metadata.subject || '').trim()) changedFields.push('subject');
+  if (Object.hasOwn(patch, 'knowledgePath') && JSON.stringify(knowledgePath) !== JSON.stringify(currentLearning.knowledgePath || [])) changedFields.push('knowledgePath');
+  if (Object.hasOwn(patch, 'questionType') && String(patch.questionType || '').trim() !== currentQuestionType) changedFields.push('questionType');
+  if (Object.hasOwn(patch, 'wrongReason') && String(patch.wrongReason || '').trim() !== currentWrongReason) changedFields.push('wrongReason');
+  changedFields.forEach((field) => previousUserEditedFields.add(field));
+  const nextWrongReason = Object.hasOwn(patch, 'wrongReason')
+    ? String(patch.wrongReason || '').trim().slice(0, 500)
+    : currentWrongReason;
 
   const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
   const subjectNode = ensureSubject(taxonomy, subject, { createdBy: 'user' });
@@ -603,7 +617,14 @@ function persistManualClassification(noteUid, patch) {
       subject,
       knowledgePath,
       ...(Object.hasOwn(patch, 'questionType') ? { questionType: String(patch.questionType || '').trim().slice(0, 60) } : {}),
-      ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: String(patch.wrongReason || '').trim().slice(0, 500) } : {}),
+      ...(Object.hasOwn(patch, 'wrongReason') ? {
+        wrongReason: nextWrongReason,
+        ...(changedFields.includes('wrongReason') ? {
+          wrongReasonSource: nextWrongReason ? 'manual' : 'manual_deleted',
+          wrongReasonConfidence: nextWrongReason ? 1 : null,
+        } : {}),
+      } : {}),
+      userEditedFields: [...previousUserEditedFields],
       organizationStatus: 'confirmed',
       classificationSource: 'manual',
       pendingAiOrganization: false,
@@ -1185,7 +1206,10 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
     knowledgePath,
     noteType,
     wrongReason: parsed.wrongReasons?.[0] || '',
-    intent,
+    wrongReasonSource: parsed.wrongReasons?.[0] ? 'explicit_remark' : 'none',
+      wrongReasonConfidence: parsed.wrongReasons?.[0] ? 1 : null,
+      userEditedFields: [],
+      intent,
     cards,
     organizationStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
     classificationSource: details.subject && details.subject !== DEFAULT_SUBJECT ? 'local' : 'ai',
@@ -1375,11 +1399,30 @@ async function runAiNamingJob(noteUid) {
   writeSaveReceipt(noteUid, metadata, learningSyncError);
 }
 
+function queueNoteEnrichment(noteUid) {
+  if (!noteUid || noteEnrichmentJobs.has(noteUid)) return false;
+  const job = noteEnrichmentQueue.then(() => new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(__dirname, 'organize-notes.cjs'), '--force', `--note-uid=${noteUid}`], {
+      cwd: PROJECT_ROOT,
+      windowsHide: true,
+      stdio: 'ignore',
+      env: process.env,
+    });
+    child.once('error', resolve);
+    child.once('close', resolve);
+  }));
+  noteEnrichmentJobs.set(noteUid, job);
+  noteEnrichmentQueue = job.catch(() => undefined);
+  void job.finally(() => noteEnrichmentJobs.delete(noteUid)).catch(() => undefined);
+  return true;
+}
+
 function queueAiNamingJob(noteUid) {
   if (aiNamingJobs.has(noteUid)) return;
   const job = aiNamingQueue.then(async () => {
     try {
       await runAiNamingJob(noteUid);
+      queueNoteEnrichment(noteUid);
     } catch (error) {
       try {
         markAiNamingFailed(noteUid, error);
@@ -1924,6 +1967,13 @@ async function handleLearningDataRoute(req, res, pathname) {
 
   const cardMatch = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
   const noteMatch = /^\/learning-data\/notes\/([^/]+)$/.exec(pathname);
+  const noteAnalyzeMatch = /^\/learning-data\/notes\/([^/]+)\/analyze-wrong-reason$/.exec(pathname);
+  if (noteAnalyzeMatch && req.method === 'POST') {
+    const noteUid = decodeURIComponent(noteAnalyzeMatch[1]);
+    const queued = queueNoteEnrichment(noteUid);
+    sendJson(res, 202, { ok: true, queued, noteUid });
+    return true;
+  }
   const noteRestoreMatch = /^\/learning-data\/notes\/([^/]+)\/restore$/.exec(pathname);
   if (noteRestoreMatch && req.method === 'POST') {
     const payload = JSON.parse((await readBody(req)) || '{}');
@@ -1998,13 +2048,13 @@ async function handleReviewSyncRoute(req, res, pathname) {
     return true;
   }
   if (req.method === 'POST' && pathname === '/ai/review/push') {
-    const result = await reviewSync.push();
-    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    const result = reviewSync.startPush();
+    sendJson(res, result.accepted ? 202 : 200, { ...result, status: reviewSync.status() });
     return true;
   }
   if (req.method === 'POST' && pathname === '/ai/review/pull') {
-    const result = await reviewSync.pull();
-    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    const result = reviewSync.startPull();
+    sendJson(res, result.accepted ? 202 : 200, { ...result, status: reviewSync.status() });
     return true;
   }
   if (req.method === 'POST' && pathname === '/ai/review/select-directory') {

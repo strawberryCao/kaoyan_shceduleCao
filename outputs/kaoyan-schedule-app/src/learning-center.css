@@ -2054,3 +2054,13 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+.lc-wrong-reason-fact { align-items: stretch; }
+.lc-wrong-reason-view { min-width: 0; display: grid; gap: 5px; }
+.lc-wrong-reason-view > strong { white-space: normal; line-height: 1.55; }
+.lc-wrong-reason-view > small { color: #7d7469; font-size: 11px; font-weight: 600; }
+.lc-wrong-reason-view > div, .lc-wrong-reason-fact form > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.lc-wrong-reason-view button, .lc-wrong-reason-fact form button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d8d2ca; border-radius: 8px; background: #fff; color: #4f5964; padding: 6px 9px; font: inherit; font-size: 11px; cursor: pointer; }
+.lc-wrong-reason-view button.danger { color: #a04f48; }
+.lc-wrong-reason-fact form { display: grid; gap: 8px; }
+.lc-wrong-reason-fact textarea { width: 100%; resize: vertical; min-height: 72px; border: 1px solid #d8d2ca; border-radius: 9px; padding: 9px 10px; font: inherit; line-height: 1.55; }

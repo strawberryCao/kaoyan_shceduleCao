@@ -618,8 +618,25 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
   const intent = combinedIntent(parsed, analysis);
   if (intent.isMistake && !uniqueTags.includes('错题')) uniqueTags.push('错题');
   if (intent.shouldMemorize && !uniqueTags.includes('背诵')) uniqueTags.push('背诵');
-  const questionType = keepsManualClassification ? previousLearning.questionType || null : analysis.questionType;
-  const wrongReason = keepsManualClassification ? previousLearning.wrongReason || null : analysis.wrongReason;
+  const userEditedFields = new Set(Array.isArray(previousLearning.userEditedFields) ? previousLearning.userEditedFields : []);
+  const questionType = userEditedFields.has('questionType')
+    ? previousLearning.questionType || null
+    : keepsManualClassification && previousLearning.questionType ? previousLearning.questionType : analysis.questionType;
+  const explicitRemarkReason = Array.isArray(parsed.wrongReasons) ? String(parsed.wrongReasons[0] || '').trim().slice(0, 500) : '';
+  const keepsUserWrongReason = userEditedFields.has('wrongReason');
+  const wrongReason = keepsUserWrongReason
+    ? previousLearning.wrongReason || null
+    : explicitRemarkReason || analysis.wrongReason || null;
+  const wrongReasonSource = keepsUserWrongReason
+    ? previousLearning.wrongReasonSource || (wrongReason ? 'manual' : 'manual_deleted')
+    : explicitRemarkReason
+      ? 'explicit_remark'
+      : analysis.wrongReasonSource || (wrongReason ? 'ai_inferred' : 'none');
+  const wrongReasonConfidence = keepsUserWrongReason
+    ? (wrongReason ? 1 : null)
+    : explicitRemarkReason
+      ? 1
+      : Number.isFinite(Number(analysis.wrongReasonConfidence)) ? Number(analysis.wrongReasonConfidence) : null;
   if (questionType) {
     const questionTypeTag = `题型:${questionType}`.slice(0, 40);
     if (!uniqueTags.includes(questionTypeTag)) uniqueTags.push(questionTypeTag);
@@ -642,6 +659,9 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     noteType,
     questionType,
     wrongReason,
+    wrongReasonSource,
+    wrongReasonConfidence,
+    userEditedFields: [...userEditedFields],
     organizationStatus: keepsManualClassification || !isDefaultBucket(subject.name) ? 'confirmed' : 'pending',
     classificationSource: keepsManualClassification ? 'manual' : 'ai',
     pendingAiOrganization: false,
@@ -712,14 +732,15 @@ async function organizeNotes(options = {}) {
 
     const previousState = safeReadJson(statePath, {});
     const lastSuccessfulAt = new Date(previousState.lastSuccessfulAt || 0).getTime();
-    if (!dryRun && !options.force && Number.isFinite(lastSuccessfulAt) && Date.now() - lastSuccessfulAt < cadenceMs) {
+    if (!dryRun && !options.force && !options.noteUid && Number.isFinite(lastSuccessfulAt) && Date.now() - lastSuccessfulAt < cadenceMs) {
       report.cadenceSkipped = true;
       return { ...report, notesRoot, assistantRoot, taxonomyPath, moveLogPath, statePath };
     }
 
     let taxonomy = loadTaxonomy(taxonomyPath, { createIfMissing: !dryRun });
     const taxonomyBefore = JSON.stringify(taxonomy.subjects);
-    const notes = discoverNotes(notesRoot);
+    const targetNoteUid = typeof options.noteUid === 'string' ? options.noteUid.trim() : '';
+    const notes = discoverNotes(notesRoot).filter((note) => !targetNoteUid || note.metadata?.noteUid === targetNoteUid);
     report.discovered = notes.length;
 
     for (const note of notes) {
@@ -861,6 +882,8 @@ async function organizeNotes(options = {}) {
             summary: analysis.summary,
             questionType: analysis.questionType,
             wrongReason: analysis.wrongReason,
+            wrongReasonSource: analysis.wrongReasonSource,
+            wrongReasonConfidence: analysis.wrongReasonConfidence,
             memoryCard: analysis.memoryCard,
             intent: combinedIntent(parsed, analysis),
             items: analysis.items,
@@ -982,8 +1005,10 @@ async function main() {
   const analyzer = await loadInjectedAnalyzer(
     process.env.KAOYAN_AI_ANALYZER || (fs.existsSync(bundledAnalyzerPath) ? bundledAnalyzerPath : ''),
   );
+  const noteUidFlag = [...flags].find((flag) => flag.startsWith('--note-uid='));
   const report = await organizeNotes({
     analyzeNote: analyzer,
+    noteUid: noteUidFlag ? noteUidFlag.slice('--note-uid='.length) : '',
     analyzerVersion: process.env.KAOYAN_AI_ANALYZER_VERSION,
     force: flags.has('--force'),
     dryRun: flags.has('--dry-run'),
