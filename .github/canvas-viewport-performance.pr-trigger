@@ -1,2 +1,3 @@
 trigger pull-request workflow for approved canvas viewport performance patch
 rerun with captured patch diagnostics
+rerun with resilient initial viewport replacement
