@@ -76,6 +76,8 @@ const CLIENT_SINGLE_IMAGE_BUDGET_BYTES = 15.5 * 1024 * 1024;
 const MARQUEE_MIN_SCREEN_PX = 6;
 const ERASER_RADIUS = 18;
 const PALM_REJECTION_MS = 700;
+const VIEWPORT_PERSIST_DELAY_MS = 180;
+const WHEEL_ZOOM_SETTLE_MS = 120;
 const PEN_WIDTHS = [2, 4, 6, 9, 13] as const;
 const HIGHLIGHTER_WIDTHS = [12, 20, 30, 42] as const;
 const TEXT_SIZES = [12, 14, 17, 20, 24, 32, 40, 56] as const;
@@ -210,6 +212,13 @@ type TouchNavigation =
       velocityX: number;
       velocityY: number;
     };
+
+type PendingWheelZoom = {
+  zoom: number;
+  anchorWorld: CanvasPoint;
+  pointerX: number;
+  pointerY: number;
+};
 
 export interface CanvasPreviewOptions {
   padding?: number;
@@ -1168,30 +1177,56 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
 }, ref) {
   const arrowMarkerId = useId().replace(/:/g, '');
   const storageKey = draftKey === false ? null : draftKey;
-  const initialIdRef = useRef(initialDocument?.id ?? null);
-  const makeInitialDocument = () => {
-    if (storageKey && typeof localStorage !== 'undefined') {
-      try {
-        const saved = localStorage.getItem(storageKey);
-        if (saved) {
-          const draft = parseCanvasDocument(saved);
-          const draftIsNewer = !initialDocument
-            || (
-              draft.id === initialDocument.id
-              && draft.syncRevision === initialDocument.syncRevision
-              && draft.updatedAt !== initialDocument.updatedAt
-            );
-          if (draftIsNewer) return draft;
-        }
-      } catch {
-        // A malformed or over-quota draft should never prevent opening the editor.
-      }
+const viewportStorageKey = storageKey ? `${storageKey}.viewport` : null;
+const initialIdRef = useRef(initialDocument?.id ?? null);
+const restoreStoredViewport = (document: CanvasDocument): CanvasDocument => {
+  if (!viewportStorageKey || typeof localStorage === 'undefined') return document;
+  try {
+    const saved = localStorage.getItem(viewportStorageKey);
+    if (!saved) return document;
+    const parsed = JSON.parse(saved) as Partial<CanvasDocument['viewport']>;
+    const savedZoom = Number(parsed.zoom);
+    const savedScrollLeft = Number(parsed.scrollLeft);
+    const savedScrollTop = Number(parsed.scrollTop);
+    if (
+      Number.isFinite(savedZoom)
+      && Number.isFinite(savedScrollLeft)
+      && Number.isFinite(savedScrollTop)
+    ) {
+      document.viewport = {
+        zoom: clamp(savedZoom, MIN_ZOOM, MAX_ZOOM),
+        scrollLeft: Math.max(0, savedScrollLeft),
+        scrollTop: Math.max(0, savedScrollTop),
+      };
     }
-    if (initialDocument) return cloneCanvasDocument(initialDocument);
-    return createEmptyCanvasDocument();
-  };
+  } catch {
+    // Viewport state is optional; an invalid lightweight snapshot is ignored.
+  }
+  return document;
+};
+const makeInitialDocument = () => {
+  if (storageKey && typeof localStorage !== 'undefined') {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const draft = parseCanvasDocument(saved);
+        const draftIsNewer = !initialDocument
+          || (
+            draft.id === initialDocument.id
+            && draft.syncRevision === initialDocument.syncRevision
+            && draft.updatedAt !== initialDocument.updatedAt
+          );
+        if (draftIsNewer) return restoreStoredViewport(draft);
+      }
+    } catch {
+      // A malformed or over-quota draft should never prevent opening the editor.
+    }
+  }
+  if (initialDocument) return restoreStoredViewport(cloneCanvasDocument(initialDocument));
+  return restoreStoredViewport(createEmptyCanvasDocument());
+};
 
-  const [documentState, setDocumentState] = useState<CanvasDocument>(makeInitialDocument);
+const [documentState, setDocumentState] = useState<CanvasDocument>(makeInitialDocument);
   const documentRef = useRef(documentState);
   const [remoteInkPreviews, setRemoteInkPreviews] = useState<CanvasInkStroke[]>([]);
   const draftRevisionRef = useRef(0);
@@ -1232,6 +1267,11 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const [relationType, setRelationType] = useState<CanvasRelationType>('解释');
   const [customRelationLabel, setCustomRelationLabel] = useState('');
   const [zoom, setZoomState] = useState(() => clamp(documentState.viewport.zoom || 0.72, MIN_ZOOM, MAX_ZOOM));
+  const zoomRef = useRef(zoom);
+  const wheelZoomFrameRef = useRef<number | null>(null);
+  const wheelZoomSettleTimerRef = useRef<number | null>(null);
+  const pendingWheelZoomRef = useRef<PendingWheelZoom | null>(null);
+  const viewportPersistTimerRef = useRef<number | null>(null);
   const [directoryOpen, setDirectoryOpen] = useState(() => directoryInitiallyOpen && !isCoarsePointerDevice());
   const [helpOpen, setHelpOpen] = useState(false);
   const [status, setStatus] = useState('Apple Pencil 已进入钢笔模式；双指移动或缩放画布。');
@@ -1242,8 +1282,53 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const viewportRef = useRef<HTMLDivElement>(null);
   const worldSpacerRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
+  const zoomValueRef = useRef<HTMLSpanElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const jsonInputRef = useRef<HTMLInputElement>(null);
+
+  const writeViewportSnapshot = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const snapshot = {
+      zoom: clamp(zoomRef.current, MIN_ZOOM, MAX_ZOOM),
+      scrollLeft: viewport.scrollLeft,
+      scrollTop: viewport.scrollTop,
+    };
+    documentRef.current.viewport = snapshot;
+    if (!viewportStorageKey) return;
+    try {
+      localStorage.setItem(viewportStorageKey, JSON.stringify(snapshot));
+    } catch {
+      // A lightweight viewport snapshot must never interrupt canvas interaction.
+    }
+  }, [viewportStorageKey]);
+
+  const scheduleViewportPersistence = useCallback((delay = VIEWPORT_PERSIST_DELAY_MS) => {
+    if (!viewportStorageKey) return;
+    if (viewportPersistTimerRef.current !== null) {
+      window.clearTimeout(viewportPersistTimerRef.current);
+    }
+    viewportPersistTimerRef.current = window.setTimeout(() => {
+      viewportPersistTimerRef.current = null;
+      writeViewportSnapshot();
+    }, delay);
+  }, [viewportStorageKey, writeViewportSnapshot]);
+
+  const applyZoomToDom = useCallback((nextZoom: number): number => {
+    const next = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    zoomRef.current = next;
+    documentRef.current.viewport.zoom = next;
+    const spacer = worldSpacerRef.current;
+    const world = worldRef.current;
+    if (spacer) {
+      spacer.style.width = `${WORLD_WIDTH * next}px`;
+      spacer.style.height = `${WORLD_HEIGHT * next}px`;
+    }
+    if (world) world.style.transform = `scale(${next})`;
+    if (zoomValueRef.current) zoomValueRef.current.textContent = `${Math.round(next * 100)}%`;
+    return next;
+  }, []);
+
   const selected: SelectedNode = selection[selection.length - 1] ?? null;
   const setSelected = useCallback((node: SelectedNode) => {
     setSelection(node ? [node] : []);
@@ -1324,12 +1409,19 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   }, [setActiveGesture, setCurrentDocument]);
 
   const setZoom = useCallback((nextZoom: number) => {
-    const next = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    if (wheelZoomFrameRef.current !== null) {
+      cancelAnimationFrame(wheelZoomFrameRef.current);
+      wheelZoomFrameRef.current = null;
+    }
+    if (wheelZoomSettleTimerRef.current !== null) {
+      window.clearTimeout(wheelZoomSettleTimerRef.current);
+      wheelZoomSettleTimerRef.current = null;
+    }
+    pendingWheelZoomRef.current = null;
+    const next = applyZoomToDom(nextZoom);
     setZoomState(next);
-    const updated = cloneCanvasDocumentForEditing(documentRef.current);
-    updated.viewport.zoom = next;
-    setCurrentDocument(updated, false);
-  }, [setCurrentDocument]);
+    scheduleViewportPersistence();
+  }, [applyZoomToDom, scheduleViewportPersistence]);
 
   const toggleFocusMode = useCallback(() => {
     setFocusMode((active) => !active);
@@ -1338,11 +1430,12 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   const getWorldPoint = useCallback((clientX: number, clientY: number): CanvasPoint => {
     const rect = worldRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
+    const currentZoom = Math.max(MIN_ZOOM, zoomRef.current);
     return {
-      x: clamp((clientX - rect.left) / zoom, 0, WORLD_WIDTH),
-      y: clamp((clientY - rect.top) / zoom, 0, WORLD_HEIGHT),
+      x: clamp((clientX - rect.left) / currentZoom, 0, WORLD_WIDTH),
+      y: clamp((clientY - rect.top) / currentZoom, 0, WORLD_HEIGHT),
     };
-  }, [zoom]);
+  }, []);
 
   const getInkWorldPoint = useCallback((clientX: number, clientY: number): CanvasPoint | null => {
     const rect = worldRef.current?.getBoundingClientRect();
@@ -1354,20 +1447,22 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       || clientY < rect.top - safeMargin
       || clientY > rect.bottom + safeMargin
     ) return null;
+    const currentZoom = Math.max(MIN_ZOOM, zoomRef.current);
     return {
-      x: clamp((clientX - rect.left) / zoom, 0, WORLD_WIDTH),
-      y: clamp((clientY - rect.top) / zoom, 0, WORLD_HEIGHT),
+      x: clamp((clientX - rect.left) / currentZoom, 0, WORLD_WIDTH),
+      y: clamp((clientY - rect.top) / currentZoom, 0, WORLD_HEIGHT),
     };
-  }, [zoom]);
+  }, []);
 
   const getViewportCenterWorld = useCallback((): CanvasPoint => {
     const viewport = viewportRef.current;
     if (!viewport) return { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 };
+    const currentZoom = Math.max(MIN_ZOOM, zoomRef.current);
     return {
-      x: clamp((viewport.scrollLeft + viewport.clientWidth / 2) / zoom, 0, WORLD_WIDTH),
-      y: clamp((viewport.scrollTop + viewport.clientHeight / 2) / zoom, 0, WORLD_HEIGHT),
+      x: clamp((viewport.scrollLeft + viewport.clientWidth / 2) / currentZoom, 0, WORLD_WIDTH),
+      y: clamp((viewport.scrollTop + viewport.clientHeight / 2) / currentZoom, 0, WORLD_HEIGHT),
     };
-  }, [zoom]);
+  }, []);
 
   const fitToContent = useCallback(() => {
     const viewport = viewportRef.current;
@@ -1702,7 +1797,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
 
     const viewport = viewportRef.current;
     const localViewport = {
-      zoom,
+      zoom: zoomRef.current,
       scrollLeft: viewport?.scrollLeft ?? documentRef.current.viewport.scrollLeft,
       scrollTop: viewport?.scrollTop ?? documentRef.current.viewport.scrollTop,
     };
@@ -1721,7 +1816,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     setLinkingAnnotationId(null);
     setStatus('已同步另一台设备上的最新修改。');
     return true;
-  }, [setCurrentDocument, setSelected, zoom]);
+  }, [setCurrentDocument, setSelected]);
 
   const applyRemoteInkStroke = useCallback((remoteStroke: CanvasInkStroke): boolean => {
     if (
@@ -1827,11 +1922,20 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     return () => { cancelled = true; };
   }, [commit, documentState.images, reportError]);
 
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
   useEffect(() => () => {
     if (gestureRenderFrameRef.current !== null) cancelAnimationFrame(gestureRenderFrameRef.current);
     if (touchNavigationFrameRef.current !== null) cancelAnimationFrame(touchNavigationFrameRef.current);
     if (touchMomentumFrameRef.current !== null) cancelAnimationFrame(touchMomentumFrameRef.current);
-  }, []);
+    if (wheelZoomFrameRef.current !== null) cancelAnimationFrame(wheelZoomFrameRef.current);
+    if (wheelZoomSettleTimerRef.current !== null) window.clearTimeout(wheelZoomSettleTimerRef.current);
+    if (viewportPersistTimerRef.current !== null) window.clearTimeout(viewportPersistTimerRef.current);
+    pendingWheelZoomRef.current = null;
+    writeViewportSnapshot();
+  }, [writeViewportSnapshot]);
 
   useEffect(() => {
     try {
@@ -1923,15 +2027,19 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
 
   useEffect(() => {
     if (!storageKey) return;
-    const handleBeforeUnload = () => flushDraft(false);
+    const handleBeforeUnload = () => {
+      writeViewportSnapshot();
+      flushDraft(false);
+    };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       // React unmount is the last chance to persist edits that have not reached
       // the debounce timer yet. localStorage is synchronous by design here.
+      writeViewportSnapshot();
       flushDraft(false);
     };
-  }, [flushDraft, storageKey]);
+  }, [flushDraft, storageKey, writeViewportSnapshot]);
 
   useEffect(() => {
     const handleMove = (event: PointerEvent) => {
@@ -2289,15 +2397,14 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
   };
 
   const commitTouchViewport = (viewport: HTMLDivElement) => {
-    const nextZoom = clamp(documentRef.current.viewport.zoom || zoom, MIN_ZOOM, MAX_ZOOM);
-    const next = cloneCanvasDocumentForEditing(documentRef.current);
-    next.viewport = {
+    const nextZoom = applyZoomToDom(zoomRef.current);
+    documentRef.current.viewport = {
       zoom: nextZoom,
       scrollLeft: viewport.scrollLeft,
       scrollTop: viewport.scrollTop,
     };
     setZoomState(nextZoom);
-    setCurrentDocument(next, false);
+    writeViewportSnapshot();
   };
 
   const startTouchMomentum = (viewport: HTMLDivElement, velocityX: number, velocityY: number) => {
@@ -2365,7 +2472,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
       clientY: (first.clientY + second.clientY) / 2,
     };
     const rect = viewport.getBoundingClientRect();
-    const currentZoom = documentRef.current.viewport.zoom || zoom;
+    const currentZoom = clamp(zoomRef.current, MIN_ZOOM, MAX_ZOOM);
     touchNavigationRef.current = {
       type: 'pinch',
       startDistance: Math.max(1, Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY)),
@@ -2408,14 +2515,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
         clientY: (first.clientY + second.clientY) / 2,
       };
       const viewportRect = viewport.getBoundingClientRect();
-      const spacer = worldSpacerRef.current;
-      const world = worldRef.current;
-      if (spacer) {
-        spacer.style.width = `${WORLD_WIDTH * nextZoom}px`;
-        spacer.style.height = `${WORLD_HEIGHT * nextZoom}px`;
-      }
-      if (world) world.style.transform = `scale(${nextZoom})`;
-      documentRef.current.viewport.zoom = nextZoom;
+      applyZoomToDom(nextZoom);
       viewport.scrollTo({
         left: navigation.anchorWorld.x * nextZoom - (center.clientX - viewportRect.left),
         top: navigation.anchorWorld.y * nextZoom - (center.clientY - viewportRect.top),
@@ -2566,7 +2666,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     if (touchPointersRef.current.size === 0) {
       touchNavigationRef.current = null;
       commitTouchViewport(viewport);
-      if (completedNavigation) {
+      if (completedNavigation?.type === 'pan') {
         startTouchMomentum(viewport, completedNavigation.velocityX, completedNavigation.velocityY);
       }
       return;
@@ -2736,45 +2836,88 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
     await addImages(event.dataTransfer.files, point);
   };
 
-  const handleViewportWheel = useCallback((event: WheelEvent) => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('textarea, input, select, .cw-directory')) return;
-    if (event.ctrlKey || event.metaKey) {
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = viewport.getBoundingClientRect();
-      const pointerX = event.clientX - rect.left;
-      const pointerY = event.clientY - rect.top;
-      const anchorWorld = {
-        x: (viewport.scrollLeft + pointerX) / zoom,
-        y: (viewport.scrollTop + pointerY) / zoom,
-      };
-      const nextZoom = clamp(zoom * Math.exp(-event.deltaY * 0.0018), MIN_ZOOM, MAX_ZOOM);
-      if (Math.abs(nextZoom - zoom) < 0.0001) return;
-      setZoomState(nextZoom);
-      const next = cloneCanvasDocumentForEditing(documentRef.current);
-      next.viewport.zoom = nextZoom;
-      setCurrentDocument(next, false);
-      requestAnimationFrame(() => {
-        viewport.scrollTo({
-          left: anchorWorld.x * nextZoom - pointerX,
-          top: anchorWorld.y * nextZoom - pointerY,
-        });
-        documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
-        documentRef.current.viewport.scrollTop = viewport.scrollTop;
-      });
-      setStatus(`画布缩放 ${Math.round(nextZoom * 100)}% · 已阻止浏览器页面缩放`);
-      return;
-    }
+  const applyPendingWheelZoom = useCallback(() => {
+  wheelZoomFrameRef.current = null;
+  const pending = pendingWheelZoomRef.current;
+  pendingWheelZoomRef.current = null;
+  const viewport = viewportRef.current;
+  if (!pending || !viewport) return;
+  const nextZoom = applyZoomToDom(pending.zoom);
+  const maxLeft = Math.max(0, WORLD_WIDTH * nextZoom - viewport.clientWidth);
+  const maxTop = Math.max(0, WORLD_HEIGHT * nextZoom - viewport.clientHeight);
+  viewport.scrollTo({
+    left: clamp(pending.anchorWorld.x * nextZoom - pending.pointerX, 0, maxLeft),
+    top: clamp(pending.anchorWorld.y * nextZoom - pending.pointerY, 0, maxTop),
+  });
+  documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
+  documentRef.current.viewport.scrollTop = viewport.scrollTop;
+}, [applyZoomToDom]);
+
+const settleWheelZoom = useCallback(() => {
+  if (wheelZoomFrameRef.current !== null) {
+    cancelAnimationFrame(wheelZoomFrameRef.current);
+    wheelZoomFrameRef.current = null;
+  }
+  if (pendingWheelZoomRef.current) applyPendingWheelZoom();
+  const viewport = viewportRef.current;
+  if (!viewport) return;
+  const settledZoom = clamp(zoomRef.current, MIN_ZOOM, MAX_ZOOM);
+  setZoomState(settledZoom);
+  writeViewportSnapshot();
+  setStatus(`画布缩放 ${Math.round(settledZoom * 100)}% · 已阻止浏览器页面缩放`);
+}, [applyPendingWheelZoom, writeViewportSnapshot]);
+
+const handleViewportWheel = useCallback((event: WheelEvent) => {
+  const viewport = viewportRef.current;
+  if (!viewport) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (target?.closest('textarea, input, select, .cw-directory')) return;
+  if (event.ctrlKey || event.metaKey) {
     event.preventDefault();
-    const horizontal = event.shiftKey ? event.deltaY : event.deltaX;
-    const vertical = event.shiftKey ? 0 : event.deltaY;
-    viewport.scrollBy({ left: horizontal, top: vertical });
-    documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
-    documentRef.current.viewport.scrollTop = viewport.scrollTop;
-  }, [setCurrentDocument, zoom]);
+    event.stopPropagation();
+    const rect = viewport.getBoundingClientRect();
+    const pointerX = event.clientX - rect.left;
+    const pointerY = event.clientY - rect.top;
+    const renderedZoom = clamp(zoomRef.current, MIN_ZOOM, MAX_ZOOM);
+    const baseZoom = pendingWheelZoomRef.current?.zoom ?? renderedZoom;
+    const nextZoom = clamp(baseZoom * Math.exp(-event.deltaY * 0.0018), MIN_ZOOM, MAX_ZOOM);
+    if (Math.abs(nextZoom - baseZoom) < 0.0001) return;
+    pendingWheelZoomRef.current = {
+      zoom: nextZoom,
+      anchorWorld: {
+        x: (viewport.scrollLeft + pointerX) / renderedZoom,
+        y: (viewport.scrollTop + pointerY) / renderedZoom,
+      },
+      pointerX,
+      pointerY,
+    };
+    if (wheelZoomFrameRef.current === null) {
+      wheelZoomFrameRef.current = requestAnimationFrame(applyPendingWheelZoom);
+    }
+    if (wheelZoomSettleTimerRef.current !== null) {
+      window.clearTimeout(wheelZoomSettleTimerRef.current);
+    }
+    wheelZoomSettleTimerRef.current = window.setTimeout(() => {
+      wheelZoomSettleTimerRef.current = null;
+      settleWheelZoom();
+    }, WHEEL_ZOOM_SETTLE_MS);
+    return;
+  }
+  if (pendingWheelZoomRef.current || wheelZoomFrameRef.current !== null) {
+    if (wheelZoomSettleTimerRef.current !== null) {
+      window.clearTimeout(wheelZoomSettleTimerRef.current);
+      wheelZoomSettleTimerRef.current = null;
+    }
+    settleWheelZoom();
+  }
+  event.preventDefault();
+  const horizontal = event.shiftKey ? event.deltaY : event.deltaX;
+  const vertical = event.shiftKey ? 0 : event.deltaY;
+  viewport.scrollBy({ left: horizontal, top: vertical });
+  documentRef.current.viewport.scrollLeft = viewport.scrollLeft;
+  documentRef.current.viewport.scrollTop = viewport.scrollTop;
+  scheduleViewportPersistence();
+}, [applyPendingWheelZoom, scheduleViewportPersistence, settleWheelZoom]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -3258,7 +3401,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           <button onClick={redo} disabled={future.length === 0} title="重做（Ctrl+Shift+Z）"><Redo2 size={17} /></button>
           <button className="cw-delete-selection" onClick={deleteSelected} disabled={selection.length === 0} title="删除所选内容"><Trash2 size={17} /><span>删除</span></button>
           <button onClick={() => setZoom(zoom - 0.1)} title="缩小"><ZoomOut size={17} /></button>
-          <span className="cw-zoom-value">{Math.round(zoom * 100)}%</span>
+          <span ref={zoomValueRef} className="cw-zoom-value">{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom(zoom + 0.1)} title="放大"><ZoomIn size={17} /></button>
           <button onClick={fitToContent} title="适应内容（0）"><Maximize2 size={17} /></button>
         </div>
@@ -3289,7 +3432,7 @@ export const CanvasWorkspace = forwardRef<CanvasWorkspaceHandle, CanvasWorkspace
           onScroll={(event) => {
             documentRef.current.viewport.scrollLeft = event.currentTarget.scrollLeft;
             documentRef.current.viewport.scrollTop = event.currentTarget.scrollTop;
-            draftRevisionRef.current += 1;
+            scheduleViewportPersistence();
           }}
         >
           <div ref={worldSpacerRef} className="cw-world-spacer" style={{ width: WORLD_WIDTH * zoom, height: WORLD_HEIGHT * zoom }}>
