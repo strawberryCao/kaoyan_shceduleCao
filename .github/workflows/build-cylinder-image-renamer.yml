@@ -40,7 +40,10 @@ jobs:
         run: npm install
 
       - name: Type-check and build frontend
-        run: npm run build
+        shell: pwsh
+        run: |
+          npm run build *>&1 | Tee-Object -FilePath frontend-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build NSIS installer
         shell: pwsh
@@ -53,7 +56,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cylinder-image-renamer-build-log
-          path: apps/cylinder-image-renamer/build.log
+          path: |
+            apps/cylinder-image-renamer/frontend-build.log
+            apps/cylinder-image-renamer/build.log
           if-no-files-found: warn
 
       - name: Upload installer

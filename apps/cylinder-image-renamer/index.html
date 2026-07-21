@@ -1,214 +1,99 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#eef3f8" />
-    <title>AI 缸号图片整理器</title>
-  </head>
-  <body>
-    <div id="app">
-      <header class="app-header">
-        <div>
-          <p class="eyebrow">LIGHTWEIGHT PRODUCTION ASSISTANT</p>
-          <h1>AI 缸号图片整理器</h1>
-          <p class="subtitle">稳定结果自动命名，冲突或看不清时才交给用户填写。</p>
-        </div>
-        <div class="header-actions">
-          <button id="import-config" class="button ghost">导入配置</button>
-          <button id="export-config" class="button ghost">导出配置</button>
-          <input id="config-file" type="file" accept="application/json" hidden />
-        </div>
-      </header>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f3f1ec" />
+  <title>缸号助手</title>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">缸</span>
+        <div><strong>缸号助手</strong><small id="key-status">尚未配置</small></div>
+      </div>
+      <button id="open-settings" class="icon-button" title="设置" aria-label="打开设置">⚙</button>
+    </header>
 
-      <main class="layout">
-        <aside class="settings-panel">
-          <section class="panel-section">
-            <div class="section-heading">
-              <div>
-                <span class="step">01</span>
-                <h2>AI 服务</h2>
-              </div>
-              <span id="key-status" class="badge muted">未保存 Key</span>
-            </div>
+    <main class="main-view">
+      <section id="drop-zone" class="drop-zone" tabindex="0">
+        <div class="drop-symbol" aria-hidden="true"><span></span><span></span></div>
+        <h1>把图片拖到这里</h1>
+        <p>松开后自动识别并整理</p>
+        <button id="select-images" class="primary-button">选择图片</button>
+        <p class="drop-note">支持 JPG、PNG、WEBP、BMP</p>
+      </section>
 
-            <label>API 地址
-              <input id="base-url" value="https://dashscope.aliyuncs.com/compatible-mode/v1" />
-            </label>
-            <label>API Key
-              <div class="input-action-row">
-                <input id="api-key" type="password" autocomplete="off" placeholder="填写后保存到系统凭据库" />
-                <button id="save-key" class="button compact">保存</button>
-              </div>
-            </label>
-            <label>首次识别模型
-              <input id="first-model" list="model-presets" value="qwen3.7-plus" />
-            </label>
-            <label>独立复核模型
-              <input id="review-model" list="model-presets" value="qwen-vl-ocr" />
-            </label>
-            <label>加强复核模型
-              <input id="strict-model" list="model-presets" value="qwen3.7-plus" />
-            </label>
-            <datalist id="model-presets">
-              <option value="qwen3.7-plus"></option>
-              <option value="qwen3.6-plus"></option>
-              <option value="qwen3.6-flash"></option>
-              <option value="qwen-vl-ocr"></option>
-              <option value="qwen3-vl-plus-2026-01-25"></option>
-            </datalist>
-            <div class="inline-buttons">
-              <button id="test-api" class="button secondary">测试连接</button>
-              <button id="clear-key" class="button ghost danger-text">清除 Key</button>
-            </div>
+      <section id="progress-view" class="progress-view hidden" aria-live="polite">
+        <div class="progress-heading"><div><small>正在整理</small><strong id="progress-title">0 张图片</strong></div><span id="progress-count">0 / 0</span></div>
+        <div class="progress-track"><div id="progress-bar"></div></div>
+        <p id="progress-message">正在读取图片…</p>
+        <button id="stop" class="text-button">处理完当前图片后暂停</button>
+      </section>
+
+      <section id="result-view" class="result-view hidden">
+        <div class="result-heading"><div><small>本次处理完成</small><h1 id="result-title">已整理 0 张图片</h1></div><button id="new-task" class="secondary-button">继续添加</button></div>
+        <div class="summary-strip">
+          <button class="summary-item complete" data-filter="complete"><strong id="stat-auto">0</strong><span>已完成</span></button>
+          <button class="summary-item review" data-filter="review"><strong id="stat-manual">0</strong><span>待确认</span></button>
+          <button class="summary-item unreadable" data-filter="unreadable"><strong id="stat-failed">0</strong><span>无法识别</span></button>
+        </div>
+        <div id="review-list" class="review-list"></div>
+        <div class="result-footer">
+          <button id="open-output" class="primary-button">查看整理结果</button>
+          <button id="undo" class="text-button">撤销本次整理</button>
+        </div>
+      </section>
+    </main>
+
+    <aside id="settings-drawer" class="settings-drawer" aria-hidden="true">
+      <div class="drawer-backdrop" data-close-settings></div>
+      <div class="drawer-panel">
+        <header><div><small>偏好设置</small><h2>缸号助手</h2></div><button class="icon-button" data-close-settings aria-label="关闭">×</button></header>
+        <div class="drawer-scroll">
+          <section class="settings-section">
+            <h3>文件整理</h3>
+            <label>输出位置<div class="field-action"><input id="output-path" readonly placeholder="默认：图片旁的“缸号整理结果”" /><button id="select-output">选择</button></div></label>
+            <label>文件名格式<input id="filename-template" value="{{缸号}}_{{序号}}" /></label>
+            <p class="field-help">可用：{{缸号}}、{{序号}}、{{日期}}、{{原文件名}}、{{批次}}</p>
+            <div class="field-grid"><label>序号起始<input id="sequence-start" type="number" value="1" /></label><label>序号位数<input id="sequence-digits" type="number" value="3" /></label></div>
+            <label>批次名称<input id="batch-name" placeholder="可不填" /></label>
           </section>
 
-          <section class="panel-section">
-            <div class="section-heading">
-              <div>
-                <span class="step">02</span>
-                <h2>缸号与命名规则</h2>
-              </div>
-            </div>
-            <label>缸号合法格式（正则）
-              <input id="number-pattern" value="^[A-Z0-9]+(?:-[A-Z0-9]+)*$" />
-            </label>
-            <div class="two-column">
-              <label>统一分隔符
-                <input id="separator" value="-" maxlength="2" />
-              </label>
-              <label>数字补齐位数
-                <input id="number-padding" type="number" min="0" max="12" value="0" />
-              </label>
-            </div>
-            <div class="check-grid">
-              <label class="check"><input id="uppercase" type="checkbox" checked /> 字母转大写</label>
-              <label class="check"><input id="remove-spaces" type="checkbox" checked /> 删除空格</label>
-            </div>
-            <label>文件名模板
-              <input id="filename-template" value="{{缸号}}_{{序号}}" />
-            </label>
-            <p class="hint">变量：{{缸号}}、{{序号}}、{{日期}}、{{原文件名}}、{{批次}}、{{扩展名}}</p>
-            <div class="two-column">
-              <label>序号起始
-                <input id="sequence-start" type="number" min="0" value="1" />
-              </label>
-              <label>序号位数
-                <input id="sequence-digits" type="number" min="1" max="8" value="3" />
-              </label>
-            </div>
-            <label>批次（可选）
-              <input id="batch-name" placeholder="例如 2026-07-A班" />
-            </label>
+          <section class="settings-section">
+            <div class="section-title"><h3>AI 服务</h3><span id="key-badge" class="state-badge">未配置</span></div>
+            <label>API Key<div class="field-action"><input id="api-key" type="password" placeholder="只保存在本机系统凭据库" /><button id="save-key">保存</button></div></label>
+            <label>API 地址<input id="base-url" value="https://dashscope.aliyuncs.com/compatible-mode/v1" /></label>
+            <label>识别模型<input id="first-model" value="qwen3.7-plus" /></label>
+            <label>复核模型<input id="review-model" value="qwen-vl-ocr" /></label>
+            <div class="button-row"><button id="test-api" class="secondary-button">测试连接</button><button id="clear-key" class="text-button danger">清除 Key</button></div>
           </section>
 
-          <details class="panel-section advanced">
-            <summary>高级 AI 参数与提示词</summary>
-            <div class="advanced-content">
-              <div class="two-column">
-                <label>Temperature
-                  <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.05" />
-                </label>
-                <label>最大输出 Token
-                  <input id="max-tokens" type="number" min="128" max="8192" value="800" />
-                </label>
-              </div>
-              <div class="two-column">
-                <label>超时（秒）
-                  <input id="timeout" type="number" min="10" max="300" value="90" />
-                </label>
-                <label>上传最长边
-                  <input id="max-dimension" type="number" min="640" max="4096" value="2048" />
-                </label>
-              </div>
-              <label>首次识别提示词
-                <textarea id="first-prompt" rows="7"></textarea>
-              </label>
-              <label>独立复核提示词
-                <textarea id="review-prompt" rows="7"></textarea>
-              </label>
-              <label>加强复核提示词
-                <textarea id="strict-prompt" rows="7"></textarea>
-              </label>
-              <button id="restore-prompts" class="button ghost">恢复默认提示词</button>
+          <details class="settings-section advanced-settings">
+            <summary>高级设置</summary>
+            <div class="advanced-body">
+              <label>加强复核模型<input id="strict-model" value="qwen3.7-plus" /></label>
+              <label>缸号格式<input id="number-pattern" value="^[A-Z0-9]+(?:-[A-Z0-9]+)*$" /></label>
+              <div class="field-grid"><label>统一分隔符<input id="separator" value="-" /></label><label>数字补齐<input id="number-padding" type="number" value="0" /></label></div>
+              <label class="toggle-line"><input id="uppercase" type="checkbox" checked /><span>字母统一大写</span></label>
+              <label class="toggle-line"><input id="remove-spaces" type="checkbox" checked /><span>自动移除空格</span></label>
+              <div class="field-grid"><label>Temperature<input id="temperature" type="number" step="0.05" value="0.05" /></label><label>最大 Token<input id="max-tokens" type="number" value="800" /></label></div>
+              <div class="field-grid"><label>超时（秒）<input id="timeout" type="number" value="90" /></label><label>图片最长边<input id="max-dimension" type="number" value="2048" /></label></div>
+              <label>首次识别提示词<textarea id="first-prompt" rows="5"></textarea></label>
+              <label>复核提示词<textarea id="review-prompt" rows="5"></textarea></label>
+              <label>加强复核提示词<textarea id="strict-prompt" rows="5"></textarea></label>
+              <button id="restore-prompts" class="secondary-button">恢复默认提示词</button>
             </div>
           </details>
-        </aside>
-
-        <section class="workspace">
-          <section class="toolbar card">
-            <div class="toolbar-main">
-              <button id="select-images" class="button primary">选择图片</button>
-              <button id="clear-list" class="button ghost">清空列表</button>
-              <span id="source-summary" class="muted-text">尚未导入图片</span>
-            </div>
-            <div class="toolbar-output">
-              <button id="select-output" class="button secondary">选择输出目录</button>
-              <span id="output-path" class="path-text">默认写入原图所在目录</span>
-              <select id="operation-mode" aria-label="文件处理模式">
-                <option value="copy">复制并命名（推荐）</option>
-                <option value="move">移动并命名</option>
-              </select>
-            </div>
-          </section>
-
-          <section class="stats-grid">
-            <article class="stat-card"><span>总图片</span><strong id="stat-total">0</strong></article>
-            <article class="stat-card success"><span>自动命名</span><strong id="stat-auto">0</strong></article>
-            <article class="stat-card warning"><span>需要填写</span><strong id="stat-manual">0</strong></article>
-            <article class="stat-card"><span>待处理</span><strong id="stat-pending">0</strong></article>
-          </section>
-
-          <section class="queue card">
-            <div class="queue-heading">
-              <div>
-                <h2>处理队列</h2>
-                <p>程序按顺序逐张读取，原图不会批量驻留内存。</p>
-              </div>
-              <div class="inline-buttons">
-                <button id="analyze" class="button primary" disabled>开始 AI 识别</button>
-                <button id="stop" class="button ghost" disabled>暂停</button>
-                <button id="execute" class="button success-button" disabled>执行可用结果</button>
-                <button id="undo" class="button ghost">撤销上次操作</button>
-              </div>
-            </div>
-
-            <div id="empty-state" class="empty-state">
-              <div class="empty-icon">缸</div>
-              <h3>导入图片后开始</h3>
-              <p>两次识别一致并通过规则校验的结果会自动放行；存在字符冲突或无法读取的图片才要求填写。</p>
-            </div>
-
-            <div id="queue-table-wrap" class="table-wrap hidden">
-              <table>
-                <thead>
-                  <tr>
-                    <th>原文件</th>
-                    <th>识别结果</th>
-                    <th>状态</th>
-                    <th>最终缸号</th>
-                    <th>新文件名</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody id="queue-body"></tbody>
-              </table>
-            </div>
-          </section>
-        </section>
-      </main>
-    </div>
-
-    <dialog id="preview-dialog">
-      <div class="dialog-header">
-        <h2 id="preview-title">图片预览</h2>
-        <button id="close-preview" class="icon-button" aria-label="关闭">×</button>
+        </div>
       </div>
-      <div id="preview-loading" class="preview-loading">正在读取缩略图…</div>
-      <img id="preview-image" alt="当前图片预览" hidden />
-    </dialog>
+    </aside>
 
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+    <dialog id="preview-dialog"><button id="close-preview" class="dialog-close">×</button><img id="preview-image" alt="图片预览" /><p id="preview-loading">正在读取图片…</p></dialog>
+    <input id="config-file" type="file" accept="application/json" hidden />
+    <div id="toast" class="toast" role="status"></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
 </html>
