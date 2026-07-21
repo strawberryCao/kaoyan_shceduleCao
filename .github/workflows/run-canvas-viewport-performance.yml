@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - fix/learning-detail-title-latex
+  pull_request:
+    branches:
+      - fix/learning-detail-title-latex
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
