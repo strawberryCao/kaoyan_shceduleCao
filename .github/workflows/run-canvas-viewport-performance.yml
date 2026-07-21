@@ -45,7 +45,18 @@ jobs:
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
           Path('/tmp/apply_canvas_viewport_performance.py').write_text(script, encoding='utf-8')
           EXTRACT
-          python3 /tmp/apply_canvas_viewport_performance.py
+          if ! python3 /tmp/apply_canvas_viewport_performance.py > /tmp/canvas-patch.log 2>&1; then
+            cat /tmp/canvas-patch.log
+            exit 1
+          fi
+
+      - name: Upload patch failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-patch-failure
+          path: /tmp/canvas-patch.log
+          if-no-files-found: ignore
 
       - name: Install dependencies
         working-directory: outputs/kaoyan-schedule-app
