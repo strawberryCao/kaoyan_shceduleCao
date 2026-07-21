@@ -9,7 +9,7 @@ const {
 } = require('./ai-subject-policy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
 
-const ANALYZER_VERSION = 'note-ai-analyzer-v3';
+const ANALYZER_VERSION = 'note-ai-analyzer-v4';
 const DEFAULT_TAXONOMY_MAX_CHARS = 12_000;
 
 const NOTE_ANALYSIS_SCHEMA = Object.freeze({
@@ -22,6 +22,8 @@ const NOTE_ANALYSIS_SCHEMA = Object.freeze({
     'summary',
     'tags',
     'wrongReason',
+    'wrongReasonSource',
+    'wrongReasonConfidence',
     'intent',
     'items',
     'cards',
@@ -46,6 +48,8 @@ const NOTE_ANALYSIS_SCHEMA = Object.freeze({
     tags: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 40 } },
     questionType: { type: ['string', 'null'], maxLength: 60 },
     wrongReason: { type: ['string', 'null'], maxLength: 500 },
+    wrongReasonSource: { type: 'string', enum: ['explicit_remark', 'explicit_image', 'ai_inferred', 'none'] },
+    wrongReasonConfidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
     intent: {
       type: 'object',
       required: ['isQuestion', 'isMistake', 'shouldMemorize'],
@@ -254,6 +258,13 @@ function makePromptContext(context, parsed, hints, taxonomy) {
       subject: cleanText(current.subject, 60) || null,
       knowledgePoint: cleanText(current.knowledgePoint, 60) || null,
     },
+    existingLearning: {
+      noteType: cleanText(metadata.learning?.noteType, 40) || null,
+      organizationStatus: cleanText(metadata.learning?.organizationStatus, 40) || null,
+      wrongReason: cleanText(metadata.learning?.wrongReason, 500) || null,
+      wrongReasonSource: cleanText(metadata.learning?.wrongReasonSource, 40) || null,
+      userEditedFields: uniqueStrings(metadata.learning?.userEditedFields, 30, 60),
+    },
     existingTaxonomy: taxonomy,
   };
 }
@@ -294,7 +305,9 @@ function buildPrompt(contextPayload, options = {}) {
     '2. aliases 只放与规范分类真正同义的名称，不要放上下位概念或无关标签。',
     '3. subject/knowledgePoint 是整张笔记用于归档的主分类。canvas 含多道题时选共同或最主要分类，并在 items 中逐项描述。',
     `4. single 通常是一道题或一个知识单元；除非图片明显包含多个独立题目，不要拆成多个 items。canvas 可以返回多个 items，但最多 ${maxItems} 项，不要机械逐段拆分。`,
-    '5. questionType 概括题型（如极限计算、证明题、选择题、代码分析）；不是题目则为 null。wrongReason 必须根据备注和图片语义总结真实错因；无法判断则为 null，禁止编造。',
+    '5. questionType 概括题型（如极限计算、证明题、选择题、代码分析）；不是题目则为 null。',
+    '5.0 错因按证据优先级处理：备注明确写出错因时只做忠实提取，wrongReasonSource=explicit_remark；图片中明确标注、划改或订正能直接证明错因时为 explicit_image；前两者都没有、但可从可见错误步骤与订正可靠推断时，才允许给出一句简短推断并标记 ai_inferred；证据不足必须返回 null/none，禁止猜测。',
+    '5.0.1 wrongReason 最多一句话，描述具体错误动作，不写完整解法、不教学、不扩展知识。wrongReasonConfidence 只表示错因判断可靠度。',
     `5.1 ${summaryRule}`,
     `6. ${mistakeRule}`,
     `6.1 ${goodRule}`,
@@ -303,7 +316,7 @@ function buildPrompt(contextPayload, options = {}) {
     '8. confidence 衡量主分类和语义判断的可靠程度；置信度只用于记录可靠性，不用于要求用户确认，也不能替代你的最佳分类判断。图片不清晰或跨多个不相关主题时应降低。',
     '9. 所有文字使用简洁中文。不要输出 Markdown，不要解释 JSON 之外的内容。',
     '必须严格使用以下 JSON 结构；没有错因时 wrongReason 为 null，没有分项或卡片时用空数组：',
-    '{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}',
+    '{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"wrongReasonSource":"none","wrongReasonConfidence":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}',
     '输入上下文：',
     JSON.stringify(contextPayload),
   ].join('\n');
@@ -383,7 +396,7 @@ function normalizeCards(value, overallIntent, items, hints, tags, options = {}) 
   return cards;
 }
 
-function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {}) {
+function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {}, promptContext = {}) {
   if (!aiResult || typeof aiResult !== 'object' || Array.isArray(aiResult)) {
     const error = new Error('AI note analyzer returned an invalid result');
     error.code = 'NOTE_AI_RESULT_INVALID';
@@ -415,6 +428,29 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
   ], 20, 40).filter((tag) => !['好题', '经典题', '典型题', '精品题'].includes(tag));
   const cards = normalizeCards(aiResult.cards, intent, items, hints, tags, options);
   const confidence = Number(aiResult.confidence);
+  const explicitRemarkReason = uniqueStrings(parsed?.wrongReasons, 1, 500)[0] || '';
+  const manualWrongReason = cleanText(promptContext?.existingLearning?.wrongReason, 500);
+  const manualFields = new Set(promptContext?.existingLearning?.userEditedFields || []);
+  const manualLocked = manualFields.has('wrongReason');
+  const aiWrongReason = cleanText(aiResult.wrongReason, 500);
+  const allowedWrongReasonSources = new Set(['explicit_remark', 'explicit_image', 'ai_inferred', 'none']);
+  const wrongReason = manualLocked ? manualWrongReason : explicitRemarkReason || aiWrongReason || null;
+  let wrongReasonSource = manualLocked
+    ? (manualWrongReason ? 'manual' : 'manual_deleted')
+    : explicitRemarkReason
+      ? 'explicit_remark'
+      : allowedWrongReasonSources.has(aiResult.wrongReasonSource)
+        ? aiResult.wrongReasonSource
+        : aiWrongReason ? 'ai_inferred' : 'none';
+  if (!wrongReason) wrongReasonSource = manualLocked ? 'manual_deleted' : 'none';
+  const rawWrongReasonConfidence = Number(aiResult.wrongReasonConfidence);
+  const wrongReasonConfidence = manualLocked
+    ? (manualWrongReason ? 1 : null)
+    : explicitRemarkReason
+      ? 1
+      : wrongReason && Number.isFinite(rawWrongReasonConfidence)
+        ? Math.min(1, Math.max(0, rawWrongReasonConfidence))
+        : wrongReason ? 0.55 : null;
   return {
     subject: cleanText(aiResult.subject, 60),
     knowledgePoint: cleanText(aiResult.knowledgePoint, 60) || null,
@@ -429,7 +465,9 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
     summary: cleanText(aiResult.summary, 2_000),
     tags,
     questionType,
-    wrongReason: cleanText(aiResult.wrongReason, 500) || null,
+    wrongReason,
+    wrongReasonSource,
+    wrongReasonConfidence,
     intent,
     items,
     cards,
@@ -451,10 +489,21 @@ function createNoteAiAnalyzer(options = {}) {
     || DEFAULT_TAXONOMY_MAX_CHARS;
 
   const analyzer = async function noteAiAnalyzer(context = {}) {
-    const taskOptions = typeof router.getTaskOptions === 'function' ? router.getTaskOptions('note_enrichment') : {};
     const metadata = context.metadata && typeof context.metadata === 'object' ? context.metadata : {};
+    const remarkMissing = !cleanText(metadata.remark, 4_000);
+    const taskId = remarkMissing ? 'note_image_understanding' : 'note_enrichment';
+    const baseTaskOptions = typeof router.getTaskOptions === 'function' ? router.getTaskOptions('note_enrichment') : {};
+    const taskOptions = typeof router.getTaskOptions === 'function'
+      ? { ...baseTaskOptions, ...router.getTaskOptions(taskId) }
+      : baseTaskOptions;
     const parsed = parseRemark(typeof metadata.remark === 'string' ? metadata.remark : '');
-    const hints = detectStrongIntentHints(metadata.remark, parsed);
+    const baseHints = detectStrongIntentHints(metadata.remark, parsed);
+    const existingTags = Array.isArray(metadata.learning?.tags) ? metadata.learning.tags : [];
+    const hints = {
+      ...baseHints,
+      isMistake: baseHints.isMistake || metadata.learning?.noteType === 'mistake' || existingTags.includes('错题'),
+      shouldMemorize: baseHints.shouldMemorize || metadata.learning?.noteType === 'memory' || existingTags.includes('背诵'),
+    };
     // Unknown legacy/user subjects remain in the persisted taxonomy, but they
     // are deliberately omitted from the AI prompt so the model cannot select
     // them as a new top-level classification.
@@ -466,8 +515,8 @@ function createNoteAiAnalyzer(options = {}) {
     const imageDataUrl = imagePathToDataUrl(context.imagePath);
 
     const result = await router.complete({
-      task: 'note_enrichment',
-      difficulty: metadata.kind === 'canvas' ? 'high' : 'medium',
+      task: taskId,
+      difficulty: remarkMissing || metadata.kind === 'canvas' ? 'high' : 'medium',
       messages: [
         {
           role: 'user',
@@ -482,7 +531,7 @@ function createNoteAiAnalyzer(options = {}) {
       maxTokens: Number(taskOptions.maxTokens) || (metadata.kind === 'canvas' ? 5_200 : 3_200),
     });
 
-    const analysis = normalizeAnalysis(result.json, result.provider, result.model, parsed, hints, taskOptions);
+    const analysis = normalizeAnalysis(result.json, result.provider, result.model, parsed, hints, taskOptions, promptContext);
     const subjectDecision = resolveAiSubject(context.taxonomy, {
       requestedSubject: analysis.subject,
       subjectAliases: analysis.subjectAliases,
