@@ -5,7 +5,7 @@ on:
     branches:
       - fix/learning-detail-title-latex
     paths:
-      - .github/scripts/apply-review-ai-improvements.py
+      - .github/scripts/apply-review-ai-*.py
       - .github/workflows/validate-review-ai-improvements.yml
 
 permissions:
@@ -28,7 +28,11 @@ jobs:
           fetch-depth: 0
 
       - name: Apply improvements
-        run: python3 .github/scripts/apply-review-ai-improvements.py
+        run: |
+          for script in .github/scripts/apply-review-ai-*.py; do
+            echo "Applying $script"
+            python3 "$script"
+          done
 
       - name: Syntax checks
         working-directory: outputs/kaoyan-schedule-app
@@ -50,10 +54,10 @@ jobs:
 
       - name: Commit validated implementation
         run: |
-          rm -f .github/scripts/apply-review-ai-improvements.py
+          rm -f .github/scripts/apply-review-ai-*.py
           rm -f .github/workflows/validate-review-ai-improvements.yml
           git config user.name "github-actions[bot]"
-          git config user.email "4189826+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add outputs/kaoyan-schedule-app .github
           git commit -m "feat: improve review sync and AI wrong-reason analysis"
           git push origin HEAD:fix/learning-detail-title-latex
