@@ -33,6 +33,76 @@ jobs:
       - name: Extract and run validated patch script
         shell: bash
         run: |
+          python3 - <<'PATCH_INITIAL'
+          from pathlib import Path
+          import re
+
+          path = Path('outputs/kaoyan-schedule-app/src/components/CanvasWorkspace.tsx')
+          text = path.read_text(encoding='utf-8').replace('\r\n', '\n')
+          pattern = re.compile(
+              r"  const storageKey = draftKey === false \? null : draftKey;\n"
+              r"  const initialIdRef = useRef\(initialDocument\?\.id \?\? null\);\n"
+              r"  const makeInitialDocument = \(\) => \{\n.*?\n  \};\n\n"
+              r"  const \[documentState",
+              re.DOTALL,
+          )
+          replacement = """  const storageKey = draftKey === false ? null : draftKey;
+          const viewportStorageKey = storageKey ? `${storageKey}.viewport` : null;
+          const initialIdRef = useRef(initialDocument?.id ?? null);
+          const restoreStoredViewport = (document: CanvasDocument): CanvasDocument => {
+            if (!viewportStorageKey || typeof localStorage === 'undefined') return document;
+            try {
+              const saved = localStorage.getItem(viewportStorageKey);
+              if (!saved) return document;
+              const parsed = JSON.parse(saved) as Partial<CanvasDocument['viewport']>;
+              const savedZoom = Number(parsed.zoom);
+              const savedScrollLeft = Number(parsed.scrollLeft);
+              const savedScrollTop = Number(parsed.scrollTop);
+              if (
+                Number.isFinite(savedZoom)
+                && Number.isFinite(savedScrollLeft)
+                && Number.isFinite(savedScrollTop)
+              ) {
+                document.viewport = {
+                  zoom: clamp(savedZoom, MIN_ZOOM, MAX_ZOOM),
+                  scrollLeft: Math.max(0, savedScrollLeft),
+                  scrollTop: Math.max(0, savedScrollTop),
+                };
+              }
+            } catch {
+              // Viewport state is optional; an invalid lightweight snapshot is ignored.
+            }
+            return document;
+          };
+          const makeInitialDocument = () => {
+            if (storageKey && typeof localStorage !== 'undefined') {
+              try {
+                const saved = localStorage.getItem(storageKey);
+                if (saved) {
+                  const draft = parseCanvasDocument(saved);
+                  const draftIsNewer = !initialDocument
+                    || (
+                      draft.id === initialDocument.id
+                      && draft.syncRevision === initialDocument.syncRevision
+                      && draft.updatedAt !== initialDocument.updatedAt
+                    );
+                  if (draftIsNewer) return restoreStoredViewport(draft);
+                }
+              } catch {
+                // A malformed or over-quota draft should never prevent opening the editor.
+              }
+            }
+            if (initialDocument) return restoreStoredViewport(cloneCanvasDocument(initialDocument));
+            return restoreStoredViewport(createEmptyCanvasDocument());
+          };
+
+          const [documentState"""
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'lightweight viewport restore regex: expected one match, found {count}')
+          path.write_text(text, encoding='utf-8')
+          PATCH_INITIAL
+
           python3 - <<'EXTRACT'
           from pathlib import Path
 
@@ -43,6 +113,10 @@ jobs:
           end = workflow.index(end_marker, start)
           lines = workflow[start:end].splitlines()
           script = '\n'.join(line[10:] if line.startswith('          ') else line for line in lines) + '\n'
+          label_position = script.index("'lightweight viewport restore'")
+          call_start = script.rfind('\nreplace_once(', 0, label_position) + 1
+          call_end = script.index('\n)\n', label_position) + 3
+          script = script[:call_start] + script[call_end:]
           Path('/tmp/apply_canvas_viewport_performance.py').write_text(script, encoding='utf-8')
           EXTRACT
           if ! python3 /tmp/apply_canvas_viewport_performance.py > /tmp/canvas-patch.log 2>&1; then
