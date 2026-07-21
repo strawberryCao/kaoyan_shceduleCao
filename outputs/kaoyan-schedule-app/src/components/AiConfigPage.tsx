@@ -5,8 +5,11 @@ import {
   Check,
   ChevronRight,
   CircleGauge,
+  Download,
+  FolderOpen,
   LoaderCircle,
   Plus,
+  RefreshCcw,
   RotateCcw,
   Save,
   ServerCog,
@@ -14,12 +17,18 @@ import {
   SlidersHorizontal,
   Sparkles,
   Trash2,
+  UploadCloud,
   WandSparkles,
 } from 'lucide-react';
 import {
   fetchAiConfiguration,
+  fetchReviewSyncStatus,
+  pullReviewPdfs,
+  pushReviewData,
   saveAiConfiguration,
+  selectReviewOutputDirectory,
   type AiConfigurationSnapshot,
+  type ReviewSyncStatus,
   type AiNamingRule,
   type AiTaskParameterDefinition,
   type AiTaskDefinition,
@@ -45,6 +54,7 @@ const instructionExamples: Record<string, string> = {
   note_enrichment: '例如：错因必须写成可执行的改进动作；不要把单纯计算量大的题判断为好题。',
   widget_generation: '例如：按钮使用紧凑布局；所有计时状态必须在组件内可重置。',
   canvas_organization: '例如：同一道题的原题、草稿、订正按从左到右排列；不同题目上下分组。',
+  weekly_review_pdf: '只能分组和排序；禁止补充答案、知识讲解、例题、口诀或额外总结。',
   note_classification: '例如：涉及多个知识点时，主分类选择题目最终考查的知识点。',
   taxonomy: '例如：同义缩写归并为正式教材名称，不合并上下位知识点。',
   flashcard_generation: '例如：正面必须是能独立作答的问题，背面优先写判定步骤而不是整段抄录。',
@@ -87,6 +97,8 @@ export function AiConfigPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
+  const [reviewStatus, setReviewStatus] = useState<ReviewSyncStatus | null>(null);
+  const [reviewAction, setReviewAction] = useState<'push' | 'pull' | 'directory' | 'refresh' | ''>('');
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +122,15 @@ export function AiConfigPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (selectedTaskId !== 'weekly_review_pdf') return undefined;
+    let cancelled = false;
+    void fetchReviewSyncStatus()
+      .then((next) => { if (!cancelled) setReviewStatus(next); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
+    return () => { cancelled = true; };
+  }, [selectedTaskId, savedMessage]);
 
   const selectedTask = snapshot?.taskDefinitions.find((task) => task.id === selectedTaskId) || null;
   const settings = draft[selectedTaskId] || {};
@@ -179,6 +200,39 @@ export function AiConfigPage() {
   const handleProviderChange = (providerId: string) => {
     if (!providerId) updateTask({}, ['providerId', 'modelId']);
     else updateTask({ providerId }, ['modelId']);
+  };
+
+  const chooseReviewDirectory = async (parameter: AiTaskParameterDefinition) => {
+    setReviewAction('directory');
+    setError('');
+    try {
+      const result = await selectReviewOutputDirectory(String(parameterValue(parameter) || ''));
+      if (result.path) updateTaskParameter(parameter, result.path);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setReviewAction('');
+    }
+  };
+
+  const runReviewAction = async (action: 'push' | 'pull' | 'refresh') => {
+    setReviewAction(action);
+    setError('');
+    setSavedMessage('');
+    try {
+      if (action === 'push') {
+        const result = await pushReviewData();
+        setSavedMessage(result.skipped ? result.reason || '本次同步已跳过。' : `已同步 ${result.count ?? 0} 条已确认内容${result.changed ? '并推送到 GitHub' : '；仓库内容没有变化'}。`);
+      } else if (action === 'pull') {
+        const result = await pullReviewPdfs();
+        setSavedMessage(result.skipped ? result.reason || '本次下载已跳过。' : `已检查最新 PDF，下载 ${result.downloaded ?? 0} 个文件。`);
+      }
+      setReviewStatus(await fetchReviewSyncStatus());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setReviewAction('');
+    }
   };
 
   const setNamingRules = (namingRules: AiNamingRule[]) => {
@@ -362,30 +416,46 @@ export function AiConfigPage() {
                           </label>
                         );
                       }
-                      return (
-                        <label className="ai-config-field" key={parameter.id}>
-                          <span>{parameter.label}</span>
-                          <small>{parameter.description}</small>
-                          {parameter.type === 'select' ? (
-                            <select value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)}>
-                              {(parameter.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                            </select>
-                          ) : (
-                            <span className="ai-number-with-unit">
-                              <input
-                                inputMode="decimal"
-                                max={parameter.max}
-                                min={parameter.min}
-                                step={parameter.step}
-                                type="number"
-                                value={Number(value)}
-                                onChange={(event) => updateTaskParameter(parameter, Number(event.target.value))}
-                              />
-                              {parameter.unit && <em>{parameter.unit}</em>}
-                            </span>
-                          )}
-                        </label>
-                      );
+                       if (parameter.type === 'path') {
+                         return (
+                           <div className="ai-config-field ai-path-parameter" key={parameter.id}>
+                             <span>{parameter.label}</span>
+                             <small>{parameter.description}</small>
+                             <div>
+                               <input maxLength={parameter.maxLength} type="text" value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)} />
+                               <button disabled={reviewAction === 'directory'} type="button" onClick={() => void chooseReviewDirectory(parameter)}>
+                                 {reviewAction === 'directory' ? <LoaderCircle className="is-spinning" size={15} /> : <FolderOpen size={15} />} 选择目录
+                               </button>
+                             </div>
+                           </div>
+                         );
+                       }
+                       return (
+                         <label className="ai-config-field" key={parameter.id}>
+                           <span>{parameter.label}</span>
+                           <small>{parameter.description}</small>
+                           {parameter.type === 'select' ? (
+                             <select value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)}>
+                               {(parameter.options || []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                             </select>
+                           ) : parameter.type === 'text' ? (
+                             <input maxLength={parameter.maxLength} type="text" value={String(value)} onChange={(event) => updateTaskParameter(parameter, event.target.value)} />
+                           ) : (
+                             <span className="ai-number-with-unit">
+                               <input
+                                 inputMode="decimal"
+                                 max={parameter.max}
+                                 min={parameter.min}
+                                 step={parameter.step}
+                                 type="number"
+                                 value={Number(value)}
+                                 onChange={(event) => updateTaskParameter(parameter, Number(event.target.value))}
+                               />
+                               {parameter.unit && <em>{parameter.unit}</em>}
+                             </span>
+                           )}
+                         </label>
+                       );
                     })}
                   </div>
                 </div>
@@ -393,6 +463,40 @@ export function AiConfigPage() {
                 <p className="ai-no-special-parameters">这个预留任务暂时只有自由规则；接入具体业务后会显示可强制校验的专属参数。</p>
               )}
             </section>
+
+            {selectedTaskId === 'weekly_review_pdf' && (
+              <section className="ai-review-sync-panel">
+                <header>
+                  <div>
+                    <span><UploadCloud size={16} /> GitHub 综合复习流水线</span>
+                    <small>仓库是公开的。只上传已确认的错题和背诵；AI 只能分组，不生成额外正文。</small>
+                  </div>
+                  <button disabled={reviewAction !== ''} type="button" onClick={() => void runReviewAction('refresh')}>
+                    {reviewAction === 'refresh' ? <LoaderCircle className="is-spinning" size={15} /> : <RefreshCcw size={15} />} 刷新状态
+                  </button>
+                </header>
+                <div className="ai-review-public-warning">
+                  <AlertTriangle size={17} />
+                  <span>题目截图、手写过程和备注会进入公开仓库。请不要同步含姓名、账号、电话或不希望公开的信息。</span>
+                </div>
+                <div className="ai-review-status-grid">
+                  <div><small>仓库</small><strong>{reviewStatus?.settings?.repository || String(settings.options?.repository || 'strawberryCao/Caobijidata')}</strong></div>
+                  <div><small>本地目录</small><strong>{reviewStatus?.settings?.outputDirectory || String(settings.options?.localOutputDir || '桌面\考研复习资料')}</strong></div>
+                  <div><small>最近上传</small><strong>{reviewStatus?.lastPushAt ? new Date(reviewStatus.lastPushAt).toLocaleString() : '尚未上传'}</strong></div>
+                  <div><small>最近 PDF</small><strong>{reviewStatus?.lastRemoteGeneratedAt ? new Date(reviewStatus.lastRemoteGeneratedAt).toLocaleString() : '尚未下载'}</strong></div>
+                </div>
+                {reviewStatus?.lastError && <p className="ai-review-last-error">{reviewStatus.lastError}</p>}
+                <div className="ai-review-actions">
+                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('push')}>
+                    {reviewAction === 'push' ? <LoaderCircle className="is-spinning" size={16} /> : <UploadCloud size={16} />} 立即同步已确认内容
+                  </button>
+                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('pull')}>
+                    {reviewAction === 'pull' ? <LoaderCircle className="is-spinning" size={16} /> : <Download size={16} />} 下载最新两份 PDF
+                  </button>
+                  {dirty && <small>先保存当前 AI 配置，再执行同步或下载。</small>}
+                </div>
+              </section>
+            )}
 
             {selectedTaskId === 'note_naming' && (
               <section className="ai-naming-rules">

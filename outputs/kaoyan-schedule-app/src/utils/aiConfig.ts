@@ -28,7 +28,7 @@ export interface AiTaskSettings {
 export interface AiTaskParameterDefinition {
   id: string;
   group: string;
-  type: 'boolean' | 'number' | 'select';
+  type: 'boolean' | 'number' | 'select' | 'text' | 'path';
   label: string;
   description: string;
   default: string | number | boolean;
@@ -36,6 +36,7 @@ export interface AiTaskParameterDefinition {
   max?: number;
   step?: number;
   unit?: string;
+  maxLength?: number;
   options?: Array<{ value: string; label: string }>;
 }
 
@@ -109,4 +110,50 @@ export async function saveAiConfiguration(
     body: JSON.stringify({ tasks }),
   });
   return readResponse(response);
+}
+
+
+export interface ReviewSyncStatus {
+  ok?: boolean;
+  running?: boolean;
+  updatedAt?: string;
+  lastPushAt?: string;
+  lastPushCount?: number;
+  lastPushResult?: string;
+  lastPullAt?: string;
+  lastPullResult?: string;
+  lastRemoteGeneratedAt?: string;
+  lastError?: string | null;
+  settings?: {
+    enabled?: boolean;
+    repository?: string;
+    branch?: string;
+    outputDirectory?: string;
+  };
+}
+
+async function readReviewResponse<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => null) as (T & { error?: string }) | null;
+  if (!response.ok || !payload) throw new Error(payload?.error || `综合复习同步请求失败（HTTP ${response.status}）`);
+  return payload;
+}
+
+export async function fetchReviewSyncStatus(): Promise<ReviewSyncStatus> {
+  return readReviewResponse<ReviewSyncStatus>(await fetch(`${NOTE_SERVER_URL}/ai/review/status`, { cache: 'no-store' }));
+}
+
+export async function pushReviewData(): Promise<{ ok: boolean; changed?: boolean; count?: number; skipped?: boolean; reason?: string }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/push`, { method: 'POST' }));
+}
+
+export async function pullReviewPdfs(): Promise<{ ok: boolean; downloaded?: number; outputDirectory?: string; skipped?: boolean; reason?: string }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/pull`, { method: 'POST' }));
+}
+
+export async function selectReviewOutputDirectory(initialPath = ''): Promise<{ ok: boolean; path: string; cancelled?: boolean }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/select-directory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ initialPath }),
+  }));
 }

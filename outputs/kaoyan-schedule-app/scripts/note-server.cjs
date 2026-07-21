@@ -33,6 +33,7 @@ const {
 const { parseRemark } = require('./remark-parser.cjs');
 const { loadQwenConfig } = require('./qwen-config.cjs');
 const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
+const { createReviewSyncManager, selectWindowsDirectory } = require('./review-github-sync.cjs');
 
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
@@ -52,6 +53,11 @@ const DEFAULT_SUBJECT = '默认文件夹';
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const qwen = loadQwenConfig();
 const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
+const reviewSync = createReviewSyncManager({
+  assistantRoot: ASSISTANT_ROOT,
+  configPath: AI_PROVIDER_CONFIG_PATH,
+  getLearningSnapshot: () => learningData.getSnapshot(),
+});
 const canvasProjects = createCanvasDocumentStore({
   rootDir: path.join(ASSISTANT_ROOT, 'canvas-projects'),
 });
@@ -1981,6 +1987,35 @@ async function handleLearningDataRoute(req, res, pathname) {
   return false;
 }
 
+async function handleReviewSyncRoute(req, res, pathname) {
+  if (!pathname.startsWith('/ai/review/')) return false;
+  if (!canControlNoteApp(req)) {
+    sendJson(res, 403, { ok: false, error: '综合复习同步只能在运行服务的 Windows 主机上操作。' });
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/ai/review/status') {
+    sendJson(res, 200, { ok: true, ...reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/push') {
+    const result = await reviewSync.push();
+    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/pull') {
+    const result = await reviewSync.pull();
+    sendJson(res, 200, { ...result, status: reviewSync.status() });
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/review/select-directory') {
+    const payload = JSON.parse((await readBody(req, 16 * 1024)) || '{}');
+    const selectedPath = await selectWindowsDirectory(payload.initialPath);
+    sendJson(res, 200, { ok: true, path: selectedPath, cancelled: !selectedPath });
+    return true;
+  }
+  return false;
+}
+
 function readOrganizerStatus() {
   const state = readJson(ORGANIZER_STATE_PATH, {});
   const parsedLastSuccessfulAt = typeof state?.lastSuccessfulAt === 'string'
@@ -2077,6 +2112,7 @@ const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
     const { pathname } = requestUrl;
 
+    if (await handleReviewSyncRoute(req, res, pathname)) return;
     if (await handleCanvasProjectRoute(req, res, pathname)) return;
     if (await handleLearningDataRoute(req, res, pathname)) return;
     if (await handleOrganizerRoute(req, res, pathname)) return;
@@ -2143,6 +2179,8 @@ const server = http.createServer(async (req, res) => {
         learningDataPath: learningData.filePath,
         organizerEndpoint: '/organizer/status',
         organizer: readOrganizerStatus(),
+        reviewSyncEndpoint: '/ai/review/status',
+        reviewSync: reviewSync.status(),
         aiRouter: currentRouter ? currentRouter.getStatus() : { providers: [], error: aiRouterInitError },
         qwen: {
           enabled: Boolean(qwen.apiKey),
@@ -2255,6 +2293,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
+  reviewSync.start();
   console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);
   console.log(`Notes root: ${NOTES_ROOT}`);
   console.log(`Assistant root: ${ASSISTANT_ROOT}`);
@@ -2264,6 +2303,7 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`AI widget endpoint: http://127.0.0.1:${PORT}/ai/widget`);
   console.log(`Learning data endpoint: http://127.0.0.1:${PORT}/learning-data`);
   console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);
+  console.log(`Review sync status: http://127.0.0.1:${PORT}/ai/review/status`);
   console.log(`Note app endpoint: http://127.0.0.1:${PORT}/open-note-app`);
   console.log(`Note app close endpoint: http://127.0.0.1:${PORT}/close-note-app`);
   console.log('LAN app proxy: enabled without device authentication (canvas and learning-data routes)');

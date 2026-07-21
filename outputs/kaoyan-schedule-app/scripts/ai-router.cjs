@@ -43,6 +43,7 @@ const TASK_PROFILES = Object.freeze({
   flashcard_generation: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'json'] }),
   widget_generation: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json'] }),
   canvas_organization: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
+  weekly_review_pdf: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   custom: Object.freeze({ difficulty: 'medium', capabilities: ['text'] }),
 });
 
@@ -158,6 +159,23 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
       { value: 'detailed', label: '详细' },
     ] }),
   ]),
+  weekly_review_pdf: Object.freeze([
+    Object.freeze({ id: 'repository', group: 'GitHub 同步', type: 'text', label: '公开数据仓库', description: '填写 owner/name。只会上传已经确认分类为错题或背诵的内容。', default: 'strawberryCao/Caobijidata', maxLength: 200 }),
+    Object.freeze({ id: 'branch', group: 'GitHub 同步', type: 'text', label: '数据分支', description: '保存结构化数据和最新 PDF 的分支。', default: 'main', maxLength: 100 }),
+    Object.freeze({ id: 'localOutputDir', group: 'GitHub 同步', type: 'path', label: '本地 PDF 保存目录', description: 'Windows 启动后会检查并下载仓库中的最新两份 PDF。', default: '', maxLength: 500 }),
+    Object.freeze({ id: 'autoSync', group: '自动运行', type: 'boolean', label: '启用每周同步', description: '关闭后不会自动上传数据或下载 PDF，手动按钮也会跳过。', default: true }),
+    Object.freeze({ id: 'pushOnStartup', group: '自动运行', type: 'boolean', label: '到期后自动上传', description: '每周到期后，在应用下一次启动或运行检查时补传一次。', default: true }),
+    Object.freeze({ id: 'pullOnStartup', group: '自动运行', type: 'boolean', label: '自动下载最新版', description: '应用启动及定期检查时，只在远程哈希变化后下载。', default: true }),
+    Object.freeze({ id: 'scheduleDay', group: '自动运行', type: 'select', label: '每周整理日', description: '本机到期后上传数据；仓库收到数据后立即重新生成两份 PDF。', default: 'sunday', options: [
+      { value: 'monday', label: '星期一' }, { value: 'tuesday', label: '星期二' }, { value: 'wednesday', label: '星期三' },
+      { value: 'thursday', label: '星期四' }, { value: 'friday', label: '星期五' }, { value: 'saturday', label: '星期六' }, { value: 'sunday', label: '星期日' },
+    ] }),
+    Object.freeze({ id: 'scheduleHour', group: '自动运行', type: 'number', label: '运行小时', description: '按中国标准时间设置，范围 0–23。', default: 21, min: 0, max: 23, step: 1, unit: '时' }),
+    Object.freeze({ id: 'mergeSameQuestion', group: '严格整理', type: 'boolean', label: '合并同一道题的不同材料', description: '仅高度确定是同一道题的原题、错误过程、订正或重复截图时合并。', default: true }),
+    Object.freeze({ id: 'groupSimilarTopics', group: '严格整理', type: 'boolean', label: '相似题放入同一专题', description: '不同题仍保持独立，只按相同知识点或错误模式相邻编排。', default: true }),
+    Object.freeze({ id: 'maxGroupSize', group: '严格整理', type: 'number', label: '单个专题最多来源', description: '防止 AI 把过多题目塞进一个大组。', default: 8, min: 1, max: 20, step: 1, unit: '条' }),
+    Object.freeze({ id: 'includeOriginalImages', group: 'PDF 排版', type: 'boolean', label: '保留原始图片', description: '关闭后 PDF 只排版已有标题、备注和错因，不显示原图。', default: true }),
+  ]),
   custom: Object.freeze([]),
 });
 
@@ -197,6 +215,12 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     label: '独立卡片生成',
     description: '供独立卡片生成流程使用；当前卡片由“笔记整理与分类”一并生成。',
     active: false,
+  }),
+  weekly_review_pdf: Object.freeze({
+    label: '综合复习 PDF',
+    description: '每周只同步已确认的错题和背诵内容到公开 GitHub 仓库，并维护两份综合 PDF。',
+    active: true,
+    defaultTimeoutMs: 90_000,
   }),
   custom: Object.freeze({
     label: '其他 AI 任务',
@@ -288,6 +312,11 @@ function normalizeTaskOptions(taskId, value) {
       if (!Number.isFinite(number)) continue;
       const bounded = Math.min(definition.max, Math.max(definition.min, number));
       result[definition.id] = Number.isInteger(definition.step) ? Math.round(bounded) : bounded;
+      continue;
+    }
+    if (definition.type === 'text' || definition.type === 'path') {
+      const selected = cleanString(input).slice(0, Number(definition.maxLength) || 500);
+      if (selected) result[definition.id] = selected;
       continue;
     }
     if (definition.type === 'select') {
