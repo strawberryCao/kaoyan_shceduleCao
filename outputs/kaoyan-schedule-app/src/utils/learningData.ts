@@ -104,6 +104,9 @@ export interface LearningAutoNote {
   updatedAt: string;
   firstSyncedAt: string;
   filePath: string;
+  sourceType: string;
+  sourceBatchId: string;
+  sourceSplitIndex: number | null;
   pageRefs: LearningPageRef[];
   tags: string[];
   knowledgePath: string[];
@@ -348,6 +351,9 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
     firstSyncedAt: typeof value.firstSyncedAt === 'string' ? value.firstSyncedAt : '',
     filePath,
+    sourceType: typeof value.sourceType === 'string' ? value.sourceType : '',
+    sourceBatchId: typeof value.sourceBatchId === 'string' ? value.sourceBatchId : '',
+    sourceSplitIndex: Number.isFinite(Number(value.sourceSplitIndex)) ? Math.max(1, Math.round(Number(value.sourceSplitIndex))) : null,
     pageRefs: normalizePageRefs(value.pageRefs),
     tags: strings(value.tags),
     knowledgePath,

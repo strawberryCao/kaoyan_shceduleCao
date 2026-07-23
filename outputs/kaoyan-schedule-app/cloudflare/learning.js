@@ -6,6 +6,7 @@ import {
   writeReceipt,
 } from './storage.js';
 import { HttpError, sha256 } from './http.js';
+import { updateMirroredCloudNote } from './source-mirror.js';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const DEFAULT_MANUAL = Object.freeze({ completedTaskIds: [], note: '', debt: '', mistakes: '' });
@@ -332,7 +333,7 @@ export async function patchNote(env, noteUid, payload) {
     throw new HttpError(400, 'Empty note update.', 'INVALID_LEARNING_NOTE');
   }
   const timestamp = new Date().toISOString();
-  return (await mutateLearning(env, payload, (snapshot) => {
+  const result = await mutateLearning(env, payload, (snapshot) => {
     const entry = findNote(snapshot, noteUid);
     if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
     const note = entry.note;
@@ -384,7 +385,14 @@ export async function patchNote(env, noteUid, payload) {
       updatedAt: timestamp,
     });
     return { touchedDates: [entry.date] };
-  })).snapshot;
+  });
+  const updatedNote = findNote(result.snapshot, noteUid)?.note;
+  if (updatedNote) {
+    try { await updateMirroredCloudNote(env, updatedNote); } catch (error) {
+      console.error(JSON.stringify({ event: 'cloud_note_mirror_update_failed', noteUid, error: error instanceof Error ? error.message : String(error) }));
+    }
+  }
+  return result.snapshot;
 }
 
 function addDays(date, days) {
@@ -707,7 +715,10 @@ export function createSavedImageNote(payload, file, timestamp) {
   const remark = text(payload.remark, 8000);
   const title = remark.trim().split(/\r?\n/)[0]?.slice(0, 120) || (payload.kind === 'canvas' ? '画布笔记' : '图片笔记');
   return {
-    ...noteDefaults({ title, subject, remark, noteType: 'note' }, payload.noteUid, timestamp),
+    ...noteDefaults({ title, subject, remark, noteType: 'note', tags: uniqueStrings(payload.tags) }, payload.noteUid, timestamp),
+    sourceType: text(payload.sourceType, 80).trim() || 'single-capture',
+    sourceBatchId: text(payload.sourceBatchId, 160).trim(),
+    sourceSplitIndex: Number.isFinite(Number(payload.sourceSplitIndex)) ? Math.max(1, Math.round(Number(payload.sourceSplitIndex))) : null,
     filePath: `github://${file.repoPath}`,
     organizationStatus: 'pending',
     classificationSource: 'local',

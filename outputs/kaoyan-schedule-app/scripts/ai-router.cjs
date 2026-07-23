@@ -39,12 +39,6 @@ const TASK_PROFILES = Object.freeze({
   note_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
   question_splitting: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
-  question_splitting: Object.freeze({
-    label: '多题识别与自动裁剪',
-    description: '对预裁剪后的整页题目识别多个完整题目区域，并交给后台批量保存。',
-    active: true,
-    defaultTimeoutMs: 90_000,
-  }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_image_understanding: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   taxonomy: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json', 'longContext'] }),
@@ -209,6 +203,12 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     label: '笔记命名',
     description: '识别截图或画布内容，并生成科目与文件名。',
     active: true,
+  }),
+  question_splitting: Object.freeze({
+    label: '多题识别与自动裁剪',
+    description: '对预裁剪后的整页题目识别多个完整题目区域，并交给后台批量保存。',
+    active: true,
+    defaultTimeoutMs: 90_000,
   }),
   note_enrichment: Object.freeze({
     label: '笔记整理与分类',
