@@ -16,6 +16,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: 12
+      RUN_REVISION: 2
     steps:
       - uses: actions/checkout@v4
         with:
