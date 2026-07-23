@@ -1,2 +1,2 @@
 Deploy the validated kaoyan study center to Cloudflare production.
-Trigger revision 4.
+Trigger revision 5.
