@@ -31,3 +31,4 @@ jobs:
           presence CF_API_TOKEN "$CF_API_TOKEN_VALUE"
           presence CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID_VALUE"
           presence CF_ACCOUNT_ID "$CF_ACCOUNT_ID_VALUE"
+          echo "probe=complete"
