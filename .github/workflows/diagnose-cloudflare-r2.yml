@@ -3,7 +3,7 @@ name: Diagnose Cloudflare R2
 on:
   pull_request:
     branches: [fix/learning-detail-title-latex]
-    types: [synchronize]
+    types: [synchronize, reopened]
 
 permissions:
   contents: read
