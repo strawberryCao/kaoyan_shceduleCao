@@ -1,0 +1,64 @@
+name: Build cylinder image renamer
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/cylinder-image-renamer/**"
+      - ".github/workflows/build-cylinder-image-renamer.yml"
+  push:
+    tags:
+      - "cylinder-renamer-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: apps/cylinder-image-renamer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/cylinder-image-renamer/src-tauri
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Type-check and build frontend
+        run: npm run build
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          npm run tauri build *>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cylinder-image-renamer-build-log
+          path: apps/cylinder-image-renamer/build.log
+          if-no-files-found: warn
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: cylinder-image-renamer-windows-x64
+          path: apps/cylinder-image-renamer/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
