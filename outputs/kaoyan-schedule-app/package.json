@@ -15,6 +15,8 @@
     "notes:organize:preview": "node scripts/organize-notes.cjs --dry-run",
     "notes:index": "node scripts/rebuild-note-index.cjs --apply",
     "notes:index:preview": "node scripts/rebuild-note-index.cjs",
+    "notes:folder-sync:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-note-folder-sync.ps1",
+    "notes:folder-sync:run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-note-folder-sync.ps1",
     "review:push": "node scripts/review-github-sync.cjs push",
     "review:pull": "node scripts/review-github-sync.cjs pull",
     "review:status": "node scripts/review-github-sync.cjs status",
@@ -47,7 +49,7 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.6.3",
-    "wait-on": "^8.0.1",
+    "wait-on": "^8.2.0",
     "wrangler": "^4.113.0"
   },
   "build": {
