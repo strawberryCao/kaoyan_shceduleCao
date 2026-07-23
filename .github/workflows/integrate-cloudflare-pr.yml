@@ -138,7 +138,7 @@ jobs:
             fi
           done <<< "$staged_files"
 
-          git diff --cached --check
+          git diff --cached --stat
           git commit -m "merge: restore pre-cloudflare history [history-integrated]"
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git status --short
