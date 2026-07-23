@@ -1,0 +1,125 @@
+name: Integrate Cloudflare history
+
+on:
+  push:
+    branches:
+      - integration/cloudflare-latest
+
+permissions:
+  contents: write
+
+concurrency:
+  group: integrate-cloudflare-history
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    if: ${{ !contains(github.event.head_commit.message, '[history-integrated]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/cloudflare-latest
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Merge missing history and reapply overlapping changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin backup/pre-cloudflare-7c9e92d
+
+          OLD_REF="origin/backup/pre-cloudflare-7c9e92d"
+          if git merge-base --is-ancestor "$OLD_REF" HEAD; then
+            echo "The pre-Cloudflare history is already present."
+            exit 0
+          fi
+
+          BASE="$(git merge-base HEAD "$OLD_REF")"
+          set +e
+          git merge --no-commit --no-ff "$OLD_REF"
+          merge_status=$?
+          set -e
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          expected_conflicts=(
+            "outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs"
+            "outputs/kaoyan-schedule-app/scripts/note-server.cjs"
+            "outputs/kaoyan-schedule-app/scripts/organize-notes.cjs"
+            "outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx"
+            "outputs/kaoyan-schedule-app/src/learning-center.css"
+            "outputs/kaoyan-schedule-app/src/utils/learningData.ts"
+          )
+
+          if (( merge_status != 0 )); then
+            for file in "${conflicts[@]}"; do
+              expected=false
+              for allowed in "${expected_conflicts[@]}"; do
+                if [[ "$file" == "$allowed" ]]; then expected=true; break; fi
+              done
+              if [[ "$expected" != true ]]; then
+                echo "Unexpected merge conflict: $file" >&2
+                exit 1
+              fi
+            done
+          fi
+
+          for file in "${conflicts[@]}"; do
+            echo "Resolving $file from Cloudflare version plus later feature patch"
+            git checkout --ours -- "$file"
+            git add -- "$file"
+            patch_file="$(mktemp)"
+            git diff --binary "$BASE" "$OLD_REF" -- "$file" > "$patch_file"
+            if [[ -s "$patch_file" ]]; then
+              git apply --3way --index --whitespace=nowarn "$patch_file"
+            fi
+            rm -f "$patch_file"
+          done
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unresolved" ]]; then
+            echo "Unresolved conflicts remain:" >&2
+            echo "$unresolved" >&2
+            exit 1
+          fi
+
+          git diff --check
+          git status --short
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Run complete Node test suite
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test
+
+      - name: Build production application
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Validate Wrangler deployment bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+
+      - name: Commit and push validated merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor origin/backup/pre-cloudflare-7c9e92d HEAD; then
+            echo "History already integrated; nothing to commit."
+            exit 0
+          fi
+          git commit -m "merge: restore pre-cloudflare history [history-integrated]"
+          git push origin HEAD:integration/cloudflare-latest
