@@ -448,43 +448,8 @@
   color: var(--note-accent);
 }
 
-.canvas-project-state small {
-  color: #82776b;
-  font-size: 13px;
-  font-weight: 570;
-}
-
-.canvas-project-state small.is-error {
+.canvas-project-state span.is-error {
   color: #b4493e;
-}
-
-.canvas-project-state span.canvas-ai-progress {
-  position: relative;
-  width: 210px;
-  height: 4px;
-  overflow: visible;
-  border-radius: 999px;
-  background: rgba(152, 101, 45, 0.13);
-}
-
-.canvas-ai-progress > i {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #b47a3e, #e1b16e);
-  transition: width 300ms ease;
-}
-
-.canvas-ai-progress > small {
-  position: absolute;
-  top: 6px;
-  right: 0;
-  max-width: 260px;
-  overflow: hidden;
-  color: #806d59;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .canvas-publish-panel {

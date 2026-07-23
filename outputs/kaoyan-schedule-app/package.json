@@ -21,6 +21,11 @@
     "test:gemini": "node scripts/test-gemini.cjs",
     "test:kimi": "node scripts/test-kimi.cjs",
     "build": "tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs",
+    "cloudflare:types": "wrangler types",
+    "cloudflare:dev": "npm run build && wrangler dev",
+    "cloudflare:deploy": "npm run build && wrangler deploy",
+    "cloudflare:seed:prepare": "node scripts/prepare-cloudflare-seed.cjs",
+    "cloudflare:seed:upload": "node scripts/upload-cloudflare-seed.cjs",
     "build:wallpaper": "npm run build",
     "electron:dev": "concurrently -k \"vite --config vite.config.mjs --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && electron . --note-app\"",
     "desktop:start": "npm run build && electron . --note-app",
@@ -42,7 +47,8 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.6.3",
-    "wait-on": "^8.0.1"
+    "wait-on": "^8.0.1",
+    "wrangler": "^4.113.0"
   },
   "build": {
     "appId": "com.local.kaoyan.schedule",

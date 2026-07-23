@@ -35,15 +35,8 @@
 }
 
 .hub-topbar {
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 20px;
-}
-
-.hub-topbar > h1 {
-  margin: 0;
-  color: #18212f;
-  font-size: 20px;
-  letter-spacing: -0.025em;
 }
 
 .hub-brand {
@@ -109,14 +102,6 @@
 .hub-today-heading {
   justify-content: space-between;
   gap: 24px;
-}
-
-.hub-today-heading > div:first-child > span {
-  display: block;
-  margin-bottom: 4px;
-  color: #9a673b;
-  font-size: 14px;
-  font-weight: 800;
 }
 
 .hub-today-heading h1 {
@@ -334,20 +319,11 @@
   border: 0;
   border-radius: 10px;
   background: #ececeb;
-  color: #636b75;
+  color: #a64c4c;
   padding: 8px 11px;
   font-size: 13px;
   font-weight: 700;
 }
-
-.hub-service strong {
-  margin-left: auto;
-  font-size: 13px;
-}
-
-.hub-service strong.online { color: #347458; }
-.hub-service strong.offline { color: #a64c4c; }
-.hub-service strong.checking { color: #806f5d; }
 
 .hub-tools {
   min-width: 0;

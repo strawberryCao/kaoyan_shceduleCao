@@ -1,6 +1,7 @@
 import { lazy, Suspense, type ReactNode } from 'react';
 import { CommandPalette } from './components/CommandPalette';
 import { WebAppShell } from './components/WebAppShell';
+import { IS_CLOUD_RUNTIME } from './utils/notes';
 import './wallpaper.css';
 import './notes.css';
 import './theme-fifth.css';
@@ -35,6 +36,10 @@ export default function App() {
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
 
+  if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode)) {
+    return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
+  }
+
   if (isAiConfigMode) {
     return <WebAppShell active="ai-config">{deferred(<AiConfigPage />)}<CommandPalette /></WebAppShell>;
   }
@@ -43,9 +48,9 @@ export default function App() {
     return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
   }
 
-  // The drop view is an Electron renderer, not a Web route. Browsers that
-  // happen to receive ?noteApp=1 fall through to the normal Web experience.
-  if (isElectronNoteAppMode) {
+  // The compact capture view is available in Electron and in the authenticated
+  // Cloudflare app. Ordinary local browser routes keep the established fallback.
+  if (isElectronNoteAppMode || (isNoteAppMode && IS_CLOUD_RUNTIME)) {
     return deferred(<NoteDropApp />);
   }
 

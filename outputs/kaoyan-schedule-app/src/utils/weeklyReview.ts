@@ -1,8 +1,8 @@
 import type { ScheduleDay } from '../types';
 import type { LearningAutoNote, LearningCard, LearningDataSnapshot } from './learningData';
+import { isDefaultNoteBucket, isKnowledgeEligibleNote } from './noteReview';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_SUBJECTS = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 export interface WeeklyReviewStats {
   noteCount: number;
@@ -98,7 +98,7 @@ const isMemory = (note: LearningAutoNote): boolean => note.noteType === 'memory'
 const isGood = (note: LearningAutoNote): boolean => note.noteType === 'good'
   || note.tags.some((tag) => /好题|经典题|典型题|精品题/.test(tag));
 
-const isLikelyLearning = (note: LearningAutoNote): boolean => !DEFAULT_SUBJECTS.has(note.subject)
+const isLikelyLearning = (note: LearningAutoNote): boolean => !isDefaultNoteBucket(note.subject)
   || isMistake(note)
   || isMemory(note)
   || note.pageRefs.length > 0
@@ -119,7 +119,7 @@ const topText = (values: string[], limit = 8): string => {
 
 const allNotes = (snapshot: LearningDataSnapshot): Array<{ date: string; note: LearningAutoNote }> => {
   const entries = Object.entries(snapshot.days).flatMap(([date, day]) => day.autoNotes
-    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_SUBJECTS.has(note.subject.trim()))
+    .filter(isKnowledgeEligibleNote)
     .map((note) => ({
     date: /^\d{4}-\d{2}-\d{2}$/.test(note.capturedDate) ? note.capturedDate : date,
     note,
@@ -150,7 +150,7 @@ const noteLine = ({ date, note }: { date: string; note: LearningAutoNote }): str
   const summaries = unique(note.items.map((item) => item.summary)).slice(0, 3).join('；');
   const recentThoughts = note.studyNotes.slice(-5).map((thought) => clean(thought.text, 500));
   return [
-    `- [${date}] ${clean(DEFAULT_SUBJECTS.has(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
+    `- [${date}] ${clean(isDefaultNoteBucket(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
     pageText(note) ? `页码/题号：${pageText(note)}` : '',
     knowledgePoints(note).length ? `知识点：${knowledgePoints(note).join('、')}` : '',
     questionTypes(note).length ? `题型：${questionTypes(note).join('、')}` : '',
@@ -165,15 +165,15 @@ const noteLine = ({ date, note }: { date: string; note: LearningAutoNote }): str
 const thoughtDate = (value: string): string => /^\d{4}-\d{2}-\d{2}/.test(value) ? value.slice(0, 10) : '';
 
 const thoughtLine = ({ date, note, text }: { date: string; note: LearningAutoNote; text: string }): string => [
-  `- [${date}] ${clean(DEFAULT_SUBJECTS.has(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
+  `- [${date}] ${clean(isDefaultNoteBucket(note.subject) ? '未分类' : note.subject, 60)}｜${clean(note.title || note.remark || '未命名笔记', 120)}`,
   `我的新想法：${clean(text, 700)}`,
 ].join('；');
 
 const cardSubject = (card: LearningCard): string => {
-  if (card.subject && !DEFAULT_SUBJECTS.has(card.subject)) return card.subject;
+  if (card.subject && !isDefaultNoteBucket(card.subject)) return card.subject;
   const parts = card.sourceFilePath.split(/[\\/]/).filter(Boolean);
   const folder = parts.length > 1 ? parts[parts.length - 2] : '';
-  return folder && !DEFAULT_SUBJECTS.has(folder) && folder !== '笔记' ? folder : '未分类';
+  return folder && !isDefaultNoteBucket(folder) && folder !== '笔记' ? folder : '未分类';
 };
 
 const cardLine = (card: LearningCard): string => [
@@ -292,7 +292,7 @@ export function buildWeeklyReviewPackage(
     return `- ${start} 至 ${end}：笔记 ${entries.length}，错题 ${mistakes}，需记忆 ${memories}`;
   });
 
-  const historySubjects = historyNotes.map(({ note }) => DEFAULT_SUBJECTS.has(note.subject) ? '未分类' : note.subject);
+  const historySubjects = historyNotes.map(({ note }) => isDefaultNoteBucket(note.subject) ? '未分类' : note.subject);
   const historyKnowledge = historyNotes.flatMap(({ note }) => knowledgePoints(note));
   const historyWrongReasons = historyNotes.flatMap(({ note }) => wrongReasons(note));
   const currentLines = currentNotes.length

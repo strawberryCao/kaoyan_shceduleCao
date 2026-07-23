@@ -31,7 +31,7 @@ import {
   type CanvasProjectSummary,
   type CanvasAiOrganizationJob,
 } from '../utils/canvasProjects';
-import { createNoteUid, saveNoteImage } from '../utils/notes';
+import { createNoteUid, IS_CLOUD_RUNTIME, saveNoteImage } from '../utils/notes';
 type DraftStatus = 'saving' | 'saved' | 'failed';
 
 const LAST_CANVAS_DRAFT_KEY = 'kaoyan.canvas.lastDraftId.v1';
@@ -604,7 +604,7 @@ export function NoteCapturePage() {
       if (!document || document.id !== activeCanvasIdRef.current) return;
       const expectedSequence = changeSequenceRef.current;
       void persistCanvasDocument(document, false, { expectedSequence, remark: canvasRemark }).catch(() => undefined);
-    }, canvasSaving ? 650 : 180);
+    }, IS_CLOUD_RUNTIME ? (canvasSaving ? 2500 : 1800) : canvasSaving ? 650 : 180);
     return () => window.clearTimeout(timer);
   }, [canvasDeleting, canvasDirty, canvasDocument, canvasRemark, canvasSaving, persistCanvasDocument, publishing, selectedProjectId, syncConflict]);
 
@@ -683,7 +683,10 @@ export function NoteCapturePage() {
     const document = workspaceRef.current?.getDocument() ?? canvasDocument;
     const label = document.title || '未命名画布';
     if (selectedProjectId) {
-      if (!window.confirm(`确定删除画布工程“${label}”吗？删除后不会再出现在“我的画布”中。`)) return;
+      const confirmMessage = IS_CLOUD_RUNTIME
+        ? `确定永久删除画布工程“${label}”吗？删除后无法恢复。`
+        : `确定删除画布工程“${label}”吗？删除后不会再出现在“我的画布”中。`;
+      if (!window.confirm(confirmMessage)) return;
       const wasDirty = canvasDirtyRef.current;
       try {
         setCanvasDeleting(true);
@@ -691,7 +694,9 @@ export function NoteCapturePage() {
         setCanvasDirty(false);
         await deleteCanvasProject(selectedProjectId, syncedRevisionRef.current, canvasClientIdRef.current);
         removeLocalCanvasData(selectedProjectId);
-        const blank = resetToBlankCanvas(`已删除“${label}”。工程已移到本机回收目录，需要时仍可恢复。`);
+        const blank = resetToBlankCanvas(IS_CLOUD_RUNTIME
+          ? `已永久删除“${label}”。`
+          : `已删除“${label}”。工程已移到本机回收目录，需要时仍可恢复。`);
         syncBlankCanvas(blank);
         await refreshProjects();
       } catch (error) {
@@ -755,9 +760,13 @@ export function NoteCapturePage() {
       lastPublishedFingerprintRef.current = fingerprint;
       publishOperationRef.current = null;
       if (activeCanvasIdRef.current === document.id) {
-        setCanvasMessage(changeSequenceRef.current === expectedSequence
-          ? `已存入笔记：${result.filePath ?? result.fileName ?? ''}。原画布仍可继续编辑。`
-          : `已存入笔记：${result.filePath ?? result.fileName ?? ''}。发布期间的新修改仍待 Ctrl+S 保存。`);
+        setCanvasMessage(IS_CLOUD_RUNTIME
+          ? changeSequenceRef.current === expectedSequence
+            ? '已存入笔记，待确认分类。'
+            : '已存入笔记，待确认分类；发布期间的新修改尚未保存。'
+          : changeSequenceRef.current === expectedSequence
+            ? `已存入笔记：${result.filePath ?? result.fileName ?? ''}。原画布仍可继续编辑。`
+            : `已存入笔记：${result.filePath ?? result.fileName ?? ''}。发布期间的新修改仍待 Ctrl+S 保存。`);
       }
     } catch (error) {
       if (activeCanvasIdRef.current === document.id) {
@@ -792,6 +801,10 @@ export function NoteCapturePage() {
 
   const selectedMissingFromList = selectedProjectId && !projects.some((project) => project.id === selectedProjectId);
   const visibleMessage = projectsError || canvasMessage;
+  const showCanvasProjectState = Boolean(
+    (selectedProjectId && (canvasSavingVisible || syncConflict || canvasDirty))
+    || draftStatus === 'failed',
+  );
   return (
     <main
       className="note-capture-page canvas-mode"
@@ -830,45 +843,41 @@ export function NoteCapturePage() {
               <button type="button" onClick={() => void refreshProjects()} disabled={projectsLoading} title="刷新我的画布">
                 <RefreshCw size={15} className={projectsLoading ? 'is-spinning' : ''} /> 刷新
               </button>
-              <button
-                className="canvas-ai-organize-button"
-                type="button"
-                onClick={() => void organizeCanvasWithAi()}
-                disabled={canvasAiBusy || canvasSavingVisible || canvasDeleting || publishing}
-                title="先立即保存，再由可在 AI 配置中自定义的复杂任务后台整理画布"
-              >
-                <Sparkles size={15} className={canvasAiBusy ? 'is-spinning' : ''} />
-                {canvasAiBusy ? `AI 整理 ${canvasAiJob?.progress ?? 8}%` : 'AI 自动整理'}
-              </button>
-              <button className="canvas-delete-button" type="button" onClick={() => void deleteCurrentCanvas()} disabled={canvasSavingVisible || canvasDeleting || publishing} title={selectedProjectId ? '删除当前工程' : '删除当前未保存草稿'}>
+              {!IS_CLOUD_RUNTIME && (
+                <button
+                  className="canvas-ai-organize-button"
+                  type="button"
+                  onClick={() => void organizeCanvasWithAi()}
+                  disabled={canvasAiBusy || canvasSavingVisible || canvasDeleting || publishing}
+                  title="先立即保存，再由可在 AI 配置中自定义的复杂任务后台整理画布"
+                >
+                  <Sparkles size={15} className={canvasAiBusy ? 'is-spinning' : ''} />
+                  {canvasAiBusy ? `AI 整理 ${canvasAiJob?.progress ?? 8}%` : 'AI 自动整理'}
+                </button>
+              )}
+              <button className="canvas-delete-button" type="button" onClick={() => void deleteCurrentCanvas()} disabled={canvasSavingVisible || canvasDeleting || publishing} title={selectedProjectId && IS_CLOUD_RUNTIME ? '永久删除当前工程' : selectedProjectId ? '删除当前工程' : '删除当前未保存草稿'}>
                 <Trash2 size={15} /> {canvasDeleting ? '删除中' : '删除'}
               </button>
-              <div className="canvas-project-state" aria-live="polite">
-                {selectedProjectId && (
-                  <span className={canvasDirty || syncConflict ? 'is-dirty' : ''}>
-                    {canvasSavingVisible
-                      ? '工程保存中'
-                      : syncConflict
-                        ? '检测到跨设备冲突'
-                        : canvasDirty
-                          ? '等待自动同步'
-                          : '工程已实时同步'}
-                  </span>
-                )}
-                {syncConflict && (
-                  <>
-                    <button type="button" onClick={useRemoteCanvasVersion} disabled={canvasSavingVisible}>载入另一设备</button>
-                    <button type="button" onClick={keepLocalCanvasVersion} disabled={canvasSavingVisible}>保留本机版本</button>
-                  </>
-                )}
-                {draftStatus === 'failed' && <span className="is-error">本机草稿空间不足，请按 Ctrl+S 保存工程</span>}
-                {canvasAiBusy && (
-                  <span className="canvas-ai-progress" title={canvasAiJob?.message || '正在准备 AI 画布整理'}>
-                    <i style={{ width: `${canvasAiJob?.progress ?? 8}%` }} />
-                    <small>{canvasAiJob?.message || '正在保存并准备后台任务'}</small>
-                  </span>
-                )}
-              </div>
+              {showCanvasProjectState && (
+                <div className="canvas-project-state" aria-live="polite">
+                  {selectedProjectId && (canvasSavingVisible || syncConflict || canvasDirty) && (
+                    <span className={canvasDirty || syncConflict ? 'is-dirty' : ''}>
+                      {canvasSavingVisible
+                        ? '工程保存中'
+                        : syncConflict
+                          ? '检测到跨设备冲突'
+                          : '等待自动同步'}
+                    </span>
+                  )}
+                  {syncConflict && (
+                    <>
+                      <button type="button" onClick={useRemoteCanvasVersion} disabled={canvasSavingVisible}>载入另一设备</button>
+                      <button type="button" onClick={keepLocalCanvasVersion} disabled={canvasSavingVisible}>保留本机版本</button>
+                    </>
+                  )}
+                  {draftStatus === 'failed' && <span className="is-error">本机草稿空间不足，请按 Ctrl+S 保存工程</span>}
+                </div>
+              )}
             </div>
 
             <CanvasWorkspace
@@ -908,7 +917,7 @@ export function NoteCapturePage() {
                 onChange={(event) => updateCanvasRemark(event.target.value)}
                 placeholder="补充页码、错因或需要记住的内容（可选）"
               />
-              <button className="note-primary-button" title="生成整张画布预览并交给 AI 整理" type="button" onClick={() => void publishCanvas()} disabled={publishing || canvasSavingVisible}>
+              <button className="note-primary-button" title={IS_CLOUD_RUNTIME ? '生成整张画布预览并存入笔记' : '生成整张画布预览并交给 AI 整理'} type="button" onClick={() => void publishCanvas()} disabled={publishing || canvasSavingVisible}>
                 <Sparkles size={15} /> {publishing ? '正在存入笔记' : '完成并存入笔记'}
               </button>
             </section>

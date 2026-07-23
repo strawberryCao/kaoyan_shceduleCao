@@ -1,11 +1,13 @@
 import type { DayRecord, RecordsByDate } from '../types';
-import { NOTE_SERVER_URL } from './notes';
+import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 import { fetchWithTimeout } from './localService';
 
 export type LearningCardStatus = 'draft' | 'active' | 'archived';
 export type LearningCardKind = 'memory' | 'mistake';
 export type LearningNoteOrganizationStatus = 'pending' | 'confirmed' | 'ignored';
 export type LearningNoteClassificationSource = 'ai' | 'local' | 'manual';
+export type LearningNoteReviewStatus = 'pending' | 'auto_applied' | 'accepted' | 'corrected' | 'ignored';
+export type LearningNoteReviewActionType = 'accept' | 'correct' | 'ignore';
 
 export interface LearningStudyThought {
   id: string;
@@ -38,6 +40,35 @@ export interface LearningNotePatch {
   organizationStatus?: LearningNoteOrganizationStatus;
   goodQuestion?: boolean;
   thoughtAction?: LearningThoughtAction;
+}
+
+export interface LearningNoteReviewAction {
+  noteUid: string;
+  action: LearningNoteReviewActionType;
+  operationId: string;
+  expectedDecisionRevision?: number;
+  proposalId?: string;
+  patch?: Pick<LearningNotePatch, 'subject' | 'knowledgePath' | 'questionType' | 'wrongReason'>;
+}
+
+export interface LearningNoteReviewActionResult {
+  noteUid: string;
+  operationId: string;
+  ok: boolean;
+  replayed?: boolean;
+  durable: boolean;
+  reviewStatus?: LearningNoteReviewStatus;
+  decisionRevision?: number;
+  code?: string;
+  error?: string;
+  actualDecisionRevision?: number;
+  actualProposalId?: string;
+}
+
+export interface LearningNoteReviewActionsResponse {
+  ok: boolean;
+  snapshot: LearningDataSnapshot;
+  results: LearningNoteReviewActionResult[];
 }
 
 export interface LearningNoteCreateInput {
@@ -81,6 +112,12 @@ export interface LearningAutoNote {
   wrongReason: string;
   organizationStatus: LearningNoteOrganizationStatus;
   classificationSource: LearningNoteClassificationSource;
+  reviewStatus: LearningNoteReviewStatus;
+  decisionRevision: number;
+  lastReviewOperationId: string;
+  lastReviewAction: '' | LearningNoteReviewActionType;
+  proposalId: string;
+  reviewedAt: string;
   manualCreated: boolean;
   userEditedFields: string[];
   goodQuestion: boolean | null;
@@ -171,6 +208,8 @@ const LEARNING_PENDING_RECORDS_KEY = 'kaoyan-learning-pending-records-v1';
 const LEARNING_PENDING_REPLACE_KEY = 'kaoyan-learning-pending-replace-v1';
 const LEARNING_DATA_EVENT = 'kaoyan-learning-data-changed';
 const LEARNING_DATA_EVENTS_URL = `${NOTE_SERVER_URL}/learning-data/events`;
+const LEARNING_SERVICE_NAME = IS_CLOUD_RUNTIME ? '云端数据服务' : '本地笔记服务';
+const LEARNING_REQUEST_TIMEOUT_MS = IS_CLOUD_RUNTIME ? 12_000 : 4_000;
 let lastLearningDataCacheKey: string | null = null;
 let learningDataEventSource: EventSource | null = null;
 let learningDataEventSubscribers = 0;
@@ -272,6 +311,31 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
        shouldMemorize: isObject(item.intent) && item.intent.shouldMemorize === true,
     },
   })) : [];
+  const classificationSource: LearningNoteClassificationSource = inferredFromFile && value.classificationSource !== 'manual'
+    ? 'local'
+    : value.classificationSource === 'manual' || value.classificationSource === 'local'
+      ? value.classificationSource
+      : 'ai';
+  const legacyOrganizationStatus: LearningNoteOrganizationStatus = inferredFromFile && value.organizationStatus !== 'ignored'
+    ? 'confirmed'
+    : value.organizationStatus === 'confirmed' || value.organizationStatus === 'ignored'
+      ? value.organizationStatus
+      : 'pending';
+  const explicitReviewStatus = ['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(String(value.reviewStatus))
+    ? value.reviewStatus as LearningNoteReviewStatus
+    : null;
+  const reviewStatus: LearningNoteReviewStatus = inferredFromFile
+    && explicitReviewStatus === 'pending'
+    ? 'auto_applied'
+    : explicitReviewStatus ?? (legacyOrganizationStatus === 'ignored'
+      ? 'ignored'
+      : classificationSource === 'manual'
+        ? 'corrected'
+        : legacyOrganizationStatus === 'confirmed' ? 'auto_applied' : 'pending');
+  const storedDecisionRevision = Number(value.decisionRevision);
+  const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
+    ? storedDecisionRevision
+    : ['accepted', 'corrected', 'ignored'].includes(reviewStatus) ? 1 : 0;
   return {
     noteUid: value.noteUid,
     capturedDate: typeof value.capturedDate === 'string' ? value.capturedDate : '',
@@ -288,16 +352,16 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     noteType: typeof value.noteType === 'string' ? value.noteType : '',
     questionType: typeof value.questionType === 'string' ? value.questionType : '',
     wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',
-    organizationStatus: inferredFromFile && value.organizationStatus !== 'ignored'
-      ? 'confirmed'
-      : value.organizationStatus === 'confirmed' || value.organizationStatus === 'ignored'
-      ? value.organizationStatus
-      : 'pending',
-    classificationSource: inferredFromFile && value.classificationSource !== 'manual'
-      ? 'local'
-      : value.classificationSource === 'manual' || value.classificationSource === 'local'
-      ? value.classificationSource
-      : 'ai',
+    organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
+    classificationSource,
+    reviewStatus,
+    decisionRevision,
+    lastReviewOperationId: typeof value.lastReviewOperationId === 'string' ? value.lastReviewOperationId : '',
+    lastReviewAction: value.lastReviewAction === 'accept' || value.lastReviewAction === 'correct' || value.lastReviewAction === 'ignore'
+      ? value.lastReviewAction
+      : '',
+    proposalId: typeof value.proposalId === 'string' ? value.proposalId : '',
+    reviewedAt: typeof value.reviewedAt === 'string' ? value.reviewedAt : '',
     manualCreated: value.manualCreated === true,
     userEditedFields: strings(value.userEditedFields),
     goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
@@ -440,13 +504,15 @@ const extractSnapshot = (payload: unknown): LearningDataSnapshot => {
 const requestSnapshot = async (url: string, init?: RequestInit): Promise<LearningDataSnapshot> => {
   let response: Response;
   try {
-    response = await fetchWithTimeout(url, { cache: 'no-store', ...init }, 4000);
+    response = await fetchWithTimeout(url, { cache: 'no-store', ...init }, LEARNING_REQUEST_TIMEOUT_MS);
   } catch (error) {
     if (init?.signal?.aborted) throw error;
     const timedOut = error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
     throw new Error(timedOut
-      ? '本地笔记服务响应超时，请稍后重试。'
-      : '本地笔记服务已断开，请重新启动考研桌面助手后重试。');
+      ? `${LEARNING_SERVICE_NAME}响应超时，请稍后重试。`
+      : IS_CLOUD_RUNTIME
+        ? '云端数据服务暂时不可用，请检查网络后重试。'
+        : '本地笔记服务已断开，请重新启动考研桌面助手后重试。');
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
@@ -554,6 +620,58 @@ export const patchLearningNote = (
   body: JSON.stringify({ patch, expectedRevision }),
 });
 
+export const applyLearningNoteReviewActions = async (
+  actions: LearningNoteReviewAction[],
+): Promise<LearningNoteReviewActionsResponse> => {
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(`${NOTE_SERVER_URL}/learning-data/note-review-actions`, {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions }),
+    }, 12_000);
+  } catch (error) {
+    const timedOut = error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    throw new Error(timedOut ? '保存超时，请重试' : '本地笔记服务已断开');
+  }
+  const payload: unknown = await response.json().catch(() => null);
+  const results: LearningNoteReviewActionResult[] = isObject(payload) && Array.isArray(payload.results)
+    ? payload.results.filter(isObject).map((item) => ({
+        noteUid: typeof item.noteUid === 'string' ? item.noteUid : '',
+        operationId: typeof item.operationId === 'string' ? item.operationId : '',
+        ok: item.ok === true,
+        replayed: item.replayed === true,
+        durable: item.durable === true,
+        reviewStatus: ['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(String(item.reviewStatus))
+          ? item.reviewStatus as LearningNoteReviewStatus
+          : undefined,
+        decisionRevision: Number.isInteger(Number(item.decisionRevision)) ? Number(item.decisionRevision) : undefined,
+        code: typeof item.code === 'string' ? item.code : undefined,
+        error: typeof item.error === 'string' ? item.error : undefined,
+        actualDecisionRevision: Number.isInteger(Number(item.actualDecisionRevision))
+          ? Number(item.actualDecisionRevision)
+          : undefined,
+        actualProposalId: typeof item.actualProposalId === 'string' ? item.actualProposalId : undefined,
+      }))
+    : [];
+  const failed = results.find((result) => !result.ok || !result.durable);
+  const responseSnapshot = isObject(payload) && isObject(payload.snapshot)
+    ? extractSnapshot(payload.snapshot)
+    : null;
+  if (responseSnapshot) saveLearningDataCache(responseSnapshot);
+  if (!response.ok || !isObject(payload) || payload.ok !== true || failed || !responseSnapshot || results.length !== actions.length) {
+    const error = new Error(
+      failed?.error
+      || (isObject(payload) && typeof payload.error === 'string' ? payload.error : `保存失败（${response.status}）`),
+    );
+    Object.assign(error, { status: response.status, payload });
+    throw error;
+  }
+  const snapshot = responseSnapshot;
+  return { ok: true, snapshot, results };
+};
+
 export const getManualRecords = (snapshot: LearningDataSnapshot): RecordsByDate => Object.fromEntries(
   Object.entries(snapshot.days).map(([date, day]) => [date, normalizeManual(day.manual)]),
 );
@@ -631,6 +749,9 @@ export const subscribeLearningDataCache = (callback: (snapshot: LearningDataSnap
 };
 
 export const subscribeLearningDataFromServer = () => {
+  if (IS_CLOUD_RUNTIME) {
+    return () => undefined;
+  }
   if (!('EventSource' in window)) {
     return () => undefined;
   }

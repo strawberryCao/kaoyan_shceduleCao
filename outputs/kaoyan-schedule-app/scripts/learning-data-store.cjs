@@ -10,7 +10,48 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const CARD_STATUSES = new Set(['draft', 'active', 'archived']);
 const CARD_KINDS = new Set(['memory', 'mistake']);
 const NOTE_ORGANIZATION_STATUSES = new Set(['pending', 'confirmed', 'ignored']);
+const NOTE_REVIEW_STATUSES = new Set(['pending', 'auto_applied', 'accepted', 'corrected', 'ignored']);
+const HUMAN_NOTE_REVIEW_STATUSES = new Set(['accepted', 'corrected', 'ignored']);
 const DEFAULT_SUBJECT_NAMES = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
+
+function legacyReviewStatus(organizationStatus, classificationSource) {
+  if (organizationStatus === 'ignored') return 'ignored';
+  if (classificationSource === 'manual') return 'corrected';
+  if (organizationStatus === 'confirmed') return 'auto_applied';
+  return 'pending';
+}
+
+function normalizeReviewStatus(value, organizationStatus, classificationSource) {
+  return NOTE_REVIEW_STATUSES.has(value)
+    ? value
+    : legacyReviewStatus(organizationStatus, classificationSource);
+}
+
+function organizationStatusForReview(reviewStatus) {
+  if (reviewStatus === 'ignored') return 'ignored';
+  return reviewStatus === 'pending' ? 'pending' : 'confirmed';
+}
+
+function resolveReviewStatus(
+  incomingStatus,
+  incomingOrganizationStatus,
+  incomingClassificationSource,
+  existingStatus,
+  incomingDecisionRevision = 0,
+  existingDecisionRevision = 0,
+) {
+  const existing = NOTE_REVIEW_STATUSES.has(existingStatus) ? existingStatus : null;
+  const incoming = normalizeReviewStatus(incomingStatus, incomingOrganizationStatus, incomingClassificationSource);
+  if (HUMAN_NOTE_REVIEW_STATUSES.has(existing)) {
+    return HUMAN_NOTE_REVIEW_STATUSES.has(incoming)
+      && Number(incomingDecisionRevision) > Number(existingDecisionRevision)
+      ? incoming
+      : existing;
+  }
+  if (HUMAN_NOTE_REVIEW_STATUSES.has(incoming)) return incoming;
+  if (existing === 'auto_applied' && incoming === 'pending') return existing;
+  return incoming || existing || 'pending';
+}
 
 function resolveOrganizationStatus(incomingStatus, existingStatus) {
   const incoming = NOTE_ORGANIZATION_STATUSES.has(incomingStatus) ? incomingStatus : null;
@@ -164,6 +205,16 @@ function normalizeAutoNote(value) {
   const organizationStatus = NOTE_ORGANIZATION_STATUSES.has(value.organizationStatus)
     ? value.organizationStatus
     : 'pending';
+  const classificationSource = ['ai', 'local', 'manual'].includes(value.classificationSource)
+    ? inferredFromFile && value.classificationSource !== 'manual' ? 'local' : value.classificationSource
+    : inferredFromFile ? 'local' : 'ai';
+  const reviewStatus = inferredFromFile && organizationStatus === 'pending' && !HUMAN_NOTE_REVIEW_STATUSES.has(value.reviewStatus)
+    ? 'auto_applied'
+    : normalizeReviewStatus(value.reviewStatus, organizationStatus, classificationSource);
+  const rawDecisionRevision = Number(value.decisionRevision);
+  const decisionRevision = Number.isInteger(rawDecisionRevision) && rawDecisionRevision >= 0
+    ? rawDecisionRevision
+    : HUMAN_NOTE_REVIEW_STATUSES.has(reviewStatus) ? 1 : 0;
   return {
     noteUid,
     capturedDate: DATE_PATTERN.test(asString(value.capturedDate)) ? value.capturedDate : '',
@@ -180,10 +231,16 @@ function normalizeAutoNote(value) {
     noteType: asString(value.noteType),
     questionType: asString(value.questionType),
     wrongReason: asString(value.wrongReason),
-    organizationStatus: inferredFromFile && organizationStatus === 'pending' ? 'confirmed' : organizationStatus,
-    classificationSource: ['ai', 'local', 'manual'].includes(value.classificationSource)
-      ? inferredFromFile && value.classificationSource !== 'manual' ? 'local' : value.classificationSource
-      : inferredFromFile ? 'local' : 'ai',
+    organizationStatus: organizationStatusForReview(reviewStatus),
+    classificationSource,
+    reviewStatus,
+    decisionRevision,
+    lastReviewOperationId: asString(value.lastReviewOperationId).slice(0, 160),
+    lastReviewAction: ['accept', 'correct', 'ignore'].includes(value.lastReviewAction)
+      ? value.lastReviewAction
+      : '',
+    proposalId: asString(value.proposalId).slice(0, 160),
+    reviewedAt: asString(value.reviewedAt),
     manualCreated: value.manualCreated === true,
     userEditedFields: uniqueStrings(value.userEditedFields),
     goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
@@ -568,10 +625,36 @@ function createLearningDataStore(options = {}) {
       snapshot.days[date] = day;
     }
 
-    const resolvedSubject = existingNote?.classificationSource === 'manual'
+    const incomingDecisionRevision = Number(enrichment.decisionRevision);
+    const existingDecisionRevision = existingNote?.decisionRevision || 0;
+    const incomingReviewStatus = normalizeReviewStatus(
+      enrichment.reviewStatus,
+      enrichment.organizationStatus,
+      enrichment.classificationSource,
+    );
+    const reviewStatus = resolveReviewStatus(
+      enrichment.reviewStatus,
+      enrichment.organizationStatus,
+      enrichment.classificationSource,
+      existingNote?.reviewStatus,
+      incomingDecisionRevision,
+      existingDecisionRevision,
+    );
+    const hasHumanDecision = HUMAN_NOTE_REVIEW_STATUSES.has(reviewStatus);
+    const preservesExistingDecision = HUMAN_NOTE_REVIEW_STATUSES.has(existingNote?.reviewStatus)
+      && !(HUMAN_NOTE_REVIEW_STATUSES.has(incomingReviewStatus) && incomingDecisionRevision > existingDecisionRevision);
+    const decisionRevision = hasHumanDecision
+      ? Math.max(
+          existingNote?.decisionRevision || 0,
+          Number.isInteger(incomingDecisionRevision) && incomingDecisionRevision >= 0 ? incomingDecisionRevision : 1,
+        )
+      : existingNote?.decisionRevision || 0;
+
+    const resolvedSubject = preservesExistingDecision
       ? existingNote.subject
       : enrichment.subject ?? metadata.subject ?? existingNote?.subject ?? '';
-    const cardsAreKnowledgeEligible = !DEFAULT_SUBJECT_NAMES.has(String(resolvedSubject).trim());
+    const cardsAreKnowledgeEligible = reviewStatus !== 'ignored'
+      && !DEFAULT_SUBJECT_NAMES.has(String(resolvedSubject).trim());
     const seenCardContent = new Set();
     const generatedCards = incomingCards.map((card, index) => {
       const sourceKey = asOptionalString(card?.sourceKey)
@@ -583,10 +666,10 @@ function createLearningDataStore(options = {}) {
         id,
         noteUid,
         sourceKey,
-        subject: existingNote?.classificationSource === 'manual'
+        subject: preservesExistingDecision
           ? existingNote.subject
           : card?.subject ?? enrichment.subject ?? metadata.subject,
-        knowledgePath: existingNote?.classificationSource === 'manual'
+        knowledgePath: preservesExistingDecision
           ? existingNote.knowledgePath
           : card?.knowledgePath ?? enrichment.knowledgePath,
         tags: card?.tags ?? enrichment.tags,
@@ -599,6 +682,7 @@ function createLearningDataStore(options = {}) {
         updatedAt: timestamp,
       });
     }).filter((card) => {
+      if (reviewStatus === 'ignored') return false;
       if (!card || !card.front.trim() || !card.back.trim()) return false;
       const contentKey = `${card.kind}|${card.front.trim().toLocaleLowerCase('zh-CN')}`;
       if (seenCardContent.has(contentKey)) return false;
@@ -648,6 +732,11 @@ function createLearningDataStore(options = {}) {
       }
     }
     snapshot.cards = [...cardsById.values()];
+    if (reviewStatus === 'ignored') {
+      snapshot.cards = snapshot.cards.map((card) => card.noteUid === noteUid
+        ? normalizeCard({ ...card, status: 'archived', dueDate: '', updatedAt: timestamp })
+        : card);
+    }
 
     const cardIds = snapshot.cards.filter((card) => card.noteUid === noteUid).map((card) => card.id);
     const confidence = Number(enrichment.confidence);
@@ -660,7 +749,7 @@ function createLearningDataStore(options = {}) {
       noteUid,
       capturedDate,
       title: keepUserValue('title', enrichment.title ?? metadata.title, existingNote?.title),
-      subject: existingNote?.classificationSource === 'manual'
+      subject: preservesExistingDecision
         ? existingNote.subject
         : enrichment.subject ?? metadata.subject ?? existingNote?.subject,
       remark: keepUserValue('remark', metadata.remark, existingNote?.remark),
@@ -670,23 +759,42 @@ function createLearningDataStore(options = {}) {
       filePath: metadata.filePath ?? existingNote?.filePath,
       pageRefs: enrichment.pageRefs ?? existingNote?.pageRefs,
       tags: keepUserValue('tags', enrichment.tags, existingNote?.tags),
-      knowledgePath: existingNote?.classificationSource === 'manual'
+      knowledgePath: preservesExistingDecision
         ? existingNote.knowledgePath
         : enrichment.knowledgePath ?? existingNote?.knowledgePath,
       noteType: keepUserValue('noteType', enrichment.noteType, existingNote?.noteType),
-      questionType: existingNote?.classificationSource === 'manual'
+      questionType: preservesExistingDecision
         ? existingNote.questionType
         : enrichment.questionType ?? existingNote?.questionType,
-      wrongReason: existingNote?.classificationSource === 'manual'
+      wrongReason: preservesExistingDecision
         ? existingNote.wrongReason
         : enrichment.wrongReason ?? existingNote?.wrongReason,
-      organizationStatus: resolveOrganizationStatus(
-        enrichment.organizationStatus,
-        existingNote?.organizationStatus,
-      ),
-      classificationSource: existingNote?.classificationSource === 'manual'
+      organizationStatus: organizationStatusForReview(reviewStatus),
+      classificationSource: reviewStatus === 'corrected' || existingNote?.classificationSource === 'manual'
         ? 'manual'
         : enrichment.classificationSource ?? existingNote?.classificationSource ?? 'ai',
+      reviewStatus,
+      decisionRevision,
+      lastReviewOperationId: hasHumanDecision
+        ? preservesExistingDecision
+          ? existingNote?.lastReviewOperationId
+          : enrichment.lastReviewOperationId || existingNote?.lastReviewOperationId
+        : existingNote?.lastReviewOperationId,
+      lastReviewAction: hasHumanDecision
+        ? preservesExistingDecision
+          ? existingNote?.lastReviewAction
+          : enrichment.lastReviewAction || existingNote?.lastReviewAction
+        : existingNote?.lastReviewAction,
+      proposalId: hasHumanDecision
+        ? preservesExistingDecision
+          ? existingNote?.proposalId
+          : enrichment.proposalId || existingNote?.proposalId
+        : enrichment.proposalId ?? existingNote?.proposalId,
+      reviewedAt: hasHumanDecision
+        ? preservesExistingDecision
+          ? existingNote?.reviewedAt
+          : enrichment.reviewedAt || existingNote?.reviewedAt || timestamp
+        : existingNote?.reviewedAt,
       items: enrichment.items ?? existingNote?.items,
       confidence: Number.isFinite(confidence) ? confidence : existingNote?.confidence,
       cardIds,
@@ -822,6 +930,11 @@ function createLearningDataStore(options = {}) {
         wrongReason: asString(input.wrongReason).slice(0, 1000),
         organizationStatus: 'confirmed',
         classificationSource: 'manual',
+        reviewStatus: 'corrected',
+        decisionRevision: 1,
+        lastReviewOperationId: `create-${noteUid}`,
+        lastReviewAction: 'correct',
+        reviewedAt: timestamp,
         manualCreated: true,
         userEditedFields: [
           'title',
@@ -1050,6 +1163,15 @@ function createLearningDataStore(options = {}) {
           } else if (thoughtAction?.action === 'delete') {
             studyNotes = studyNotes.filter((item) => item.id !== asString(thoughtAction.id));
           }
+          const reviewStatus = editsClassification
+            ? 'corrected'
+            : hasOrganizationStatus
+              ? patch.organizationStatus === 'ignored' ? 'ignored'
+                : patch.organizationStatus === 'confirmed' ? 'accepted' : 'pending'
+              : note.reviewStatus;
+          const recordsDecision = editsClassification || (
+            hasOrganizationStatus && (patch.organizationStatus === 'confirmed' || patch.organizationStatus === 'ignored')
+          );
           return normalizeAutoNote({
             ...note,
             ...(Object.hasOwn(patch, 'title') ? { title: asString(patch.title).slice(0, 240) } : {}),
@@ -1061,10 +1183,11 @@ function createLearningDataStore(options = {}) {
             ...((subject || Object.hasOwn(patch, 'knowledgePath')) ? { knowledgePath: nextKnowledgePath } : {}),
             ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
             ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
-            organizationStatus: hasOrganizationStatus
-              ? patch.organizationStatus
-              : editableKeys.some((key) => Object.hasOwn(patch, key)) ? 'confirmed' : note.organizationStatus,
+            organizationStatus: organizationStatusForReview(reviewStatus),
             classificationSource: editsClassification ? 'manual' : note.classificationSource,
+            reviewStatus,
+            decisionRevision: recordsDecision ? note.decisionRevision + 1 : note.decisionRevision,
+            reviewedAt: recordsDecision ? timestamp : note.reviewedAt,
             userEditedFields: [...userEditedFields],
             studyNotes,
             updatedAt: timestamp,
@@ -1090,8 +1213,117 @@ function createLearningDataStore(options = {}) {
             })
           : card);
       }
+      if (hasOrganizationStatus && patch.organizationStatus === 'ignored') {
+        snapshot.cards = snapshot.cards.map((card) => card.noteUid === noteUid
+          ? normalizeCard({ ...card, status: 'archived', dueDate: '', updatedAt: timestamp })
+          : card);
+      }
       return snapshot;
     }, mutationOptions);
+  }
+
+  function applyNoteReviewAction(action, mutationOptions = {}) {
+    if (!isPlainObject(action)) throw learningError('Invalid note review action', 'INVALID_NOTE_REVIEW_ACTION');
+    const noteUid = asOptionalString(action.noteUid);
+    const operationId = asOptionalString(action.operationId);
+    const actionType = asOptionalString(action.action);
+    if (!noteUid || !operationId || !['accept', 'correct', 'ignore'].includes(actionType)) {
+      throw learningError('noteUid, operationId and a valid action are required', 'INVALID_NOTE_REVIEW_ACTION');
+    }
+    const patch = isPlainObject(action.patch) ? action.patch : {};
+    const releaseLock = acquireWriteLock();
+    try {
+      const current = readCurrent();
+      assertRevision(current, mutationOptions.expectedRevision);
+      const entry = findLiveNote(current, noteUid);
+      if (!entry) throw learningError(`Learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+      const currentNote = entry.note;
+      if (currentNote.lastReviewOperationId === operationId) {
+        if (currentNote.lastReviewAction && currentNote.lastReviewAction !== actionType) {
+          throw learningError(`Review operation id already used: ${operationId}`, 'REVIEW_OPERATION_REUSED');
+        }
+        return { snapshot: clone(current), note: clone(currentNote), replayed: true };
+      }
+      if (action.expectedDecisionRevision !== undefined && action.expectedDecisionRevision !== null) {
+        const expected = Number(action.expectedDecisionRevision);
+        if (!Number.isInteger(expected) || expected !== currentNote.decisionRevision) {
+          const error = learningError(
+            `Note review decision conflict: expected ${action.expectedDecisionRevision}, actual ${currentNote.decisionRevision}`,
+            'NOTE_REVIEW_CONFLICT',
+          );
+          error.expectedDecisionRevision = action.expectedDecisionRevision;
+          error.actualDecisionRevision = currentNote.decisionRevision;
+          throw error;
+        }
+      }
+      const proposalId = asOptionalString(action.proposalId);
+      if (proposalId && currentNote.proposalId && proposalId !== currentNote.proposalId) {
+        const error = learningError('The AI proposal changed before it was reviewed', 'NOTE_REVIEW_PROPOSAL_CONFLICT');
+        error.expectedProposalId = proposalId;
+        error.actualProposalId = currentNote.proposalId;
+        throw error;
+      }
+      const subject = Object.hasOwn(patch, 'subject') ? asOptionalString(patch.subject) : currentNote.subject;
+      if (!subject) throw learningError('A reviewed note must have a subject', 'INVALID_NOTE_REVIEW_ACTION');
+      if (Object.hasOwn(patch, 'knowledgePath') && !Array.isArray(patch.knowledgePath)) {
+        throw learningError('Invalid reviewed note knowledge path', 'INVALID_NOTE_REVIEW_ACTION');
+      }
+      let knowledgePath = Object.hasOwn(patch, 'knowledgePath')
+        ? uniqueStrings(patch.knowledgePath).slice(0, 3)
+        : currentNote.knowledgePath;
+      if (knowledgePath[0] !== subject) {
+        knowledgePath = [subject, ...knowledgePath.filter((item) => item !== currentNote.subject && item !== subject)].slice(0, 3);
+      }
+      const reviewStatus = actionType === 'accept'
+        ? 'accepted'
+        : actionType === 'correct' ? 'corrected' : 'ignored';
+      const timestamp = now().toISOString();
+      const userEditedFields = new Set(currentNote.userEditedFields);
+      if (actionType === 'correct') {
+        for (const key of ['subject', 'knowledgePath', 'questionType', 'wrongReason']) {
+          if (Object.hasOwn(patch, key)) userEditedFields.add(key);
+        }
+      }
+      const nextNote = normalizeAutoNote({
+        ...currentNote,
+        subject,
+        knowledgePath,
+        ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
+        ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
+        reviewStatus,
+        organizationStatus: organizationStatusForReview(reviewStatus),
+        classificationSource: actionType === 'correct' ? 'manual' : currentNote.classificationSource,
+        decisionRevision: currentNote.decisionRevision + 1,
+        lastReviewOperationId: operationId,
+        lastReviewAction: actionType,
+        proposalId: proposalId || currentNote.proposalId,
+        reviewedAt: timestamp,
+        userEditedFields: [...userEditedFields],
+        updatedAt: timestamp,
+      });
+      entry.day.autoNotes = entry.day.autoNotes.map((note) => note.noteUid === noteUid ? nextNote : note);
+      current.days[entry.date] = entry.day;
+      current.cards = current.cards.map((card) => {
+        if (card.noteUid !== noteUid) return card;
+        if (actionType === 'ignore') {
+          return normalizeCard({ ...card, status: 'archived', dueDate: '', updatedAt: timestamp });
+        }
+        return normalizeCard({
+          ...card,
+          subject,
+          knowledgePath,
+          updatedAt: timestamp,
+        });
+      });
+      const next = normalizeSnapshot(current);
+      next.revision = current.revision + 1;
+      next.updatedAt = timestamp;
+      writeAtomic(next);
+      const stored = findLiveNote(next, noteUid)?.note || nextNote;
+      return { snapshot: clone(next), note: clone(stored), replayed: false };
+    } finally {
+      releaseLock();
+    }
   }
 
   function deleteNote(noteUid, mutationOptions = {}) {
@@ -1180,6 +1412,7 @@ function createLearningDataStore(options = {}) {
     restoreSnapshot,
     createNote,
     updateNote,
+    applyNoteReviewAction,
     deleteNote,
     restoreNote,
     createCard,
@@ -1195,5 +1428,7 @@ module.exports = {
   defaultSnapshot,
   formatDateInTimeZone,
   makeCardId,
+  normalizeReviewStatus,
   normalizeSnapshot,
+  organizationStatusForReview,
 };

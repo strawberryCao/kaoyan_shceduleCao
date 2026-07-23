@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, ExternalLink, FileImage, ImagePlus, Minus, Save, X } from 'lucide-react';
-import { createNoteUid, fileToDataUrl, NOTE_SERVER_URL, saveNoteImage } from '../utils/notes';
+import { createNoteUid, fileToDataUrl, IS_CLOUD_RUNTIME, NOTE_SERVER_URL, saveNoteImage } from '../utils/notes';
 import { fetchWithTimeout } from '../utils/localService';
 
 interface PendingImage {
-  name: string;
   src: string;
   noteUid: string;
 }
@@ -24,13 +23,6 @@ const getClipboardImage = (items: DataTransferItemList): File | null => {
   return Array.from(items).find((item) => item.type.startsWith('image/'))?.getAsFile() ?? null;
 };
 
-const getSavedFileName = (filePath?: string) => {
-  if (!filePath) {
-    return '图片笔记';
-  }
-  return filePath.split(/[\\/]/).pop() || '图片笔记';
-};
-
 export function NoteDropApp() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const remarkRef = useRef<HTMLTextAreaElement>(null);
@@ -42,7 +34,7 @@ export function NoteDropApp() {
   const [dragActive, setDragActive] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [status, setStatus] = useState('拖入、选择或按 Ctrl+V 粘贴图片');
+  const [status, setStatus] = useState('');
   const [dialogError, setDialogError] = useState('');
 
   useEffect(() => {
@@ -71,11 +63,11 @@ export function NoteDropApp() {
 
     try {
       const src = await fileToDataUrl(file);
-      setPendingImage({ name: file.name || '粘贴的图片', src, noteUid: createNoteUid() });
+      setPendingImage({ src, noteUid: createNoteUid() });
       setRemark('');
       setSaved(false);
       setDialogError('');
-      setStatus('图片已接收，请补充备注。');
+      setStatus('');
     } catch (error) {
       const message = error instanceof Error ? error.message : '图片读取失败，请重试。';
       setSaved(false);
@@ -130,7 +122,7 @@ export function NoteDropApp() {
         setPendingImage(null);
         setRemark('');
         setDialogError('');
-        setStatus('已取消，继续拖入下一张图片。');
+        setStatus('');
         return;
       }
 
@@ -170,7 +162,7 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      setStatus('正在写入本地笔记……');
+      setStatus('');
       const result = await saveNoteImage({
         imageDataUrl: pendingImage.src,
         kind: 'single',
@@ -181,14 +173,20 @@ export function NoteDropApp() {
       setRemark('');
       setDialogError('');
       setSaved(true);
-      const aiMessage = result.aiStatus === 'complete'
-        ? 'AI 整理完成'
-        : result.aiStatus === 'failed'
-          ? 'AI 将在稍后整理'
-          : 'AI 正在后台整理';
-      setStatus(`已安全保存：${getSavedFileName(result.filePath)} · ${aiMessage}`);
+      if (IS_CLOUD_RUNTIME) {
+        setStatus('已保存，待确认分类');
+      } else {
+        const aiMessage = result.aiStatus === 'complete'
+          ? 'AI 整理完成'
+          : result.aiStatus === 'failed'
+            ? 'AI 将在稍后整理'
+            : 'AI 正在后台整理';
+        setStatus(`已保存 · ${aiMessage}`);
+      }
     } catch (error) {
-      const message = error instanceof Error ? `保存失败：${error.message}` : '保存失败，请确认笔记服务已启动。';
+      const message = error instanceof Error
+        ? `保存失败：${error.message}`
+        : IS_CLOUD_RUNTIME ? '保存失败，请稍后重试。' : '保存失败，请确认笔记服务已启动。';
       setDialogError(message);
       setStatus(message);
     } finally {
@@ -203,13 +201,23 @@ export function NoteDropApp() {
     setPendingImage(null);
     setRemark('');
     setDialogError('');
-    setStatus('已取消，继续拖入下一张图片。');
+    setStatus('');
   };
 
   const minimizeWindow = () => window.kaoyanDesktop?.minimize();
-  const closeWindow = () => window.kaoyanDesktop?.close();
+  const closeWindow = () => {
+    if (IS_CLOUD_RUNTIME) {
+      window.location.assign(`${window.location.origin}/?hub=1`);
+      return;
+    }
+    window.kaoyanDesktop?.close();
+  };
 
   const openCanvas = () => {
+    if (IS_CLOUD_RUNTIME) {
+      window.location.assign(`${window.location.origin}/?notes=1&mode=canvas`);
+      return;
+    }
     if (window.kaoyanDesktop?.openNoteCanvas) {
       void window.kaoyanDesktop.openNoteCanvas();
     }
@@ -217,7 +225,7 @@ export function NoteDropApp() {
 
   return (
     <main
-      className={`note-drop-app ${dragActive ? 'is-dragging' : ''} ${pendingImage ? 'is-remark-mode' : ''}`}
+      className={`note-drop-app ${dragActive ? 'is-dragging' : ''} ${pendingImage ? 'is-remark-mode' : ''} ${status && !pendingImage ? 'has-status' : ''}`}
       onDragEnter={(event) => {
         event.preventDefault();
         dragDepthRef.current += 1;
@@ -246,9 +254,11 @@ export function NoteDropApp() {
           <span className="note-drop-grip" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
           <strong>笔记小 App</strong>
         </div>
-        {window.kaoyanDesktop?.isElectron && (
+        {(window.kaoyanDesktop?.isElectron || IS_CLOUD_RUNTIME) && (
           <nav aria-label="窗口控制">
-            <button type="button" onClick={minimizeWindow} aria-label="最小化"><Minus size={15} /></button>
+            {window.kaoyanDesktop?.isElectron && (
+              <button type="button" onClick={minimizeWindow} aria-label="最小化"><Minus size={15} /></button>
+            )}
             <button type="button" onClick={closeWindow} aria-label="关闭"><X size={15} /></button>
           </nav>
         )}
@@ -263,8 +273,7 @@ export function NoteDropApp() {
         >
           <span className="note-drop-zone-icon"><ImagePlus size={18} aria-hidden="true" /></span>
           <span className="note-drop-zone-copy">
-            <strong>{dragActive ? '松手放入图片' : '直接拖入图片'}</strong>
-            <small>自动弹出备注 · Ctrl+V</small>
+            <strong>{dragActive ? '松手放入图片' : '拖入 / 点击 / Ctrl+V'}</strong>
           </span>
         </button>
         <button
@@ -278,10 +287,12 @@ export function NoteDropApp() {
         </button>
       </section>
 
-      <footer className={saved ? 'is-success' : ''} aria-live="polite">
-        {saved ? <CheckCircle2 size={13} aria-hidden="true" /> : <FileImage size={13} aria-hidden="true" />}
-        <span>{status}</span>
-      </footer>
+      {status && !pendingImage && (
+        <footer className={saved ? 'is-success' : ''} aria-live="polite">
+          {saved ? <CheckCircle2 size={13} aria-hidden="true" /> : <FileImage size={13} aria-hidden="true" />}
+          <span>{status}</span>
+        </footer>
+      )}
 
       <input
         ref={fileInputRef}
@@ -309,28 +320,21 @@ export function NoteDropApp() {
             }}
           >
             <header>
-              <div>
-                <p>图片已放入</p>
-                <h2 id="note-remark-title">写一句备注</h2>
-              </div>
+              <h2 id="note-remark-title">备注</h2>
               <button type="button" onClick={cancelPending} disabled={saving} aria-label="取消并关闭备注框"><X size={17} /></button>
             </header>
 
             <figure>
               <img src={pendingImage.src} alt="待保存的笔记图片" />
-              <figcaption>{pendingImage.name}</figcaption>
             </figure>
 
-            <label>
-              <span>备注（可以留空）</span>
-              <textarea
-                ref={remarkRef}
-                value={remark}
-                onChange={(event) => setRemark(event.target.value)}
-                placeholder="例如：线性代数第二章易错题，注意正交矩阵的性质……"
-              />
-              <small>AI 会按任务难度选择模型，并结合图片和备注自动整理。</small>
-            </label>
+            <textarea
+              ref={remarkRef}
+              aria-label="备注"
+              value={remark}
+              onChange={(event) => setRemark(event.target.value)}
+              placeholder="补充一句（可选）"
+            />
 
             {dialogError && <p className="note-remark-error" id="note-remark-error" role="alert">{dialogError}</p>}
 

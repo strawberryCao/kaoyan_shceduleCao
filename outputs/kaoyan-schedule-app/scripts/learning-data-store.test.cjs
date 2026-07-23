@@ -639,3 +639,132 @@ test('rejects stale revisions and keeps a backup after subsequent writes', (t) =
 test('formats captured dates in the configured timezone', () => {
   assert.equal(formatDateInTimeZone('2026-07-16T17:30:00.000Z', 'Asia/Shanghai'), '2026-07-17');
 });
+
+test('ordinary content edits do not complete a pending review', (t) => {
+  const store = makeFixture(t);
+  let snapshot = store.syncNote({
+    noteUid: 'note-content-only-edit',
+    title: 'AI draft title',
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: 'Inbox',
+      organizationStatus: 'pending',
+      classificationSource: 'ai',
+      reviewStatus: 'pending',
+      proposalId: 'proposal-content-edit',
+    },
+  });
+  snapshot = store.updateNote('note-content-only-edit', {
+    title: 'User title',
+    remark: 'User note text',
+  });
+  const note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.reviewStatus, 'pending');
+  assert.equal(note.organizationStatus, 'pending');
+  assert.equal(note.decisionRevision, 0);
+});
+
+test('review actions are idempotent, revision guarded, and ignored notes cannot reactivate cards', (t) => {
+  const store = makeFixture(t);
+  let snapshot = store.syncNote({
+    noteUid: 'note-review-actions',
+    title: 'Pending mistake',
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: 'Inbox',
+      knowledgePath: ['Inbox'],
+      organizationStatus: 'pending',
+      classificationSource: 'ai',
+      reviewStatus: 'pending',
+      proposalId: 'proposal-review-actions',
+    },
+    cards: [{ sourceKey: 'mistake:0', kind: 'mistake', front: 'Question text', back: 'Answer text' }],
+  });
+  const accepted = store.applyNoteReviewAction({
+    noteUid: 'note-review-actions',
+    action: 'accept',
+    operationId: 'review-op-accept',
+    expectedDecisionRevision: 0,
+    proposalId: 'proposal-review-actions',
+    patch: { subject: 'Mathematics', knowledgePath: ['Mathematics', 'Limits'] },
+  });
+  snapshot = accepted.snapshot;
+  let note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.reviewStatus, 'accepted');
+  assert.equal(note.organizationStatus, 'confirmed');
+  assert.equal(note.decisionRevision, 1);
+  assert.equal(snapshot.cards[0].status, 'active');
+
+  const replay = store.applyNoteReviewAction({
+    noteUid: 'note-review-actions',
+    action: 'accept',
+    operationId: 'review-op-accept',
+    expectedDecisionRevision: 0,
+    proposalId: 'proposal-review-actions',
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(replay.snapshot.revision, snapshot.revision);
+  assert.throws(() => store.applyNoteReviewAction({
+    noteUid: 'note-review-actions',
+    action: 'correct',
+    operationId: 'review-op-stale',
+    expectedDecisionRevision: 0,
+    patch: { subject: 'Linear Algebra' },
+  }), { code: 'NOTE_REVIEW_CONFLICT' });
+
+  const ignored = store.applyNoteReviewAction({
+    noteUid: 'note-review-actions',
+    action: 'ignore',
+    operationId: 'review-op-ignore',
+    expectedDecisionRevision: 1,
+  });
+  snapshot = ignored.snapshot;
+  note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.reviewStatus, 'ignored');
+  assert.equal(note.organizationStatus, 'ignored');
+  assert.equal(note.decisionRevision, 2);
+  assert.equal(snapshot.cards.every((card) => card.noteUid !== note.noteUid || card.status === 'archived'), true);
+
+  snapshot = store.syncNote({
+    noteUid: 'note-review-actions',
+    title: 'New AI output',
+    createdAt: '2026-07-17T03:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-17',
+      subject: 'Probability',
+      reviewStatus: 'auto_applied',
+      organizationStatus: 'confirmed',
+      classificationSource: 'ai',
+    },
+    cards: [{ sourceKey: 'mistake:1', kind: 'mistake', front: 'New question', back: 'New answer' }],
+  });
+  note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.reviewStatus, 'ignored');
+  assert.equal(snapshot.cards.some((card) => card.noteUid === note.noteUid && card.status === 'active'), false);
+});
+
+test('legacy manual and ignored notes migrate to durable review states', (t) => {
+  const store = makeFixture(t);
+  const snapshot = store.restoreSnapshot({
+    version: 1,
+    revision: 4,
+    days: {
+      '2026-07-17': {
+        autoNotes: [
+          { noteUid: 'legacy-manual', subject: 'Mathematics', classificationSource: 'manual', organizationStatus: 'confirmed' },
+          { noteUid: 'legacy-ignored', subject: 'Inbox', classificationSource: 'ai', organizationStatus: 'ignored' },
+        ],
+      },
+    },
+  });
+  const notes = snapshot.days['2026-07-17'].autoNotes;
+  assert.equal(notes.find((note) => note.noteUid === 'legacy-manual').reviewStatus, 'corrected');
+  assert.equal(notes.find((note) => note.noteUid === 'legacy-manual').decisionRevision, 1);
+  assert.equal(notes.find((note) => note.noteUid === 'legacy-ignored').reviewStatus, 'ignored');
+  assert.equal(notes.find((note) => note.noteUid === 'legacy-ignored').decisionRevision, 1);
+});

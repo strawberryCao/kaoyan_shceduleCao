@@ -463,3 +463,79 @@ test('replaces a stale organizer lock and release removes the live lock file', (
   assert.equal(fs.existsSync(lockPath), false);
   fs.rmdirSync(root);
 });
+
+test('keeps an ignored human decision and never regenerates cards', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-ignored-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const relocated = moveFixtureToSubject(fixture, 'Mathematics', {
+    subject: 'Mathematics',
+    knowledgePath: ['Mathematics', 'Limits'],
+    organizationStatus: 'ignored',
+    classificationSource: 'ai',
+    reviewStatus: 'ignored',
+    decisionRevision: 2,
+    lastReviewOperationId: 'ignore-organizer-op',
+    lastReviewAction: 'ignore',
+    cards: [{ sourceKey: 'old', kind: 'mistake', front: 'Old question', back: 'Old answer' }],
+  });
+  let syncedCards = null;
+  const report = await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    force: true,
+    analyzeNote: async () => ({
+      subject: 'Probability',
+      knowledgePoint: 'Random variables',
+      title: 'AI replacement',
+      confidence: 0.99,
+      cards: [{ sourceKey: 'new', kind: 'mistake', front: 'New question', back: 'New answer' }],
+    }),
+    syncNote: async (_metadata, options) => {
+      syncedCards = options.cards;
+    },
+  });
+  assert.equal(report.failed, 0);
+  assert.deepEqual(syncedCards, []);
+  const metadata = JSON.parse(fs.readFileSync(relocated.sidecarPath, 'utf8'));
+  assert.equal(metadata.learning.reviewStatus, 'ignored');
+  assert.equal(metadata.learning.organizationStatus, 'ignored');
+  assert.equal(metadata.learning.decisionRevision, 2);
+  assert.equal(metadata.learning.lastReviewOperationId, 'ignore-organizer-op');
+  assert.equal(metadata.subject, 'Mathematics');
+  assert.deepEqual(metadata.learning.cards, []);
+});
+
+test('keeps an accepted AI proposal locked during later organizer runs', async (t) => {
+  const fixture = makeFixture('kaoyan-organizer-accepted-');
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const relocated = moveFixtureToSubject(fixture, 'Mathematics', {
+    subject: 'Mathematics',
+    knowledgePath: ['Mathematics', 'Limits'],
+    organizationStatus: 'confirmed',
+    classificationSource: 'ai',
+    reviewStatus: 'accepted',
+    decisionRevision: 1,
+    lastReviewOperationId: 'accept-organizer-op',
+    lastReviewAction: 'accept',
+    proposalId: 'accepted-proposal',
+  });
+  await organizeNotes({
+    notesRoot: fixture.notesRoot,
+    assistantRoot: fixture.assistantRoot,
+    force: true,
+    analyzeNote: async () => ({
+      subject: 'Probability',
+      knowledgePoint: 'Random variables',
+      title: 'Later AI output',
+      confidence: 0.99,
+    }),
+    syncNote: false,
+  });
+  const metadata = JSON.parse(fs.readFileSync(relocated.sidecarPath, 'utf8'));
+  assert.equal(metadata.subject, 'Mathematics');
+  assert.deepEqual(metadata.learning.knowledgePath, ['Mathematics', 'Limits']);
+  assert.equal(metadata.learning.reviewStatus, 'accepted');
+  assert.equal(metadata.learning.decisionRevision, 1);
+  assert.equal(metadata.learning.lastReviewOperationId, 'accept-organizer-op');
+  assert.equal(metadata.learning.proposalId, 'accepted-proposal');
+});

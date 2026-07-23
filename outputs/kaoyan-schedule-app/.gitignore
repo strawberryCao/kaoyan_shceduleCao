@@ -4,3 +4,6 @@ dist
 *.local
 dev-server.*.log
 diagnostics/
+cloudflare/.seed/
+.dev.vars*
+.wrangler/

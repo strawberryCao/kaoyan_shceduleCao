@@ -164,3 +164,144 @@ test('capturedAt and createdAt win over mtimes, then image mtime is used', () =>
     '2026-07-10T00:00:00.000Z',
   );
 });
+
+test('deduplication prefers an older human decision over a newer AI sidecar', (t) => {
+  const fixture = makeFixture(t);
+  const oldMetadata = JSON.parse(fs.readFileSync(fixture.oldSidecar, 'utf8'));
+  writeJson(fixture.oldSidecar, {
+    ...oldMetadata,
+    learning: {
+      subject: '楂樼瓑鏁板',
+      knowledgePath: ['楂樼瓑鏁板', '浜哄伐淇'],
+      organizationStatus: 'confirmed',
+      classificationSource: 'manual',
+      reviewStatus: 'corrected',
+      decisionRevision: 3,
+      lastReviewOperationId: 'dedupe-human-op',
+      lastReviewAction: 'correct',
+    },
+  });
+  const oldTime = new Date('2026-07-10T00:00:00.000Z');
+  fs.utimesSync(fixture.oldSidecar, oldTime, oldTime);
+  const scan = scanNoteIndex({ notesRoot: fixture.notesRoot });
+  const decision = scan.entries.find((entry) => entry.metadata.noteUid === 'same-note-uid');
+  assert.equal(decision.sidecarPath, fixture.oldSidecar);
+  assert.equal(decision.enrichment.reviewStatus, 'corrected');
+  assert.equal(decision.enrichment.decisionRevision, 3);
+  assert.equal(decision.enrichment.lastReviewOperationId, 'dedupe-human-op');
+});
+
+test('an empty learning index rebuilds ignored decisions from sidecars without cards', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-rebuild-ignored-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const assistantRoot = path.join(root, 'assistant');
+  const subjectDir = path.join(notesRoot, '楂樼瓑鏁板');
+  const imagePath = path.join(subjectDir, 'ignored-note.png');
+  const sidecarPath = path.join(subjectDir, '.metadata', 'ignored-note.note.json');
+  fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.from('image'));
+  writeJson(sidecarPath, {
+    noteUid: 'ignored-rebuild-note',
+    id: 'ignored-note',
+    subject: '楂樼瓑鏁板',
+    title: 'Ignored mistake',
+    remark: '#閿欓 remember this answer',
+    createdAt: '2026-07-17T03:00:00.000Z',
+    fileName: path.basename(imagePath),
+    filePath: imagePath,
+    learning: {
+      subject: '楂樼瓑鏁板',
+      knowledgePath: ['楂樼瓑鏁板'],
+      noteType: 'mistake',
+      organizationStatus: 'ignored',
+      classificationSource: 'ai',
+      reviewStatus: 'ignored',
+      decisionRevision: 2,
+      lastReviewOperationId: 'ignored-before-rebuild',
+      lastReviewAction: 'ignore',
+      cards: [{ sourceKey: 'old-card', kind: 'mistake', front: 'Question text', back: 'Answer text' }],
+    },
+  });
+  rebuildNoteIndex({ notesRoot, assistantRoot, apply: true, flatten: false });
+  const snapshot = createLearningDataStore({ assistantRoot }).getSnapshot();
+  const note = Object.values(snapshot.days).flatMap((day) => day.autoNotes)[0];
+  assert.equal(note.reviewStatus, 'ignored');
+  assert.equal(note.decisionRevision, 2);
+  assert.equal(note.lastReviewOperationId, 'ignored-before-rebuild');
+  assert.equal(snapshot.cards.length, 0);
+});
+
+test('accepted and corrected decisions survive a full rebuild from sidecars', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-rebuild-accepted-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const assistantRoot = path.join(root, 'assistant');
+  const subjectDir = path.join(notesRoot, 'Mathematics');
+  const imagePath = path.join(subjectDir, 'accepted-note.png');
+  const sidecarPath = path.join(subjectDir, '.metadata', 'accepted-note.note.json');
+  fs.mkdirSync(path.dirname(sidecarPath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.from('image'));
+  writeJson(sidecarPath, {
+    noteUid: 'accepted-rebuild-note',
+    id: 'accepted-note',
+    subject: 'Mathematics',
+    title: 'Accepted note',
+    remark: 'A useful memory note',
+    createdAt: '2026-07-17T03:00:00.000Z',
+    fileName: path.basename(imagePath),
+    filePath: imagePath,
+    learning: {
+      subject: 'Mathematics',
+      knowledgePath: ['Mathematics', 'Limits'],
+      organizationStatus: 'confirmed',
+      classificationSource: 'ai',
+      reviewStatus: 'accepted',
+      decisionRevision: 1,
+      lastReviewOperationId: 'accepted-before-rebuild',
+      lastReviewAction: 'accept',
+      proposalId: 'accepted-proposal',
+      cards: [{ sourceKey: 'accepted-card', kind: 'memory', front: 'Question text', back: 'Answer text' }],
+    },
+  });
+  const correctedDir = path.join(notesRoot, 'LinearAlgebra');
+  const correctedImagePath = path.join(correctedDir, 'corrected-note.png');
+  const correctedSidecarPath = path.join(correctedDir, '.metadata', 'corrected-note.note.json');
+  fs.mkdirSync(path.dirname(correctedSidecarPath), { recursive: true });
+  fs.writeFileSync(correctedImagePath, Buffer.from('image'));
+  writeJson(correctedSidecarPath, {
+    noteUid: 'corrected-rebuild-note',
+    id: 'corrected-note',
+    subject: 'LinearAlgebra',
+    title: 'Corrected note',
+    createdAt: '2026-07-17T04:00:00.000Z',
+    fileName: path.basename(correctedImagePath),
+    filePath: correctedImagePath,
+    learning: {
+      subject: 'LinearAlgebra',
+      knowledgePath: ['LinearAlgebra', 'Matrices'],
+      organizationStatus: 'confirmed',
+      classificationSource: 'manual',
+      reviewStatus: 'corrected',
+      decisionRevision: 4,
+      lastReviewOperationId: 'corrected-before-rebuild',
+      lastReviewAction: 'correct',
+      proposalId: 'corrected-proposal',
+    },
+  });
+  rebuildNoteIndex({ notesRoot, assistantRoot, apply: true, flatten: false });
+  const snapshot = createLearningDataStore({ assistantRoot }).getSnapshot();
+  const notes = Object.values(snapshot.days).flatMap((day) => day.autoNotes);
+  const accepted = notes.find((note) => note.noteUid === 'accepted-rebuild-note');
+  const corrected = notes.find((note) => note.noteUid === 'corrected-rebuild-note');
+  assert.equal(accepted.reviewStatus, 'accepted');
+  assert.equal(accepted.decisionRevision, 1);
+  assert.equal(accepted.lastReviewOperationId, 'accepted-before-rebuild');
+  assert.equal(accepted.proposalId, 'accepted-proposal');
+  assert.equal(corrected.reviewStatus, 'corrected');
+  assert.equal(corrected.classificationSource, 'manual');
+  assert.equal(corrected.decisionRevision, 4);
+  assert.equal(corrected.lastReviewOperationId, 'corrected-before-rebuild');
+  assert.equal(snapshot.cards.length, 1);
+  assert.equal(snapshot.cards[0].status, 'active');
+});

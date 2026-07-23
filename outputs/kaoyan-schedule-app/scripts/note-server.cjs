@@ -23,8 +23,15 @@ const {
   applyCanvasOrganization,
 } = require('./canvas-ai-organizer.cjs');
 const { createLearningDataStore, formatDateInTimeZone, LearningDataConflictError } = require('./learning-data-store.cjs');
+const {
+  acquireOrganizerLock,
+  moveWithJournal,
+  rebuildMetadataIndex,
+  recoverMoves,
+} = require('./organize-notes.cjs');
 const { resolveNoteImage, revealNoteImage } = require('./note-file-access.cjs');
 const {
+  atomicWriteJson,
   ensureKnowledgePoint,
   ensureSubject,
   loadTaxonomy,
@@ -41,6 +48,7 @@ const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir
 const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
 const ORGANIZER_STATE_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-state.json');
 const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
+const ORGANIZER_MOVE_LOG_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-moves.jsonl');
 const AI_PROVIDER_CONFIG_PATH = process.env.KAOYAN_AI_CONFIG_PATH || path.join(ASSISTANT_ROOT, 'ai-providers.json');
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
 const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
@@ -230,6 +238,7 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && pathname === '/save-note') return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
   if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
+  if (method === 'POST' && pathname === '/learning-data/note-review-actions') return true;
   if (method === 'PATCH' && pathname === '/learning-data/day') return true;
   if (method === 'PUT' && pathname === '/learning-data/manual-records') return true;
   if (method === 'POST' && /^\/learning-data\/notes\/[^/]+\/restore$/.test(pathname)) return true;
@@ -542,60 +551,147 @@ function findSavedNote(noteUid) {
   return null;
 }
 
-function persistManualClassification(noteUid, patch) {
-  const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
-  if (!patch || !classificationKeys.some((key) => Object.hasOwn(patch, key))) return null;
-  const saved = findSavedNote(noteUid);
-  if (!saved) return null;
+function findLearningNote(snapshot, noteUid) {
+  for (const day of Object.values(snapshot?.days || {})) {
+    const note = Array.isArray(day?.autoNotes)
+      ? day.autoNotes.find((item) => item?.noteUid === noteUid)
+      : null;
+    if (note) return note;
+  }
+  return null;
+}
 
+function makeReviewError(message, code, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  Object.assign(error, details);
+  return error;
+}
+
+function normalizedReviewStatus(learning = {}) {
+  if (['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(learning.reviewStatus)) {
+    return learning.reviewStatus;
+  }
+  if (learning.organizationStatus === 'ignored') return 'ignored';
+  if (learning.classificationSource === 'manual') return 'corrected';
+  return learning.organizationStatus === 'confirmed' ? 'auto_applied' : 'pending';
+}
+
+function proposalIdFor(noteUid, subject, knowledgePath, seed = '') {
+  const digest = crypto.createHash('sha256')
+    .update(`${noteUid}|${subject}|${(knowledgePath || []).join('/')}|${seed}`)
+    .digest('hex')
+    .slice(0, 20);
+  return `proposal-${digest}`;
+}
+
+function persistNoteReviewAction(action, snapshot) {
+  const noteUid = typeof action?.noteUid === 'string' ? action.noteUid.trim() : '';
+  const operationId = typeof action?.operationId === 'string' ? action.operationId.trim().slice(0, 160) : '';
+  const actionType = action?.action;
+  if (!noteUid || !operationId || !['accept', 'correct', 'ignore'].includes(actionType)) {
+    throw makeReviewError('Invalid note review action', 'INVALID_NOTE_REVIEW_ACTION');
+  }
+  const currentNote = findLearningNote(snapshot, noteUid);
+  if (!currentNote) throw makeReviewError(`Learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+  const saved = findSavedNote(noteUid);
+  if (!saved) {
+    if (currentNote.manualCreated && !currentNote.filePath) return { metadata: null, durable: true, replayed: false };
+    throw makeReviewError(`Durable note metadata not found: ${noteUid}`, 'NOTE_FILE_METADATA_NOT_FOUND');
+  }
   const currentLearning = saved.metadata.learning && typeof saved.metadata.learning === 'object'
     ? saved.metadata.learning
     : {};
-  const subject = sanitizeSegment(patch.subject || currentLearning.subject || saved.metadata.subject, DEFAULT_SUBJECT, 60);
-  const incomingPath = Array.isArray(patch.knowledgePath) ? patch.knowledgePath : currentLearning.knowledgePath;
+  const sidecarRevision = Number.isInteger(Number(currentLearning.decisionRevision))
+    ? Math.max(0, Number(currentLearning.decisionRevision))
+    : ['accepted', 'corrected', 'ignored'].includes(normalizedReviewStatus(currentLearning)) ? 1 : 0;
+  const storeRevision = Number.isInteger(Number(currentNote.decisionRevision))
+    ? Math.max(0, Number(currentNote.decisionRevision))
+    : 0;
+  const currentDecisionRevision = Math.max(sidecarRevision, storeRevision);
+  const lastOperationId = sidecarRevision >= storeRevision
+    ? currentLearning.lastReviewOperationId
+    : currentNote.lastReviewOperationId;
+  const lastAction = sidecarRevision >= storeRevision
+    ? currentLearning.lastReviewAction
+    : currentNote.lastReviewAction;
+  if (lastOperationId === operationId) {
+    if (lastAction && lastAction !== actionType) {
+      throw makeReviewError(`Review operation id already used: ${operationId}`, 'REVIEW_OPERATION_REUSED');
+    }
+    return { metadata: saved.metadata, durable: true, replayed: true };
+  }
+  if (action.expectedDecisionRevision !== undefined && action.expectedDecisionRevision !== null) {
+    const expected = Number(action.expectedDecisionRevision);
+    if (!Number.isInteger(expected) || expected !== currentDecisionRevision) {
+      throw makeReviewError(
+        `Note review decision conflict: expected ${action.expectedDecisionRevision}, actual ${currentDecisionRevision}`,
+        'NOTE_REVIEW_CONFLICT',
+        { expectedDecisionRevision: action.expectedDecisionRevision, actualDecisionRevision: currentDecisionRevision },
+      );
+    }
+  }
+  const currentProposalId = String(currentLearning.proposalId || currentNote.proposalId || '');
+  const proposalId = typeof action.proposalId === 'string' ? action.proposalId.trim().slice(0, 160) : '';
+  if (proposalId && currentProposalId && proposalId !== currentProposalId) {
+    throw makeReviewError('The AI proposal changed before it was reviewed', 'NOTE_REVIEW_PROPOSAL_CONFLICT', {
+      expectedProposalId: proposalId,
+      actualProposalId: currentProposalId,
+    });
+  }
+
+  const patch = action.patch && typeof action.patch === 'object' && !Array.isArray(action.patch) ? action.patch : {};
+  const proposed = actionType === 'accept' && saved.metadata.organizer?.proposed
+    ? saved.metadata.organizer.proposed
+    : {};
+  const subject = sanitizeSegment(
+    patch.subject || proposed.subject || currentLearning.subject || saved.metadata.subject,
+    DEFAULT_SUBJECT,
+    60,
+  );
+  const incomingPath = Array.isArray(patch.knowledgePath)
+    ? patch.knowledgePath
+    : proposed.knowledgePoint
+      ? [subject, proposed.knowledgePoint]
+      : currentLearning.knowledgePath;
   const knowledgePath = [subject, ...(Array.isArray(incomingPath) ? incomingPath : [])
     .map((item) => sanitizeSegment(item, '', 60))
     .filter((item) => item && item !== subject && item !== saved.metadata.subject)]
     .slice(0, 3);
   const knowledgePoint = knowledgePath[1] || null;
-
-  const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
-  const subjectNode = ensureSubject(taxonomy, subject, { createdBy: 'user' });
-  const pointNode = knowledgePoint
-    ? ensureKnowledgePoint(taxonomy, subjectNode, knowledgePoint, { createdBy: 'user' })
-    : null;
-  saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
-
-  const destinationDir = path.join(NOTES_ROOT, subject);
-  fs.mkdirSync(metadataDir(destinationDir), { recursive: true });
-  const sourceImagePath = saved.filePath;
-  const sourceSidecarPath = saved.receipt.sidecarPath;
-  const sourceSubjectDir = path.dirname(sourceImagePath);
-  const sourceExt = path.extname(sourceImagePath).replace(/^\./, '') || 'png';
-  const sourceStem = path.basename(sourceImagePath, path.extname(sourceImagePath));
-  const target = ensureUniquePath(destinationDir, sourceStem, sourceExt, sourceImagePath);
-  const targetId = path.basename(target.filename, path.extname(target.filename));
-  const targetSidecarPath = sidecarPathForId(destinationDir, targetId);
+  const reviewStatus = actionType === 'accept' ? 'accepted' : actionType === 'correct' ? 'corrected' : 'ignored';
   const updatedAt = new Date().toISOString();
+  const nextProposalId = proposalId || currentProposalId || proposalIdFor(noteUid, subject, knowledgePath);
+
+  let subjectNode = null;
+  let pointNode = null;
+  if (actionType !== 'ignore') {
+    const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
+    subjectNode = ensureSubject(taxonomy, subject, { createdBy: actionType === 'correct' ? 'user' : 'ai' });
+    pointNode = knowledgePoint
+      ? ensureKnowledgePoint(taxonomy, subjectNode, knowledgePoint, { createdBy: actionType === 'correct' ? 'user' : 'ai' })
+      : null;
+    saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
+  }
+
   const metadata = {
     ...saved.metadata,
-    id: targetId,
     subject,
-    fileName: target.filename,
-    filePath: target.filePath,
     updatedAt,
-    classification: {
-      ...(saved.metadata.classification || {}),
-      subjectId: subjectNode.id,
-      subjectName: subjectNode.name,
-      knowledgePointId: pointNode?.id || null,
-      knowledgePointName: pointNode?.name || null,
-      correctedBy: 'user',
-      correctedAt: updatedAt,
-    },
+    ...(actionType === 'ignore' ? {} : {
+      classification: {
+        ...(saved.metadata.classification || {}),
+        subjectId: subjectNode?.id || null,
+        subjectName: subjectNode?.name || subject,
+        knowledgePointId: pointNode?.id || null,
+        knowledgePointName: pointNode?.name || knowledgePoint,
+        reviewedBy: 'user',
+        reviewedAt: updatedAt,
+      },
+    }),
     organizer: {
       ...(saved.metadata.organizer || {}),
-      status: 'user_corrected',
+      status: `user_${reviewStatus}`,
       proposed: null,
     },
     learning: {
@@ -604,42 +700,41 @@ function persistManualClassification(noteUid, patch) {
       knowledgePath,
       ...(Object.hasOwn(patch, 'questionType') ? { questionType: String(patch.questionType || '').trim().slice(0, 60) } : {}),
       ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: String(patch.wrongReason || '').trim().slice(0, 500) } : {}),
-      organizationStatus: 'confirmed',
-      classificationSource: 'manual',
+      organizationStatus: reviewStatus === 'ignored' ? 'ignored' : 'confirmed',
+      classificationSource: reviewStatus === 'corrected' ? 'manual' : currentLearning.classificationSource || currentNote.classificationSource || 'ai',
+      reviewStatus,
+      decisionRevision: currentDecisionRevision + 1,
+      lastReviewOperationId: operationId,
+      lastReviewAction: actionType,
+      proposalId: nextProposalId,
+      reviewedAt: updatedAt,
       pendingAiOrganization: false,
+      ...(reviewStatus === 'ignored' ? { cards: [] } : {}),
     },
   };
 
-  const moved = path.resolve(sourceImagePath) !== path.resolve(target.filePath);
-  if (!moved) {
-    fs.writeFileSync(sourceSidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
-    appendMetadata(destinationDir, metadata);
-    writeSaveReceipt(noteUid, metadata, saved.receipt.learningSyncError);
-    return metadata;
+  let finalMetadata = metadata;
+  let finalSidecarPath = saved.receipt.sidecarPath;
+  const destinationDir = path.join(NOTES_ROOT, subject);
+  const shouldMove = actionType !== 'ignore' && path.resolve(path.dirname(saved.filePath)) !== path.resolve(destinationDir);
+  if (shouldMove) {
+    const movement = moveWithJournal({
+      notesRoot: NOTES_ROOT,
+      logPath: ORGANIZER_MOVE_LOG_PATH,
+      imagePath: saved.filePath,
+      sidecarPath: saved.receipt.sidecarPath,
+      destinationDir,
+      metadata,
+    });
+    finalMetadata = movement.metadata || metadata;
+    finalSidecarPath = movement.sidecarPath;
+  } else {
+    atomicWriteJson(finalSidecarPath, metadata);
+    rebuildMetadataIndex(path.dirname(saved.filePath));
   }
-
-  fs.renameSync(sourceImagePath, target.filePath);
-  try {
-    fs.writeFileSync(targetSidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
-    appendMetadata(destinationDir, metadata);
-    writeSaveReceipt(noteUid, metadata, saved.receipt.learningSyncError);
-  } catch (error) {
-    unlinkFileIfExists(targetSidecarPath);
-    if (fs.existsSync(target.filePath) && !fs.existsSync(sourceImagePath)) fs.renameSync(target.filePath, sourceImagePath);
-    try {
-      writeSaveReceipt(noteUid, saved.metadata, saved.receipt.learningSyncError);
-    } catch {
-      // The original image and sidecar are still valid; a later launch can rebuild the receipt.
-    }
-    throw error;
-  }
-  if (path.resolve(sourceSidecarPath) !== path.resolve(targetSidecarPath)) unlinkFileIfExists(sourceSidecarPath);
-  try {
-    removeMetadataEntry(sourceSubjectDir, noteUid);
-  } catch {
-    // A stale aggregate index is repairable from the sidecars.
-  }
-  return metadata;
+  appendMetadata(path.dirname(finalMetadata.filePath), finalMetadata);
+  writeSaveReceipt(noteUid, finalMetadata, saved.receipt.learningSyncError);
+  return { metadata: finalMetadata, sidecarPath: finalSidecarPath, durable: true, replayed: false };
 }
 
 function removeMetadataEntry(subjectDir, noteUid) {
@@ -1189,22 +1284,36 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
     cards,
     organizationStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
     classificationSource: details.subject && details.subject !== DEFAULT_SUBJECT ? 'local' : 'ai',
+    reviewStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+    decisionRevision: 0,
+    proposalId: proposalIdFor(details.noteUid || 'new-note', details.subject || DEFAULT_SUBJECT, knowledgePath, createdAt),
     flags: parsed.flags,
     pendingAiOrganization: true,
   };
 }
 
 function persistBackgroundMetadata(saved, metadata) {
-  fs.writeFileSync(saved.receipt.sidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
+  atomicWriteJson(saved.receipt.sidecarPath, metadata);
   appendMetadata(path.dirname(metadata.filePath), metadata);
   const learningSyncError = syncLearningMetadata(metadata);
   writeSaveReceipt(metadata.noteUid, metadata, learningSyncError);
 }
 
 function markAiNamingFailed(noteUid, error, naming = null) {
+  const releaseOrganizerLock = acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+  try {
   const saved = readSaveReceipt(noteUid);
   if (!saved) return;
   const completedAt = new Date().toISOString();
+  const currentReviewStatus = normalizedReviewStatus(saved.metadata.learning || {});
+  const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const storedDecisionRevision = Number(saved.metadata.learning?.decisionRevision);
+  const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
+    ? storedDecisionRevision
+    : keepsHumanDecision ? 1 : 0;
+  const reviewStatus = keepsHumanDecision
+    ? currentReviewStatus
+    : saved.metadata.subject === DEFAULT_SUBJECT ? 'pending' : 'auto_applied';
   const metadata = {
     ...saved.metadata,
     updatedAt: completedAt,
@@ -1224,12 +1333,20 @@ function markAiNamingFailed(noteUid, error, naming = null) {
     },
     learning: {
       ...(saved.metadata.learning || {}),
-      organizationStatus: saved.metadata.subject === DEFAULT_SUBJECT ? 'pending' : 'confirmed',
+      organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
       classificationSource: saved.metadata.learning?.classificationSource || 'local',
+      reviewStatus,
+      decisionRevision,
+      proposalId: saved.metadata.learning?.proposalId
+        || proposalIdFor(noteUid, saved.metadata.subject, saved.metadata.learning?.knowledgePath || [], saved.metadata.createdAt),
       pendingAiOrganization: false,
+      ...(reviewStatus === 'ignored' ? { cards: [] } : {}),
     },
   };
   persistBackgroundMetadata(saved, metadata);
+  } finally {
+    releaseOrganizerLock();
+  }
 }
 
 async function runAiNamingJob(noteUid) {
@@ -1252,11 +1369,18 @@ async function runAiNamingJob(noteUid) {
   // The 72-hour organizer may have enriched this sidecar while the model was
   // running. Re-read it now and merge only naming/path fields so classification
   // and generated cards are never overwritten by the stale pre-AI snapshot.
+  const releaseOrganizerLock = acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+  try {
   const latest = readSaveReceipt(noteUid);
   if (!latest) return;
   const requestedSubject = sanitizeSegment(latest.metadata.requestedSubject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
-  const keepsManualClassification = latest.metadata.learning?.classificationSource === 'manual';
-  const subject = keepsManualClassification
+  const currentReviewStatus = normalizedReviewStatus(latest.metadata.learning || {});
+  const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const storedDecisionRevision = Number(latest.metadata.learning?.decisionRevision);
+  const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
+    ? storedDecisionRevision
+    : keepsHumanDecision ? 1 : 0;
+  const subject = keepsHumanDecision
     ? sanitizeSegment(latest.metadata.subject, DEFAULT_SUBJECT, 60)
     : naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
       ? requestedSubject
@@ -1310,12 +1434,25 @@ async function runAiNamingJob(noteUid) {
       ...(latest.metadata.learning || {}),
       title: safeTitle,
       subject,
-      knowledgePath: keepsManualClassification
+      knowledgePath: keepsHumanDecision
         ? latest.metadata.learning.knowledgePath
         : [subject, ...((latest.metadata.learning?.knowledgePath || []).filter((item) => item !== latest.metadata.subject && item !== subject))].slice(0, 3),
-      organizationStatus: keepsManualClassification || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
-      classificationSource: keepsManualClassification ? 'manual' : 'ai',
+      organizationStatus: currentReviewStatus === 'ignored'
+        ? 'ignored'
+        : keepsHumanDecision || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+      classificationSource: currentReviewStatus === 'corrected' ? 'manual' : keepsHumanDecision
+        ? latest.metadata.learning?.classificationSource || 'ai'
+        : 'ai',
+      reviewStatus: keepsHumanDecision
+        ? currentReviewStatus
+        : subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+      decisionRevision,
+      proposalId: keepsHumanDecision
+        ? latest.metadata.learning?.proposalId
+          || proposalIdFor(noteUid, subject, latest.metadata.learning?.knowledgePath || [subject], latest.metadata.createdAt)
+        : proposalIdFor(noteUid, subject, [subject], completedAt),
       pendingAiOrganization: false,
+      ...(currentReviewStatus === 'ignored' ? { cards: [] } : {}),
     },
   };
 
@@ -1335,7 +1472,7 @@ async function runAiNamingJob(noteUid) {
   const activeSidecarPath = moved ? targetSidecarPath : originalSidecarPath;
 
   if (!moved) {
-    fs.writeFileSync(originalSidecarPath, JSON.stringify(stagedMetadata, null, 2), 'utf8');
+    atomicWriteJson(originalSidecarPath, stagedMetadata);
     writeSaveReceipt(noteUid, stagedMetadata, latest.receipt.learningSyncError);
     receiptUpdated = true;
     appendMetadata(subjectDir, stagedMetadata);
@@ -1343,7 +1480,7 @@ async function runAiNamingJob(noteUid) {
     fs.mkdirSync(metadataDir(subjectDir), { recursive: true });
     fs.renameSync(originalPath, target.filePath);
     try {
-      fs.writeFileSync(targetSidecarPath, JSON.stringify(stagedMetadata, null, 2), 'utf8');
+      atomicWriteJson(targetSidecarPath, stagedMetadata);
       // Make the idempotency receipt point at the new, already-valid pair
       // before deleting the old sidecar or index entry.
       writeSaveReceipt(noteUid, stagedMetadata, latest.receipt.learningSyncError);
@@ -1370,9 +1507,12 @@ async function runAiNamingJob(noteUid) {
   }
 
   const learningSyncError = syncLearningMetadata(metadata);
-  fs.writeFileSync(activeSidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
+  atomicWriteJson(activeSidecarPath, metadata);
   appendMetadata(subjectDir, metadata);
   writeSaveReceipt(noteUid, metadata, learningSyncError);
+  } finally {
+    releaseOrganizerLock();
+  }
 }
 
 function queueAiNamingJob(noteUid) {
@@ -1461,6 +1601,7 @@ async function handleSave(req, res) {
     learning: {
       noteUid,
       ...makeInitialLearning(kind, extracted, createdAt, {
+        noteUid,
         title: safeTitle,
         subject,
         remark,
@@ -1881,6 +2022,93 @@ async function handleLearningDataRoute(req, res, pathname) {
     return true;
   }
 
+  if (req.method === 'POST' && pathname === '/learning-data/note-review-actions') {
+    const payload = JSON.parse((await readBody(req, 512 * 1024)) || '{}');
+    if (!Array.isArray(payload.actions) || payload.actions.length === 0 || payload.actions.length > 100) {
+      throw makeReviewError('actions must contain between 1 and 100 review actions', 'INVALID_NOTE_REVIEW_ACTION');
+    }
+    const releaseOrganizerLock = acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+    const results = [];
+    let snapshot = learningData.getSnapshot();
+    try {
+      const recovery = recoverMoves({ notesRoot: NOTES_ROOT, logPath: ORGANIZER_MOVE_LOG_PATH });
+      if (recovery.failed > 0) {
+        throw makeReviewError('An interrupted note move requires manual review', 'NOTE_MOVE_RECOVERY_FAILED');
+      }
+      for (const action of payload.actions) {
+        const noteUid = typeof action?.noteUid === 'string' ? action.noteUid : '';
+        const operationId = typeof action?.operationId === 'string' ? action.operationId : '';
+        try {
+          const persisted = persistNoteReviewAction(action, snapshot);
+          if (persisted.metadata) {
+            const currentNote = findLearningNote(snapshot, noteUid);
+            const storeAlreadyApplied = persisted.replayed
+              && currentNote?.lastReviewOperationId === operationId
+              && currentNote?.decisionRevision === persisted.metadata.learning?.decisionRevision;
+            if (!storeAlreadyApplied) {
+              const currentCards = snapshot.cards
+                .filter((card) => card.noteUid === noteUid)
+                .map((card) => ({ ...card, sourceFilePath: persisted.metadata.filePath }));
+              const cards = Array.isArray(persisted.metadata.learning?.cards)
+                ? persisted.metadata.learning.cards
+                : currentCards;
+              snapshot = learningData.syncNote(persisted.metadata, {
+                enrichment: persisted.metadata.learning,
+                cards,
+              });
+            }
+          } else {
+            const applied = learningData.applyNoteReviewAction(action);
+            snapshot = applied.snapshot;
+          }
+          const note = findLearningNote(snapshot, noteUid);
+          results.push({
+            noteUid,
+            operationId,
+            ok: true,
+            replayed: persisted.replayed === true,
+            durable: persisted.durable === true,
+            reviewStatus: note?.reviewStatus,
+            decisionRevision: note?.decisionRevision,
+          });
+        } catch (error) {
+          snapshot = learningData.getSnapshot();
+          results.push({
+            noteUid,
+            operationId,
+            ok: false,
+            durable: false,
+            error: error instanceof Error ? error.message : String(error),
+            ...(error && typeof error === 'object' && error.code ? { code: error.code } : {}),
+            ...(Number.isInteger(error?.actualDecisionRevision) ? {
+              actualDecisionRevision: error.actualDecisionRevision,
+            } : {}),
+            ...(typeof error?.actualProposalId === 'string' ? { actualProposalId: error.actualProposalId } : {}),
+          });
+        }
+      }
+    } finally {
+      releaseOrganizerLock();
+    }
+    broadcastLearningData(snapshot);
+    const failedResults = results.filter((result) => !result.ok || result.durable !== true);
+    const responseStatus = failedResults.length === 0
+      ? 200
+      : failedResults.every((result) => result.code === 'INVALID_NOTE_REVIEW_ACTION') ? 400
+        : failedResults.some((result) => [
+            'NOTE_REVIEW_CONFLICT',
+            'NOTE_REVIEW_PROPOSAL_CONFLICT',
+            'REVIEW_OPERATION_REUSED',
+          ].includes(result.code)) ? 409
+          : failedResults.every((result) => result.code === 'NOTE_NOT_FOUND') ? 404 : 500;
+    sendJson(res, responseStatus, {
+      ok: failedResults.length === 0,
+      snapshot,
+      results,
+    });
+    return true;
+  }
+
   if (req.method === 'POST' && pathname === '/learning-data/notes') {
     const payload = JSON.parse((await readBody(req)) || '{}');
     const snapshot = learningData.createNote(payload.input ?? payload.note, {
@@ -1937,21 +2165,61 @@ async function handleLearningDataRoute(req, res, pathname) {
   if (noteMatch && req.method === 'PATCH') {
     const payload = JSON.parse((await readBody(req)) || '{}');
     const noteUid = decodeURIComponent(noteMatch[1]);
-    let snapshot = learningData.updateNote(noteUid, payload.patch, {
-      expectedRevision: payload.expectedRevision,
-    });
-    try {
-      const metadata = persistManualClassification(noteUid, payload.patch);
-      if (metadata) {
-        snapshot = learningData.syncNote(metadata, {
-          enrichment: metadata.learning,
-          cards: snapshot.cards
-            .filter((card) => card.noteUid === noteUid)
-            .map((card) => ({ ...card, sourceFilePath: metadata.filePath })),
-        });
+    const patch = payload.patch && typeof payload.patch === 'object' ? payload.patch : {};
+    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
+    const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
+    const reviewAction = editsClassification
+      ? 'correct'
+      : patch.organizationStatus === 'ignored' ? 'ignore'
+        : patch.organizationStatus === 'confirmed' ? 'accept' : null;
+    let snapshot;
+    if (reviewAction) {
+      const releaseOrganizerLock = acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+      try {
+        snapshot = learningData.getSnapshot();
+        if (
+          payload.expectedRevision !== undefined
+          && Number(payload.expectedRevision) !== snapshot.revision
+        ) {
+          throw new LearningDataConflictError(payload.expectedRevision, snapshot.revision);
+        }
+        const action = {
+          noteUid,
+          action: reviewAction,
+          operationId: typeof payload.operationId === 'string' && payload.operationId.trim()
+            ? payload.operationId.trim()
+            : `legacy-${crypto.randomUUID()}`,
+          expectedDecisionRevision: payload.expectedDecisionRevision,
+          proposalId: payload.proposalId,
+          patch,
+        };
+        const persisted = persistNoteReviewAction(action, snapshot);
+        if (persisted.metadata) {
+          const cards = Array.isArray(persisted.metadata.learning?.cards)
+            ? persisted.metadata.learning.cards
+            : snapshot.cards
+              .filter((card) => card.noteUid === noteUid)
+              .map((card) => ({ ...card, sourceFilePath: persisted.metadata.filePath }));
+          snapshot = learningData.syncNote(persisted.metadata, {
+            enrichment: persisted.metadata.learning,
+            cards,
+          });
+        } else {
+          snapshot = learningData.applyNoteReviewAction(action).snapshot;
+        }
+        const remainingPatch = Object.fromEntries(Object.entries(patch).filter(([key]) => (
+          !classificationKeys.includes(key) && key !== 'organizationStatus'
+        )));
+        if (Object.keys(remainingPatch).length > 0) {
+          snapshot = learningData.updateNote(noteUid, remainingPatch);
+        }
+      } finally {
+        releaseOrganizerLock();
       }
-    } catch (error) {
-      console.warn(`Manual note classification metadata sync failed for ${noteUid}:`, error);
+    } else {
+      snapshot = learningData.updateNote(noteUid, patch, {
+        expectedRevision: payload.expectedRevision,
+      });
     }
     broadcastLearningData(snapshot);
     sendJson(res, 200, snapshot);
@@ -2271,6 +2539,8 @@ const server = http.createServer(async (req, res) => {
       : error?.code === 'CANVAS_AI_PROJECT_NOT_FOUND' ? 404
       : error?.code === 'CANVAS_AI_EMPTY' ? 400
       : ['INVALID_LEARNING_NOTE', 'INVALID_LEARNING_CARD'].includes(error?.code) ? 400
+      : error?.code === 'INVALID_NOTE_REVIEW_ACTION' ? 400
+      : ['NOTE_REVIEW_CONFLICT', 'NOTE_REVIEW_PROPOSAL_CONFLICT', 'REVIEW_OPERATION_REUSED', 'ORGANIZER_LOCKED'].includes(error?.code) ? 409
       : error?.code === 'LEARNING_DATA_BUSY' ? 503
       : error?.code === 'NOTE_PATH_FORBIDDEN' ? 403
       : error?.code === 'NOTE_FILE_NOT_FOUND' ? 404

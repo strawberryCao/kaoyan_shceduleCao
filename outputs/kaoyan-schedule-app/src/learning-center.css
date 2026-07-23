@@ -13,6 +13,7 @@
   height: 100%;
   min-width: 0;
   min-height: 0;
+  position: relative;
   display: grid;
   grid-template-rows: 54px minmax(0, 1fr);
   overflow: hidden;
@@ -301,6 +302,42 @@
   transition: background-color 130ms ease, box-shadow 130ms ease;
 }
 
+.lc-note-button {
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.lc-note-button-thumb {
+  position: relative;
+  width: 52px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 10px;
+  color: rgba(32, 33, 36, 0.36);
+  background: rgba(32, 33, 36, 0.055);
+}
+
+.lc-note-button-thumb img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lc-note-button-thumb img[hidden] {
+  display: none;
+}
+
+.lc-note-button-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .lc-note-button:hover,
 .lc-queue-list button:hover {
   background: var(--lc-hover);
@@ -420,6 +457,10 @@
   min-height: 100%;
   margin: 0 auto;
   padding: clamp(24px, 4vw, 44px) clamp(24px, 5vw, 64px) 36px;
+}
+
+.lc-mobile-back {
+  display: none;
 }
 
 .lc-detail-heading,
@@ -573,7 +614,7 @@
 
 .lc-detail-facts span {
   color: var(--lc-muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .lc-detail-facts strong {
@@ -732,7 +773,7 @@
 
 .lc-thought-composer > div,
 .lc-thought-list footer {
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 12px;
 }
 
@@ -860,11 +901,11 @@
 }
 
 .lc-source-preview {
-  min-height: 180px;
-  max-height: 420px;
+  min-height: 220px;
+  max-height: min(58vh, 560px);
   display: grid;
   place-items: center;
-  margin: 28px 0 0;
+  margin: 0 0 22px;
   overflow: hidden;
   border: 1px solid var(--lc-line);
   border-radius: 12px;
@@ -873,13 +914,13 @@
 
 .lc-source-preview img {
   width: 100%;
-  max-height: 420px;
+  max-height: min(58vh, 560px);
   display: block;
   object-fit: contain;
 }
 
 .lc-source-preview.is-question-first {
-  margin-top: 16px;
+  margin-top: 0;
 }
 
 .lc-source-preview-open {
@@ -903,65 +944,15 @@
   bottom: 10px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  min-height: 30px;
-  padding: 0 10px;
+  width: 38px;
+  height: 38px;
+  justify-content: center;
+  padding: 0;
   color: #fff;
   border-radius: 8px;
   background: rgba(32, 30, 27, 0.72);
   box-shadow: 0 3px 12px rgba(20, 18, 16, 0.2);
-  font-size: 12px;
-  font-weight: 680;
   pointer-events: none;
-}
-
-.lc-image-lightbox {
-  position: fixed;
-  z-index: 1400;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left));
-  background: rgba(15, 14, 13, 0.88);
-  backdrop-filter: blur(5px);
-}
-
-.lc-image-lightbox-dialog {
-  position: relative;
-  width: min(1400px, 100%);
-  height: 100%;
-  display: grid;
-  place-items: center;
-  overflow: auto;
-  overscroll-behavior: contain;
-  touch-action: pinch-zoom;
-}
-
-.lc-image-lightbox-dialog > button {
-  position: fixed;
-  z-index: 2;
-  top: max(18px, env(safe-area-inset-top));
-  right: max(18px, env(safe-area-inset-right));
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  padding: 0;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  border-radius: 50%;
-  background: rgba(26, 24, 22, 0.76);
-  cursor: pointer;
-}
-
-.lc-image-lightbox-dialog > img {
-  max-width: 100%;
-  max-height: 100%;
-  display: block;
-  object-fit: contain;
-  touch-action: pinch-zoom;
-  -webkit-user-select: none;
-  user-select: none;
 }
 
 @media (pointer: coarse) {
@@ -974,8 +965,8 @@
   }
 
   .lc-source-preview-open > span {
-    min-height: 36px;
-    padding-inline: 12px;
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -1012,6 +1003,7 @@
   min-width: 0;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   margin-top: 10px;
   padding: 10px 0;
@@ -1078,17 +1070,24 @@
 
 .lc-source-feedback,
 .lc-feedback {
-  min-height: 19px;
   padding-top: 7px;
   color: #785735;
   font-size: 12px;
-  opacity: 0;
-  transition: opacity 140ms ease;
 }
 
-.lc-source-feedback.visible,
-.lc-feedback.visible {
-  opacity: 1;
+.lc-review-notice {
+  position: absolute;
+  z-index: 20;
+  right: 22px;
+  bottom: 20px;
+  padding: 10px 14px;
+  color: #fff;
+  border-radius: 10px;
+  background: rgba(32, 33, 36, 0.9);
+  box-shadow: 0 10px 26px rgba(20, 18, 16, 0.2);
+  font-size: 13px;
+  font-weight: 680;
+  pointer-events: none;
 }
 
 .lc-inbox-summary {
@@ -1374,10 +1373,22 @@
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr) auto auto auto;
+  align-content: start;
   gap: 12px;
+  overflow-y: auto;
   padding: clamp(22px, 3vw, 36px) clamp(24px, 6vw, 86px) 14px;
   background: #fbfbfa;
+}
+
+.lc-review-source-preview {
+  width: min(860px, 100%);
+  min-height: 180px;
+  max-height: min(38vh, 420px);
+  margin: 0 auto;
+}
+
+.lc-review-source-preview img {
+  max-height: min(38vh, 420px);
 }
 
 .lc-card-heading {
@@ -1402,7 +1413,7 @@
 .lc-flip-card {
   position: relative;
   width: min(860px, 100%);
-  min-height: 0;
+  min-height: clamp(220px, 32vh, 360px);
   justify-self: center;
   display: grid;
   place-content: center;
@@ -1445,11 +1456,6 @@
   line-height: 1.65;
   letter-spacing: -0.015em;
   white-space: pre-wrap;
-}
-
-.lc-flip-hint {
-  color: var(--lc-muted);
-  font-size: 12px;
 }
 
 .lc-card-meta {
@@ -1945,10 +1951,33 @@
     display: none;
   }
 
-  .lc-workspace,
+  .lc-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
+  }
+
   .lc-review-layout {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(210px, 42%) minmax(0, 1fr);
+  }
+
+  .lc-workspace.is-list-open .lc-detail-pane,
+  .lc-workspace.is-detail-open .lc-master-pane {
+    display: none;
+  }
+
+  .lc-mobile-back {
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
+    margin: -8px 0 10px;
+    padding: 0;
+    color: var(--lc-ink);
+    border: 1px solid var(--lc-line-strong);
+    border-radius: 10px;
+    background: #fff;
+    cursor: pointer;
   }
 
   .lc-master-pane,
@@ -2006,7 +2035,6 @@
   }
 
   .lc-card-stage {
-    grid-template-rows: auto minmax(180px, 1fr) auto auto auto;
     gap: 8px;
     padding: 13px 11px 7px;
   }

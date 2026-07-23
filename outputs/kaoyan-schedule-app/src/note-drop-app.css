@@ -25,7 +25,7 @@ body:has(.note-drop-app),
   --dh-fill-hover: rgba(230, 195, 142, 0.14);
   position: relative;
   display: grid;
-  grid-template-rows: 29px minmax(0, 1fr) 20px;
+  grid-template-rows: 29px minmax(0, 1fr);
   gap: 4px;
   width: calc(100vw - 4px);
   height: calc(100vh - 4px);
@@ -42,6 +42,10 @@ body:has(.note-drop-app),
   font-family: "Microsoft YaHei", system-ui, sans-serif;
   padding: 0 6px 5px;
   backdrop-filter: blur(20px) saturate(0.94);
+}
+
+.note-drop-app.has-status {
+  grid-template-rows: 29px minmax(0, 1fr) 20px;
 }
 
 .note-drop-app::before {
@@ -174,9 +178,7 @@ body:has(.note-drop-app),
 }
 
 .note-drop-zone-copy {
-  display: grid;
   min-width: 0;
-  gap: 2px;
 }
 
 .note-drop-zone-copy strong {
@@ -184,15 +186,6 @@ body:has(.note-drop-app),
   color: var(--dh-text);
   font-size: 11px;
   font-weight: 950;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.note-drop-zone-copy small {
-  overflow: hidden;
-  color: var(--dh-muted);
-  font-size: 8px;
-  font-weight: 760;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -274,19 +267,11 @@ body:has(.note-drop-app),
   gap: 10px;
 }
 
-.note-remark-dialog header p,
 .note-remark-dialog header h2 {
   margin: 0;
 }
 
-.note-remark-dialog header p {
-  color: var(--dh-gold);
-  font-size: 10px;
-  font-weight: 900;
-}
-
 .note-remark-dialog header h2 {
-  margin-top: 2px;
   color: var(--dh-text);
   font-size: 18px;
 }
@@ -312,33 +297,6 @@ body:has(.note-drop-app),
   object-fit: contain;
 }
 
-.note-remark-dialog figcaption {
-  position: absolute;
-  right: 7px;
-  bottom: 7px;
-  max-width: calc(100% - 14px);
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(47, 37, 30, 0.78);
-  color: var(--dh-muted);
-  font-size: 9px;
-  font-weight: 760;
-  padding: 4px 7px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.note-remark-dialog label {
-  display: grid;
-  gap: 5px;
-}
-
-.note-remark-dialog label > span {
-  color: var(--dh-text);
-  font-size: 11px;
-  font-weight: 900;
-}
-
 .note-remark-dialog textarea {
   min-height: 76px;
   resize: vertical;
@@ -358,13 +316,6 @@ body:has(.note-drop-app),
 .note-remark-dialog textarea:focus {
   border-color: rgba(230, 195, 142, 0.62);
   box-shadow: 0 0 0 3px rgba(230, 195, 142, 0.09);
-}
-
-.note-remark-dialog label small {
-  color: var(--dh-faint);
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1.4;
 }
 
 .note-remark-error {

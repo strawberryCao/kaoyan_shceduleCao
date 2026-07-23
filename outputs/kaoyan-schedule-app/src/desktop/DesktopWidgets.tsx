@@ -26,6 +26,7 @@ import {
   subscribeLearningDataPolling,
   type LearningDataSnapshot,
 } from '../utils/learningData';
+import { selectKnowledgeEligibleNotes } from '../utils/noteReview';
 import {
   mergeScheduleRecords,
   readScheduleRecords,
@@ -38,8 +39,6 @@ import type { WidgetLayout } from './types';
 const recordFor = (records: RecordsByDate, day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
 
 const widgetStoreKey = (name: string) => `kaoyan-widget-${name}`;
-const DEFAULT_NOTE_FOLDERS = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
-
 const usePersistentText = (key: string, fallback: string) => {
   const [value, setValue] = useState(() => window.localStorage.getItem(key) ?? fallback);
   useEffect(() => {
@@ -322,8 +321,7 @@ function MemoryCardWidget() {
   }, [images]);
 
   const eligibleNoteUids = useMemo(() => new Set(Object.values(learningData.days)
-    .flatMap((day) => day.autoNotes)
-    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim()))
+    .flatMap((day) => selectKnowledgeEligibleNotes(day.autoNotes))
     .map((note) => note.noteUid)), [learningData.days]);
   const cards = useMemo(() => learningData.cards
     .filter((card) => card.status === 'active' && eligibleNoteUids.has(card.noteUid))

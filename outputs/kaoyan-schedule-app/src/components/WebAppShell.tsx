@@ -13,6 +13,7 @@ import {
   Search,
 } from 'lucide-react';
 import { openNoteCaptureApp } from './NoteDock';
+import { IS_CLOUD_RUNTIME } from '../utils/notes';
 
 export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'notes' | 'console' | 'ai-config';
 
@@ -38,6 +39,9 @@ const mainItems = [
 
 export function WebAppShell({ active, children }: WebAppShellProps) {
   const [collapsed, setCollapsed] = useState(() => window.localStorage.getItem(COLLAPSE_KEY) === '1');
+  const visibleMainItems = IS_CLOUD_RUNTIME
+    ? mainItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
+    : mainItems;
 
   useEffect(() => {
     window.localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
@@ -56,7 +60,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
         </button>
 
         <nav className="web-app-main-nav">
-          {mainItems.map((item) => {
+          {visibleMainItems.map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -105,7 +109,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       <div className="web-app-content">{children}</div>
 
       <nav className="web-app-mobile-nav" aria-label="移动端导航">
-        {mainItems.filter((item) => item.id !== 'ai-config').map((item) => {
+        {visibleMainItems.filter((item) => item.id !== 'ai-config').map((item) => {
           const Icon = item.icon;
           return (
             <button

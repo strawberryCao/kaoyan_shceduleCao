@@ -19,6 +19,8 @@ import {
   type LearningDataSnapshot,
 } from '../utils/learningData';
 import { fuzzySearchScore } from '../utils/fuzzySearch';
+import { selectKnowledgeEligibleNotes } from '../utils/noteReview';
+import { IS_CLOUD_RUNTIME } from '../utils/notes';
 
 type PaletteCommand = {
   id: string;
@@ -120,15 +122,16 @@ export function CommandPalette() {
       icon: BrainCircuit,
       run: () => navigate('?aiConfig=1'),
     },
-  ], []);
+  ].filter((command) => (
+    !IS_CLOUD_RUNTIME || !['console', 'service', 'ai-config'].includes(command.id)
+  )), []);
 
   const resultCommands = useMemo<PaletteCommand[]>(() => {
     if (!query.trim() || !learningData) return [];
     const results: Array<PaletteCommand & { searchScore: number }> = [];
-    const defaultFolders = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
-    const eligibleNotes = Object.values(learningData.days).flatMap((day) => day.autoNotes).filter((note) => (
-      note.organizationStatus !== 'ignored' && !defaultFolders.has(note.subject.trim())
-    ));
+    const eligibleNotes = selectKnowledgeEligibleNotes(
+      Object.values(learningData.days).flatMap((day) => day.autoNotes),
+    );
     const eligibleNoteUids = new Set(eligibleNotes.map((note) => note.noteUid));
 
     learningData.cards.filter((card) => card.status === 'active' && eligibleNoteUids.has(card.noteUid)).forEach((card) => {

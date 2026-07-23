@@ -22,17 +22,28 @@ export interface SaveNoteResult {
     };
   };
   learningSyncError?: string | null;
-  aiStatus?: 'pending' | 'complete' | 'failed';
+  aiStatus?: 'pending' | 'complete' | 'failed' | 'unavailable';
+  aiAvailable?: boolean;
   provisional?: boolean;
   idempotentReplay?: boolean;
   error?: string;
 }
 
+const isLoopbackHostname = (hostname: string): boolean => (
+  hostname === '127.0.0.1'
+  || hostname === 'localhost'
+  || hostname === '::1'
+  || hostname === '[::1]'
+);
+
+export const IS_CLOUD_RUNTIME = typeof window !== 'undefined'
+  && window.location.protocol === 'https:'
+  && !isLoopbackHostname(window.location.hostname.toLowerCase());
+
 const resolveNoteServerUrl = (): string => {
   if (typeof window === 'undefined') return 'http://127.0.0.1:5174';
   const hostname = window.location.hostname.toLowerCase();
-  const loopback = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
-  return loopback || window.location.protocol === 'file:'
+  return isLoopbackHostname(hostname) || window.location.protocol === 'file:'
     ? 'http://127.0.0.1:5174'
     : `${window.location.origin}/api`;
 };
@@ -63,7 +74,7 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
   const noteUid = payload.noteUid || createNoteUid();
   const controller = new AbortController();
   const timer = window.setTimeout(
-    () => controller.abort(new DOMException('本地保存等待超时', 'TimeoutError')),
+    () => controller.abort(new DOMException(IS_CLOUD_RUNTIME ? '云端保存等待超时' : '本地保存等待超时', 'TimeoutError')),
     NOTE_SAVE_TIMEOUT_MS,
   );
   let response: Response;
@@ -83,7 +94,7 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
     });
   } catch (error) {
     if (controller.signal.aborted) {
-      throw new Error('本地保存暂未确认；可以再次点击保存，系统不会重复创建笔记');
+      throw new Error(`${IS_CLOUD_RUNTIME ? '云端' : '本地'}保存暂未确认；可以再次点击保存，系统不会重复创建笔记`);
     }
     throw error;
   } finally {

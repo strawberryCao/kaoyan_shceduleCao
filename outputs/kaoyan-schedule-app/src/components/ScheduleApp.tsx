@@ -23,6 +23,7 @@ import {
   subscribeScheduleRecords,
 } from '../utils/scheduleRecords';
 import {
+  applyLearningNoteReviewActions,
   clearPendingLearningRecord,
   clearPendingLearningReplacement,
   createLearningNote,
@@ -43,6 +44,7 @@ import {
   subscribeLearningDataFromServer,
   subscribeLearningDataPolling,
   type LearningDataSnapshot,
+  type LearningNoteReviewAction,
 } from '../utils/learningData';
 
 const matchesFilter = (day: ScheduleDay, filter: FilterType): boolean => {
@@ -449,6 +451,10 @@ export function ScheduleApp() {
           onPatchNote={async (noteUid, patch) => {
             const snapshot = await patchLearningNote(noteUid, patch);
             applyLearningSnapshot(snapshot);
+          }}
+          onReviewNotes={async (actions: LearningNoteReviewAction[]) => {
+            const response = await applyLearningNoteReviewActions(actions);
+            applyLearningSnapshot(response.snapshot);
           }}
           onDeleteNote={async (noteUid) => {
             const snapshot = await deleteLearningNote(noteUid);

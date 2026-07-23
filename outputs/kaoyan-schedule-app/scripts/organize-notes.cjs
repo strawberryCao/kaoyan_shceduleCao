@@ -28,6 +28,19 @@ const NOTE_SCHEMA_VERSION = 2;
 const DEFAULT_SUBJECT = '默认文件夹';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
 
+function normalizedReviewStatus(learning = {}) {
+  if (['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(learning.reviewStatus)) {
+    return learning.reviewStatus;
+  }
+  if (learning.organizationStatus === 'ignored') return 'ignored';
+  if (learning.classificationSource === 'manual') return 'corrected';
+  return learning.organizationStatus === 'confirmed' ? 'auto_applied' : 'pending';
+}
+
+function hasHumanReviewDecision(learning = {}) {
+  return ['accepted', 'corrected', 'ignored'].includes(normalizedReviewStatus(learning));
+}
+
 function safeReadJson(filePath, fallback = null) {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -604,22 +617,23 @@ function makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, tags,
 
 function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledgePoint) {
   const previousLearning = metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {};
-  const keepsManualClassification = previousLearning.classificationSource === 'manual';
+  const reviewStatusBefore = normalizedReviewStatus(previousLearning);
+  const keepsHumanDecision = hasHumanReviewDecision(previousLearning);
   const tags = [
     ...(metadata.tags?.manual || []),
     ...(metadata.tags?.explicit || []),
     ...(metadata.tags?.inferred || []),
   ];
   const uniqueTags = [...new Set(tags)];
-  const knowledgePath = keepsManualClassification && Array.isArray(previousLearning.knowledgePath)
+  const knowledgePath = keepsHumanDecision && Array.isArray(previousLearning.knowledgePath)
     ? previousLearning.knowledgePath
     : [subject.name, ...(knowledgePoint ? [knowledgePoint.name] : [])];
   const pageRefs = makeLearningPageRefs(parsed);
   const intent = combinedIntent(parsed, analysis);
   if (intent.isMistake && !uniqueTags.includes('错题')) uniqueTags.push('错题');
   if (intent.shouldMemorize && !uniqueTags.includes('背诵')) uniqueTags.push('背诵');
-  const questionType = keepsManualClassification ? previousLearning.questionType || null : analysis.questionType;
-  const wrongReason = keepsManualClassification ? previousLearning.wrongReason || null : analysis.wrongReason;
+  const questionType = keepsHumanDecision ? previousLearning.questionType || null : analysis.questionType;
+  const wrongReason = keepsHumanDecision ? previousLearning.wrongReason || null : analysis.wrongReason;
   if (questionType) {
     const questionTypeTag = `题型:${questionType}`.slice(0, 40);
     if (!uniqueTags.includes(questionTypeTag)) uniqueTags.push(questionTypeTag);
@@ -629,7 +643,21 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     if (!uniqueTags.includes(wrongReasonTag)) uniqueTags.push(wrongReasonTag);
   }
   const noteType = intent.isMistake ? 'mistake' : intent.shouldMemorize ? 'memory' : intent.isQuestion ? 'question' : 'note';
-  const cards = makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, uniqueTags, pageRefs);
+  const cards = reviewStatusBefore === 'ignored'
+    ? []
+    : makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, uniqueTags, pageRefs);
+  const reviewStatus = keepsHumanDecision
+    ? reviewStatusBefore
+    : !isDefaultBucket(subject.name) ? 'auto_applied' : 'pending';
+  const proposalSeed = metadata.organizer?.inputHash || metadata.updatedAt || metadata.createdAt || '';
+  const proposalDigest = crypto.createHash('sha256')
+    .update(`${metadata.noteUid}|${subject.name}|${knowledgePath.join('/')}|${proposalSeed}`)
+    .digest('hex')
+    .slice(0, 20);
+  const storedDecisionRevision = Number(previousLearning.decisionRevision);
+  const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
+    ? storedDecisionRevision
+    : keepsHumanDecision ? 1 : 0;
   metadata.learning = {
     ...(metadata.learning || {}),
     noteUid: metadata.noteUid,
@@ -642,8 +670,15 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     noteType,
     questionType,
     wrongReason,
-    organizationStatus: keepsManualClassification || !isDefaultBucket(subject.name) ? 'confirmed' : 'pending',
-    classificationSource: keepsManualClassification ? 'manual' : 'ai',
+    organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
+    classificationSource: reviewStatus === 'corrected'
+      ? 'manual'
+      : keepsHumanDecision ? previousLearning.classificationSource || 'ai' : 'ai',
+    reviewStatus,
+    decisionRevision,
+    proposalId: keepsHumanDecision
+      ? previousLearning.proposalId || `proposal-${proposalDigest}`
+      : `proposal-${proposalDigest}`,
     pendingAiOrganization: false,
     intent,
     items: analysis.items,
@@ -759,9 +794,10 @@ async function organizeNotes(options = {}) {
           notesRoot,
         });
         const analysis = normalizeAnalysis(rawAnalysis, currentCategory);
-        const keepsManualClassification = metadata.learning?.classificationSource === 'manual';
+        const reviewStatusBefore = normalizedReviewStatus(metadata.learning || {});
+        const keepsHumanDecision = hasHumanReviewDecision(metadata.learning || {});
         let currentSubject = resolveSubject(taxonomy, currentCategory.subject);
-        if (keepsManualClassification) {
+        if (keepsHumanDecision) {
           currentSubject = ensureSubject(taxonomy, currentCategory.subject, { createdBy: 'user' });
           // A user choosing a legacy AI-created root takes ownership of it, so
           // the end-of-run AI cleanup must not remove their manual category.
@@ -781,7 +817,7 @@ async function organizeNotes(options = {}) {
         );
         let currentPoint = null;
         if (currentSubject && currentCategory.knowledgePoint) {
-          if (keepsManualClassification || currentSubjectIsSupported || isDefaultBucket(currentSubject.name)) {
+          if (keepsHumanDecision || currentSubjectIsSupported || isDefaultBucket(currentSubject.name)) {
             currentPoint = ensureKnowledgePoint(taxonomy, currentSubject, currentCategory.knowledgePoint, { createdBy: 'user' });
           } else if (preservesUserOwnedPhysicalSubject) {
             // Compatibility-only roots keep an existing point but never gain a
@@ -807,13 +843,13 @@ async function organizeNotes(options = {}) {
         // Manual classifications may use any user-owned subject. AI output is
         // restricted to an already-existing supported exam subject or the fallback bucket;
         // autoCreateCategories applies only to knowledge points below it.
-        const subject = keepsManualClassification || preservesUserOwnedPhysicalSubject
+        const subject = keepsHumanDecision || preservesUserOwnedPhysicalSubject
           ? currentSubject
           : fallbackSubject;
-        let needsReview = !keepsManualClassification && isDefaultBucket(subject.name);
+        let needsReview = !keepsHumanDecision && isDefaultBucket(subject.name);
 
         let knowledgePoint = null;
-        if (keepsManualClassification || preservesUserOwnedPhysicalSubject) {
+        if (keepsHumanDecision || preservesUserOwnedPhysicalSubject) {
           knowledgePoint = currentPoint;
         } else if (analysis.knowledgePoint && !isDefaultBucket(subject.name)) {
           knowledgePoint = resolveKnowledgePoint(subject, analysis.knowledgePoint);
@@ -852,7 +888,7 @@ async function organizeNotes(options = {}) {
             version: ORGANIZER_VERSION,
             inputHash,
             analyzerVersion,
-            status: needsReview ? 'needs_review' : 'organized',
+            status: reviewStatusBefore === 'ignored' ? 'user_ignored' : needsReview ? 'needs_review' : 'organized',
             processedAt: new Date().toISOString(),
             confidence: analysis.confidence,
             provider: analysis.provider,
@@ -867,8 +903,8 @@ async function organizeNotes(options = {}) {
             subjectPolicy: {
               requested: analysis.subject,
               resolved: subject.name,
-              reason: keepsManualClassification
-                ? 'manual'
+              reason: keepsHumanDecision
+                ? reviewStatusBefore
                 : preservesUserOwnedPhysicalSubject ? 'current-user' : subjectDecision.reason,
             },
             proposed: needsReview ? {

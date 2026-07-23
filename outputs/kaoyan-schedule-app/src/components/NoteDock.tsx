@@ -1,5 +1,5 @@
 import { Clipboard, ExternalLink } from 'lucide-react';
-import { NOTE_SERVER_URL } from '../utils/notes';
+import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
 import { fetchWithTimeout } from '../utils/localService';
 
 const wait = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -23,6 +23,10 @@ const waitForNativeNoteApp = async (timeoutMs = 3200) => {
 };
 
 export const openNoteCaptureAppSilently = async () => {
+  if (IS_CLOUD_RUNTIME) {
+    window.location.assign(`${window.location.origin}/?noteApp=1`);
+    return true;
+  }
   if (window.kaoyanDesktop?.openNoteApp) {
     try {
       await window.kaoyanDesktop.openNoteApp();
@@ -41,6 +45,10 @@ export const openNoteCaptureAppSilently = async () => {
 };
 
 export const openNoteCaptureApp = async () => {
+  if (IS_CLOUD_RUNTIME) {
+    window.location.assign(`${window.location.origin}/?noteApp=1`);
+    return;
+  }
   if (window.kaoyanDesktop?.openNoteApp) {
     try {
       await window.kaoyanDesktop.openNoteApp();
@@ -63,6 +71,11 @@ export const openNoteCaptureApp = async () => {
 };
 
 export const closeNoteCaptureApp = async () => {
+  if (IS_CLOUD_RUNTIME) {
+    if (window.history.length > 1) window.history.back();
+    else window.location.assign(`${window.location.origin}/?hub=1`);
+    return true;
+  }
   if (window.kaoyanDesktop?.closeNoteApp) {
     try {
       await window.kaoyanDesktop.closeNoteApp();

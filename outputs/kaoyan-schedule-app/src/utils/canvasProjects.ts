@@ -1,17 +1,18 @@
 import type { CanvasDocument, CanvasInkStroke } from './canvasDocument';
 import { fetchWithTimeout } from './localService';
-import { NOTE_SERVER_URL } from './notes';
+import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 
 type CanvasRequestOperation = 'list' | 'load' | 'save' | 'delete' | 'active' | 'organize';
 
 const CANVAS_REQUEST_TIMEOUT_MS: Record<CanvasRequestOperation, number> = {
-  list: 5000,
-  load: 15000,
+  list: IS_CLOUD_RUNTIME ? 12_000 : 5_000,
+  load: IS_CLOUD_RUNTIME ? 20_000 : 15_000,
   save: 30000,
-  delete: 10000,
-  active: 5000,
+  delete: IS_CLOUD_RUNTIME ? 15_000 : 10_000,
+  active: IS_CLOUD_RUNTIME ? 12_000 : 5_000,
   organize: 15000,
 };
+const CANVAS_SERVICE_NAME = IS_CLOUD_RUNTIME ? '云端画布服务' : '本地画布服务';
 
 export interface CanvasProjectSummary {
   id: string;
@@ -128,7 +129,7 @@ async function readJson<T>(response: Response): Promise<T> {
   try {
     result = await response.json() as T & { error?: string };
   } catch {
-    throw new Error('本地画布服务返回了无法识别的数据。');
+    throw new Error(`${CANVAS_SERVICE_NAME}返回了无法识别的数据。`);
   }
   if (!response.ok) {
     if (response.status === 409 && result.code === 'CANVAS_REVISION_CONFLICT') {
@@ -144,15 +145,15 @@ async function readJson<T>(response: Response): Promise<T> {
 
 const unavailableMessage = (operation: CanvasRequestOperation, timedOut: boolean): string => {
   if (operation === 'list') {
-    return timedOut ? '本地画布服务响应超时，正在自动重试。' : '本地画布服务暂时断开，正在自动重连。';
+    return timedOut ? `${CANVAS_SERVICE_NAME}响应超时，正在自动重试。` : `${CANVAS_SERVICE_NAME}暂时不可用，正在自动重连。`;
   }
   if (operation === 'save') {
     return timedOut
       ? '保存结果暂未确认，本机草稿仍在；请稍后按 Ctrl+S 再保存一次。'
-      : '本地画布服务暂时断开，本机草稿仍在；服务恢复后请再次保存。';
+      : `${CANVAS_SERVICE_NAME}暂时不可用，本机草稿仍在；服务恢复后请再次保存。`;
   }
   if (operation === 'delete') {
-    return timedOut ? '删除画布超时，工程尚未确认删除。' : '本地画布服务暂时断开，工程尚未删除。';
+    return timedOut ? '删除画布超时，工程尚未确认删除。' : `${CANVAS_SERVICE_NAME}暂时不可用，工程尚未删除。`;
   }
   if (operation === 'active') {
     return timedOut ? '同步当前画布超时，正在等待自动重连。' : '当前画布暂未同步到其他设备。';
@@ -160,7 +161,7 @@ const unavailableMessage = (operation: CanvasRequestOperation, timedOut: boolean
   if (operation === 'organize') {
     return timedOut ? 'AI 整理任务响应较慢，后台可能仍在继续；请稍后查看状态。' : '暂时无法连接 AI 画布整理服务。';
   }
-  return timedOut ? '打开画布超时，请稍后重新选择。' : '本地画布服务暂时断开，请稍后重新打开这个画布。';
+  return timedOut ? '打开画布超时，请稍后重新选择。' : `${CANVAS_SERVICE_NAME}暂时不可用，请稍后重新打开这个画布。`;
 };
 
 async function requestCanvas<T>(operation: CanvasRequestOperation, url: string, init: RequestInit = {}): Promise<T> {
@@ -297,6 +298,9 @@ export function subscribeCanvasProjectEvents(
   onEvent: (event: CanvasProjectEvent) => void,
   onConnectionChange?: (connected: boolean) => void,
 ): () => void {
+  if (IS_CLOUD_RUNTIME) {
+    return () => undefined;
+  }
   const source = new EventSource(`${NOTE_SERVER_URL}/canvas-projects/events`);
   const handleEvent = (message: Event) => {
     try {

@@ -15,6 +15,20 @@ const { unlinkFileIfExists } = require('./safe-file-ops.cjs');
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizedReviewStatus(learning = {}) {
+  if (['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(learning.reviewStatus)) {
+    return learning.reviewStatus;
+  }
+  if (learning.organizationStatus === 'ignored') return 'ignored';
+  if (learning.classificationSource === 'manual') return 'corrected';
+  return learning.organizationStatus === 'confirmed' ? 'auto_applied' : 'pending';
+}
+
+function reviewDecisionRank(learning = {}) {
+  const reviewStatus = normalizedReviewStatus(learning);
+  return ['accepted', 'corrected', 'ignored'].includes(reviewStatus) ? 2 : reviewStatus === 'auto_applied' ? 1 : 0;
+}
 const DEFAULT_SUBJECT = '默认文件夹';
 
 function safeReadJson(filePath) {
@@ -198,6 +212,7 @@ function resolveSidecarImage(notesRoot, sidecarPath, metadata) {
 }
 
 function makeGeneratedCards(metadata, enrichment, intent) {
+  if (normalizedReviewStatus(enrichment) === 'ignored') return [];
   if (!enrichment.subject || enrichment.subject === DEFAULT_SUBJECT) return [];
   const finalize = (input) => {
     const seen = new Set();
@@ -289,8 +304,14 @@ function buildIndexEntry({ notesRoot, imagePath, sidecarPath, metadata = {}, fil
     : intent.shouldMemorize
       ? 'memory'
       : metadata?.learning?.noteType || (metadata.kind === 'canvas' ? 'canvas' : intent.isQuestion ? 'question' : 'note');
+  const storedLearning = metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {};
+  const reviewStatus = normalizedReviewStatus(storedLearning);
+  const storedDecisionRevision = Number(storedLearning.decisionRevision);
+  const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
+    ? storedDecisionRevision
+    : ['accepted', 'corrected', 'ignored'].includes(reviewStatus) ? 1 : 0;
   const enrichment = {
-    ...(metadata.learning && typeof metadata.learning === 'object' ? metadata.learning : {}),
+    ...storedLearning,
     noteUid,
     capturedDate,
     title: metadata.title || path.parse(imagePath).name,
@@ -301,6 +322,10 @@ function buildIndexEntry({ notesRoot, imagePath, sidecarPath, metadata = {}, fil
     noteType,
     questionType,
     wrongReason,
+    reviewStatus,
+    decisionRevision,
+    organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
+    classificationSource: reviewStatus === 'corrected' ? 'manual' : storedLearning.classificationSource || 'ai',
     intent,
     items: Array.isArray(metadata?.learning?.items)
       ? metadata.learning.items
@@ -345,12 +370,16 @@ function buildIndexEntry({ notesRoot, imagePath, sidecarPath, metadata = {}, fil
 
 function isCandidatePreferred(candidate, previous) {
   const left = [
+    reviewDecisionRank(candidate.enrichment),
+    Number(candidate.enrichment?.decisionRevision) || 0,
     candidate.filePathMatched ? 1 : 0,
     candidate.enriched ? 1 : 0,
     candidate.sidecarMtimeMs || 0,
     candidate.imageMtimeMs || 0,
   ];
   const right = [
+    reviewDecisionRank(previous.enrichment),
+    Number(previous.enrichment?.decisionRevision) || 0,
     previous.filePathMatched ? 1 : 0,
     previous.enriched ? 1 : 0,
     previous.sidecarMtimeMs || 0,
@@ -424,8 +453,38 @@ function scanNoteIndex(options = {}) {
   }
   for (const unresolved of unresolvedSidecars) {
     const uid = unresolved.metadata?.noteUid || unresolved.metadata?.learning?.noteUid || unresolved.metadata?.uid;
-    const winner = typeof uid === 'string' && uid.trim() ? byUid.get(uid.trim()) : null;
+    let winner = typeof uid === 'string' && uid.trim() ? byUid.get(uid.trim()) : null;
     if (winner) {
+      const unresolvedLearning = unresolved.metadata?.learning || {};
+      const unresolvedDecisionRevision = Number(unresolvedLearning.decisionRevision) || 0;
+      const winnerDecisionRevision = Number(winner.enrichment?.decisionRevision) || 0;
+      if (
+        reviewDecisionRank(unresolvedLearning) > reviewDecisionRank(winner.enrichment)
+        || (
+          reviewDecisionRank(unresolvedLearning) === reviewDecisionRank(winner.enrichment)
+          && unresolvedDecisionRevision > winnerDecisionRevision
+        )
+      ) {
+        winner = buildIndexEntry({
+          notesRoot,
+          imagePath: winner.imagePath,
+          sidecarPath: winner.sidecarPath,
+          metadata: {
+            ...winner.metadata,
+            ...unresolved.metadata,
+            id: path.parse(winner.imagePath).name,
+            fileName: path.basename(winner.imagePath),
+            filePath: winner.imagePath,
+            learning: {
+              ...(winner.metadata.learning || {}),
+              ...unresolvedLearning,
+            },
+          },
+          filePathMatched: true,
+          now,
+        });
+        byUid.set(uid.trim(), winner);
+      }
       duplicates.push({
         noteUid: uid.trim(),
         kept: winner.sidecarPath,

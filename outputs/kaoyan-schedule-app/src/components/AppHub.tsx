@@ -20,10 +20,15 @@ import {
   recordsMissingFromSnapshot,
   subscribeLearningDataCache,
   subscribeLearningDataFromServer,
+  subscribeLearningDataPolling,
   type LearningDataSnapshot,
 } from '../utils/learningData';
 import { fetchWithTimeout } from '../utils/localService';
-import { NOTE_SERVER_URL } from '../utils/notes';
+import {
+  selectKnowledgeEligibleNotes,
+  selectPendingNoteReviews,
+} from '../utils/noteReview';
+import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
 import {
   generateSchedule,
   getCurrentScheduleDay,
@@ -39,7 +44,6 @@ import {
 } from '../utils/scheduleRecords';
 
 type ServiceState = 'checking' | 'online' | 'offline';
-const DEFAULT_NOTE_FOLDERS = new Set(['默认文件夹', '未分类', '默认', '收件箱']);
 
 const go = (path: string) => {
   window.location.assign(`${window.location.origin}/${path}`);
@@ -109,11 +113,12 @@ export function AppHub() {
     });
     const unsubscribeLearning = subscribeLearningDataCache(applyServiceSnapshot);
     const unsubscribeServer = subscribeLearningDataFromServer();
+    const unsubscribePolling = subscribeLearningDataPolling();
     void fetchLearningData(controller.signal).then(applyServiceSnapshot).catch(() => undefined);
     void fetchWithTimeout(`${NOTE_SERVER_URL}/health`, {
       cache: 'no-store',
       signal: controller.signal,
-    }, 1800)
+    }, IS_CLOUD_RUNTIME ? 5000 : 1800)
       .then((response) => setServiceState(response.ok ? 'online' : 'offline'))
       .catch(() => setServiceState('offline'));
     const timer = window.setInterval(() => setNow(new Date()), 60000);
@@ -122,25 +127,21 @@ export function AppHub() {
       unsubscribeSchedule();
       unsubscribeLearning();
       unsubscribeServer();
+      unsubscribePolling();
       window.clearInterval(timer);
     };
   }, [days]);
 
   const todayRecord = records[todayDay.date] ?? getDefaultRecord();
   const progress = getDayProgress(todayDay, todayRecord);
-  const todayNotes = learningData.days[todayDay.date]?.autoNotes.filter((note) => (
-    note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim())
-  )).length ?? 0;
-  const eligibleNoteUids = new Set(Object.values(learningData.days).flatMap((day) => day.autoNotes)
-    .filter((note) => note.organizationStatus !== 'ignored' && !DEFAULT_NOTE_FOLDERS.has(note.subject.trim()))
-    .map((note) => note.noteUid));
+  const allNotes = Object.values(learningData.days).flatMap((day) => day.autoNotes);
+  const todayNotes = selectKnowledgeEligibleNotes(learningData.days[todayDay.date]?.autoNotes ?? []).length;
+  const eligibleNoteUids = new Set(selectKnowledgeEligibleNotes(allNotes).map((note) => note.noteUid));
   const today = localDate();
   const dueCards = learningData.cards.filter((card) => (
     eligibleNoteUids.has(card.noteUid) && card.status === 'active' && (!card.dueDate || card.dueDate <= today)
   )).length;
-  const uncertainClassifications = Object.values(learningData.days).flatMap((day) => day.autoNotes).filter((note) => (
-    note.organizationStatus === 'pending' && DEFAULT_NOTE_FOLDERS.has(note.subject.trim())
-  )).length;
+  const pendingClassifications = selectPendingNoteReviews(allNotes).length;
   const completedTaskIds = new Set(todayRecord.completedTaskIds);
   const currentTaskId = getCurrentTaskId(todayDay.tasks, now);
 
@@ -148,7 +149,6 @@ export function AppHub() {
     <main className="app-hub-page">
       <section className="app-hub-shell">
         <header className="hub-topbar">
-          <h1>首页</h1>
           <div className="hub-date">
             <strong>{formatToday(now)}</strong>
             <time>{now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</time>
@@ -158,10 +158,7 @@ export function AppHub() {
         <section className="hub-workbench">
           <section className="hub-today-pane">
             <header className="hub-today-heading">
-              <div>
-                <span>今天</span>
-                <h1>{todayDay.weekday} · {todayDay.type} 日</h1>
-              </div>
+              <h1>{todayDay.type} 日</h1>
               <div className="hub-progress-number">
                 <strong>{progress.rate}%</strong>
                 <span>{progress.completed}/{progress.total} 完成</span>
@@ -208,8 +205,8 @@ export function AppHub() {
               </button>
               <button type="button" onClick={() => go('?panel=learning&view=inbox')}>
                 <span><Sparkles size={20} /></span>
-                <strong>不确定分类</strong>
-                <b>{uncertainClassifications} 条</b>
+                <strong>待确认分类</strong>
+                <b>{pendingClassifications} 条</b>
                 <ArrowRight size={17} />
               </button>
               <button type="button" onClick={() => go('?panel=learning&view=knowledge')}>
@@ -219,11 +216,12 @@ export function AppHub() {
                 <ArrowRight size={17} />
               </button>
             </div>
-            <button className="hub-service" type="button" onClick={() => window.open('http://127.0.0.1:5174/health', '_blank', 'noopener,noreferrer')}>
-              <Server size={17} />
-              本地服务
-              <strong className={serviceState}>{serviceState === 'checking' ? '检查中' : serviceState === 'online' ? '正常' : '离线'}</strong>
-            </button>
+            {serviceState === 'offline' && (
+              <button className="hub-service" type="button" onClick={() => window.open(`${NOTE_SERVER_URL}/health`, '_blank', 'noopener,noreferrer')}>
+                <Server size={17} />
+                {IS_CLOUD_RUNTIME ? '云端数据服务不可用' : '本地服务离线'}
+              </button>
+            )}
           </aside>
         </section>
 
