@@ -7,6 +7,7 @@ import {
   writeBinaryFile,
 } from './github-store.js';
 import { readReceipt, writeReceipt } from './storage.js';
+import { mirrorNewCloudImage } from './source-mirror.js';
 
 const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -77,6 +78,10 @@ export async function saveNote(env, payload) {
     subject: typeof payload.subject === 'string' ? payload.subject : '',
     remark: typeof payload.remark === 'string' ? payload.remark : '',
     canvasProjectId: typeof payload.canvasProjectId === 'string' ? payload.canvasProjectId : '',
+    sourceType: typeof payload.sourceType === 'string' ? payload.sourceType : '',
+    sourceBatchId: typeof payload.sourceBatchId === 'string' ? payload.sourceBatchId : '',
+    sourceSplitIndex: Number(payload.sourceSplitIndex) || 0,
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
     imageHash,
   }));
   const existingReceipt = await readReceipt(env, 'save-note', noteUid);
@@ -108,20 +113,25 @@ export async function saveNote(env, payload) {
   const timestamp = new Date().toISOString();
   const fileName = `${noteUid}.${image.extension}`;
   const note = createSavedImageNote({ ...payload, noteUid }, { repoPath }, timestamp);
+  const sourceMirror = await mirrorNewCloudImage(env, image, note, payload, timestamp);
   const learningResult = await insertSavedImageNote(env, note);
   const response = {
     ok: true,
     noteUid,
     filePath: `github://${repoPath}`,
     fileName,
+    sourceMirrorPath: sourceMirror.imagePath,
     metadata: {
       noteUid,
+      sourceType: note.sourceType,
+      sourceBatchId: note.sourceBatchId,
+      sourceSplitIndex: note.sourceSplitIndex,
       learning: { tags: note.tags, noteType: note.noteType },
     },
     learningData: learningResult.snapshot,
     learningSyncError: null,
-    aiStatus: 'unavailable',
-    aiAvailable: false,
+    aiStatus: note.sourceType === 'ai-multi-question' ? 'pending' : 'unavailable',
+    aiAvailable: note.sourceType === 'ai-multi-question',
     provisional: false,
     idempotentReplay: learningResult.outcome.replayed === true,
   };
