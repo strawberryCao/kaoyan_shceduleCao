@@ -119,3 +119,5 @@ jobs:
         if: always()
         shell: bash
         run: exit "${{ steps.validation.outputs.overall || '1' }}"
+
+# validation trigger: 2026-07-23T15:00:00Z
