@@ -1,0 +1,37 @@
+{
+  "providers": {
+    "gemini": {
+      "enabled": true,
+      "apiKey": "",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "models": [
+        {
+          "id": "请填写你的 Gemini 模型名",
+          "capabilities": ["text", "vision", "json", "longContext"],
+          "costTier": 2,
+          "qualityTier": 2
+        }
+      ]
+    },
+    "kimi": {
+      "enabled": true,
+      "apiKey": "",
+      "baseUrl": "https://api.moonshot.cn/v1",
+      "models": [
+        {
+          "id": "请填写你的 Kimi 模型名",
+          "capabilities": ["text", "vision", "json", "longContext", "reasoning"],
+          "costTier": 2,
+          "qualityTier": 3
+        }
+      ]
+    }
+  },
+  "routing": {
+    "timeoutMs": 30000,
+    "networkRetries": 1,
+    "jsonRepairRetries": 1,
+    "circuitThreshold": 3,
+    "circuitCooldownMs": 60000
+  }
+}

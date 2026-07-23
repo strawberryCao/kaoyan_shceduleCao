@@ -1,0 +1,429 @@
+html:has(.note-drop-app),
+body:has(.note-drop-app),
+#root:has(.note-drop-app) {
+  width: 100%;
+  min-width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.note-drop-app,
+.note-drop-app * {
+  box-sizing: border-box;
+}
+
+.note-drop-app {
+  --dh-text: rgba(255, 250, 240, 0.94);
+  --dh-muted: rgba(255, 245, 226, 0.62);
+  --dh-faint: rgba(255, 245, 226, 0.48);
+  --dh-gold: #e6c38e;
+  --dh-line: rgba(255, 247, 226, 0.18);
+  --dh-line-soft: rgba(255, 245, 222, 0.1);
+  --dh-fill: rgba(255, 248, 232, 0.045);
+  --dh-fill-hover: rgba(230, 195, 142, 0.14);
+  position: relative;
+  display: grid;
+  grid-template-rows: 29px minmax(0, 1fr) 20px;
+  gap: 4px;
+  width: calc(100vw - 4px);
+  height: calc(100vh - 4px);
+  min-height: 0;
+  margin: 2px;
+  overflow: hidden;
+  border: 1px solid var(--dh-line);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgba(255, 249, 232, 0.08), rgba(20, 18, 18, 0.1)),
+    rgba(38, 33, 31, 0.28);
+  box-shadow: 0 16px 42px rgba(47, 34, 26, 0.22), inset 0 1px 0 rgba(255, 255, 245, 0.12);
+  color: var(--dh-text);
+  font-family: "Microsoft YaHei", system-ui, sans-serif;
+  padding: 0 6px 5px;
+  backdrop-filter: blur(20px) saturate(0.94);
+}
+
+.note-drop-app::before {
+  display: none;
+  content: none;
+}
+
+.note-drop-app > * {
+  position: relative;
+  z-index: 1;
+}
+
+.note-drop-titlebar {
+  display: flex;
+  height: 29px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0 -6px;
+  border-bottom: 1px solid var(--dh-line-soft);
+  background: var(--dh-fill);
+  padding: 0 4px 0 8px;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.note-drop-titlebar > div,
+.note-drop-titlebar nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.note-drop-titlebar strong {
+  color: rgba(255, 244, 222, 0.72);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.note-drop-grip {
+  display: grid;
+  grid-template-columns: repeat(3, 2px);
+  gap: 2px;
+}
+
+.note-drop-grip i {
+  width: 2px;
+  height: 2px;
+  border-radius: 99px;
+  background: rgba(255, 244, 222, 0.52);
+}
+
+.note-drop-titlebar nav {
+  -webkit-app-region: no-drag;
+}
+
+.note-drop-titlebar button,
+.note-remark-dialog header button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgba(255, 243, 218, 0.12);
+  border-radius: 999px;
+  background: var(--dh-fill);
+  color: rgba(255, 245, 226, 0.68);
+  cursor: pointer;
+  padding: 0;
+}
+
+.note-drop-titlebar button:hover,
+.note-remark-dialog header button:hover {
+  border-color: rgba(230, 195, 142, 0.52);
+  background: var(--dh-fill-hover);
+  color: var(--dh-gold);
+}
+
+.note-drop-body {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 5px;
+}
+
+.note-drop-zone,
+.note-canvas-launch {
+  min-width: 0;
+  border: 1px solid rgba(255, 247, 226, 0.12);
+  outline: none;
+  background: var(--dh-fill);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 245, 0.06);
+  color: var(--dh-text);
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.note-drop-zone {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 11px;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.note-drop-zone:hover,
+.note-drop-zone:focus-visible,
+.note-drop-app.is-dragging .note-drop-zone,
+.note-canvas-launch:hover,
+.note-canvas-launch:focus-visible {
+  border-color: rgba(230, 195, 142, 0.52);
+  background: rgba(230, 195, 142, 0.12);
+}
+
+.note-drop-app.is-dragging .note-drop-zone {
+  transform: scale(1.008);
+}
+
+.note-drop-zone-icon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(230, 195, 142, 0.2);
+  border-radius: 10px;
+  background: rgba(230, 195, 142, 0.16);
+  color: var(--dh-gold);
+}
+
+.note-drop-zone-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.note-drop-zone-copy strong {
+  overflow: hidden;
+  color: var(--dh-text);
+  font-size: 11px;
+  font-weight: 950;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-drop-zone-copy small {
+  overflow: hidden;
+  color: var(--dh-muted);
+  font-size: 8px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-canvas-launch {
+  display: grid;
+  height: 100%;
+  place-items: center;
+  border-radius: 11px;
+  color: var(--dh-gold);
+  padding: 0;
+}
+
+.note-drop-app > footer {
+  display: flex;
+  min-width: 0;
+  height: 20px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid rgba(255, 247, 226, 0.1);
+  border-radius: 7px;
+  background: var(--dh-fill);
+  color: var(--dh-muted);
+  font-size: 8px;
+  font-weight: 760;
+  padding: 0 6px;
+}
+
+.note-drop-app > footer svg {
+  flex: 0 0 auto;
+  color: var(--dh-gold);
+}
+
+.note-drop-app > footer span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-drop-app > footer.is-success,
+.note-drop-app > footer.is-success svg {
+  color: #cfe2c4;
+}
+
+.note-remark-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  border-radius: 15px;
+  background: rgba(53, 39, 29, 0.38);
+  backdrop-filter: blur(10px) saturate(0.92);
+  padding: 12px;
+}
+
+.note-remark-dialog {
+  display: grid;
+  width: min(100%, 416px);
+  max-height: calc(100vh - 24px);
+  gap: 10px;
+  overflow: auto;
+  border: 1px solid rgba(255, 247, 226, 0.2);
+  border-radius: 20px;
+  background:
+    linear-gradient(145deg, rgba(255, 249, 232, 0.12), rgba(20, 18, 18, 0.08)),
+    rgba(91, 74, 60, 0.94);
+  box-shadow: 0 26px 75px rgba(47, 34, 26, 0.4), inset 0 1px 0 rgba(255, 255, 245, 0.1);
+  color: var(--dh-text);
+  padding: 13px;
+}
+
+.note-remark-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.note-remark-dialog header p,
+.note-remark-dialog header h2 {
+  margin: 0;
+}
+
+.note-remark-dialog header p {
+  color: var(--dh-gold);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.note-remark-dialog header h2 {
+  margin-top: 2px;
+  color: var(--dh-text);
+  font-size: 18px;
+}
+
+.note-remark-dialog figure {
+  position: relative;
+  display: grid;
+  min-height: 118px;
+  max-height: 165px;
+  place-items: center;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid rgba(255, 247, 226, 0.12);
+  border-radius: 15px;
+  background: rgba(47, 37, 30, 0.38);
+}
+
+.note-remark-dialog figure img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-height: 165px;
+  object-fit: contain;
+}
+
+.note-remark-dialog figcaption {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  max-width: calc(100% - 14px);
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(47, 37, 30, 0.78);
+  color: var(--dh-muted);
+  font-size: 9px;
+  font-weight: 760;
+  padding: 4px 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-remark-dialog label {
+  display: grid;
+  gap: 5px;
+}
+
+.note-remark-dialog label > span {
+  color: var(--dh-text);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.note-remark-dialog textarea {
+  min-height: 76px;
+  resize: vertical;
+  border: 1px solid rgba(255, 247, 226, 0.18);
+  border-radius: 13px;
+  outline: none;
+  background: rgba(255, 248, 232, 0.08);
+  color: var(--dh-text);
+  font: 780 12px/1.5 "Microsoft YaHei", system-ui, sans-serif;
+  padding: 9px;
+}
+
+.note-remark-dialog textarea::placeholder {
+  color: var(--dh-faint);
+}
+
+.note-remark-dialog textarea:focus {
+  border-color: rgba(230, 195, 142, 0.62);
+  box-shadow: 0 0 0 3px rgba(230, 195, 142, 0.09);
+}
+
+.note-remark-dialog label small {
+  color: var(--dh-faint);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.note-remark-error {
+  margin: 0;
+  border: 1px solid rgba(239, 137, 137, 0.28);
+  border-radius: 10px;
+  background: rgba(176, 64, 76, 0.14);
+  color: #ffd0ce;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1.4;
+  padding: 7px 9px;
+}
+
+.note-remark-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.note-remark-actions button {
+  display: inline-flex;
+  min-height: 33px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid rgba(255, 247, 226, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 248, 232, 0.06);
+  color: rgba(255, 250, 240, 0.84);
+  cursor: pointer;
+  font-weight: 850;
+  padding: 0 11px;
+}
+
+.note-remark-actions button.primary {
+  border-color: rgba(230, 195, 142, 0.42);
+  background: rgba(230, 195, 142, 0.2);
+  color: var(--dh-text);
+}
+
+.note-remark-actions button:hover:not(:disabled) {
+  background: rgba(230, 195, 142, 0.24);
+}
+
+.note-remark-actions button:disabled,
+.note-remark-dialog header button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+@media (max-height: 470px) {
+  .note-remark-dialog figure {
+    min-height: 88px;
+    max-height: 120px;
+  }
+
+  .note-remark-dialog figure img {
+    max-height: 120px;
+  }
+}

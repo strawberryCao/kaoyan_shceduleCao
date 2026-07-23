@@ -9,7 +9,13 @@ declare global {
       setAutoLaunch: (enabled: boolean) => Promise<boolean>;
       restoreDefaultPosition: () => Promise<unknown>;
       savePosition: () => Promise<unknown>;
-      attachToDesktop: () => Promise<boolean>;
+      openNoteApp: () => Promise<boolean>;
+      closeNoteApp: () => Promise<boolean>;
+      setNoteAppDirty: (dirty: boolean, saving: boolean) => Promise<boolean>;
+      setNoteAppMode: (mode: 'compact' | 'remark') => Promise<boolean>;
+      openNoteCanvas: () => Promise<boolean>;
+      showItemInFolder: (filePath: string) => Promise<boolean>;
+      openPath: (filePath: string) => Promise<boolean>;
       minimize: () => void;
       hide: () => void;
       close: () => void;

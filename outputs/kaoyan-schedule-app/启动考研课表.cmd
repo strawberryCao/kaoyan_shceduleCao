@@ -28,17 +28,8 @@ if not exist node_modules (
   )
 )
 
-echo Starting Kaoyan Schedule App...
-echo Browser will open http://127.0.0.1:5173/
+echo Starting optimized Kaoyan Schedule App...
+call "%~dp0scripts\start-note-app.cmd" --services-only
+if errorlevel 1 exit /b 1
 
-netstat -ano | findstr /R /C:":5173 .*LISTENING" >nul 2>nul
-if not errorlevel 1 (
-  echo Local dev server is already running. Opening the page.
-  start "" "http://127.0.0.1:5173/"
-  exit /b 0
-)
-
-start "" cmd /c "timeout /t 3 /nobreak >nul & start "" http://127.0.0.1:5173/"
-call npm.cmd run dev -- --host 127.0.0.1 --port 5173 --strictPort
-
-pause
+start "" "http://127.0.0.1:5173/"

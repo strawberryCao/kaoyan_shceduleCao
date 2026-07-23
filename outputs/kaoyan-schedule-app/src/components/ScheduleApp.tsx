@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EyeOff, LocateFixed, Minus, MoreHorizontal, Pin, X } from 'lucide-react';
 import { DataPanel } from './DataPanel';
 import { DayCard } from './DayCard';
+import { LearningCenter, type LearningCardPatch } from './LearningCenter';
 import { NotesPanel } from './NotesPanel';
 import { Sidebar } from './Sidebar';
 import { StatsPanel } from './StatsPanel';
@@ -14,8 +14,36 @@ import {
   getScheduleRangeText,
   makeStoragePayload,
   normalizeRecords,
-  STORAGE_KEY,
 } from '../utils/schedule';
+import {
+  mergeScheduleRecords,
+  readScheduleRecords,
+  sameScheduleRecords,
+  saveScheduleRecords,
+  subscribeScheduleRecords,
+} from '../utils/scheduleRecords';
+import {
+  clearPendingLearningRecord,
+  clearPendingLearningReplacement,
+  createLearningNote,
+  deleteLearningCard,
+  deleteLearningNote,
+  fetchLearningData,
+  getManualRecords,
+  patchLearningDay,
+  patchLearningCard,
+  patchLearningNote,
+  putLearningManualRecords,
+  queuePendingLearningRecord,
+  queuePendingLearningReplacement,
+  readLearningDataCache,
+  readPendingLearningRecords,
+  readPendingLearningReplacement,
+  subscribeLearningDataCache,
+  subscribeLearningDataFromServer,
+  subscribeLearningDataPolling,
+  type LearningDataSnapshot,
+} from '../utils/learningData';
 
 const matchesFilter = (day: ScheduleDay, filter: FilterType): boolean => {
   if (filter === 'all') {
@@ -34,38 +62,252 @@ const panelButtons: Array<{ value: ActivePanel; label: string }> = [
   { value: 'data', label: '数据' },
 ];
 
+const panelTitles: Record<ActivePanel, string> = {
+  schedule: '完整课表',
+  notes: '每日记录',
+  stats: '学习统计',
+  data: '数据管理',
+  learning: '学习中心',
+};
+
+const getInitialPanel = (): ActivePanel => {
+  const panel = new URLSearchParams(window.location.search).get('panel');
+  return panel === 'learning' || panel === 'notes' || panel === 'stats' || panel === 'data'
+    ? panel
+    : 'schedule';
+};
+
+const sameDayRecord = (left: DayRecord, right: DayRecord) => JSON.stringify(left) === JSON.stringify(right);
+
+const mergePendingRecords = (
+  snapshot: LearningDataSnapshot,
+  livePending: RecordsByDate = {},
+): RecordsByDate => mergeScheduleRecords(
+  getManualRecords(snapshot),
+  readPendingLearningReplacement(),
+  readPendingLearningRecords(),
+  livePending,
+);
+
 export function ScheduleApp() {
   const days = useMemo(() => generateSchedule(), []);
   const todayDay = useMemo(() => getCurrentScheduleDay(days), [days]);
-  const wallpaperMode = useMemo(() => new URLSearchParams(window.location.search).get('wallpaper') === '1', []);
-  const desktopMode = Boolean(window.kaoyanDesktop?.isElectron);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [activePanel, setActivePanel] = useState<ActivePanel>('schedule');
-  const [detailOpen, setDetailOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<ActivePanel>(getInitialPanel);
   const [filter, setFilter] = useState<FilterType>('all');
   const [selectedDate, setSelectedDate] = useState(todayDay.date);
-  const [records, setRecords] = useState<RecordsByDate>(() => {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) {
-      return {};
+  const [records, setRecords] = useState<RecordsByDate>(() => readScheduleRecords(days));
+  const [learningData, setLearningData] = useState<LearningDataSnapshot>(() => readLearningDataCache());
+  const recordsRef = useRef(records);
+  const learningDataRef = useRef(learningData);
+  const syncTimersRef = useRef(new Map<string, number>());
+  const pendingSyncRecordsRef = useRef(new Map<string, DayRecord>());
+  const inFlightSyncRecordsRef = useRef(new Map<string, DayRecord>());
+  const initialHydrationRef = useRef(true);
+
+  const applyRecords = (next: RecordsByDate, persist = false) => {
+    if (sameScheduleRecords(recordsRef.current, next)) {
+      return;
+    }
+    recordsRef.current = next;
+    setRecords(next);
+    if (persist) {
+      saveScheduleRecords(next);
+    }
+  };
+
+  const readLivePendingRecords = (): RecordsByDate => Object.fromEntries(pendingSyncRecordsRef.current);
+
+  const acceptLearningSnapshot = (snapshot: LearningDataSnapshot, force = false) => {
+    const current = learningDataRef.current;
+    const incomingUpdatedAt = snapshot.updatedAt ? Date.parse(snapshot.updatedAt) : Number.NaN;
+    const currentUpdatedAt = current.updatedAt ? Date.parse(current.updatedAt) : Number.NaN;
+    const isNewerServerEpoch = Number.isFinite(incomingUpdatedAt)
+      && (!Number.isFinite(currentUpdatedAt) || incomingUpdatedAt > currentUpdatedAt);
+
+    // A rebuild or restore can legitimately restart from a lower revision.
+    // In that case the newer server timestamp is authoritative over an older
+    // localStorage snapshot, while genuinely older events are still ignored.
+    if (!force && snapshot.revision < current.revision && !isNewerServerEpoch) {
+      return false;
+    }
+    learningDataRef.current = snapshot;
+    setLearningData(snapshot);
+    return true;
+  };
+
+  const applyLearningSnapshot = (snapshot: LearningDataSnapshot, syncRecords = true) => {
+    if (!acceptLearningSnapshot(snapshot)) {
+      return false;
+    }
+    if (syncRecords && !initialHydrationRef.current) {
+      applyRecords(mergePendingRecords(snapshot, readLivePendingRecords()), true);
+    }
+    return true;
+  };
+
+  const submitLatestRecord = (date: string) => {
+    if (inFlightSyncRecordsRef.current.has(date)) {
+      return;
+    }
+    const record = pendingSyncRecordsRef.current.get(date);
+    if (!record) {
+      return;
     }
 
-    try {
-      return normalizeRecords(JSON.parse(saved), days);
-    } catch {
-      return {};
+    inFlightSyncRecordsRef.current.set(date, record);
+    let succeeded = false;
+    void patchLearningDay(date, record)
+      .then((snapshot) => {
+        succeeded = true;
+        const accepted = applyLearningSnapshot(snapshot);
+
+        const latest = pendingSyncRecordsRef.current.get(date);
+        if (latest && sameDayRecord(latest, record)) {
+          pendingSyncRecordsRef.current.delete(date);
+          clearPendingLearningRecord(date, record);
+          applyRecords(mergePendingRecords(
+            accepted ? snapshot : learningDataRef.current,
+            readLivePendingRecords(),
+          ), true);
+        }
+      })
+      .catch(() => {
+        // Keep the newest local value queued for the next successful load.
+      })
+      .finally(() => {
+        const active = inFlightSyncRecordsRef.current.get(date);
+        if (active && sameDayRecord(active, record)) {
+          inFlightSyncRecordsRef.current.delete(date);
+        }
+        const latest = pendingSyncRecordsRef.current.get(date);
+        const wasSuperseded = Boolean(latest && !sameDayRecord(latest, record));
+        if (
+          latest
+          && (succeeded || wasSuperseded)
+          && !syncTimersRef.current.has(date)
+        ) {
+          submitLatestRecord(date);
+        }
+      });
+  };
+
+  const scheduleRecordSync = (date: string, record: DayRecord, delay = 0) => {
+    queuePendingLearningRecord(date, record);
+    pendingSyncRecordsRef.current.set(date, record);
+
+    const previousTimer = syncTimersRef.current.get(date);
+    if (previousTimer !== undefined) {
+      window.clearTimeout(previousTimer);
+      syncTimersRef.current.delete(date);
     }
-  });
+
+    if (delay <= 0) {
+      submitLatestRecord(date);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      syncTimersRef.current.delete(date);
+      submitLatestRecord(date);
+    }, delay);
+    syncTimersRef.current.set(date, timer);
+  };
+
+  useEffect(() => subscribeScheduleRecords(days, (next) => {
+    applyRecords(mergeScheduleRecords(
+      next,
+      readPendingLearningReplacement(),
+      readPendingLearningRecords(),
+      readLivePendingRecords(),
+    ));
+  }), [days]);
+
+  useEffect(() => subscribeLearningDataCache((snapshot) => {
+    applyLearningSnapshot(snapshot);
+  }), []);
+
+  useEffect(() => subscribeLearningDataFromServer(), []);
+
+  // iPad Safari may suspend an EventSource while the tab is in the background.
+  // Polling refreshes immediately on mount and provides a quiet fallback.
+  useEffect(() => subscribeLearningDataPolling(), []);
 
   useEffect(() => {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(makeStoragePayload(records)));
-  }, [records]);
+    const controller = new AbortController();
+    Object.entries(readPendingLearningRecords()).forEach(([date, record]) => {
+      if (!pendingSyncRecordsRef.current.has(date)) {
+        pendingSyncRecordsRef.current.set(date, record);
+      }
+    });
 
-  useEffect(() => {
-    if (wallpaperMode && activePanel === 'data') {
-      setActivePanel('schedule');
-    }
-  }, [activePanel, wallpaperMode]);
+    void (async () => {
+      try {
+        let snapshot = await fetchLearningData(controller.signal);
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        const pendingReplacement = readPendingLearningReplacement();
+        if (pendingReplacement !== null) {
+          snapshot = await putLearningManualRecords(pendingReplacement, 'replace');
+          const latestReplacement = readPendingLearningReplacement();
+          if (latestReplacement !== null && sameScheduleRecords(latestReplacement, pendingReplacement)) {
+            clearPendingLearningReplacement();
+          }
+        }
+
+        const pendingRecords = readPendingLearningRecords();
+        for (const [date, record] of Object.entries(pendingRecords)) {
+          if (!pendingSyncRecordsRef.current.has(date)) {
+            pendingSyncRecordsRef.current.set(date, record);
+          }
+        }
+
+        const localToMerge = recordsRef.current;
+        if (
+          pendingReplacement === null
+          && Object.keys(pendingRecords).length === 0
+          && Object.keys(localToMerge).length > 0
+          && !sameScheduleRecords(getManualRecords(snapshot), localToMerge)
+        ) {
+          snapshot = await putLearningManualRecords(localToMerge, 'merge');
+        }
+
+        if (!controller.signal.aborted) {
+          const accepted = acceptLearningSnapshot(snapshot, true);
+          applyRecords(mergePendingRecords(
+            accepted ? snapshot : learningDataRef.current,
+            readLivePendingRecords(),
+          ), true);
+        }
+      } catch {
+        // Keep the existing schedule localStorage and cached AI notes while offline.
+      } finally {
+        initialHydrationRef.current = false;
+        if (!controller.signal.aborted) {
+          pendingSyncRecordsRef.current.forEach((_record, date) => submitLatestRecord(date));
+        }
+      }
+    })();
+
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => () => {
+    syncTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    syncTimersRef.current.clear();
+
+    const pending = mergeScheduleRecords(
+      readPendingLearningRecords(),
+      readLivePendingRecords(),
+    );
+    Object.entries(pending).forEach(([date, record]) => {
+      void patchLearningDay(date, record, undefined, { keepalive: true }).catch(() => {
+        // The durable pending queue remains available for the next launch.
+      });
+    });
+  }, []);
 
   const selectedDay = days.find((day) => day.date === selectedDate) ?? todayDay;
   const stats = useMemo(() => calculateStats(days, records), [days, records]);
@@ -73,14 +315,18 @@ export function ScheduleApp() {
 
   const getRecord = (day: ScheduleDay): DayRecord => records[day.date] ?? getDefaultRecord();
 
-  const updateRecord = (date: string, updater: (record: DayRecord) => DayRecord) => {
-    setRecords((current) => {
-      const previous = current[date] ?? getDefaultRecord();
-      return {
-        ...current,
-        [date]: updater(previous),
-      };
-    });
+  const updateRecord = (
+    date: string,
+    updater: (record: DayRecord) => DayRecord,
+    syncDelay = 0,
+  ) => {
+    const previous = recordsRef.current[date] ?? getDefaultRecord();
+    const nextRecord = updater(previous);
+    applyRecords({
+      ...recordsRef.current,
+      [date]: nextRecord,
+    }, true);
+    scheduleRecordSync(date, nextRecord, syncDelay);
   };
 
   const toggleTask = (date: string, taskId: string) => {
@@ -99,7 +345,7 @@ export function ScheduleApp() {
     updateRecord(date, (record) => ({
       ...record,
       [field]: value,
-    }));
+    }), 350);
   };
 
   const changeFilter = (nextFilter: FilterType) => {
@@ -111,9 +357,11 @@ export function ScheduleApp() {
   };
 
   const stepDay = (direction: -1 | 1) => {
-    const currentIndex = days.findIndex((day) => day.date === selectedDay.date);
-    const nextIndex = Math.min(Math.max(currentIndex + direction, 0), days.length - 1);
-    setSelectedDate(days[nextIndex].date);
+    const navigationDays = filteredDays.length > 0 ? filteredDays : days;
+    const currentIndex = navigationDays.findIndex((day) => day.date === selectedDay.date);
+    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextIndex = Math.min(Math.max(safeIndex + direction, 0), navigationDays.length - 1);
+    setSelectedDate(navigationDays[nextIndex].date);
     setActivePanel('schedule');
   };
 
@@ -137,7 +385,18 @@ export function ScheduleApp() {
       const text = await file.text();
       const parsed = JSON.parse(text);
       const normalized = normalizeRecords(parsed, days);
-      setRecords(normalized);
+      queuePendingLearningReplacement(normalized);
+      applyRecords(normalized, true);
+      try {
+        const snapshot = await putLearningManualRecords(normalized, 'replace');
+        const latestReplacement = readPendingLearningReplacement();
+        if (latestReplacement !== null && sameScheduleRecords(latestReplacement, normalized)) {
+          clearPendingLearningReplacement();
+        }
+        applyLearningSnapshot(snapshot);
+      } catch {
+        // The imported records remain local and are retried when the service returns.
+      }
       window.alert('导入成功，记录已更新。');
     } catch {
       window.alert('导入失败，请选择有效的 JSON 记录文件。');
@@ -147,20 +406,73 @@ export function ScheduleApp() {
   const clearRecords = () => {
     const confirmed = window.confirm('确定清空所有完成记录、备注、欠账和错题提醒吗？此操作不可撤销。');
     if (confirmed) {
-      setRecords({});
+      queuePendingLearningReplacement({});
+      applyRecords({}, true);
+      void putLearningManualRecords({}, 'replace')
+        .then((snapshot) => {
+          const latestReplacement = readPendingLearningReplacement();
+          if (latestReplacement !== null && sameScheduleRecords(latestReplacement, {})) {
+            clearPendingLearningReplacement();
+          }
+          applyLearningSnapshot(snapshot);
+        })
+        .catch(() => {
+          // Keep the pending clear operation until the local service is available.
+        });
     }
   };
 
   const renderPanel = () => {
+    if (activePanel === 'learning') {
+      return (
+        <LearningCenter
+          snapshot={learningData}
+          scheduleDays={days}
+          onOpenDate={(date) => {
+            if (days.some((day) => day.date === date)) {
+              setSelectedDate(date);
+              setActivePanel('notes');
+            }
+          }}
+          onPatchCard={async (cardId: string, patch: LearningCardPatch) => {
+            const snapshot = await patchLearningCard(cardId, patch);
+            applyLearningSnapshot(snapshot);
+          }}
+          onDeleteCard={async (cardId) => {
+            const snapshot = await deleteLearningCard(cardId);
+            applyLearningSnapshot(snapshot);
+          }}
+          onCreateNote={async (input) => {
+            const snapshot = await createLearningNote(input);
+            applyLearningSnapshot(snapshot);
+          }}
+          onPatchNote={async (noteUid, patch) => {
+            const snapshot = await patchLearningNote(noteUid, patch);
+            applyLearningSnapshot(snapshot);
+          }}
+          onDeleteNote={async (noteUid) => {
+            const snapshot = await deleteLearningNote(noteUid);
+            applyLearningSnapshot(snapshot);
+          }}
+        />
+      );
+    }
+
     if (activePanel === 'notes') {
-      return <NotesPanel day={selectedDay} onUpdateField={updateField} record={getRecord(selectedDay)} />;
+      return (
+        <NotesPanel
+          day={selectedDay}
+          onUpdateField={updateField}
+          record={getRecord(selectedDay)}
+          autoNotes={learningData.days[selectedDay.date]?.autoNotes ?? []}
+        />
+      );
     }
 
     if (activePanel === 'stats') {
       return (
         <section className="content-panel stats-view" aria-label="学习统计">
           <div className="panel-heading">
-            <p>整体进度</p>
             <h2>30 天统计</h2>
           </div>
           <StatsPanel stats={stats} />
@@ -168,7 +480,7 @@ export function ScheduleApp() {
       );
     }
 
-    if (activePanel === 'data' && !wallpaperMode) {
+    if (activePanel === 'data') {
       return <DataPanel onClear={clearRecords} onExport={exportRecords} onImportClick={() => fileInputRef.current?.click()} />;
     }
 
@@ -182,221 +494,18 @@ export function ScheduleApp() {
     );
   };
 
-  const shellClassName = [
-    'app-shell',
-    wallpaperMode ? 'wallpaper-shell' : '',
-    desktopMode ? 'desktop-shell' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
-
-  if (desktopMode) {
-    return (
-      <main className={`${shellClassName} wallpaper-desktop-shell`}>
-        <section className="wallpaper-widget">
-          <header className="widget-toolbar">
-            <div>
-              <p>今日课表</p>
-              <strong>{selectedDay.date}</strong>
-            </div>
-
-            <div className="widget-actions" aria-label="桌面组件操作">
-              <button type="button" title="恢复到红框位置" onClick={() => void window.kaoyanDesktop?.restoreDefaultPosition()}>
-                <LocateFixed aria-hidden="true" size={15} />
-              </button>
-              <button type="button" title="保存当前位置" onClick={() => void window.kaoyanDesktop?.savePosition()}>
-                <Pin aria-hidden="true" size={15} />
-              </button>
-              <button type="button" title="重新贴到桌面" onClick={() => void window.kaoyanDesktop?.attachToDesktop()}>
-                贴
-              </button>
-              <button type="button" title="隐藏到托盘" onClick={() => window.kaoyanDesktop?.hide()}>
-                <EyeOff aria-hidden="true" size={15} />
-              </button>
-              <button
-                className={detailOpen ? 'active' : ''}
-                type="button"
-                title="更多"
-                onClick={() => setDetailOpen((open) => !open)}
-              >
-                <MoreHorizontal aria-hidden="true" size={16} />
-              </button>
-            </div>
-          </header>
-
-          <section className="widget-core">
-            <DayCard
-              day={selectedDay}
-              isToday={selectedDay.date === todayDay.date}
-              onToggleTask={toggleTask}
-              record={getRecord(selectedDay)}
-            />
-          </section>
-
-          {detailOpen && (
-            <aside className="widget-detail-drawer" aria-label="详细功能">
-              <div className="drawer-head">
-                <span>详细功能</span>
-                <button type="button" onClick={() => setDetailOpen(false)}>
-                  <X aria-hidden="true" size={15} />
-                  收起
-                </button>
-              </div>
-
-              <nav className="drawer-tabs" aria-label="详情切换">
-                {panelButtons.map((panel) => (
-                  <button
-                    className={activePanel === panel.value ? 'active' : ''}
-                    key={panel.value}
-                    type="button"
-                    onClick={() => setActivePanel(panel.value)}
-                  >
-                    {panel.label}
-                  </button>
-                ))}
-              </nav>
-
-              {activePanel === 'schedule' && (
-                <section className="drawer-section">
-                  <div className="drawer-quick-row">
-                    <button type="button" onClick={() => setSelectedDate(todayDay.date)}>
-                      今日
-                    </button>
-                    <button type="button" onClick={() => stepDay(-1)}>
-                      前一天
-                    </button>
-                    <button type="button" onClick={() => stepDay(1)}>
-                      后一天
-                    </button>
-                  </div>
-
-                  <div className="drawer-filter-row">
-                    {(['all', 'A', 'B', 'basketball'] as FilterType[]).map((item) => (
-                      <button
-                        className={filter === item ? 'active' : ''}
-                        key={item}
-                        type="button"
-                        onClick={() => changeFilter(item)}
-                      >
-                        {item === 'all' ? '全部' : item === 'basketball' ? '打球' : `${item}日`}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="drawer-date-strip">
-                    {filteredDays.map((day) => (
-                      <button
-                        className={selectedDay.date === day.date ? 'active' : ''}
-                        key={day.date}
-                        type="button"
-                        onClick={() => setSelectedDate(day.date)}
-                      >
-                        <span>{day.date.slice(5)}</span>
-                        <small>{day.type}日</small>
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {activePanel === 'notes' && (
-                <NotesPanel day={selectedDay} onUpdateField={updateField} record={getRecord(selectedDay)} />
-              )}
-
-              {activePanel === 'stats' && (
-                <section className="content-panel stats-view" aria-label="学习统计">
-                  <div className="panel-heading">
-                    <p>整体进度</p>
-                    <h2>30 天统计</h2>
-                  </div>
-                  <StatsPanel stats={stats} />
-                </section>
-              )}
-
-              {activePanel === 'data' && (
-                <DataPanel onClear={clearRecords} onExport={exportRecords} onImportClick={() => fileInputRef.current?.click()} />
-              )}
-            </aside>
-          )}
-
-          <input
-            accept="application/json,.json"
-            className="visually-hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                void importRecords(file);
-              }
-              event.currentTarget.value = '';
-            }}
-            ref={fileInputRef}
-            type="file"
-          />
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <main className={shellClassName}>
-      <section className={desktopMode ? 'desktop-frame electron-frame' : 'desktop-frame'}>
-        <header className="desktop-commandbar">
-          <div className="command-title">
-            <span className="soft-mark">研</span>
-            <div>
-              <p>{desktopMode ? '桌面学习组件' : '30 天考研计划'}</p>
-              <h1>考研学习课表</h1>
-            </div>
-          </div>
-
-          <div className="command-meta">
+    <main className={`app-shell schedule-app-shell panel-${activePanel}`}>
+      <section className="desktop-frame schedule-frame">
+        <header className="desktop-commandbar schedule-commandbar">
+          <div className="schedule-command-title">
+            <h1>{panelTitles[activePanel]}</h1>
             <span>{getScheduleRangeText()}</span>
-            {desktopMode && (
-              <div className="window-actions" aria-label="窗口操作">
-                <button type="button" title="恢复到红框位置" onClick={() => void window.kaoyanDesktop?.restoreDefaultPosition()}>
-                  <LocateFixed aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="保存当前位置" onClick={() => void window.kaoyanDesktop?.savePosition()}>
-                  <Pin aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="最小化" onClick={() => window.kaoyanDesktop?.minimize()}>
-                  <Minus aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="隐藏到托盘" onClick={() => window.kaoyanDesktop?.hide()}>
-                  <EyeOff aria-hidden="true" size={16} />
-                </button>
-                <button type="button" title="退出" onClick={() => window.kaoyanDesktop?.close()}>
-                  <X aria-hidden="true" size={16} />
-                </button>
-              </div>
-            )}
           </div>
-        </header>
-
-        <div className="workspace">
-        <Sidebar
-          activePanel={activePanel}
-          days={days}
-          filter={filter}
-          onDateChange={(date) => {
-            setSelectedDate(date);
-            setActivePanel('schedule');
-          }}
-          onFilterChange={changeFilter}
-          onPanelChange={setActivePanel}
-          onStepDay={stepDay}
-          selectedDay={selectedDay}
-          todayDay={todayDay}
-          wallpaperMode={wallpaperMode}
-        />
-
-        <section className="main-stage">{renderPanel()}</section>
-      </div>
-
-        {desktopMode && (
-          <nav className="bottom-panel-tabs" aria-label="功能切换">
+          <nav className="schedule-panel-switcher" aria-label="课表功能切换">
             {panelButtons.map((panel) => (
               <button
+                aria-current={activePanel === panel.value ? 'page' : undefined}
                 className={activePanel === panel.value ? 'active' : ''}
                 key={panel.value}
                 type="button"
@@ -406,7 +515,41 @@ export function ScheduleApp() {
               </button>
             ))}
           </nav>
-        )}
+        </header>
+
+        <div className={`workspace schedule-workspace panel-${activePanel}`}>
+          <Sidebar
+            activePanel={activePanel}
+            days={days}
+            filter={filter}
+            onDateChange={(date) => {
+              setSelectedDate(date);
+              setActivePanel('schedule');
+            }}
+            onFilterChange={changeFilter}
+            onPanelChange={setActivePanel}
+            onStepDay={stepDay}
+            selectedDay={selectedDay}
+            todayDay={todayDay}
+            wallpaperMode={false}
+          />
+
+          <section className={`main-stage schedule-main-stage panel-${activePanel}`}>{renderPanel()}</section>
+        </div>
+
+        <nav className="bottom-panel-tabs schedule-bottom-tabs" aria-label="课表功能切换">
+          {panelButtons.map((panel) => (
+            <button
+              aria-current={activePanel === panel.value ? 'page' : undefined}
+              className={activePanel === panel.value ? 'active' : ''}
+              key={panel.value}
+              type="button"
+              onClick={() => setActivePanel(panel.value)}
+            >
+              {panel.label}
+            </button>
+          ))}
+        </nav>
       </section>
 
       <input

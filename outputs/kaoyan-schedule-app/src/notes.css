@@ -1,0 +1,232 @@
+.note-dock {
+  position: fixed;
+  right: 22px;
+  bottom: 16px;
+  z-index: 5;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 8px;
+  width: min(370px, calc(100vw - 44px));
+  min-height: 64px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 18px;
+  background: linear-gradient(145deg, rgba(30, 25, 36, 0.66), rgba(60, 48, 66, 0.38));
+  box-shadow: 0 18px 48px rgba(18, 14, 24, 0.26);
+  backdrop-filter: blur(18px) saturate(1.12);
+  color: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+  pointer-events: auto;
+  outline: none;
+}
+
+.note-dock:focus,
+.note-dock:hover {
+  border-color: rgba(242, 202, 151, 0.54);
+}
+
+.note-dock-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.note-dock-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(242, 202, 151, 0.18);
+  color: #f2ca97;
+}
+
+.note-dock p,
+.note-dock span {
+  margin: 0;
+}
+
+.note-dock p {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.note-dock-main div > span {
+  display: block;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-canvas-button {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  align-self: center;
+  place-items: center;
+  border: 1px solid rgba(242, 202, 151, 0.28);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f2ca97;
+  cursor: pointer;
+}
+
+.note-canvas-button:hover {
+  background: rgba(242, 202, 151, 0.18);
+}
+
+.note-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 9, 14, 0.56);
+  pointer-events: auto;
+}
+
+.note-modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1180px, calc(100vw - 64px));
+  height: min(760px, calc(100vh - 80px));
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 26px;
+  background: rgba(35, 30, 42, 0.82);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(22px) saturate(1.08);
+  overflow: hidden;
+}
+
+.note-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 16px 18px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.note-modal-header p,
+.note-modal-header h2 {
+  margin: 0;
+}
+
+.note-modal-header p {
+  color: #f2ca97;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.note-modal-header h2 {
+  margin-top: 3px;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.note-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.note-modal-actions button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+  font-weight: 850;
+  padding: 0 14px;
+}
+
+.note-modal-actions button:hover {
+  background: rgba(242, 202, 151, 0.16);
+}
+
+.note-board {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  background-color: #f7f4ee;
+  background-image: linear-gradient(rgba(36, 48, 57, 0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(36, 48, 57, 0.08) 1px, transparent 1px);
+  background-size: 32px 32px;
+  cursor: crosshair;
+  outline: none;
+}
+
+.note-board-tip {
+  position: absolute;
+  left: 16px;
+  top: 14px;
+  z-index: 1;
+  border-radius: 999px;
+  background: rgba(36, 48, 57, 0.72);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 7px 11px;
+  pointer-events: none;
+}
+
+.note-board-image {
+  position: absolute;
+  border: 2px solid rgba(49, 93, 114, 0.36);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(20, 20, 20, 0.16);
+  cursor: move;
+  overflow: hidden;
+}
+
+.note-board-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: fill;
+  user-select: none;
+}
+
+.note-board-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  border-top-left-radius: 8px;
+  background: rgba(49, 93, 114, 0.82);
+  cursor: nwse-resize;
+}
+
+.note-board-text {
+  position: absolute;
+  color: #243039;
+  cursor: move;
+  font-size: 22px;
+  font-weight: 800;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+  user-select: none;
+}
+
+@media (max-width: 720px) {
+  .note-dock {
+    right: 12px;
+    bottom: 12px;
+    width: calc(100vw - 24px);
+  }
+
+  .note-modal {
+    width: calc(100vw - 22px);
+    height: calc(100vh - 44px);
+  }
+}

@@ -1,0 +1,113 @@
+html:has(.lively-wallpaper-page),
+body:has(.lively-wallpaper-page),
+#root:has(.lively-wallpaper-page) {
+  background: #17131d;
+}
+
+.lively-wallpaper-page {
+  background:
+    radial-gradient(circle at 48% 8%, rgba(216, 168, 196, 0.42) 0, rgba(216, 168, 196, 0.14) 18%, transparent 42%),
+    radial-gradient(circle at 16% 78%, rgba(186, 76, 160, 0.44) 0, rgba(186, 76, 160, 0.15) 24%, transparent 48%),
+    radial-gradient(circle at 72% 54%, rgba(239, 193, 129, 0.22) 0, rgba(239, 193, 129, 0.08) 22%, transparent 42%),
+    linear-gradient(135deg, #11101a 0%, #241d2b 38%, #382d3c 70%, #15131c 100%);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.lively-wallpaper-page::before {
+  background-image:
+    radial-gradient(circle at 18% 66%, rgba(255, 147, 211, 0.32) 0 0.8px, transparent 1.2px),
+    linear-gradient(118deg, transparent 0 39%, rgba(239, 193, 129, 0.28) 39.1%, rgba(255, 215, 150, 0.08) 39.55%, transparent 40.2% 100%),
+    linear-gradient(142deg, transparent 0 54%, rgba(226, 128, 202, 0.2) 54.1%, rgba(255, 255, 255, 0.08) 54.5%, transparent 55.2% 100%);
+  background-position: center, center, center;
+  background-size: 18px 18px, 100% 100%, 100% 100%;
+  mask-image: linear-gradient(90deg, rgba(0, 0, 0, 0.66), rgba(0, 0, 0, 0.28) 62%, transparent 88%);
+  opacity: 0.9;
+}
+
+.lively-wallpaper-page::after {
+  left: 2vw;
+  top: 20vh;
+  width: 72vw;
+  height: 48vh;
+  border: 0;
+  border-radius: 46% 54% 62% 38% / 46% 42% 58% 54%;
+  background:
+    linear-gradient(100deg, transparent 0 8%, rgba(255, 255, 255, 0.05) 18%, rgba(238, 196, 139, 0.28) 40%, rgba(215, 100, 181, 0.2) 54%, transparent 72%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.07), rgba(49, 37, 62, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 36px 120px rgba(230, 133, 196, 0.13);
+  opacity: 0.86;
+  transform: rotate(-9deg);
+}
+
+.lively-wallpaper-card {
+  border-color: rgba(255, 255, 255, 0.16);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.035)),
+    rgba(32, 27, 38, 0.58);
+  box-shadow: 0 24px 72px rgba(6, 5, 9, 0.34);
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.lively-header p,
+.lively-tag,
+.lively-actions button,
+.lively-task-time,
+.lively-footer strong {
+  color: #f2ca97;
+}
+
+.lively-header h1,
+.lively-task-main strong,
+.lively-overview strong {
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.lively-header span,
+.lively-task-main small,
+.lively-overview span,
+.lively-footer {
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.lively-progress-ring {
+  border-color: rgba(206, 144, 220, 0.42);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.lively-progress-ring small {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.lively-tag,
+.lively-tag.type-a,
+.lively-tag.type-b,
+.lively-tag.basketball,
+.lively-actions button,
+.lively-overview div,
+.lively-task {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.lively-actions button:hover,
+.lively-task:not(:disabled):hover {
+  background: rgba(242, 202, 151, 0.14);
+}
+
+.lively-task-dot {
+  border-color: rgba(242, 202, 151, 0.62);
+  background: rgba(242, 202, 151, 0.46);
+}
+
+.lively-check,
+.lively-static {
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #f2ca97;
+}
+
+.lively-footer {
+  border-top-color: rgba(255, 255, 255, 0.1);
+}

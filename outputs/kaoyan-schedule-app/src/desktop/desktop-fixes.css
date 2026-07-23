@@ -1,0 +1,331 @@
+.schedule-topline strong {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.schedule-topline strong em {
+  color: #f2ca97;
+  font-size: 18px;
+  font-style: normal;
+  letter-spacing: 0.2px;
+}
+
+.pomodoro-widget {
+  align-content: start;
+}
+
+.pomodoro-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.pomodoro-settings label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(255, 255, 255, 0.64);
+  font-size: 11px;
+  font-weight: 850;
+  padding: 6px 8px;
+}
+
+.pomodoro-settings input {
+  width: 52px;
+  border: 0;
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.94);
+  font-weight: 900;
+  padding: 5px 6px;
+  text-align: center;
+}
+
+.memory-card-rich {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.memory-modebar,
+.memory-modebar span,
+.memory-modebar button,
+.structured-memory-card header,
+.structured-memory-card footer,
+.structured-memory-card footer button,
+.structured-memory-reveal {
+  display: flex;
+  align-items: center;
+}
+
+.memory-modebar {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.memory-modebar span {
+  gap: 5px;
+  color: #f2ca97;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.memory-modebar button {
+  min-height: 24px;
+  gap: 4px;
+  border: 1px solid rgba(242, 202, 151, 0.2);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.08);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 850;
+  padding: 0 8px;
+}
+
+.memory-modebar button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.structured-memory-card {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 7px;
+  overflow: hidden;
+  border: 1px solid rgba(242, 202, 151, 0.18);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.055);
+  padding: 8px;
+}
+
+.structured-memory-card header {
+  min-width: 0;
+  gap: 6px;
+}
+
+.structured-memory-card header > span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 900;
+  padding: 3px 6px;
+}
+
+.structured-memory-card header > span.is-draft {
+  background: rgba(242, 202, 151, 0.14);
+  color: #f2ca97;
+}
+
+.structured-memory-card header > span.is-active {
+  background: rgba(141, 202, 169, 0.14);
+  color: #a9dfbf;
+}
+
+.structured-memory-card header strong {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.structured-memory-card header small {
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 9px;
+}
+
+.structured-memory-body {
+  display: grid;
+  min-height: 0;
+  align-content: start;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.structured-memory-editor {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.structured-memory-editor label {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 3px;
+  color: rgba(255, 255, 255, 0.54);
+  font-size: 9px;
+  font-weight: 850;
+}
+
+.memory-card-rich .structured-memory-editor textarea {
+  min-height: 46px;
+  resize: none;
+  border: 1px solid rgba(242, 202, 151, 0.16);
+  border-radius: 8px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.86);
+  font: 750 10px/1.4 "Microsoft YaHei", system-ui, sans-serif;
+  padding: 5px;
+}
+
+.structured-memory-body p,
+.structured-memory-body small {
+  margin: 0;
+}
+
+.structured-memory-body p {
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.structured-memory-body small {
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.structured-memory-answer {
+  border-left: 2px solid rgba(242, 202, 151, 0.46);
+  background: rgba(242, 202, 151, 0.07);
+  color: #f2ca97;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.45;
+  padding: 5px 7px;
+  white-space: pre-wrap;
+}
+
+.structured-memory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.structured-memory-actions button {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid rgba(242, 202, 151, 0.16);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.07);
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+  padding: 0 7px;
+}
+
+.structured-memory-reveal {
+  width: max-content;
+  min-height: 25px;
+  gap: 5px;
+  border: 1px dashed rgba(242, 202, 151, 0.24);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.06);
+  color: #f2ca97;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 850;
+  padding: 0 9px;
+}
+
+.structured-memory-card footer {
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.structured-memory-card footer button {
+  min-width: 26px;
+  min-height: 24px;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(242, 202, 151, 0.18);
+  border-radius: 999px;
+  background: rgba(242, 202, 151, 0.08);
+  color: rgba(255, 255, 255, 0.74);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 850;
+  padding: 0 7px;
+}
+
+.memory-card-rich textarea {
+  min-height: 0;
+}
+
+.memory-image-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.memory-image-strip figure {
+  position: relative;
+  flex: 0 0 86px;
+  height: 64px;
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid rgba(242, 202, 151, 0.22);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.memory-image-strip img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.memory-image-strip figure button {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(20, 18, 24, 0.72);
+  color: #fff;
+  cursor: pointer;
+}
+
+.memory-add-image {
+  display: inline-flex;
+  min-width: 96px;
+  height: 64px;
+  flex: 0 0 96px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px dashed rgba(242, 202, 151, 0.28);
+  border-radius: 12px;
+  background: rgba(242, 202, 151, 0.08);
+  color: rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}

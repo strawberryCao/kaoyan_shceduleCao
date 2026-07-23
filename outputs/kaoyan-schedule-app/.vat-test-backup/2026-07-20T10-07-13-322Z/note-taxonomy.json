@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "revision": 8,
+  "createdAt": "2026-07-17T11:55:31.062Z",
+  "updatedAt": "2026-07-19T07:29:10.528Z",
+  "subjects": [
+    {
+      "id": "subject_e39db340-a48f-428e-9e05-da9ddaf9543c",
+      "name": "高等数学",
+      "aliases": [
+        "高数",
+        "数学"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-19T01:02:19.104Z",
+      "knowledgePoints": [
+        {
+          "id": "kp_b51e3074-daea-43ce-8970-d0c8b6cbcc80",
+          "name": "导数与切线",
+          "aliases": [],
+          "createdBy": "user",
+          "createdAt": "2026-07-18T12:40:59.287Z",
+          "updatedAt": "2026-07-18T12:40:59.287Z"
+        },
+        {
+          "id": "kp_866ba69c-e937-4b9b-af81-696e7ceaffe9",
+          "name": "导数与极值",
+          "aliases": [
+            "极值判定",
+            "高阶导数应用"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-18T12:41:16.607Z",
+          "updatedAt": "2026-07-18T12:41:16.607Z"
+        },
+        {
+          "id": "kp_13761336-6746-4f82-af9e-86a103aeb88d",
+          "name": "导数与微分",
+          "aliases": [
+            "微分",
+            "可微",
+            "可导"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-18T12:41:24.169Z",
+          "updatedAt": "2026-07-18T12:41:24.169Z"
+        },
+        {
+          "id": "kp_8abe1980-2ef3-4149-aa52-dfe2027699c8",
+          "name": "曲面积分",
+          "aliases": [
+            "积分"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-18T12:42:05.177Z",
+          "updatedAt": "2026-07-18T12:42:05.177Z"
+        },
+        {
+          "id": "kp_46704fff-430b-4d77-80e7-2661d656a121",
+          "name": "导数与极限",
+          "aliases": [
+            "导数定义",
+            "极限计算"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-19T01:02:19.104Z",
+          "updatedAt": "2026-07-19T01:02:19.104Z"
+        }
+      ]
+    },
+    {
+      "id": "subject_f67a35bb-cdbb-47a8-8128-6d768aa18e4f",
+      "name": "线性代数",
+      "aliases": [
+        "线代"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-17T11:55:31.062Z",
+      "knowledgePoints": []
+    },
+    {
+      "id": "subject_b21641a7-51ef-4380-a443-2516ec2a8bde",
+      "name": "概率论",
+      "aliases": [
+        "概率"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-17T11:55:31.062Z",
+      "knowledgePoints": []
+    },
+    {
+      "id": "subject_e9e16517-498a-4a1a-b467-404e3615af66",
+      "name": "数据结构",
+      "aliases": [],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-17T11:55:31.062Z",
+      "knowledgePoints": []
+    },
+    {
+      "id": "subject_85ddbe4a-e26d-4438-b154-4f8d5ba0ac88",
+      "name": "计算机组成",
+      "aliases": [
+        "组成原理",
+        "计组"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-19T01:05:45.638Z",
+      "knowledgePoints": [
+        {
+          "id": "kp_2c7d9be3-59aa-42d1-9aab-1035625cfa22",
+          "name": "流水线技术",
+          "aliases": [
+            "流水线",
+            "指令执行时间"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-19T01:05:34.771Z",
+          "updatedAt": "2026-07-19T01:05:34.771Z"
+        },
+        {
+          "id": "kp_2a6c774f-324c-482b-8626-05fd51750468",
+          "name": "Cache 地址映射",
+          "aliases": [
+            "地址映射",
+            "直接映射"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-19T01:05:45.638Z",
+          "updatedAt": "2026-07-19T01:05:45.638Z"
+        }
+      ]
+    },
+    {
+      "id": "subject_fad96936-6340-4e35-b31c-64bf130ac560",
+      "name": "操作系统",
+      "aliases": [
+        "OS"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-18T12:40:51.813Z",
+      "knowledgePoints": [
+        {
+          "id": "kp_03b29d98-6056-4ce1-bc65-a487f24fbfcb",
+          "name": "页面置换算法",
+          "aliases": [],
+          "createdBy": "user",
+          "createdAt": "2026-07-18T12:40:51.813Z",
+          "updatedAt": "2026-07-18T12:40:51.813Z"
+        }
+      ]
+    },
+    {
+      "id": "subject_fe83a942-84a1-452b-b9dc-ac99c85d7495",
+      "name": "计算机网络",
+      "aliases": [
+        "计网",
+        "网络"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-17T11:55:31.062Z",
+      "knowledgePoints": []
+    },
+    {
+      "id": "subject_65d39e64-fbda-4f6a-8544-6d6b13a914eb",
+      "name": "英语",
+      "aliases": [],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-19T01:07:41.445Z",
+      "knowledgePoints": [
+        {
+          "id": "kp_5831c56a-940e-43c8-a43e-287dd737b52f",
+          "name": "核心词汇",
+          "aliases": [
+            "单词记忆"
+          ],
+          "createdBy": "ai",
+          "createdAt": "2026-07-19T01:07:41.445Z",
+          "updatedAt": "2026-07-19T01:07:41.445Z"
+        }
+      ]
+    },
+    {
+      "id": "subject_4fb7dd54-d7a8-430e-90b6-accca807f506",
+      "name": "默认文件夹",
+      "aliases": [
+        "默认",
+        "未分类"
+      ],
+      "createdBy": "user",
+      "createdAt": "2026-07-17T11:55:31.062Z",
+      "updatedAt": "2026-07-19T07:24:54.156Z",
+      "knowledgePoints": [
+        {
+          "id": "kp_41728adb-c3df-48de-b355-a8341553fec5",
+          "name": "图像噪声与合成",
+          "aliases": [],
+          "createdBy": "user",
+          "createdAt": "2026-07-19T07:24:54.156Z",
+          "updatedAt": "2026-07-19T07:24:54.156Z"
+        }
+      ]
+    }
+  ]
+}

@@ -4,7 +4,7 @@ export type ViewMode = 'today' | 'full';
 
 export type FilterType = 'all' | 'A' | 'B' | 'basketball';
 
-export type ActivePanel = 'schedule' | 'notes' | 'stats' | 'data';
+export type ActivePanel = 'schedule' | 'learning' | 'notes' | 'stats' | 'data';
 
 export type RecordField = 'note' | 'debt' | 'mistakes';
 
