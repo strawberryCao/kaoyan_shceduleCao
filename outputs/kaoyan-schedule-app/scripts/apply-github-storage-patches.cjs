@@ -38,12 +38,6 @@ replaceFirst(
 
 replaceOnce(
   'cloudflare/learning.js',
-  "    if (/^r2:\/\/note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return current;\n    if (/^note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return `r2://${current}`;\n    return '';",
-  "    if (/^github:\/\/data\/assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return current;\n    if (/^data\/assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return `github://${current}`;\n    if (/^r2:\/\/note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) {\n      return `github://data/assets/${current.slice('r2://note-assets/'.length)}`;\n    }\n    return '';",
-);
-
-replaceOnce(
-  'cloudflare/learning.js',
   '    filePath: `r2://${file.r2Key}`,',
   '    filePath: `github://${file.repoPath}`,'
 );
