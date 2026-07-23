@@ -1,2 +1,2 @@
 Trigger the trusted pull_request workflow from the target branch.
-Build diagnostic: 20
+Final validation: 21
