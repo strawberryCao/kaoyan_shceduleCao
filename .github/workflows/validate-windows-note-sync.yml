@@ -45,6 +45,10 @@ jobs:
             }
             Write-Host "Windows PowerShell parse OK: $script"
           }
+      - name: Reproduce successful native Git stderr
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -NativeCommandSelfTest
       - name: Exercise uninstall path safely
         shell: powershell
         run: |
