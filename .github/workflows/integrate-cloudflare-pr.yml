@@ -55,9 +55,9 @@ jobs:
           echo "needed=true" >> "$GITHUB_OUTPUT"
 
           BASE="$(git merge-base HEAD "$OLD_REF")"
-          if ! git diff --quiet -- ':(glob)**/*.cmd'; then
-            git stash push -m ci-checkout-cmd-eol -- ':(glob)**/*.cmd'
-          fi
+          mkdir -p .git/info
+          printf '*.cmd -text\n' >> .git/info/attributes
+          git reset --hard HEAD
           git status --short
 
           set +e
@@ -152,7 +152,6 @@ jobs:
           git diff --cached --stat
           git commit -m "merge: restore pre-cloudflare history [history-integrated]"
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git stash drop >/dev/null 2>&1 || true
           git status --short
 
       - name: Report merge integration failure
@@ -240,8 +239,7 @@ jobs:
         run: |
           set +e
           publish_log="$RUNNER_TEMP/integration-publish.log"
-          git restore --worktree -- '*.cmd' > "$publish_log" 2>&1
-          git push origin HEAD:integration/cloudflare-latest >> "$publish_log" 2>&1
+          git push origin HEAD:integration/cloudflare-latest > "$publish_log" 2>&1
           publish_status=$?
           set -e
           if (( publish_status != 0 )); then
