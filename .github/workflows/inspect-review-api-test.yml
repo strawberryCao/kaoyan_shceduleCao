@@ -7,46 +7,92 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   inspect:
     if: github.head_ref == 'integration/cloudflare-latest'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           ref: integration/cloudflare-latest
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: true
 
-      - name: Persist exact test source on integration branch
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Reproduce exact failure on merged tree
         shell: bash
         run: |
           set -euo pipefail
-          title='review API is durable, idempotent, conflict guarded, and never reports file failures as success'
-          match="$(grep -RFl --include='*.test.cjs' --include='*.test.mjs' "$title" outputs/kaoyan-schedule-app || true)"
-          if [[ -z "$match" ]]; then
-            echo "Exact test title not found" >&2
-            exit 1
-          fi
-          line="$(grep -nF "$title" "$match" | head -n1 | cut -d: -f1)"
-          start=$(( line > 40 ? line - 40 : 1 ))
-          end=$(( line + 220 ))
-          output=.github/review-api-test-source.txt
-          {
-            echo "FILE=$match"
-            echo "TITLE_LINE=$line"
-            echo "SOURCE_RANGE=${start}-${end}"
-            sed -n "${start},${end}p" "$match"
-          } > "$output"
-          if git diff --quiet -- "$output" && git ls-files --error-unmatch "$output" >/dev/null 2>&1; then
-            echo "Diagnostic source is unchanged."
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin backup/pre-cloudflare-7c9e92d
+          OLD_REF=origin/backup/pre-cloudflare-7c9e92d
+          PRE_HEAD="$(git rev-parse HEAD)"
+          mkdir -p .git/info
+          printf '*.cmd -text\n' >> .git/info/attributes
+          git reset --hard "$PRE_HEAD"
+          git merge -X ours --no-commit --no-ff "$OLD_REF"
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file_path = Path(path)
+              text = file_path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one target, found {count}')
+              file_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs',
+              "    'wrongReason',\n    'wrongReasonSource',\n    'wrongReasonConfidence',\n    'intent',",
+              "    'wrongReason',\n    'intent',",
+          )
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) {\n    return null;\n  }",
+              "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string') {\n    return null;\n  }\n  const fileExists = fs.existsSync(filePath);\n  const namingInFlight = metadata.naming?.status === 'pending' && receipt.aiStatus === 'pending';\n  if (!fileExists && !namingInFlight) {\n    return null;\n  }",
+          )
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "function findSavedNote(noteUid) {\n  const saved = readSaveReceipt(noteUid);\n  if (saved || !fs.existsSync(NOTES_ROOT)) return saved;",
+              "function findSavedNote(noteUid) {\n  const saved = readSaveReceipt(noteUid);\n  if (saved && fs.existsSync(saved.filePath)) return saved;\n  if (!fs.existsSync(NOTES_ROOT)) return saved;",
+          )
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "    }\n  }\n  return null;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
+              "    }\n  }\n  return saved;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
+          )
+          PY
+
+          npm ci --prefix outputs/kaoyan-schedule-app
+          set +e
+          (
+            cd outputs/kaoyan-schedule-app
+            node --test scripts/__tests__/note-save-flow.test.cjs
+          ) > "$RUNNER_TEMP/review-api-test-output.txt" 2>&1
+          test_status=$?
+          set -e
+
+          git reset --hard "$PRE_HEAD"
+          output=.github/review-api-test-output.txt
+          {
+            echo "TEST_STATUS=$test_status"
+            echo "PRE_HEAD=$PRE_HEAD"
+            cat "$RUNNER_TEMP/review-api-test-output.txt"
+          } > "$output"
+          if git diff --quiet -- "$output" && git ls-files --error-unmatch "$output" >/dev/null 2>&1; then
+            echo "Diagnostic output is unchanged."
+            exit 0
+          fi
           git add "$output"
-          git commit -m "ci: persist review API test source"
+          git commit -m "ci: persist merged review API test output"
           git push origin HEAD:integration/cloudflare-latest
