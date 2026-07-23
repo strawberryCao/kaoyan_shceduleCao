@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckCircle2, ExternalLink, FileImage, ImagePlus, Minus, Save, X } from 'lucide-react';
+import {
+  Camera,
+  CheckCircle2,
+  ClipboardPaste,
+  ExternalLink,
+  FileImage,
+  ImagePlus,
+  Images,
+  Minus,
+  Save,
+  X,
+} from 'lucide-react';
 import { createNoteUid, fileToDataUrl, IS_CLOUD_RUNTIME, NOTE_SERVER_URL, saveNoteImage } from '../utils/notes';
+import { saveLearningDataCache } from '../utils/learningData';
 import { fetchWithTimeout } from '../utils/localService';
 
 interface PendingImage {
@@ -23,8 +35,15 @@ const getClipboardImage = (items: DataTransferItemList): File | null => {
   return Array.from(items).find((item) => item.type.startsWith('image/'))?.getAsFile() ?? null;
 };
 
+const clipboardFileExtension = (mime: string): string => {
+  if (mime === 'image/jpeg') return 'jpg';
+  if (mime === 'image/svg+xml') return 'svg';
+  return mime.split('/')[1]?.replace(/[^a-z0-9.+-]/gi, '') || 'png';
+};
+
 export function NoteDropApp() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const galleryInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const remarkRef = useRef<HTMLTextAreaElement>(null);
   const dialogRef = useRef<HTMLFormElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -56,8 +75,8 @@ export function NoteDropApp() {
 
     if (!file) {
       setSaved(false);
-      setDialogError('没有检测到图片，请拖入 PNG、JPG、WebP 等图片文件。');
-      setStatus('没有检测到图片，请拖入 PNG、JPG、WebP 等图片文件。');
+      setDialogError('没有检测到图片，请拍照、从相册选择或粘贴图片。');
+      setStatus('没有检测到图片，请拍照、从相册选择或粘贴图片。');
       return;
     }
 
@@ -75,6 +94,38 @@ export function NoteDropApp() {
       setStatus(message);
     }
   }, [saving]);
+
+  const pasteFromClipboard = useCallback(async () => {
+    if (saving) return;
+    if (!navigator.clipboard?.read) {
+      setSaved(false);
+      setStatus('当前浏览器不支持按钮读取剪贴板；复制图片后在页面长按选择“粘贴”，或按 Ctrl+V。');
+      return;
+    }
+    try {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const mime = item.types.find((type) => type.startsWith('image/'));
+        if (!mime) continue;
+        const blob = await item.getType(mime);
+        const file = new File(
+          [blob],
+          `clipboard-${Date.now()}.${clipboardFileExtension(mime)}`,
+          { type: mime },
+        );
+        await acceptImage(file);
+        return;
+      }
+      setSaved(false);
+      setStatus('剪贴板中没有图片。');
+    } catch (error) {
+      const message = error instanceof Error && error.name === 'NotAllowedError'
+        ? '浏览器未允许读取剪贴板；请长按页面选择“粘贴”，或按 Ctrl+V。'
+        : error instanceof Error ? error.message : '读取剪贴板失败。';
+      setSaved(false);
+      setStatus(message);
+    }
+  }, [acceptImage, saving]);
 
   useEffect(() => {
     const mode = pendingImage ? 'remark' : 'compact';
@@ -169,12 +220,13 @@ export function NoteDropApp() {
         noteUid: pendingImage.noteUid,
         remark,
       });
+      if (result.learningData) saveLearningDataCache(result.learningData);
       setPendingImage(null);
       setRemark('');
       setDialogError('');
       setSaved(true);
       if (IS_CLOUD_RUNTIME) {
-        setStatus('已保存，待确认分类');
+        setStatus(result.learningData ? '已保存，学习中心已更新' : '已保存，学习中心正在同步');
       } else {
         const aiMessage = result.aiStatus === 'complete'
           ? 'AI 整理完成'
@@ -265,17 +317,24 @@ export function NoteDropApp() {
       </header>
 
       <section className="note-drop-body">
-        <button
-          className="note-drop-zone"
-          type="button"
-          aria-label="拖入图片或点击选择图片"
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <span className="note-drop-zone-icon"><ImagePlus size={18} aria-hidden="true" /></span>
-          <span className="note-drop-zone-copy">
-            <strong>{dragActive ? '松手放入图片' : '拖入 / 点击 / Ctrl+V'}</strong>
-          </span>
-        </button>
+        <div className="note-drop-capture">
+          <button
+            className="note-drop-zone"
+            type="button"
+            aria-label="从相册选择图片，也可拖入或粘贴图片"
+            onClick={() => galleryInputRef.current?.click()}
+          >
+            <span className="note-drop-zone-icon"><ImagePlus size={18} aria-hidden="true" /></span>
+            <span className="note-drop-zone-copy">
+              <strong>{dragActive ? '松手放入图片' : '快速记录题目图片'}</strong>
+            </span>
+          </button>
+          <div className="note-drop-source-actions" role="group" aria-label="图片来源">
+            <button type="button" onClick={() => cameraInputRef.current?.click()}><Camera size={15} /><span>拍照</span></button>
+            <button type="button" onClick={() => galleryInputRef.current?.click()}><Images size={15} /><span>相册</span></button>
+            <button type="button" onClick={() => void pasteFromClipboard()}><ClipboardPaste size={15} /><span>粘贴</span></button>
+          </div>
+        </div>
         <button
           className="note-canvas-launch"
           type="button"
@@ -295,9 +354,20 @@ export function NoteDropApp() {
       )}
 
       <input
-        ref={fileInputRef}
+        ref={galleryInputRef}
         type="file"
         accept="image/*"
+        hidden
+        onChange={(event) => {
+          void acceptImage(getFirstImage(event.currentTarget.files));
+          event.currentTarget.value = '';
+        }}
+      />
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
         hidden
         onChange={(event) => {
           void acceptImage(getFirstImage(event.currentTarget.files));
@@ -339,9 +409,9 @@ export function NoteDropApp() {
             {dialogError && <p className="note-remark-error" id="note-remark-error" role="alert">{dialogError}</p>}
 
             <div className="note-remark-actions">
-              <button type="button" onClick={() => fileInputRef.current?.click()} disabled={saving}><ImagePlus size={15} /> 换一张</button>
+              <button type="button" onClick={() => galleryInputRef.current?.click()} disabled={saving}><ImagePlus size={15} /> 换一张</button>
               <button type="button" onClick={cancelPending} disabled={saving}>取消</button>
-              <button className="primary" type="submit" disabled={saving}><Save size={15} /> {saving ? '正在本地保存……' : '保存笔记'}</button>
+              <button className="primary" type="submit" disabled={saving}><Save size={15} /> {saving ? '正在保存……' : '保存笔记'}</button>
             </div>
           </form>
         </div>
