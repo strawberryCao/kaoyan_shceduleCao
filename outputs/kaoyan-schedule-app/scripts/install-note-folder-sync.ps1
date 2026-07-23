@@ -12,6 +12,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Invoke-ScheduledTaskCommand(
+  [string[]]$Arguments,
+  [int[]]$AllowedExitCodes = @(0)
+) {
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = & schtasks.exe @Arguments 2>&1 | Out-String
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
+  if ($AllowedExitCodes -notcontains $exitCode) {
+    throw "Task Scheduler command failed (exit $exitCode).`n$($output.Trim())"
+  }
+  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output.Trim() }
+}
+
 $taskName = 'Kaoyan Note Folder Sync'
 $installRoot = Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter\NoteFolderSync'
 $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
@@ -20,7 +38,8 @@ $clonePath = Join-Path $installRoot 'Caobijidata'
 $startupPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFolderSync.cmd'
 
 if ($Uninstall) {
-  & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
+  # Exit code 1 is expected when the task does not exist yet.
+  Invoke-ScheduledTaskCommand @('/Delete', '/TN', $taskName, '/F') @(0, 1) | Out-Null
   Remove-Item -LiteralPath $startupPath -Force -ErrorAction SilentlyContinue
   Write-Host 'Automatic note synchronization has been disabled.' -ForegroundColor Yellow
   Write-Host ('Local configuration and logs remain at: ' + $installRoot)
@@ -75,10 +94,7 @@ $taskCreateArguments = @(
   '/MO', [string]$IntervalMinutes,
   '/F'
 )
-& schtasks.exe @taskCreateArguments | Out-Null
-if ($LASTEXITCODE -ne 0) {
-  throw 'Windows Task Scheduler could not create the synchronization task.'
-}
+Invoke-ScheduledTaskCommand $taskCreateArguments | Out-Null
 
 $startupLines = @(
   '@echo off',
