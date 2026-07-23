@@ -98,6 +98,12 @@ jobs:
           )
 
           replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "  if (existing) {\n    sendJson(res, 200, makeSaveResponse(existing, { idempotentReplay: true }));\n    if (existing.metadata.naming?.status === 'pending') queueAiNamingJob(noteUid);\n    return;\n  }",
+              "  if (existing) {\n    const response = makeSaveResponse(existing, { idempotentReplay: true });\n    if (response.aiStatus === 'complete' && aiNamingJobs.has(noteUid)) {\n      response.aiStatus = 'pending';\n    }\n    sendJson(res, 200, response);\n    if (existing.metadata.naming?.status === 'pending') queueAiNamingJob(noteUid);\n    return;\n  }",
+          )
+
+          replace_once(
               'outputs/kaoyan-schedule-app/scripts/organize-notes.cjs',
               "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  fs.mkdirSync(destinationDir, { recursive: true });",
               "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  if (!fs.existsSync(imagePath) || !fs.statSync(imagePath).isFile()) {\n    const error = new Error(`Source image does not exist: ${imagePath}`);\n    error.code = 'NOTE_SOURCE_MISSING';\n    throw error;\n  }\n  fs.mkdirSync(destinationDir, { recursive: true });",
@@ -148,6 +154,7 @@ jobs:
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'reviewSync.startPush()'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'namingInFlight'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'if (saved && fs.existsSync(saved.filePath)) return saved;'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs "response.aiStatus === 'complete' && aiNamingJobs.has(noteUid)"
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'wrongReasonSource'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'targetNoteUid'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'NOTE_SOURCE_MISSING'
