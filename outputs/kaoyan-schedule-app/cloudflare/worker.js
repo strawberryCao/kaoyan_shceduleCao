@@ -1,6 +1,5 @@
 import { bootstrapFromR2 } from './bootstrap.js';
 import {
-  deleteCanvasProject,
   listCanvasProjects,
   loadCanvasProject,
   saveCanvasProject,
@@ -11,8 +10,6 @@ import {
   applyReviewActions,
   createCard,
   createNote,
-  deleteCard,
-  deleteNote,
   getLearningSnapshot,
   patchCard,
   patchDay,
@@ -21,7 +18,15 @@ import {
   replaceLearningSnapshot,
   restoreNote,
 } from './learning.js';
-import { detectQuestions, renameNoteWithAi } from './ai.js';
+import { detectQuestions } from './ai.js';
+import { getGlobalAiSettings } from './ai-config.js';
+import {
+  enqueueRenameJob,
+  getBackgroundJob,
+  kickPendingJobs,
+  listBackgroundJobs,
+  processBackgroundJob,
+} from './background-jobs.js';
 import { getNoteFile, saveNote } from './media.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
@@ -41,6 +46,10 @@ function unavailable(feature) {
   throw new HttpError(501, `${feature} is available only in the local Windows app.`, 'LOCAL_ONLY_FEATURE');
 }
 
+function cloudDeleteDisabled() {
+  throw new HttpError(403, '云端不允许永久删除。请在 Windows 本地笔记目录执行删除。', 'CLOUD_DELETE_DISABLED');
+}
+
 function enforceWriteRequest(request, url, pathname) {
   if (!WRITE_METHODS.has(request.method)) return;
   const fetchSite = request.headers.get('sec-fetch-site')?.toLowerCase();
@@ -56,7 +65,7 @@ function enforceWriteRequest(request, url, pathname) {
   }
 }
 
-async function handleLearningRoute(request, env, pathname) {
+async function handleLearningRoute(request, env, pathname, ctx) {
   if (request.method === 'GET' && pathname === '/learning-data') {
     return json(await getLearningSnapshot(env));
   }
@@ -93,7 +102,9 @@ async function handleLearningRoute(request, env, pathname) {
   const noteRename = /^\/learning-data\/notes\/([^/]+)\/rename$/.exec(pathname);
   if (noteRename && request.method === 'POST') {
     await readJson(request, 64 * 1024);
-    return json(await renameNoteWithAi(env, decodeURIComponent(noteRename[1])));
+    const { job, replayed } = await enqueueRenameJob(env, decodeURIComponent(noteRename[1]));
+    ctx?.waitUntil?.(processBackgroundJob(env, job.id));
+    return json({ ok: true, accepted: true, replayed, job }, 202);
   }
   const noteRestore = /^\/learning-data\/notes\/([^/]+)\/restore$/.exec(pathname);
   if (noteRestore && request.method === 'POST') {
@@ -103,16 +114,12 @@ async function handleLearningRoute(request, env, pathname) {
   if (note && request.method === 'PATCH') {
     return json(await patchNote(env, decodeURIComponent(note[1]), await readJson(request)));
   }
-  if (note && request.method === 'DELETE') {
-    return json(await deleteNote(env, decodeURIComponent(note[1]), await readJson(request)));
-  }
+  if (note && request.method === 'DELETE') cloudDeleteDisabled();
   const card = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
   if (card && request.method === 'PATCH') {
     return json(await patchCard(env, decodeURIComponent(card[1]), await readJson(request)));
   }
-  if (card && request.method === 'DELETE') {
-    return json(await deleteCard(env, decodeURIComponent(card[1]), await readJson(request)));
-  }
+  if (card && request.method === 'DELETE') cloudDeleteDisabled();
   return null;
 }
 
@@ -132,28 +139,40 @@ async function handleCanvasRoute(request, env, pathname) {
     return json({ ok: true, degraded: true, persistence: 'next-canvas-save' }, 202);
   }
   const aiOrganize = /^\/canvas-projects\/([^/]+)\/ai-organize$/.exec(pathname);
-  if (aiOrganize && (request.method === 'GET' || request.method === 'POST')) {
-    unavailable('Canvas AI organization');
-  }
+  if (aiOrganize && (request.method === 'GET' || request.method === 'POST')) unavailable('Canvas AI organization');
   const project = /^\/canvas-projects\/([^/]+)$/.exec(pathname);
   if (!project) return null;
   const projectId = decodeURIComponent(project[1]);
-  if (request.method === 'GET') {
-    return json({ ok: true, document: await loadCanvasProject(env, projectId) });
-  }
+  if (request.method === 'GET') return json({ ok: true, document: await loadCanvasProject(env, projectId) });
   if (request.method === 'PUT') {
     const result = await saveCanvasProject(env, projectId, await readJson(request));
     return json({ ok: true, ...result });
   }
-  if (request.method === 'DELETE') {
-    const result = await deleteCanvasProject(env, projectId, await readJson(request, 64 * 1024));
-    return json({ ok: true, ...result });
+  if (request.method === 'DELETE') cloudDeleteDisabled();
+  return null;
+}
+
+async function handleJobRoute(request, env, pathname, url, ctx) {
+  if (request.method === 'GET' && pathname === '/ai/jobs') {
+    const noteUid = url.searchParams.get('noteUid') || '';
+    const type = url.searchParams.get('type') || '';
+    const jobs = await listBackgroundJobs(env, { noteUid, type });
+    ctx?.waitUntil?.(kickPendingJobs(env));
+    return json({ ok: true, jobs });
+  }
+  const match = /^\/ai\/jobs\/([^/]+)$/.exec(pathname);
+  if (request.method === 'GET' && match) {
+    const job = await getBackgroundJob(env, decodeURIComponent(match[1]));
+    if (!job) throw new HttpError(404, 'Background job not found.', 'JOB_NOT_FOUND');
+    if (job.status === 'queued') ctx?.waitUntil?.(processBackgroundJob(env, job.id));
+    return json({ ok: true, job });
   }
   return null;
 }
 
-async function handleApi(request, env, pathname, url) {
+async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { Allow: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' } });
+  if (request.method === 'DELETE') cloudDeleteDisabled();
   if (request.method === 'POST' && pathname === '/admin/bootstrap') {
     const force = url.searchParams.get('force') === '1';
     const rawExpected = url.searchParams.get('expectedRevision');
@@ -186,10 +205,15 @@ async function handleApi(request, env, pathname, url) {
       },
     });
   }
+  if (request.method === 'GET' && pathname === '/ai/config') {
+    return json({ ok: true, ...(await getGlobalAiSettings(env)) });
+  }
   if (request.method === 'POST' && pathname === '/ai/detect-questions') {
     return json(await detectQuestions(env, await readJson(request, 28 * 1024 * 1024)));
   }
-  const learningResponse = await handleLearningRoute(request, env, pathname);
+  const jobResponse = await handleJobRoute(request, env, pathname, url, ctx);
+  if (jobResponse) return jobResponse;
+  const learningResponse = await handleLearningRoute(request, env, pathname, ctx);
   if (learningResponse) return learningResponse;
   const canvasResponse = await handleCanvasRoute(request, env, pathname);
   if (canvasResponse) return canvasResponse;
@@ -197,12 +221,9 @@ async function handleApi(request, env, pathname, url) {
     const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024));
     return json(result, result.idempotentReplay ? 200 : 202);
   }
-  if (request.method === 'GET' && pathname === '/note-file') {
-    return getNoteFile(env, url.searchParams.get('path'));
-  }
+  if (request.method === 'GET' && pathname === '/note-file') return getNoteFile(env, url.searchParams.get('path'));
   if (pathname === '/notes/reveal') unavailable('Windows file reveal');
   if (pathname === '/organizer/run') unavailable('AI note organization');
-  if (pathname === '/ai/config') unavailable('Windows AI configuration');
   if (request.method === 'GET' && pathname === '/organizer/status') {
     return json({ ok: true, available: false, running: false, code: 'LOCAL_ONLY_FEATURE' });
   }
@@ -234,7 +255,7 @@ async function serveAsset(request, env, isPublic) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-export async function handleRequest(request, env) {
+export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   const pathname = apiPath(url.pathname);
   const isPublic = publicReadEnabled(env);
@@ -250,6 +271,7 @@ export async function handleRequest(request, env) {
       repository: github.repository,
       branch: github.branch,
       aiConfigured: Boolean(env.AI && typeof env.AI.run === 'function'),
+      cloudDeleteEnabled: false,
       d1Bound: false,
       r2Bound: false,
     });
@@ -261,7 +283,8 @@ export async function handleRequest(request, env) {
       if (authResponse) return authResponse;
     }
     enforceWriteRequest(request, url, pathname);
-    return handleApi(request, env, pathname, url);
+    if (ctx?.waitUntil) ctx.waitUntil(kickPendingJobs(env, 1));
+    return handleApi(request, env, pathname, url, ctx);
   }
 
   if (!isPublic) {
@@ -272,9 +295,9 @@ export async function handleRequest(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handleRequest(request, env);
+      return await handleRequest(request, env, ctx);
     } catch (error) {
       return handleError(error);
     }
