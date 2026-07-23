@@ -1,0 +1,117 @@
+name: Validate synchronized architecture
+
+on:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/workflows/validate-sync-architecture.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: validate-sync-architecture
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Validate application and synchronization scripts
+        id: validation
+        shell: bash
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          set +e
+          npm ci > "$RUNNER_TEMP/npm-ci.log" 2>&1
+          npm_ci=$?
+
+          if (( npm_ci == 0 )); then
+            mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+            node --test "${test_files[@]}" > "$RUNNER_TEMP/tests.log" 2>&1
+            tests=$?
+            npm run build > "$RUNNER_TEMP/build.log" 2>&1
+            build=$?
+            npx wrangler deploy --dry-run > "$RUNNER_TEMP/wrangler.log" 2>&1
+            wrangler=$?
+          else
+            tests=99
+            build=99
+            wrangler=99
+          fi
+
+          pwsh -NoProfile -NonInteractive -Command '
+            $failed = $false
+            foreach ($file in @("scripts/windows-note-folder-sync.ps1", "scripts/install-note-folder-sync.ps1")) {
+              $tokens = $null
+              $errors = $null
+              [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+              if (@($errors).Count -gt 0) {
+                $failed = $true
+                $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
+              }
+            }
+            if ($failed) { exit 1 }
+          ' > "$RUNNER_TEMP/powershell.log" 2>&1
+          powershell_parse=$?
+
+          overall=0
+          for code in "$npm_ci" "$tests" "$build" "$wrangler" "$powershell_parse"; do
+            if (( code != 0 )); then overall=1; fi
+          done
+
+          mkdir -p "$GITHUB_WORKSPACE/.github/validation"
+          node - "$GITHUB_WORKSPACE/.github/validation/sync-architecture-status.json" "$npm_ci" "$tests" "$build" "$wrangler" "$powershell_parse" "$overall" <<'NODE'
+          const fs = require('node:fs');
+          const [file, npmCi, tests, build, wrangler, powershell, overall] = process.argv.slice(2);
+          fs.writeFileSync(file, JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            commit: process.env.GITHUB_SHA,
+            ok: Number(overall) === 0,
+            npmCi: Number(npmCi),
+            tests: Number(tests),
+            build: Number(build),
+            wranglerDryRun: Number(wrangler),
+            powershellParse: Number(powershell),
+          }, null, 2) + '\n');
+          NODE
+
+          {
+            echo '## npm ci'; tail -n 40 "$RUNNER_TEMP/npm-ci.log" || true
+            echo '## tests'; tail -n 100 "$RUNNER_TEMP/tests.log" || true
+            echo '## build'; tail -n 100 "$RUNNER_TEMP/build.log" || true
+            echo '## wrangler'; tail -n 60 "$RUNNER_TEMP/wrangler.log" || true
+            echo '## powershell'; cat "$RUNNER_TEMP/powershell.log" || true
+          } > "$RUNNER_TEMP/validation-summary.log"
+          cat "$RUNNER_TEMP/validation-summary.log"
+          echo "overall=$overall" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Commit validation result
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/validation/sync-architecture-status.json
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'ci: record synchronized architecture validation'
+          git push origin HEAD:fix/learning-detail-title-latex
+
+      - name: Enforce validation result
+        if: always()
+        shell: bash
+        run: exit "${{ steps.validation.outputs.overall || '1' }}"
