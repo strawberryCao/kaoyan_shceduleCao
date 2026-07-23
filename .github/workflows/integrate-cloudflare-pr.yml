@@ -102,19 +102,34 @@ jobs:
               "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  fs.mkdirSync(destinationDir, { recursive: true });",
               "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  if (!fs.existsSync(imagePath) || !fs.statSync(imagePath).isFile()) {\n    const error = new Error(`Source image does not exist: ${imagePath}`);\n    error.code = 'NOTE_SOURCE_MISSING';\n    throw error;\n  }\n  fs.mkdirSync(destinationDir, { recursive: true });",
           )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx',
+              "} from '../utils/learningData';\nimport { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';",
+              "} from '../utils/learningData';\nimport { analyzeLearningNoteWrongReason } from '../utils/aiConfig';\nimport { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';",
+          )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/src/utils/learningData.ts',
+              "    wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',\n    organizationStatus:",
+              "    wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',\n    wrongReasonSource: typeof value.wrongReasonSource === 'string' ? value.wrongReasonSource : '',\n    wrongReasonConfidence: Number.isFinite(Number(value.wrongReasonConfidence))\n      ? Math.min(1, Math.max(0, Number(value.wrongReasonConfidence)))\n      : null,\n    organizationStatus:",
+          )
           PY
 
           git add -- \
             outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs \
             outputs/kaoyan-schedule-app/scripts/note-server.cjs \
-            outputs/kaoyan-schedule-app/scripts/organize-notes.cjs
+            outputs/kaoyan-schedule-app/scripts/organize-notes.cjs \
+            outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx \
+            outputs/kaoyan-schedule-app/src/utils/learningData.ts
 
           git rm -f --ignore-unmatch \
             .github/workflows/integrate-cloudflare-history.yml \
             .github/integration-cloudflare-trigger.txt \
             .github/integration-cloudflare-pr-trigger.txt \
             .github/review-api-test-source.txt \
-            .github/review-api-test-output.txt
+            .github/review-api-test-output.txt \
+            .github/cloudflare-build-output.txt
 
           assert_contains() {
             local file="$1"
@@ -138,7 +153,9 @@ jobs:
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'NOTE_SOURCE_MISSING'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonSource: string'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonConfidence: number | null'
+          assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonConfidence: Number.isFinite'
           assert_contains outputs/kaoyan-schedule-app/src/utils/aiConfig.ts 'analyzeLearningNoteWrongReason'
+          assert_contains outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx "import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';"
           assert_contains outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx 'wrongReasonEditor'
           assert_contains outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx 'analyzeLearningNoteWrongReason'
           assert_contains outputs/kaoyan-schedule-app/src/learning-center.css '.lc-wrong-reason-fact'
