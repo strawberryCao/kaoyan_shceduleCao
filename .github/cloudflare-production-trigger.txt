@@ -1,2 +1,2 @@
 Deploy the validated kaoyan study center to Cloudflare production.
-Trigger revision 7: GitHub-backed storage.
+Trigger revision 8: retry GitHub bootstrap with diagnostics.
