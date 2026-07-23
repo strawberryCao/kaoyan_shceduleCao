@@ -84,6 +84,18 @@ jobs:
               "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) {\n    return null;\n  }",
               "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string') {\n    return null;\n  }\n  const fileExists = fs.existsSync(filePath);\n  const namingInFlight = metadata.naming?.status === 'pending' && receipt.aiStatus === 'pending';\n  if (!fileExists && !namingInFlight) {\n    return null;\n  }",
           )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "function findSavedNote(noteUid) {\n  const saved = readSaveReceipt(noteUid);\n  if (saved || !fs.existsSync(NOTES_ROOT)) return saved;",
+              "function findSavedNote(noteUid) {\n  const saved = readSaveReceipt(noteUid);\n  if (saved && fs.existsSync(saved.filePath)) return saved;\n  if (!fs.existsSync(NOTES_ROOT)) return saved;",
+          )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "    }\n  }\n  return null;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
+              "    }\n  }\n  return saved;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
+          )
           PY
 
           git add -- \
@@ -93,7 +105,8 @@ jobs:
           git rm -f --ignore-unmatch \
             .github/workflows/integrate-cloudflare-history.yml \
             .github/integration-cloudflare-trigger.txt \
-            .github/integration-cloudflare-pr-trigger.txt
+            .github/integration-cloudflare-pr-trigger.txt \
+            .github/review-api-test-source.txt
 
           assert_contains() {
             local file="$1"
@@ -111,6 +124,7 @@ jobs:
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'analyze-wrong-reason'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'reviewSync.startPush()'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'namingInFlight'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'if (saved && fs.existsSync(saved.filePath)) return saved;'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'wrongReasonSource'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'targetNoteUid'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonSource: string'
