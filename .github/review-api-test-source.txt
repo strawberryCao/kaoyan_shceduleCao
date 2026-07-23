@@ -1,0 +1,206 @@
+FILE=outputs/kaoyan-schedule-app/scripts/__tests__/note-save-flow.test.cjs
+TITLE_LINE=326
+SOURCE_RANGE=286-546
+    const imageFiles = fs.readdirSync(subjectDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(?:png|jpe?g|webp)$/i.test(entry.name));
+    assert.equal(imageFiles.length, 1);
+    const metadataIndex = JSON.parse(fs.readFileSync(path.join(subjectDir, '.metadata', 'metadata.json'), 'utf8'));
+    assert.equal(metadataIndex.filter((item) => item.noteUid === payload.noteUid).length, 1);
+    const learningData = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'learning-data.json'), 'utf8'));
+    assert.equal(learningData.cards.filter((card) => card.noteUid === payload.noteUid && card.kind === 'mistake').length, 1);
+
+    const correctionResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patch: {
+          subject: '线性代数',
+          knowledgePath: ['线性代数', '矩阵秩'],
+          questionType: '计算题',
+          wrongReason: '初等变换出错',
+          organizationStatus: 'confirmed',
+        },
+      }),
+    });
+    const correctedSnapshot = await correctionResponse.json();
+    assert.equal(correctionResponse.status, 200);
+    const correctedNote = Object.values(correctedSnapshot.days)
+      .flatMap((day) => day.autoNotes)
+      .find((note) => note.noteUid === payload.noteUid);
+    assert.equal(correctedNote.subject, '线性代数');
+    assert.deepEqual(correctedNote.knowledgePath, ['线性代数', '矩阵秩']);
+    assert.equal(correctedNote.classificationSource, 'manual');
+    assert.equal(path.basename(path.dirname(correctedNote.filePath)), '线性代数');
+    assert.ok(fs.existsSync(correctedNote.filePath));
+    assert.equal(fs.existsSync(completed.filePath), false);
+    assert.equal(correctedSnapshot.cards.find((card) => card.noteUid === payload.noteUid).subject, '线性代数');
+  } finally {
+    await stopChild(child);
+    await new Promise((resolve) => fakeAi.close(resolve));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('review API is durable, idempotent, conflict guarded, and never reports file failures as success', { timeout: 20_000 }, async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-note-review-'));
+  const assistantRoot = path.join(tempRoot, 'assistant');
+  const notesRoot = path.join(tempRoot, 'notes');
+  fs.mkdirSync(assistantRoot, { recursive: true });
+  const aiPort = await reservePort();
+  const notePort = await reservePort();
+  const slowAi = http.createServer((_request, _response) => {});
+  await new Promise((resolve, reject) => {
+    slowAi.once('error', reject);
+    slowAi.listen(aiPort, '127.0.0.1', resolve);
+  });
+  const aiConfigPath = path.join(assistantRoot, 'ai-providers.json');
+  fs.writeFileSync(aiConfigPath, JSON.stringify({
+    providers: {
+      gemini: {
+        enabled: true,
+        apiKey: 'test-key-not-a-real-secret',
+        baseUrl: `http://127.0.0.1:${aiPort}/v1`,
+        models: [{ id: 'slow-review-model', capabilities: ['text', 'vision', 'json'] }],
+      },
+    },
+    routing: { timeoutMs: 10_000, networkRetries: 0, jsonRepairRetries: 0 },
+  }, null, 2));
+  const child = spawn(process.execPath, [serverScript], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      KAOYAN_NOTE_PORT: String(notePort),
+      KAOYAN_NOTES_ROOT: notesRoot,
+      KAOYAN_ASSISTANT_ROOT: assistantRoot,
+      KAOYAN_AI_CONFIG_PATH: aiConfigPath,
+      QWEN_API_KEY: '',
+      DASHSCOPE_API_KEY: '',
+      GEMINI_API_KEY: '',
+      KIMI_API_KEY: '',
+      MOONSHOT_API_KEY: '',
+    },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  const baseUrl = `http://127.0.0.1:${notePort}`;
+  const noteUid = 'note_review_durable_001';
+  const action = {
+    noteUid,
+    action: 'correct',
+    operationId: 'review-correct-operation-1',
+    expectedDecisionRevision: 0,
+    patch: {
+      subject: 'TargetSubject',
+      knowledgePath: ['TargetSubject', 'TargetPoint'],
+      questionType: 'Calculation',
+      wrongReason: 'Manual correction',
+    },
+  };
+
+  try {
+    await waitForHealth(baseUrl, child);
+    const savedResponse = await fetch(`${baseUrl}/save-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ noteUid, imageDataUrl: tinyPng, kind: 'single', remark: 'pending review' }),
+    });
+    const saved = await savedResponse.json();
+    assert.equal(savedResponse.status, 202);
+
+    const targetDir = path.join(notesRoot, 'TargetSubject');
+    fs.mkdirSync(targetDir, { recursive: true });
+    fs.writeFileSync(path.join(targetDir, '.metadata'), 'blocks-sidecar-directory', 'utf8');
+    const failedResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions: [action] }),
+    });
+    const failed = await failedResponse.json();
+    assert.equal(failedResponse.status, 500);
+    assert.equal(failed.ok, false);
+    assert.equal(failed.results[0].ok, false);
+    let snapshot = await (await fetch(`${baseUrl}/learning-data`)).json();
+    let note = Object.values(snapshot.days).flatMap((day) => day.autoNotes).find((item) => item.noteUid === noteUid);
+    assert.equal(note.reviewStatus, 'pending');
+    assert.equal(note.decisionRevision, 0);
+
+    const legacyFailureResponse = await fetch(`${baseUrl}/learning-data/notes/${noteUid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patch: action.patch }),
+    });
+    assert.notEqual(legacyFailureResponse.status, 200);
+    snapshot = await (await fetch(`${baseUrl}/learning-data`)).json();
+    note = Object.values(snapshot.days).flatMap((day) => day.autoNotes).find((item) => item.noteUid === noteUid);
+    assert.equal(note.reviewStatus, 'pending');
+
+    fs.unlinkSync(path.join(targetDir, '.metadata'));
+    const correctedResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions: [action] }),
+    });
+    const corrected = await correctedResponse.json();
+    assert.equal(correctedResponse.status, 200);
+    assert.equal(corrected.ok, true);
+    assert.equal(corrected.results[0].durable, true);
+    note = Object.values(corrected.snapshot.days).flatMap((day) => day.autoNotes).find((item) => item.noteUid === noteUid);
+    assert.equal(note.reviewStatus, 'corrected');
+    assert.equal(note.decisionRevision, 1);
+    assert.equal(note.lastReviewOperationId, action.operationId);
+    assert.equal(fs.existsSync(note.filePath), true);
+    const sidecarPath = path.join(path.dirname(note.filePath), '.metadata', `${path.parse(note.filePath).name}.note.json`);
+    const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    assert.equal(sidecar.learning.reviewStatus, 'corrected');
+    assert.equal(sidecar.learning.decisionRevision, 1);
+
+    const revisionAfterCorrect = corrected.snapshot.revision;
+    const replayResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions: [action] }),
+    });
+    const replay = await replayResponse.json();
+    assert.equal(replayResponse.status, 200);
+    assert.equal(replay.results[0].replayed, true);
+    assert.equal(replay.snapshot.revision, revisionAfterCorrect);
+
+    const conflictResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions: [{
+        noteUid,
+        action: 'ignore',
+        operationId: 'review-ignore-stale',
+        expectedDecisionRevision: 0,
+      }] }),
+    });
+    const conflict = await conflictResponse.json();
+    assert.equal(conflictResponse.status, 409);
+    assert.equal(conflict.results[0].code, 'NOTE_REVIEW_CONFLICT');
+
+    const ignoredResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ actions: [{
+        noteUid,
+        action: 'ignore',
+        operationId: 'review-ignore-operation-2',
+        expectedDecisionRevision: 1,
+      }] }),
+    });
+    const ignored = await ignoredResponse.json();
+    assert.equal(ignoredResponse.status, 200);
+    note = Object.values(ignored.snapshot.days).flatMap((day) => day.autoNotes).find((item) => item.noteUid === noteUid);
+    assert.equal(note.reviewStatus, 'ignored');
+    assert.equal(note.decisionRevision, 2);
+    assert.equal(ignored.snapshot.cards.some((card) => card.noteUid === noteUid && card.status === 'active'), false);
+    const ignoredSidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+    assert.equal(ignoredSidecar.learning.reviewStatus, 'ignored');
+    assert.deepEqual(ignoredSidecar.learning.cards, []);
+  } finally {
+    await stopChild(child);
+    await new Promise((resolve) => slowAi.close(resolve));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
