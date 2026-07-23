@@ -71,6 +71,11 @@ jobs:
               "    }\n  }\n  return null;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
               "    }\n  }\n  return saved;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
           )
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/__tests__/note-save-flow.test.cjs',
+              "    const corrected = await correctedResponse.json();\n    assert.equal(correctedResponse.status, 200);",
+              "    const corrected = await correctedResponse.json();\n    console.error('CORRECTED_RESPONSE_DEBUG', correctedResponse.status, JSON.stringify(corrected));\n    assert.equal(correctedResponse.status, 200);",
+          )
           PY
 
           npm ci --prefix outputs/kaoyan-schedule-app
@@ -94,5 +99,5 @@ jobs:
             exit 0
           fi
           git add "$output"
-          git commit -m "ci: persist merged review API test output"
+          git commit -m "ci: persist corrected review response body"
           git push origin HEAD:integration/cloudflare-latest
