@@ -114,6 +114,7 @@ export async function saveNote(env, payload) {
       noteUid,
       learning: { tags: note.tags, noteType: note.noteType },
     },
+    learningData: learningResult.snapshot,
     learningSyncError: null,
     aiStatus: 'unavailable',
     aiAvailable: false,
