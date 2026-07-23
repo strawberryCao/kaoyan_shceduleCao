@@ -22,14 +22,15 @@ $startupPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFo
 if ($Uninstall) {
   & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
   Remove-Item -LiteralPath $startupPath -Force -ErrorAction SilentlyContinue
-  Write-Host '已停止自动同步。配置、日志和本地 Git 缓存仍保留在：' -ForegroundColor Yellow
-  Write-Host $installRoot
+  Write-Host 'Automatic note synchronization has been disabled.' -ForegroundColor Yellow
+  Write-Host ('Local configuration and logs remain at: ' + $installRoot)
   exit 0
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-  throw '未检测到 Git for Windows。请先安装 Git，并确保 git 命令可在 PowerShell 中运行。'
+  throw 'Git for Windows was not found. Install Git and ensure git.exe is available in PATH.'
 }
+
 if (-not (Test-Path -LiteralPath $LocalPath)) {
   New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null
 }
@@ -55,29 +56,41 @@ $config = [ordered]@{
 }
 $config | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding UTF8
 
-Write-Host '正在执行首次同步。GitHub 若要求登录，请在弹出的 Git Credential Manager 中完成一次授权。' -ForegroundColor Cyan
+Write-Host 'Running the first synchronization. Git Credential Manager may ask you to sign in once.' -ForegroundColor Cyan
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runtimePath -ConfigPath $configPath
 if ($LASTEXITCODE -ne 0) {
-  throw "首次同步失败。请查看日志：$(Join-Path $installRoot 'sync.log')"
+  throw ('Initial synchronization failed. Check: ' + (Join-Path $installRoot 'sync.log'))
 }
 
-$taskArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runtimePath`" -ConfigPath `"$configPath`""
-$taskCommand = "powershell.exe $taskArguments"
-& schtasks.exe /Create /TN $taskName /TR $taskCommand /SC MINUTE /MO $IntervalMinutes /F | Out-Null
+$quotedRuntime = '"' + $runtimePath + '"'
+$quotedConfig = '"' + $configPath + '"'
+$taskArguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + $quotedRuntime + ' -ConfigPath ' + $quotedConfig
+$taskCommand = 'powershell.exe ' + $taskArguments
+
+$taskCreateArguments = @(
+  '/Create',
+  '/TN', $taskName,
+  '/TR', $taskCommand,
+  '/SC', 'MINUTE',
+  '/MO', [string]$IntervalMinutes,
+  '/F'
+)
+& schtasks.exe @taskCreateArguments | Out-Null
 if ($LASTEXITCODE -ne 0) {
-  throw 'Windows 计划任务创建失败。请用当前账户重新运行该安装脚本。'
+  throw 'Windows Task Scheduler could not create the synchronization task.'
 }
 
-@"
-@echo off
-start "" /min powershell.exe $taskArguments
-"@ | Set-Content -LiteralPath $startupPath -Encoding ASCII
+$startupLines = @(
+  '@echo off',
+  ('start "" /min ' + $taskCommand)
+)
+$startupLines | Set-Content -LiteralPath $startupPath -Encoding ASCII
 
 Write-Host ''
-Write-Host '自动同步已启用。' -ForegroundColor Green
-Write-Host "本机目录：$LocalPath"
-Write-Host "GitHub 目录：https://github.com/$Repository/tree/$Branch/$RemoteSubdir"
-Write-Host "同步频率：每 $IntervalMinutes 分钟，并在登录 Windows 时运行一次"
-Write-Host '冲突策略：保留双方文件，并生成 sync-conflict 副本；删除不会自动传播。'
-Write-Host "状态文件：$(Join-Path $installRoot 'status.json')"
-Write-Host "日志文件：$(Join-Path $installRoot 'sync.log')"
+Write-Host 'Automatic note synchronization is enabled.' -ForegroundColor Green
+Write-Host ('Local folder: ' + $LocalPath)
+Write-Host ('GitHub folder: https://github.com/' + $Repository + '/tree/' + $Branch + '/' + $RemoteSubdir)
+Write-Host ('Schedule: every ' + $IntervalMinutes + ' minutes and once after Windows sign-in')
+Write-Host 'Conflict policy: both versions are preserved; deletions are not propagated.'
+Write-Host ('Status: ' + (Join-Path $installRoot 'status.json'))
+Write-Host ('Log: ' + (Join-Path $installRoot 'sync.log'))
