@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
   [string]$LocalPath = 'C:\Users\ASUS\Desktop\笔记',
+  [string]$DataRoot = 'D:\kaoyandata',
   [string]$Repository = 'strawberryCao/Caobijidata',
   [string]$Branch = 'main',
   [string]$RemoteSubdir = 'source-notes',
@@ -31,40 +32,51 @@ function Invoke-ScheduledTaskCommand(
 }
 
 $taskName = 'Kaoyan Note Folder Sync'
-$installRoot = Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter\NoteFolderSync'
+$installRoot = Join-Path $DataRoot 'NoteFolderSync'
 $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
 $configPath = Join-Path $installRoot 'config.json'
-$clonePath = Join-Path $installRoot 'Caobijidata'
-$startupPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFolderSync.cmd'
+$clonePath = Join-Path $DataRoot 'Caobijidata'
+$oldInstallRoot = Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter\NoteFolderSync'
+$oldStartupPath = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFolderSync.cmd'
 
 if ($Uninstall) {
-  # Exit code 1 is expected when the task does not exist yet.
   Invoke-ScheduledTaskCommand @('/Delete', '/TN', $taskName, '/F') @(0, 1) | Out-Null
-  Remove-Item -LiteralPath $startupPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $oldStartupPath -Force -ErrorAction SilentlyContinue
   Write-Host 'Automatic note synchronization has been disabled.' -ForegroundColor Yellow
-  Write-Host ('Local configuration and logs remain at: ' + $installRoot)
+  Write-Host ('Synchronization data remains at: ' + $DataRoot)
   exit 0
 }
 
+if (-not (Test-Path -LiteralPath 'D:\')) {
+  throw 'Drive D: is not available. The synchronization data root must be D:\kaoyandata.'
+}
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   throw 'Git for Windows was not found. Install Git and ensure git.exe is available in PATH.'
 }
-
 if (-not (Test-Path -LiteralPath $LocalPath)) {
   New-Item -ItemType Directory -Path $LocalPath -Force | Out-Null
 }
-New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 
+# Remove only the failed synchronization cache from the previous C-drive setup.
+# The real note folder at C:\Users\ASUS\Desktop\笔记 is never touched here.
+Invoke-ScheduledTaskCommand @('/Delete', '/TN', $taskName, '/F') @(0, 1) | Out-Null
+Remove-Item -LiteralPath $oldStartupPath -Force -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $oldInstallRoot) {
+  Remove-Item -LiteralPath $oldInstallRoot -Recurse -Force
+}
+
+New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
 $localRuntime = Join-Path $PSScriptRoot 'windows-note-folder-sync.ps1'
 if (Test-Path -LiteralPath $localRuntime) {
   Copy-Item -LiteralPath $localRuntime -Destination $runtimePath -Force
 } else {
   $runtimeUrl = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
+  $ProgressPreference = 'SilentlyContinue'
   Invoke-WebRequest -UseBasicParsing -Uri $runtimeUrl -OutFile $runtimePath
 }
 
 $config = [ordered]@{
-  version = 1
+  version = 2
   localPath = $LocalPath
   repository = $Repository
   branch = $Branch
@@ -85,7 +97,6 @@ $quotedRuntime = '"' + $runtimePath + '"'
 $quotedConfig = '"' + $configPath + '"'
 $taskArguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ' + $quotedRuntime + ' -ConfigPath ' + $quotedConfig
 $taskCommand = 'powershell.exe ' + $taskArguments
-
 $taskCreateArguments = @(
   '/Create',
   '/TN', $taskName,
@@ -96,17 +107,13 @@ $taskCreateArguments = @(
 )
 Invoke-ScheduledTaskCommand $taskCreateArguments | Out-Null
 
-$startupLines = @(
-  '@echo off',
-  ('start "" /min ' + $taskCommand)
-)
-$startupLines | Set-Content -LiteralPath $startupPath -Encoding ASCII
-
 Write-Host ''
 Write-Host 'Automatic note synchronization is enabled.' -ForegroundColor Green
-Write-Host ('Local folder: ' + $LocalPath)
+Write-Host ('Source note folder: ' + $LocalPath)
+Write-Host ('Synchronization data root: ' + $DataRoot)
+Write-Host ('Local Git mirror: ' + $clonePath)
 Write-Host ('GitHub folder: https://github.com/' + $Repository + '/tree/' + $Branch + '/' + $RemoteSubdir)
-Write-Host ('Schedule: every ' + $IntervalMinutes + ' minutes and once after Windows sign-in')
+Write-Host ('Schedule: every ' + $IntervalMinutes + ' minutes')
 Write-Host 'Conflict policy: both versions are preserved; deletions are not propagated.'
 Write-Host ('Status: ' + (Join-Path $installRoot 'status.json'))
 Write-Host ('Log: ' + (Join-Path $installRoot 'sync.log'))
