@@ -11,18 +11,37 @@ const isLoopbackHostname = (hostname: string): boolean => (
 
 const readStoredAuthorization = (): string => {
   try {
-    return window.sessionStorage.getItem(STORAGE_KEY) || '';
+    const persistent = window.localStorage.getItem(STORAGE_KEY) || '';
+    if (persistent) return persistent;
+    const legacy = window.sessionStorage.getItem(STORAGE_KEY) || '';
+    if (legacy) {
+      window.localStorage.setItem(STORAGE_KEY, legacy);
+      window.sessionStorage.removeItem(STORAGE_KEY);
+    }
+    return legacy;
   } catch {
-    return '';
+    try {
+      return window.sessionStorage.getItem(STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
   }
 };
 
 const storeAuthorization = (value: string): void => {
   try {
+    if (value) window.localStorage.setItem(STORAGE_KEY, value);
+    else window.localStorage.removeItem(STORAGE_KEY);
+    window.sessionStorage.removeItem(STORAGE_KEY);
+    return;
+  } catch {
+    // Fall back to the current browser session only when persistent storage is blocked.
+  }
+  try {
     if (value) window.sessionStorage.setItem(STORAGE_KEY, value);
     else window.sessionStorage.removeItem(STORAGE_KEY);
   } catch {
-    // Session storage may be unavailable in hardened browser modes.
+    // Storage may be unavailable in hardened browser modes.
   }
 };
 
@@ -38,8 +57,8 @@ const encodeBasicAuthorization = (password: string): string => {
 
 const promptForPassword = (retry = false): string => {
   const message = retry
-    ? '编辑密码不正确，请重新输入。取消后仍可继续浏览。'
-    : '当前页面可公开浏览。保存、修改或删除内容需要输入编辑密码：';
+    ? '编辑密码不正确，请重新输入。验证成功后此设备会记住，不再重复询问。'
+    : '首次修改需要输入编辑密码。验证成功后此设备会记住，不再重复询问：';
   const password = window.prompt(message) || '';
   return password ? encodeBasicAuthorization(password) : '';
 };
