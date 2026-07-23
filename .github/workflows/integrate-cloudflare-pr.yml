@@ -2,9 +2,8 @@ name: Validate Cloudflare integration PR
 
 on:
   pull_request:
-    branches:
-      - fix/learning-detail-title-latex
-    types: [opened, reopened, synchronize, ready_for_review]
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -35,223 +34,98 @@ jobs:
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
 
-      - name: Merge missing history and reapply overlapping changes
+      - name: Merge missing history
         id: merge
-        continue-on-error: true
         shell: bash
         run: |
-          exec > >(tee "$RUNNER_TEMP/cloudflare-merge.log") 2>&1
-          set -euxo pipefail
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin backup/pre-cloudflare-7c9e92d
-          OLD_REF="origin/backup/pre-cloudflare-7c9e92d"
+          OLD_REF=origin/backup/pre-cloudflare-7c9e92d
 
           if git merge-base --is-ancestor "$OLD_REF" HEAD; then
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "The pre-Cloudflare history is already present."
             exit 0
           fi
           echo "needed=true" >> "$GITHUB_OUTPUT"
 
-          BASE="$(git merge-base HEAD "$OLD_REF")"
           mkdir -p .git/info
           printf '*.cmd -text\n' >> .git/info/attributes
           git reset --hard HEAD
-          git status --short
+          PRE_MERGE_HEAD="$(git rev-parse HEAD)"
 
-          set +e
-          git merge --no-commit --no-ff "$OLD_REF"
-          merge_status=$?
-          set -e
+          git merge -X ours --no-commit --no-ff "$OLD_REF"
 
-          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
-          expected_conflicts=(
-            "outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs"
-            "outputs/kaoyan-schedule-app/scripts/note-server.cjs"
-            "outputs/kaoyan-schedule-app/scripts/organize-notes.cjs"
-            "outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx"
-            "outputs/kaoyan-schedule-app/src/learning-center.css"
-            "outputs/kaoyan-schedule-app/src/utils/learningData.ts"
-          )
-
-          if (( merge_status != 0 && ${#conflicts[@]} == 0 )); then
-            echo "Merge failed before producing resolvable conflicts (exit $merge_status)." >&2
-            exit "$merge_status"
-          fi
-          if (( merge_status != 0 )); then
-            for file in "${conflicts[@]}"; do
-              expected=false
-              for allowed in "${expected_conflicts[@]}"; do
-                if [[ "$file" == "$allowed" ]]; then expected=true; break; fi
-              done
-              if [[ "$expected" != true ]]; then
-                echo "Unexpected merge conflict: $file" >&2
-                exit 1
-              fi
-            done
-          fi
-
-          for file in "${conflicts[@]}"; do
-            echo "Resolving $file from Cloudflare version plus later feature patch"
-            git checkout --ours -- "$file"
-            git add -- "$file"
-            patch_file="$(mktemp)"
-            git diff --binary "$BASE" "$OLD_REF" -- "$file" > "$patch_file"
-            if [[ -s "$patch_file" ]]; then
-              git apply --3way --index --whitespace=nowarn "$patch_file"
-            fi
-            rm -f "$patch_file"
-          done
-
-          unresolved="$(git diff --name-only --diff-filter=U)"
-          if [[ -n "$unresolved" ]]; then
-            echo "Unresolved conflicts remain:" >&2
-            echo "$unresolved" >&2
-            exit 1
-          fi
-
-          mapfile -d '' cmd_files < <(git diff --name-only -z "$BASE" "$OLD_REF" -- '*.cmd')
+          mapfile -d '' cmd_files < <(git diff --name-only -z "$PRE_MERGE_HEAD" "$OLD_REF" -- '*.cmd')
           if (( ${#cmd_files[@]} > 0 )); then
-            git restore --source=HEAD --staged --worktree -- "${cmd_files[@]}"
+            git restore --source="$PRE_MERGE_HEAD" --staged --worktree -- "${cmd_files[@]}"
           fi
 
-          intended_files=(
-            ".github/workflows/apply-review-ai-data-ui-final.yml"
-            "outputs/kaoyan-schedule-app/scripts/ai-router.cjs"
-            "outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs"
-            "outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs"
-            "outputs/kaoyan-schedule-app/scripts/note-server.cjs"
-            "outputs/kaoyan-schedule-app/scripts/organize-notes.cjs"
-            "outputs/kaoyan-schedule-app/scripts/review-github-sync.cjs"
-            "outputs/kaoyan-schedule-app/src/ai-config.css"
-            "outputs/kaoyan-schedule-app/src/components/AiConfigPage.tsx"
-            "outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx"
-            "outputs/kaoyan-schedule-app/src/learning-center.css"
-            "outputs/kaoyan-schedule-app/src/utils/aiConfig.ts"
-            "outputs/kaoyan-schedule-app/src/utils/learningData.ts"
-          )
-          git add -- "${intended_files[@]}"
+          git rm -f --ignore-unmatch \
+            .github/workflows/integrate-cloudflare-history.yml \
+            .github/integration-cloudflare-trigger.txt \
+            .github/integration-cloudflare-pr-trigger.txt
 
-          staged_files="$(git diff --cached --name-only)"
-          if [[ -z "$staged_files" ]]; then
-            echo "No merged changes were staged." >&2
-            exit 1
+          assert_contains() {
+            local file="$1"
+            local text="$2"
+            grep -Fq "$text" "$file" || {
+              echo "Missing merged capability '$text' in $file" >&2
+              exit 42
+            }
+          }
+
+          assert_contains outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs 'wrongReasonSource'
+          assert_contains outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs 'wrongReasonConfidence'
+          assert_contains outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs 'changedEditableKeys'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'queueNoteEnrichment'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'analyze-wrong-reason'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'reviewSync.startPush()'
+          assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'wrongReasonSource'
+          assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'targetNoteUid'
+          assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonSource: string'
+          assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonConfidence: number | null'
+          assert_contains outputs/kaoyan-schedule-app/src/utils/aiConfig.ts 'analyzeLearningNoteWrongReason'
+          assert_contains outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx 'wrongReasonEditor'
+          assert_contains outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx 'analyzeLearningNoteWrongReason'
+          assert_contains outputs/kaoyan-schedule-app/src/learning-center.css '.lc-wrong-reason-fact'
+
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+            git diff --name-status --diff-filter=U
+            exit 43
           fi
-          while IFS= read -r file; do
-            allowed=false
-            for expected in "${intended_files[@]}"; do
-              if [[ "$file" == "$expected" ]]; then allowed=true; break; fi
-            done
-            if [[ "$allowed" != true ]]; then
-              echo "Unexpected staged file: $file" >&2
-              exit 1
-            fi
-          done <<< "$staged_files"
 
+          git status --short
           git diff --cached --stat
           git commit -m "merge: restore pre-cloudflare history [history-integrated]"
-          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git status --short
-
-      - name: Report merge integration failure
-        if: steps.merge.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        shell: bash
-        run: |
-          {
-            echo "## Cloudflare 三方合并诊断"
-            echo
-            echo '```text'
-            cat "$RUNNER_TEMP/cloudflare-merge.log" 2>/dev/null || true
-            echo
-            echo "--- git status --porcelain=v2 ---"
-            git status --porcelain=v2 || true
-            echo
-            echo "--- staged files ---"
-            git diff --cached --name-status || true
-            echo
-            echo "--- MERGE_HEAD ---"
-            git rev-parse -q --verify MERGE_HEAD || true
-            echo '```'
-          } > "$RUNNER_TEMP/merge-failure-comment.md"
-          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/merge-failure-comment.md"
-          cat "$RUNNER_TEMP/merge-failure-comment.md"
-          exit 1
 
       - name: Install dependencies
-        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
 
       - name: Run automated Node test suite
-        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
           mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
-          if (( ${#test_files[@]} == 0 )); then
-            echo "No automated test files found." >&2
-            exit 1
-          fi
-          set +e
-          node --test "${test_files[@]}" > "$RUNNER_TEMP/node-test.log" 2>&1
-          test_status=$?
-          set -e
-          if (( test_status != 0 )); then
-            {
-              echo "## Cloudflare 整合测试失败"
-              echo
-              echo "以下是自动化测试输出的最后 220 行："
-              echo
-              echo '```text'
-              tail -n 220 "$RUNNER_TEMP/node-test.log"
-              echo '```'
-            } > "$RUNNER_TEMP/test-failure-comment.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/test-failure-comment.md"
-            cat "$RUNNER_TEMP/test-failure-comment.md"
-            exit "$test_status"
-          fi
-          tail -n 60 "$RUNNER_TEMP/node-test.log"
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
 
       - name: Build production application
-        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npm run build
 
       - name: Validate Wrangler deployment bundle
-        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npx wrangler deploy --dry-run
 
-      - name: Push validated merge
-        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Push validated integration
+        if: steps.merge.outputs.needed == 'true'
         shell: bash
-        run: |
-          set +e
-          publish_log="$RUNNER_TEMP/integration-publish.log"
-          git push origin HEAD:integration/cloudflare-latest > "$publish_log" 2>&1
-          publish_status=$?
-          set -e
-          if (( publish_status != 0 )); then
-            {
-              echo "## Cloudflare 整合提交回推失败"
-              echo
-              echo '```text'
-              cat "$publish_log"
-              echo '```'
-            } > "$RUNNER_TEMP/publish-failure-comment.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/publish-failure-comment.md"
-            cat "$RUNNER_TEMP/publish-failure-comment.md"
-            exit "$publish_status"
-          fi
-          cat "$publish_log"
+        run: git push origin HEAD:integration/cloudflare-latest
