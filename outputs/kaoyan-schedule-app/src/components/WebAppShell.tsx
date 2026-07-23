@@ -13,6 +13,7 @@ import {
   Search,
 } from 'lucide-react';
 import { openNoteCaptureApp } from './NoteDock';
+import { LearningRenameAction } from './LearningRenameAction';
 import { IS_CLOUD_RUNTIME } from '../utils/notes';
 
 export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'notes' | 'console' | 'ai-config';
@@ -107,6 +108,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       </aside>
 
       <div className="web-app-content">{children}</div>
+      {active === 'learning' && <LearningRenameAction />}
 
       <nav className="web-app-mobile-nav" aria-label="移动端导航">
         {visibleMainItems.filter((item) => item.id !== 'ai-config').map((item) => {
