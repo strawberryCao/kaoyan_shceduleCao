@@ -5,10 +5,7 @@ on:
   push:
     branches: [fix/learning-detail-title-latex]
     paths:
-      - 'outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx'
-      - 'outputs/kaoyan-schedule-app/src/note-drop-mobile.css'
-      - 'outputs/kaoyan-schedule-app/src/utils/notes.ts'
-      - 'outputs/kaoyan-schedule-app/cloudflare/media.js'
+      - 'outputs/kaoyan-schedule-app/**'
       - '.github/workflows/deploy-kaoyan-cloudflare.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
@@ -134,13 +131,13 @@ jobs:
 
           for attempt in {1..12}; do
             health_status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
-            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
+            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||!v.aiConfigured||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
               break
             fi
             echo "Health attempt $attempt returned HTTP $health_status"
             sleep 5
           done
-          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured) process.exit(1);" "$RUNNER_TEMP/health.json"
+          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||!v.aiConfigured) process.exit(1);" "$RUNNER_TEMP/health.json"
 
           bootstrap_ok=0
           for attempt in {1..12}; do
@@ -239,6 +236,7 @@ jobs:
               echo "- Learning notes: $NOTES"
               echo "- Review cards: $CARDS"
               echo "- GitHub data revision: $REVISION"
+              echo "- Workers AI: configured"
               echo "- Storage: $DATA_REPOSITORY ($DATA_BRANCH), no D1 or R2"
             else
               echo '- Status: failed'
