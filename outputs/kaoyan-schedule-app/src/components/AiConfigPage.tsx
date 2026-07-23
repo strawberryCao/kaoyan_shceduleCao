@@ -52,6 +52,7 @@ const capabilityNames: Record<string, string> = {
 const instructionExamples: Record<string, string> = {
   note_naming: '例如：标题优先使用图片里出现的教材章节名；老师姓名不进入标题。',
   note_enrichment: '例如：错因必须写成可执行的改进动作；不要把单纯计算量大的题判断为好题。',
+  note_image_understanding: '无备注时优先使用高质量视觉模型；只依据图片可见内容，不猜测缺失信息。',
   widget_generation: '例如：按钮使用紧凑布局；所有计时状态必须在组件内可重置。',
   canvas_organization: '例如：同一道题的原题、草稿、订正按从左到右排列；不同题目上下分组。',
   weekly_review_pdf: '只能分组和排序；禁止补充答案、知识讲解、例题、口诀或额外总结。',
@@ -126,11 +127,19 @@ export function AiConfigPage() {
   useEffect(() => {
     if (selectedTaskId !== 'weekly_review_pdf') return undefined;
     let cancelled = false;
-    void fetchReviewSyncStatus()
-      .then((next) => { if (!cancelled) setReviewStatus(next); })
-      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
-    return () => { cancelled = true; };
-  }, [selectedTaskId, savedMessage]);
+    let timer = 0;
+    const refresh = async () => {
+      try {
+        const next = await fetchReviewSyncStatus();
+        if (!cancelled) setReviewStatus(next);
+      } catch (reason) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    };
+    void refresh();
+    timer = window.setInterval(() => void refresh(), 2_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [selectedTaskId]);
 
   const selectedTask = snapshot?.taskDefinitions.find((task) => task.id === selectedTaskId) || null;
   const settings = draft[selectedTaskId] || {};
@@ -222,10 +231,18 @@ export function AiConfigPage() {
     try {
       if (action === 'push') {
         const result = await pushReviewData();
-        setSavedMessage(result.skipped ? result.reason || '本次同步已跳过。' : `已同步 ${result.count ?? 0} 条已确认内容${result.changed ? '并推送到 GitHub' : '；仓库内容没有变化'}。`);
+        setSavedMessage(result.skipped
+          ? result.reason || '本次同步已跳过。'
+          : result.accepted === false
+            ? '已有综合复习任务在后台运行。'
+            : '同步已转入后台；你可以离开此页面，状态会自动刷新。');
       } else if (action === 'pull') {
         const result = await pullReviewPdfs();
-        setSavedMessage(result.skipped ? result.reason || '本次下载已跳过。' : `已检查最新 PDF，下载 ${result.downloaded ?? 0} 个文件。`);
+        setSavedMessage(result.skipped
+          ? result.reason || '本次下载已跳过。'
+          : result.accepted === false
+            ? '已有综合复习任务在后台运行。'
+            : 'PDF 检查已转入后台；下载完成后状态会自动更新。');
       }
       setReviewStatus(await fetchReviewSyncStatus());
     } catch (reason) {
@@ -485,13 +502,19 @@ export function AiConfigPage() {
                   <div><small>最近上传</small><strong>{reviewStatus?.lastPushAt ? new Date(reviewStatus.lastPushAt).toLocaleString() : '尚未上传'}</strong></div>
                   <div><small>最近 PDF</small><strong>{reviewStatus?.lastRemoteGeneratedAt ? new Date(reviewStatus.lastRemoteGeneratedAt).toLocaleString() : '尚未下载'}</strong></div>
                 </div>
+                {reviewStatus?.running && (
+                  <div className="ai-review-progress">
+                    <div><span>{reviewStatus.message || '后台任务正在运行…'}</span><strong>{Math.round(reviewStatus.progress || 0)}%</strong></div>
+                    <progress max="100" value={reviewStatus.progress || 0} />
+                  </div>
+                )}
                 {reviewStatus?.lastError && <p className="ai-review-last-error">{reviewStatus.lastError}</p>}
                 <div className="ai-review-actions">
-                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('push')}>
-                    {reviewAction === 'push' ? <LoaderCircle className="is-spinning" size={16} /> : <UploadCloud size={16} />} 立即同步已确认内容
+                  <button disabled={dirty || saving || reviewAction !== '' || reviewStatus?.running === true} type="button" onClick={() => void runReviewAction('push')}>
+                    {reviewAction === 'push' || reviewStatus?.runningAction === 'push' ? <LoaderCircle className="is-spinning" size={16} /> : <UploadCloud size={16} />} 立即同步已确认内容
                   </button>
-                  <button disabled={dirty || saving || reviewAction !== ''} type="button" onClick={() => void runReviewAction('pull')}>
-                    {reviewAction === 'pull' ? <LoaderCircle className="is-spinning" size={16} /> : <Download size={16} />} 下载最新两份 PDF
+                  <button disabled={dirty || saving || reviewAction !== '' || reviewStatus?.running === true} type="button" onClick={() => void runReviewAction('pull')}>
+                    {reviewAction === 'pull' || reviewStatus?.runningAction === 'pull' ? <LoaderCircle className="is-spinning" size={16} /> : <Download size={16} />} 下载最新两份 PDF
                   </button>
                   {dirty && <small>先保存当前 AI 配置，再执行同步或下载。</small>}
                 </div>

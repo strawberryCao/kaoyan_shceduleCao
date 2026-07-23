@@ -941,8 +941,11 @@ function createLearningDataStore(options = {}) {
           'remark',
           'tags',
           'noteType',
+          ...(asString(input.wrongReason).trim() ? ['wrongReason'] : []),
           ...(typeof input.goodQuestion === 'boolean' ? ['goodQuestion'] : []),
         ],
+        wrongReasonSource: asString(input.wrongReason).trim() ? 'manual' : '',
+        wrongReasonConfidence: asString(input.wrongReason).trim() ? 1 : null,
         goodQuestion: typeof input.goodQuestion === 'boolean' ? input.goodQuestion : null,
         items: normalizeLearningItems(input.items),
         confidence: null,
@@ -1141,9 +1144,20 @@ function createLearningDataStore(options = {}) {
             nextKnowledgePath = [nextSubject, ...nextKnowledgePath.filter((item) => item !== note.subject && item !== nextSubject)].slice(0, 3);
           }
           const userEditedFields = new Set(note.userEditedFields);
-          contentKeys.forEach((key) => {
-            if (Object.hasOwn(patch, key)) userEditedFields.add(key);
-          });
+          const normalizedPatchValue = (key) => {
+            if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(uniqueStrings(patch[key]));
+            if (key === 'goodQuestion') return String(patch[key] === true);
+            return asString(patch[key]).trim();
+          };
+          const normalizedNoteValue = (key) => {
+            if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(note[key] || []);
+            if (key === 'goodQuestion') return String(note[key] === true);
+            return asString(note[key]).trim();
+          };
+          const changedEditableKeys = editableKeys.filter((key) => (
+            Object.hasOwn(patch, key) && normalizedPatchValue(key) !== normalizedNoteValue(key)
+          ));
+          changedEditableKeys.forEach((key) => userEditedFields.add(key));
           let studyNotes = normalizeStudyNotes(note.studyNotes);
           if (thoughtAction?.action === 'add') {
             studyNotes = [...studyNotes, {

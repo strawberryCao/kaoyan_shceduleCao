@@ -1,8 +1,0 @@
-BUILD_STATUS=2
-PRE_HEAD=3f8562668f31498d8b9b1e641b88899a8db4b50c
-
-> kaoyan-schedule-app@1.0.0 build
-> tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs
-
-src/components/LearningCenter.tsx(759,28): error TS2304: Cannot find name 'analyzeLearningNoteWrongReason'.
-src/utils/learningData.ts(341,3): error TS2739: Type '{ noteUid: string; capturedDate: string; title: string; subject: string; remark: string; createdAt: string; updatedAt: string; firstSyncedAt: string; filePath: string; pageRefs: LearningPageRef[]; ... 19 more ...; cardIds: string[]; }' is missing the following properties from type 'LearningAutoNote': wrongReasonSource, wrongReasonConfidence

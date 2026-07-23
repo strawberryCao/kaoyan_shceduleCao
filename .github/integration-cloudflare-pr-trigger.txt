@@ -1,2 +1,0 @@
-Trigger the trusted pull_request workflow from the target branch.
-Final validation: 22

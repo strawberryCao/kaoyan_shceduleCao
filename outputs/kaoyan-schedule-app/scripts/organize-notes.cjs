@@ -370,6 +370,11 @@ function removeSourceDirectoryWhenMetadataOnly(directory) {
 function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {
   ensureInside(notesRoot, imagePath, 'source image');
   ensureInside(notesRoot, destinationDir, 'destination directory');
+  if (!fs.existsSync(imagePath) || !fs.statSync(imagePath).isFile()) {
+    const error = new Error(`Source image does not exist: ${imagePath}`);
+    error.code = 'NOTE_SOURCE_MISSING';
+    throw error;
+  }
   fs.mkdirSync(destinationDir, { recursive: true });
   const destinationImage = ensureUniqueDestination(destinationDir, path.basename(imagePath), imagePath);
   const destinationSidecar = preferredSidecarPath(destinationImage);
@@ -747,14 +752,15 @@ async function organizeNotes(options = {}) {
 
     const previousState = safeReadJson(statePath, {});
     const lastSuccessfulAt = new Date(previousState.lastSuccessfulAt || 0).getTime();
-    if (!dryRun && !options.force && Number.isFinite(lastSuccessfulAt) && Date.now() - lastSuccessfulAt < cadenceMs) {
+    if (!dryRun && !options.force && !options.noteUid && Number.isFinite(lastSuccessfulAt) && Date.now() - lastSuccessfulAt < cadenceMs) {
       report.cadenceSkipped = true;
       return { ...report, notesRoot, assistantRoot, taxonomyPath, moveLogPath, statePath };
     }
 
     let taxonomy = loadTaxonomy(taxonomyPath, { createIfMissing: !dryRun });
     const taxonomyBefore = JSON.stringify(taxonomy.subjects);
-    const notes = discoverNotes(notesRoot);
+    const targetNoteUid = typeof options.noteUid === 'string' ? options.noteUid.trim() : '';
+    const notes = discoverNotes(notesRoot).filter((note) => !targetNoteUid || note.metadata?.noteUid === targetNoteUid);
     report.discovered = notes.length;
 
     for (const note of notes) {
@@ -897,6 +903,8 @@ async function organizeNotes(options = {}) {
             summary: analysis.summary,
             questionType: analysis.questionType,
             wrongReason: analysis.wrongReason,
+            wrongReasonSource: analysis.wrongReasonSource,
+            wrongReasonConfidence: analysis.wrongReasonConfidence,
             memoryCard: analysis.memoryCard,
             intent: combinedIntent(parsed, analysis),
             items: analysis.items,
@@ -1018,8 +1026,10 @@ async function main() {
   const analyzer = await loadInjectedAnalyzer(
     process.env.KAOYAN_AI_ANALYZER || (fs.existsSync(bundledAnalyzerPath) ? bundledAnalyzerPath : ''),
   );
+  const noteUidFlag = [...flags].find((flag) => flag.startsWith('--note-uid='));
   const report = await organizeNotes({
     analyzeNote: analyzer,
+    noteUid: noteUidFlag ? noteUidFlag.slice('--note-uid='.length) : '',
     analyzerVersion: process.env.KAOYAN_AI_ANALYZER_VERSION,
     force: flags.has('--force'),
     dryRun: flags.has('--dry-run'),

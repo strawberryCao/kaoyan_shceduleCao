@@ -39,6 +39,7 @@ const TASK_PROFILES = Object.freeze({
   note_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
+  note_image_understanding: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   taxonomy: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json', 'longContext'] }),
   flashcard_generation: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'json'] }),
   widget_generation: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json'] }),
@@ -159,6 +160,14 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
       { value: 'detailed', label: '详细' },
     ] }),
   ]),
+  note_image_understanding: Object.freeze([
+    Object.freeze({ id: 'reasoningMode', group: '图像理解', type: 'select', label: '推理强度', description: '无备注时优先使用更强视觉理解；复杂手写过程建议使用均衡或深度。', default: 'balanced', options: [
+      { value: 'fast', label: '快速' },
+      { value: 'balanced', label: '均衡（推荐）' },
+      { value: 'deep', label: '深度' },
+    ] }),
+    Object.freeze({ id: 'maxTokens', group: '图像理解', type: 'number', label: '最大完成 Token', description: '无备注时需要从图片独立理解题意、手写过程和错因。', default: 5200, min: 1800, max: 12000, step: 200, unit: 'tokens' }),
+  ]),
   weekly_review_pdf: Object.freeze([
     Object.freeze({ id: 'repository', group: 'GitHub 同步', type: 'text', label: '公开数据仓库', description: '填写 owner/name。只会上传已经确认分类为错题或背诵的内容。', default: 'strawberryCao/Caobijidata', maxLength: 200 }),
     Object.freeze({ id: 'branch', group: 'GitHub 同步', type: 'text', label: '数据分支', description: '保存结构化数据和最新 PDF 的分支。', default: 'main', maxLength: 100 }),
@@ -189,6 +198,12 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     label: '笔记整理与分类',
     description: '提取知识点、错因、题目价值与复习卡片等结构化信息。',
     active: true,
+  }),
+  note_image_understanding: Object.freeze({
+    label: '无备注图片理解',
+    description: '笔记没有备注时，使用独立的高质量视觉模型理解题目、手写过程和错因。',
+    active: true,
+    defaultTimeoutMs: 120_000,
   }),
   widget_generation: Object.freeze({
     label: '桌面组件生成',

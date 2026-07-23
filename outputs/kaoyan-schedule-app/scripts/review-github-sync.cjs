@@ -322,11 +322,12 @@ function createReviewSyncManager(options = {}) {
   const cacheRoot = options.cacheRoot || path.join(assistantRoot, 'review-github-sync');
   const statusPath = path.join(cacheRoot, 'status.json');
   let running = null;
+  let activeAction = '';
   let startupTimer = null;
   let intervalTimer = null;
 
   function status() {
-    return { ...readJson(statusPath, {}), settings: taskSettings(configPath), running: Boolean(running) };
+    return { ...readJson(statusPath, {}), settings: taskSettings(configPath), running: Boolean(running), runningAction: activeAction || null };
   }
 
   function updateStatus(patch) {
@@ -335,6 +336,7 @@ function createReviewSyncManager(options = {}) {
 
   async function push(scheduleKey = currentScheduleKey(taskSettings(configPath))) {
     const settings = taskSettings(configPath);
+    updateStatus({ phase: 'preparing', progress: 8, message: '正在准备 GitHub 数据仓库…', lastError: null });
     if (!settings.enabled) return { ok: false, skipped: true, reason: '综合复习 PDF 自动同步已关闭' };
     if (typeof getLearningSnapshot !== 'function') throw new Error('缺少学习数据读取器');
     const workingRoot = path.join(cacheRoot, settings.repository.replace('/', '__'));
@@ -347,6 +349,7 @@ function createReviewSyncManager(options = {}) {
       runGit(['reset', '--hard', `origin/${settings.branch}`], { cwd: workingRoot });
       runGit(['clean', '-fd', '--', 'data', 'config/review-config.json'], { cwd: workingRoot });
     }
+    updateStatus({ phase: 'exporting', progress: 38, message: '正在导出已确认的错题和背诵内容…' });
     const aiConfig = providerPublicConfig(configPath, settings);
     const notes = exportReviewData({ learningSnapshot: getLearningSnapshot(), repositoryRoot: workingRoot, settings, aiConfig });
     runGit(['add', 'data', 'config/review-config.json'], { cwd: workingRoot });
@@ -355,22 +358,26 @@ function createReviewSyncManager(options = {}) {
       updateStatus({ lastPushAt: new Date().toISOString(), lastScheduleKey: scheduleKey, lastPushCount: notes.length, lastPushResult: 'unchanged', lastError: null });
       return { ok: true, changed: false, count: notes.length };
     }
+    updateStatus({ phase: 'committing', progress: 68, message: '正在提交本次综合数据…' });
     runGit(['config', 'user.name', 'Kaoyan Review Sync'], { cwd: workingRoot });
     runGit(['config', 'user.email', 'review-sync@local.invalid'], { cwd: workingRoot });
     runGit(['commit', '-m', 'data: sync confirmed review notes'], { cwd: workingRoot });
+    updateStatus({ phase: 'pushing', progress: 82, message: '正在推送 GitHub；远程更新时会自动同步后重试…' });
     pushWithRemoteRefresh(workingRoot, settings.branch);
-    updateStatus({ lastPushAt: new Date().toISOString(), lastScheduleKey: scheduleKey, lastPushCount: notes.length, lastPushResult: 'pushed', lastError: null });
+    updateStatus({ phase: 'complete', progress: 100, message: `已同步 ${notes.length} 条内容，GitHub 正在生成 PDF。`, lastPushAt: new Date().toISOString(), lastScheduleKey: scheduleKey, lastPushCount: notes.length, lastPushResult: 'pushed', lastError: null });
     return { ok: true, changed: true, count: notes.length };
   }
 
   async function pull() {
     const settings = taskSettings(configPath);
+    updateStatus({ phase: 'checking_pdf', progress: 15, message: '正在检查远程 PDF 版本…', lastError: null });
     if (!settings.enabled) return { ok: false, skipped: true, reason: '综合复习 PDF 自动同步已关闭' };
     const manifestBuffer = await downloadBuffer(rawUrl(settings.repository, settings.branch, 'generated/manifest.json'));
     const manifest = JSON.parse(manifestBuffer.toString('utf8'));
     const targets = [manifest?.files?.mistakes, manifest?.files?.memory].filter(Boolean);
     if (targets.length !== 2) return { ok: false, skipped: true, reason: '远程仓库尚未生成两份 PDF' };
     ensureDirectory(settings.outputDirectory);
+    updateStatus({ phase: 'downloading_pdf', progress: 48, message: '正在校验并下载最新版 PDF…' });
     let downloaded = 0;
     for (const target of targets) {
       const remotePath = clean(target.path, 500);
@@ -385,17 +392,24 @@ function createReviewSyncManager(options = {}) {
       fs.renameSync(temporary, destination);
       downloaded += 1;
     }
-    updateStatus({ lastPullAt: new Date().toISOString(), lastRemoteGeneratedAt: manifest.generatedAt || null, lastPullResult: downloaded ? 'downloaded' : 'unchanged', lastError: null });
+    updateStatus({ phase: 'complete', progress: 100, message: downloaded ? `已下载 ${downloaded} 份最新版 PDF。` : '本地 PDF 已是最新版。', lastPullAt: new Date().toISOString(), lastRemoteGeneratedAt: manifest.generatedAt || null, lastPullResult: downloaded ? 'downloaded' : 'unchanged', lastError: null });
     return { ok: true, downloaded, outputDirectory: settings.outputDirectory, generatedAt: manifest.generatedAt || null };
   }
 
-  function runExclusive(action) {
+  function runExclusive(actionName, action) {
     if (running) return running;
+    activeAction = actionName;
     running = Promise.resolve().then(action).catch((error) => {
-      updateStatus({ lastError: error instanceof Error ? error.message : String(error), lastErrorAt: new Date().toISOString() });
+      updateStatus({ phase: 'failed', progress: 100, message: '任务失败，请查看错误信息。', lastError: error instanceof Error ? error.message : String(error), lastErrorAt: new Date().toISOString() });
       throw error;
-    }).finally(() => { running = null; });
+    }).finally(() => { running = null; activeAction = ''; });
     return running;
+  }
+
+  function startBackground(actionName, action) {
+    if (running) return { ok: true, accepted: false, running: true, action: activeAction || actionName };
+    void runExclusive(actionName, action).catch(() => undefined);
+    return { ok: true, accepted: true, running: true, action: actionName };
   }
 
   async function runAutomaticCycle() {
@@ -410,10 +424,10 @@ function createReviewSyncManager(options = {}) {
   function start() {
     stop();
     startupTimer = setTimeout(() => {
-      runExclusive(runAutomaticCycle).catch((error) => console.warn('Review GitHub startup sync failed:', error.message));
+      runExclusive('automatic', runAutomaticCycle).catch((error) => console.warn('Review GitHub startup sync failed:', error.message));
     }, 15000);
     intervalTimer = setInterval(() => {
-      runExclusive(runAutomaticCycle).catch((error) => console.warn('Review GitHub periodic sync failed:', error.message));
+      runExclusive('automatic', runAutomaticCycle).catch((error) => console.warn('Review GitHub periodic sync failed:', error.message));
     }, 60 * 60 * 1000);
     intervalTimer.unref?.();
     startupTimer.unref?.();
@@ -426,7 +440,15 @@ function createReviewSyncManager(options = {}) {
     intervalTimer = null;
   }
 
-  return { status, push: () => runExclusive(push), pull: () => runExclusive(pull), start, stop };
+  return {
+    status,
+    push: () => runExclusive('push', push),
+    pull: () => runExclusive('pull', pull),
+    startPush: () => startBackground('push', push),
+    startPull: () => startBackground('pull', pull),
+    start,
+    stop,
+  };
 }
 
 module.exports = { createReviewSyncManager, currentScheduleKey, exportReviewData, selectWindowsDirectory, taskSettings };
