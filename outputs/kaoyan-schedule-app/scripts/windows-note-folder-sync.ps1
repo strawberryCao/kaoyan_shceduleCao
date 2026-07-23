@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [string]$ConfigPath = "$env:LOCALAPPDATA\KaoyanStudyCenter\NoteFolderSync\config.json",
+  [string]$ConfigPath = 'D:\kaoyandata\NoteFolderSync\config.json',
   [switch]$NativeCommandSelfTest
 )
 
@@ -25,11 +25,10 @@ function Invoke-Git(
   [string]$WorkingDirectory = '',
   [int[]]$AllowedExitCodes = @(0)
 ) {
-  # Git writes normal progress messages (clone/push/fetch) to stderr. Windows
-  # PowerShell 5.1 turns native stderr into ErrorRecord objects and can stop the
-  # script when the global ErrorActionPreference is Stop, even when Git exits 0.
   $previousPreference = $ErrorActionPreference
   try {
+    # Git writes normal clone/fetch/push progress to stderr. Windows PowerShell
+    # 5.1 otherwise converts those lines into terminating ErrorRecord objects.
     $ErrorActionPreference = 'Continue'
     if ($WorkingDirectory) {
       $output = & git -C $WorkingDirectory @Arguments 2>&1 | Out-String
@@ -43,10 +42,7 @@ function Invoke-Git(
   if ($AllowedExitCodes -notcontains $exitCode) {
     throw "Git command failed (exit $exitCode): git $($Arguments -join ' ')`n$($output.Trim())"
   }
-  return [pscustomobject]@{
-    ExitCode = $exitCode
-    Output = $output.Trim()
-  }
+  return [pscustomobject]@{ ExitCode = $exitCode; Output = $output.Trim() }
 }
 
 function Get-RelativeFilePath([string]$Root, [string]$FullPath) {
@@ -99,13 +95,18 @@ function Read-PreviousHashes([string]$StatePath) {
       if ($entry.path -and $entry.hash) { $hashes[[string]$entry.path] = [string]$entry.hash }
     }
   } catch {
-    # A damaged local state file must not block synchronization; hashes will be rebuilt.
+    # Rebuild state when the local status file is damaged.
   }
   return $hashes
 }
 
 function Commit-PendingMirror([string]$ClonePath, [string]$RemoteSubdir, [string]$Message) {
-  Invoke-Git @('add', '--', $RemoteSubdir) $ClonePath | Out-Null
+  $mirrorPath = Join-Path $ClonePath $RemoteSubdir
+  if (-not (Test-Path -LiteralPath $mirrorPath)) { return $false }
+  $files = @(Get-ChildItem -LiteralPath $mirrorPath -File -Recurse -Force -ErrorAction SilentlyContinue)
+  if ($files.Count -eq 0) { return $false }
+
+  Invoke-Git @('add', '-A', '--', $RemoteSubdir) $ClonePath | Out-Null
   $diff = Invoke-Git @('diff', '--cached', '--quiet', '--', $RemoteSubdir) $ClonePath @(0, 1)
   if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
@@ -121,13 +122,19 @@ if ($NativeCommandSelfTest) {
     $bareRepository = Join-Path $selfTestRoot 'source.git'
     $cloneRepository = Join-Path $selfTestRoot 'clone'
     Invoke-Git @('init', '--bare', $bareRepository) | Out-Null
-    # Cloning an empty repository exits 0 but emits progress/warning text on
-    # stderr, exactly reproducing the Windows PowerShell behavior that failed.
     $cloneResult = Invoke-Git @('clone', $bareRepository, $cloneRepository)
-    if (-not (Test-Path -LiteralPath (Join-Path $cloneRepository '.git'))) {
-      throw 'Native Git self-test clone did not create a repository.'
+    Invoke-Git @('config', 'user.name', 'Sync Self Test') $cloneRepository | Out-Null
+    Invoke-Git @('config', 'user.email', 'sync-test@local.invalid') $cloneRepository | Out-Null
+
+    if (Commit-PendingMirror $cloneRepository 'source-notes' 'self-test: missing path') {
+      throw 'A missing source-notes path must not create a commit.'
     }
-    Write-Host "Native Git stderr handling self-test passed (exit $($cloneResult.ExitCode))."
+    Ensure-Directory (Join-Path $cloneRepository 'source-notes')
+    Set-Content -LiteralPath (Join-Path $cloneRepository 'source-notes\sample.txt') -Value 'sample' -Encoding UTF8
+    if (-not (Commit-PendingMirror $cloneRepository 'source-notes' 'self-test: mirror path')) {
+      throw 'A populated source-notes path should create a commit.'
+    }
+    Write-Host "Native Git and missing-path self-test passed (clone exit $($cloneResult.ExitCode))."
   } finally {
     Remove-Item -LiteralPath $selfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -243,6 +250,7 @@ try {
       $stateFiles += [pscustomobject]@{ path = $relative; hash = $finalLocal[$relative].Hash }
     }
   }
+
   $now = [DateTime]::UtcNow.ToString('o')
   Write-JsonAtomic $statePath ([pscustomobject]@{ version = 1; updatedAt = $now; files = $stateFiles })
   Write-JsonAtomic $statusPath ([pscustomobject]@{
