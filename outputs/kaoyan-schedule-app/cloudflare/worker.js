@@ -278,7 +278,12 @@ export async function handleRequest(request, env, ctx) {
   }
 
   if (pathname !== null) {
-    if (!isPublic || WRITE_METHODS.has(request.method)) {
+    // Static application files stay loadable, but all data/configuration APIs
+    // require the device-persisted password. The image endpoint remains a
+    // narrow exception because ordinary <img> requests cannot attach the
+    // authorization header stored by the application fetch wrapper.
+    const publicImageRead = request.method === 'GET' && pathname === '/note-file';
+    if (!publicImageRead) {
       const authResponse = await requireBasicAuth(request, env);
       if (authResponse) return authResponse;
     }
