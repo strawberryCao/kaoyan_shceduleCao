@@ -10,6 +10,10 @@ export interface SaveNotePayload {
   remark?: string;
   subject?: string;
   canvasProjectId?: string;
+  sourceType?: 'ai-multi-question' | 'single-capture' | string;
+  sourceBatchId?: string;
+  sourceSplitIndex?: number;
+  tags?: string[];
 }
 
 export interface SaveNoteResult {
@@ -40,6 +44,33 @@ export interface DetectQuestionResult {
   error?: string;
 }
 
+export type AiBackgroundJobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'skipped';
+
+export interface AiBackgroundJob {
+  id: string;
+  type: string;
+  noteUid: string;
+  status: AiBackgroundJobStatus;
+  progress: number;
+  message: string;
+  error: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string;
+  result?: {
+    applied?: boolean;
+    title?: string;
+    revision?: number;
+  } | null;
+}
+
+export interface AiJobResponse {
+  ok: boolean;
+  accepted?: boolean;
+  replayed?: boolean;
+  job: AiBackgroundJob;
+}
+
 const isLoopbackHostname = (hostname: string): boolean => (
   hostname === '127.0.0.1'
   || hostname === 'localhost'
@@ -62,22 +93,19 @@ const resolveNoteServerUrl = (): string => {
 export const NOTE_SERVER_URL = resolveNoteServerUrl();
 const NOTE_SAVE_TIMEOUT_MS = 15_000;
 const AI_REQUEST_TIMEOUT_MS = 45_000;
+const AI_ENQUEUE_TIMEOUT_MS = 12_000;
 
 export const createNoteUid = () => {
-  if (typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return `note_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 14)}`;
 };
 
-export const fileToDataUrl = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
-    reader.readAsDataURL(file);
-  });
-};
+export const fileToDataUrl = (file: File): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
+  reader.readAsDataURL(file);
+});
 
 export const getImageDimensions = (src: string): Promise<{ width: number; height: number }> => new Promise((resolve, reject) => {
   const image = new Image();
@@ -113,16 +141,9 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
   try {
     response = await fetch(`${NOTE_SERVER_URL}/save-note`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
+      headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({
-        subject: '默认文件夹',
-        remark: '',
-        ...payload,
-        noteUid,
-      }),
+      body: JSON.stringify({ subject: '默认文件夹', remark: '', ...payload, noteUid }),
     });
   } catch (error) {
     if (controller.signal.aborted) {
@@ -134,9 +155,7 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
   }
 
   const result = (await response.json()) as SaveNoteResult;
-  if (!response.ok || !result.ok) {
-    throw new Error(result.error || '保存失败');
-  }
+  if (!response.ok || !result.ok) throw new Error(result.error || '保存失败');
   return result;
 };
 
@@ -149,23 +168,45 @@ export const detectQuestionRegions = async (imageDataUrl: string): Promise<Detec
   }, AI_REQUEST_TIMEOUT_MS);
 };
 
-export const renameLearningNoteWithAi = async (noteUid: string): Promise<LearningDataSnapshot> => {
-  return fetchJsonWithTimeout<LearningDataSnapshot>(
+export const enqueueLearningNoteRename = async (noteUid: string): Promise<AiJobResponse> => (
+  fetchJsonWithTimeout<AiJobResponse>(
     `${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/rename`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     },
-    AI_REQUEST_TIMEOUT_MS,
+    AI_ENQUEUE_TIMEOUT_MS,
+  )
+);
+
+export const getAiBackgroundJob = async (jobId: string): Promise<AiBackgroundJob> => {
+  const response = await fetchJsonWithTimeout<{ ok: boolean; job: AiBackgroundJob }>(
+    `${NOTE_SERVER_URL}/ai/jobs/${encodeURIComponent(jobId)}`,
+    { method: 'GET', cache: 'no-store' },
+    AI_ENQUEUE_TIMEOUT_MS,
   );
+  return response.job;
 };
 
-export const loadImage = (src: string): Promise<HTMLImageElement> => {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('图片加载失败'));
-    image.src = src;
-  });
+const fetchLearningSnapshot = async (): Promise<LearningDataSnapshot> => (
+  fetchJsonWithTimeout<LearningDataSnapshot>(
+    `${NOTE_SERVER_URL}/learning-data`,
+    { method: 'GET', cache: 'no-store' },
+    AI_ENQUEUE_TIMEOUT_MS,
+  )
+);
+
+// Compatibility wrapper for older call sites. It queues the work immediately and
+// returns the current snapshot instead of blocking the interface on model output.
+export const renameLearningNoteWithAi = async (noteUid: string): Promise<LearningDataSnapshot> => {
+  await enqueueLearningNoteRename(noteUid);
+  return fetchLearningSnapshot();
 };
+
+export const loadImage = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => reject(new Error('图片加载失败'));
+  image.src = src;
+});
