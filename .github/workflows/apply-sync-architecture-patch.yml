@@ -1,0 +1,48 @@
+name: Apply synchronized architecture patch
+
+on:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - 'outputs/kaoyan-schedule-app/scripts/apply-sync-architecture-patch.cjs'
+      - '.github/workflows/apply-sync-architecture-patch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-sync-architecture-patch
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply deterministic patch
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/apply-sync-architecture-patch.cjs
+
+      - name: Commit patched source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'Patch already applied.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add outputs/kaoyan-schedule-app/src outputs/kaoyan-schedule-app/scripts/ai-router.cjs
+          git commit -m 'feat: apply mobile background and shared AI configuration'
+          git push origin HEAD:fix/learning-detail-title-latex
