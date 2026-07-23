@@ -1,0 +1,48 @@
+name: Inspect review API test
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  inspect:
+    if: github.head_ref == 'integration/cloudflare-latest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: integration/cloudflare-latest
+          fetch-depth: 1
+
+      - name: Locate and post exact test source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title='review API is durable, idempotent, conflict guarded, and never reports file failures as success'
+          match="$(grep -RFl --include='*.test.cjs' --include='*.test.mjs' "$title" outputs/kaoyan-schedule-app || true)"
+          if [[ -z "$match" ]]; then
+            echo "Exact test title not found" >&2
+            exit 1
+          fi
+          line="$(grep -nF "$title" "$match" | head -n1 | cut -d: -f1)"
+          start=$(( line > 40 ? line - 40 : 1 ))
+          end=$(( line + 220 ))
+          {
+            echo '## 剩余审核 API 测试源码'
+            echo
+            echo "文件：\`$match\`，标题行：$line"
+            echo
+            echo '```javascript'
+            sed -n "${start},${end}p" "$match"
+            echo '```'
+          } > "$RUNNER_TEMP/review-test-source.md"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/review-test-source.md"
