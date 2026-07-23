@@ -118,27 +118,73 @@ jobs:
         shell: bash
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           auth_header="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
 
           for attempt in {1..12}; do
-            if curl --fail --silent --show-error "$WORKER_URL/api/health" > "$RUNNER_TEMP/health.json" && \
-              node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
+            health_status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
+            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
               break
             fi
+            echo "Health attempt $attempt returned HTTP $health_status"
             sleep 5
           done
           node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured) process.exit(1);" "$RUNNER_TEMP/health.json"
 
-          curl --fail --silent --show-error \
-            -X POST \
-            -H "Authorization: $auth_header" \
-            "$WORKER_URL/api/admin/bootstrap" > "$RUNNER_TEMP/bootstrap.json"
+          bootstrap_ok=0
+          for attempt in {1..12}; do
+            bootstrap_status="$(curl --silent --show-error -o "$RUNNER_TEMP/bootstrap.json" -w '%{http_code}' -X POST -H "Authorization: $auth_header" "$WORKER_URL/api/admin/bootstrap" || true)"
+            if [[ "$bootstrap_status" =~ ^2[0-9][0-9]$ ]]; then
+              bootstrap_ok=1
+              break
+            fi
+            echo "Bootstrap attempt $attempt returned HTTP $bootstrap_status"
+            head -c 3000 "$RUNNER_TEMP/bootstrap.json" || true
+            echo
+            sleep 5
+          done
+          if (( bootstrap_ok == 0 )); then
+            {
+              echo '## GitHub-backed bootstrap failed'
+              echo
+              echo "- Worker URL: $WORKER_URL"
+              echo "- Last HTTP status: $bootstrap_status"
+              echo '```json'
+              head -c 6000 "$RUNNER_TEMP/bootstrap.json" || true
+              echo
+              echo '```'
+            } > "$RUNNER_TEMP/bootstrap-failure.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"
+            exit 1
+          fi
 
-          curl --fail --silent --show-error \
-            -H "Authorization: $auth_header" \
-            "$WORKER_URL/api/learning-data" > "$RUNNER_TEMP/learning-data.json"
+          learning_ok=0
+          for attempt in {1..12}; do
+            learning_status="$(curl --silent --show-error -o "$RUNNER_TEMP/learning-data.json" -w '%{http_code}' -H "Authorization: $auth_header" "$WORKER_URL/api/learning-data" || true)"
+            if [[ "$learning_status" == "200" ]]; then
+              learning_ok=1
+              break
+            fi
+            echo "Learning-data attempt $attempt returned HTTP $learning_status"
+            sleep 5
+          done
+          if (( learning_ok == 0 )); then
+            {
+              echo '## Learning-data verification failed'
+              echo
+              echo "- Worker URL: $WORKER_URL"
+              echo "- Last HTTP status: $learning_status"
+              echo '```json'
+              head -c 6000 "$RUNNER_TEMP/learning-data.json" || true
+              echo
+              echo '```'
+            } > "$RUNNER_TEMP/learning-failure.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"
+            exit 1
+          fi
 
           curl --fail --silent --show-error \
             -H 'Accept: application/vnd.github+json' \
@@ -184,7 +230,8 @@ jobs:
               echo "- Storage: $DATA_REPOSITORY ($DATA_BRANCH), no D1 or R2"
             else
               echo '- Status: failed'
-              echo '- Inspect the failed workflow step; no credential values were logged.'
+              echo "- Worker URL: $WORKER_URL"
+              echo '- Inspect the diagnostic comment; no credential values were logged.'
             fi
           } | tee "$RUNNER_TEMP/deployment-summary.md" >> "$GITHUB_STEP_SUMMARY"
           if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
