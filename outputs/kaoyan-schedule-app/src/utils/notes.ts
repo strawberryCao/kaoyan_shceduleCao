@@ -1,4 +1,5 @@
 import type { LearningDataSnapshot } from './learningData';
+import type { NormalizedCrop } from './imageCrop';
 
 export type NoteKind = 'single' | 'canvas';
 
@@ -32,6 +33,13 @@ export interface SaveNoteResult {
   error?: string;
 }
 
+export interface DetectQuestionResult {
+  ok: boolean;
+  model?: string;
+  regions: NormalizedCrop[];
+  error?: string;
+}
+
 const isLoopbackHostname = (hostname: string): boolean => (
   hostname === '127.0.0.1'
   || hostname === 'localhost'
@@ -53,6 +61,7 @@ const resolveNoteServerUrl = (): string => {
 
 export const NOTE_SERVER_URL = resolveNoteServerUrl();
 const NOTE_SAVE_TIMEOUT_MS = 15_000;
+const AI_REQUEST_TIMEOUT_MS = 45_000;
 
 export const createNoteUid = () => {
   if (typeof crypto.randomUUID === 'function') {
@@ -70,10 +79,30 @@ export const fileToDataUrl = (file: File): Promise<string> => {
   });
 };
 
+export const getImageDimensions = (src: string): Promise<{ width: number; height: number }> => new Promise((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+  image.onerror = () => reject(new Error('图片尺寸读取失败'));
+  image.src = src;
+});
+
+const fetchJsonWithTimeout = async <T>(url: string, init: RequestInit, timeoutMs: number): Promise<T> => {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(new DOMException('请求超时', 'TimeoutError')), timeoutMs);
+  try {
+    const response = await fetch(url, { ...init, signal: controller.signal });
+    const result = await response.json().catch(() => null) as (T & { error?: string }) | null;
+    if (!response.ok || !result) throw new Error(result?.error || `服务返回 ${response.status}`);
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('请求超时，请检查网络后重试。');
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
 export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteResult> => {
-  // A caller owns one operation id and reuses it only when retrying that same
-  // operation. Independent saves, even with identical image content, must not
-  // be collapsed into one note.
   const noteUid = payload.noteUid || createNoteUid();
   const controller = new AbortController();
   const timer = window.setTimeout(
@@ -109,6 +138,27 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
     throw new Error(result.error || '保存失败');
   }
   return result;
+};
+
+export const detectQuestionRegions = async (imageDataUrl: string): Promise<DetectQuestionResult> => {
+  const size = await getImageDimensions(imageDataUrl);
+  return fetchJsonWithTimeout<DetectQuestionResult>(`${NOTE_SERVER_URL}/ai/detect-questions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
+  }, AI_REQUEST_TIMEOUT_MS);
+};
+
+export const renameLearningNoteWithAi = async (noteUid: string): Promise<LearningDataSnapshot> => {
+  return fetchJsonWithTimeout<LearningDataSnapshot>(
+    `${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/rename`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    },
+    AI_REQUEST_TIMEOUT_MS,
+  );
 };
 
 export const loadImage = (src: string): Promise<HTMLImageElement> => {
