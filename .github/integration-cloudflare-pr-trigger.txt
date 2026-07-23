@@ -1,2 +1,2 @@
 Trigger the trusted pull_request workflow from the target branch.
-Diagnostic rerun: 6
+Diagnostic rerun: 7
