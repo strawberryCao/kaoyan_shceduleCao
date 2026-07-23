@@ -34,7 +34,22 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -f scripts/apply-github-storage-patches.cjs ]]; then
-            node scripts/apply-github-storage-patches.cjs
+            set +e
+            node scripts/apply-github-storage-patches.cjs > "$RUNNER_TEMP/storage-patch.log" 2>&1
+            status=$?
+            set -e
+            if (( status != 0 )); then
+              {
+                echo '## GitHub storage compatibility patch failed'
+                echo
+                echo '```text'
+                cat "$RUNNER_TEMP/storage-patch.log"
+                echo '```'
+              } > "$RUNNER_TEMP/storage-patch-comment.md"
+              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/storage-patch-comment.md"
+              cat "$RUNNER_TEMP/storage-patch-comment.md"
+              exit "$status"
+            fi
             rm scripts/apply-github-storage-patches.cjs
           fi
       - name: Install dependencies
