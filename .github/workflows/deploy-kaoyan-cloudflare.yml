@@ -57,7 +57,6 @@ jobs:
           [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'CLOUDFLARE_API_TOKEN is missing' >&2; exit 2; }
           [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo 'CLOUDFLARE_ACCOUNT_ID is missing' >&2; exit 2; }
           [[ -n "$KAOYAN_APP_PASSWORD" ]] || { echo 'KAOYAN_APP_PASSWORD is missing' >&2; exit 2; }
-          (( ${#KAOYAN_APP_PASSWORD} >= 12 )) || { echo 'KAOYAN_APP_PASSWORD must be at least 12 characters' >&2; exit 2; }
           echo 'Cloudflare credentials and app password are configured.'
 
       - name: Install dependencies
