@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from './worker.js';
 
+const auth = `Basic ${Buffer.from('tester:secret').toString('base64')}`;
+
 function environment(overrides = {}) {
   return {
     PUBLIC_READ_ENABLED: 'true',
@@ -21,7 +23,7 @@ function environment(overrides = {}) {
   };
 }
 
-test('public read mode exposes pages and read-only APIs while protecting writes', async () => {
+test('public mode exposes static pages but protects every data and configuration API', async () => {
   const env = environment();
 
   const page = await worker.fetch(new Request('https://study.example/'), env, {});
@@ -32,9 +34,15 @@ test('public read mode exposes pages and read-only APIs while protecting writes'
   assert.equal(chunk.status, 200);
   assert.equal(chunk.headers.get('cache-control'), 'public, max-age=31536000, immutable');
 
-  const readOnlyApi = await worker.fetch(new Request('https://study.example/api/organizer/status'), env, {});
-  assert.equal(readOnlyApi.status, 200);
-  assert.equal((await readOnlyApi.json()).available, false);
+  const unauthorizedRead = await worker.fetch(new Request('https://study.example/api/organizer/status'), env, {});
+  assert.equal(unauthorizedRead.status, 401);
+  assert.equal((await unauthorizedRead.json()).code, 'AUTH_REQUIRED');
+
+  const authorizedRead = await worker.fetch(new Request('https://study.example/api/organizer/status', {
+    headers: { Authorization: auth },
+  }), env, {});
+  assert.equal(authorizedRead.status, 200);
+  assert.equal((await authorizedRead.json()).available, false);
 
   const write = await worker.fetch(new Request('https://study.example/api/layout', {
     method: 'POST',
@@ -45,16 +53,12 @@ test('public read mode exposes pages and read-only APIs while protecting writes'
   assert.equal((await write.json()).code, 'AUTH_REQUIRED');
 });
 
-test('public pages remain available when the write password is temporarily missing', async () => {
+test('public pages remain available when the data password is temporarily missing', async () => {
   const env = environment({ APP_PASSWORD: undefined });
   const page = await worker.fetch(new Request('https://study.example/'), env, {});
   assert.equal(page.status, 200);
 
-  const write = await worker.fetch(new Request('https://study.example/api/layout', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ layout: [] }),
-  }), env, {});
-  assert.equal(write.status, 503);
-  assert.equal((await write.json()).code, 'AUTH_NOT_CONFIGURED');
+  const dataApi = await worker.fetch(new Request('https://study.example/api/layout'), env, {});
+  assert.equal(dataApi.status, 503);
+  assert.equal((await dataApi.json()).code, 'AUTH_NOT_CONFIGURED');
 });
