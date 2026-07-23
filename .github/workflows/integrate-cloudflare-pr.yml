@@ -153,8 +153,33 @@ jobs:
 
       - name: Commit and push validated merge
         if: steps.merge.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          set -euo pipefail
-          git commit -m "merge: restore pre-cloudflare history [history-integrated]"
-          git push origin HEAD:integration/cloudflare-latest
+          set +e
+          publish_log="$RUNNER_TEMP/integration-publish.log"
+          {
+            git status --short
+            git commit -m "merge: restore pre-cloudflare history [history-integrated]"
+          } > "$publish_log" 2>&1
+          publish_status=$?
+          if (( publish_status == 0 )); then
+            git push origin HEAD:integration/cloudflare-latest >> "$publish_log" 2>&1
+            publish_status=$?
+          fi
+          set -e
+          if (( publish_status != 0 )); then
+            {
+              echo "## Cloudflare 整合提交回推失败"
+              echo
+              echo '```text'
+              cat "$publish_log"
+              echo '```'
+            } > "$RUNNER_TEMP/publish-failure-comment.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/publish-failure-comment.md"
+            cat "$RUNNER_TEMP/publish-failure-comment.md"
+            exit "$publish_status"
+          fi
+          cat "$publish_log"
