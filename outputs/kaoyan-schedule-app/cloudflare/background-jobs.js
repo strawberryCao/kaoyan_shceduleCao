@@ -11,6 +11,14 @@ function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+export function isAiMultiQuestionNote(note) {
+  return Boolean(note) && (
+    note.sourceType === 'ai-multi-question'
+    || /^multi_[A-Za-z0-9_-]+/i.test(String(note.noteUid || ''))
+    || (Array.isArray(note.tags) && note.tags.includes('AI多题拆分'))
+  );
+}
+
 function normalizeJob(value) {
   if (!isObject(value) || typeof value.id !== 'string' || !value.id) return null;
   return {
@@ -33,10 +41,7 @@ async function readState(env) {
   const stored = await readAppState(env, STATE_KEY);
   const value = isObject(stored?.value) ? stored.value : {};
   const jobs = Array.isArray(value.jobs) ? value.jobs.map(normalizeJob).filter(Boolean) : [];
-  return {
-    revision: Number(stored?.revision) || 0,
-    jobs,
-  };
+  return { revision: Number(stored?.revision) || 0, jobs };
 }
 
 async function writeState(env, current, jobs) {
@@ -74,8 +79,8 @@ export async function enqueueRenameJob(env, noteUid) {
   const snapshot = await getLearningSnapshot(env);
   const entry = findNote(snapshot, noteUid);
   if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
-  if (entry.note.sourceType !== 'ai-multi-question') {
-    throw new HttpError(403, 'Only AI multi-question notes can be renamed from the cloud action.', 'AI_RENAME_NOT_ALLOWED');
+  if (!isAiMultiQuestionNote(entry.note)) {
+    throw new HttpError(403, '只有 AI 多题拆分生成的笔记可以使用这个重新命名入口。', 'AI_RENAME_NOT_ALLOWED');
   }
 
   const existing = (await listBackgroundJobs(env, { noteUid, type: 'note-rename' }))
@@ -110,11 +115,7 @@ async function updateJob(env, jobId, patch) {
   await mutateJobs(env, (jobs) => {
     const index = jobs.findIndex((job) => job.id === jobId);
     if (index < 0) return { noWrite: true };
-    updated = {
-      ...jobs[index],
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
+    updated = { ...jobs[index], ...patch, updatedAt: new Date().toISOString() };
     jobs[index] = updated;
     return null;
   });
