@@ -37,9 +37,11 @@ jobs:
 
       - name: Merge missing history and reapply overlapping changes
         id: merge
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
+          exec > >(tee "$RUNNER_TEMP/cloudflare-merge.log") 2>&1
+          set -euxo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin backup/pre-cloudflare-7c9e92d
@@ -143,13 +145,40 @@ jobs:
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git status --short
 
+      - name: Report merge integration failure
+        if: steps.merge.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          {
+            echo "## Cloudflare 三方合并诊断"
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/cloudflare-merge.log" 2>/dev/null || true
+            echo
+            echo "--- git status --porcelain=v2 ---"
+            git status --porcelain=v2 || true
+            echo
+            echo "--- staged files ---"
+            git diff --cached --name-status || true
+            echo
+            echo "--- MERGE_HEAD ---"
+            git rev-parse -q --verify MERGE_HEAD || true
+            echo '```'
+          } > "$RUNNER_TEMP/merge-failure-comment.md"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/merge-failure-comment.md"
+          cat "$RUNNER_TEMP/merge-failure-comment.md"
+          exit 1
+
       - name: Install dependencies
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
 
       - name: Run automated Node test suite
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         env:
           GH_TOKEN: ${{ github.token }}
@@ -183,17 +212,17 @@ jobs:
           tail -n 60 "$RUNNER_TEMP/node-test.log"
 
       - name: Build production application
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npm run build
 
       - name: Validate Wrangler deployment bundle
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         run: npx wrangler deploy --dry-run
 
       - name: Push validated merge
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outcome == 'success' && steps.merge.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
