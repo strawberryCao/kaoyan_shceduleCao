@@ -35,7 +35,7 @@ async function publishDiagnostic(payload) {
   if (current.ok) sha = (await current.json()).sha;
   else if (current.status !== 404) throw new Error(`Unable to read diagnostic file: HTTP ${current.status}`);
   const body = {
-    message: 'ci: record isolated test diagnostic',
+    message: 'ci: record concurrent test diagnostic',
     branch,
     content: Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8').toString('base64'),
     ...(sha ? { sha } : {}),
@@ -44,33 +44,27 @@ async function publishDiagnostic(payload) {
   if (!response.ok) throw new Error(`Unable to publish diagnostic file: HTTP ${response.status}`);
 }
 
-test('isolates the first failing test file for synchronized architecture validation', async () => {
+test('captures the concurrent full-suite failure for synchronized architecture validation', async () => {
   if (!process.env.CAOBIJI_GITHUB_TOKEN) return;
-  const roots = [path.resolve(import.meta.dirname), path.resolve(import.meta.dirname, '..', 'scripts')];
+  const appRoot = path.resolve(import.meta.dirname, '..');
+  const roots = [path.resolve(import.meta.dirname), path.resolve(appRoot, 'scripts')];
   const files = roots.flatMap(collectTests).sort();
-  let failure = null;
-  for (const file of files) {
-    const result = spawnSync(process.execPath, ['--test', file], {
-      cwd: path.resolve(import.meta.dirname, '..'),
-      encoding: 'utf8',
-      env: { ...process.env, CAOBIJI_GITHUB_TOKEN: '' },
-      maxBuffer: 16 * 1024 * 1024,
-    });
-    if (result.status !== 0) {
-      failure = {
-        file: path.relative(path.resolve(import.meta.dirname, '..'), file).replaceAll('\\', '/'),
-        exitCode: result.status,
-        stdout: String(result.stdout || '').slice(-24000),
-        stderr: String(result.stderr || '').slice(-12000),
-      };
-      break;
-    }
-  }
+  const result = spawnSync(process.execPath, ['--test', ...files], {
+    cwd: appRoot,
+    encoding: 'utf8',
+    env: { ...process.env, CAOBIJI_GITHUB_TOKEN: '' },
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const failure = result.status === 0 ? null : {
+    exitCode: result.status,
+    stdout: String(result.stdout || '').slice(-120000),
+    stderr: String(result.stderr || '').slice(-24000),
+  };
   await publishDiagnostic({
     checkedAt: new Date().toISOString(),
     ok: failure === null,
-    isolatedFiles: files.length,
+    concurrentFiles: files.length,
     failure,
   });
-  assert.equal(failure, null, failure ? `Isolated failure: ${failure.file}` : 'No isolated test failure');
+  assert.equal(failure, null, 'Nested concurrent test suite failed; see data/diagnostics/sync-architecture-test-failure.json');
 });
