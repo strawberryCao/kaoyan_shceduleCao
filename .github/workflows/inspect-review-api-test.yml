@@ -6,7 +6,7 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
@@ -19,11 +19,9 @@ jobs:
         with:
           ref: integration/cloudflare-latest
           fetch-depth: 1
+          persist-credentials: true
 
-      - name: Locate and post exact test source
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Persist exact test source on integration branch
         shell: bash
         run: |
           set -euo pipefail
@@ -36,13 +34,19 @@ jobs:
           line="$(grep -nF "$title" "$match" | head -n1 | cut -d: -f1)"
           start=$(( line > 40 ? line - 40 : 1 ))
           end=$(( line + 220 ))
+          output=.github/review-api-test-source.txt
           {
-            echo '## 剩余审核 API 测试源码'
-            echo
-            echo "文件：\`$match\`，标题行：$line"
-            echo
-            echo '```javascript'
+            echo "FILE=$match"
+            echo "TITLE_LINE=$line"
+            echo "SOURCE_RANGE=${start}-${end}"
             sed -n "${start},${end}p" "$match"
-            echo '```'
-          } > "$RUNNER_TEMP/review-test-source.md"
-          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/review-test-source.md"
+          } > "$output"
+          if git diff --quiet -- "$output" && git ls-files --error-unmatch "$output" >/dev/null 2>&1; then
+            echo "Diagnostic source is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$output"
+          git commit -m "ci: persist review API test source"
+          git push origin HEAD:integration/cloudflare-latest
