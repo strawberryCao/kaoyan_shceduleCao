@@ -1,0 +1,87 @@
+.learning-ai-rename-action {
+  position: fixed;
+  z-index: 11500;
+  right: 22px;
+  bottom: 22px;
+  display: flex;
+  max-width: min(420px, calc(100vw - 32px));
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.learning-ai-rename-action > span {
+  overflow: hidden;
+  border: 1px solid #e2e5e9;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 10px 30px rgba(24, 33, 47, 0.14);
+  color: #586370;
+  padding: 9px 11px;
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  backdrop-filter: blur(14px);
+}
+
+.learning-ai-rename-action > button {
+  display: inline-flex;
+  min-height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid #dbc3ad;
+  border-radius: 999px;
+  background: #fff8f1;
+  box-shadow: 0 10px 30px rgba(83, 53, 31, 0.14);
+  color: #8c552e;
+  cursor: pointer;
+  padding: 8px 13px;
+  font-size: 12px;
+  font-weight: 900;
+  pointer-events: auto;
+}
+
+.learning-ai-rename-action > button:hover:not(:disabled) {
+  border-color: #c99d77;
+  background: #f9ede2;
+}
+
+.learning-ai-rename-action > button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.learning-ai-rename-action > button:disabled svg {
+  animation: learning-ai-rename-spin 0.9s linear infinite;
+}
+
+@keyframes learning-ai-rename-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 760px) {
+  .learning-ai-rename-action {
+    right: 12px;
+    bottom: calc(70px + env(safe-area-inset-bottom));
+    left: 12px;
+    justify-content: flex-end;
+  }
+
+  .learning-ai-rename-action > span {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .learning-ai-rename-action > button {
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .learning-ai-rename-action > button:disabled svg {
+    animation: none;
+  }
+}
