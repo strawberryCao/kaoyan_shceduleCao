@@ -3,7 +3,7 @@ name: Validate GitHub cloud storage migration
 on:
   pull_request:
     branches: [fix/learning-detail-title-latex]
-    types: [opened, reopened, synchronize]
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: write
