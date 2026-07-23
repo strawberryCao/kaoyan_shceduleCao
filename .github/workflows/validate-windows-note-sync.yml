@@ -7,6 +7,12 @@ on:
       - outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1
       - outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1
       - .github/workflows/validate-windows-note-sync.yml
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1
+      - outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1
+      - .github/workflows/validate-windows-note-sync.yml
   workflow_dispatch:
 
 permissions:
