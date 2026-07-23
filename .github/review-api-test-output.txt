@@ -1,22 +1,23 @@
 TEST_STATUS=1
-PRE_HEAD=e4ae08354391b241cc9d3325e452832818b29b22
+PRE_HEAD=7bb4ce5650870e6b13c88d524d9583a49d236e6c
 TAP version 13
 # Subtest: saves locally before a slow AI response and replays the same noteUid without duplication
 ok 1 - saves locally before a slow AI response and replays the same noteUid without duplication
   ---
-  duration_ms: 190.239725
+  duration_ms: 198.042988
   type: 'test'
   ...
 # Subtest: finishes AI naming in the background and keeps the idempotency receipt on the renamed file
 ok 2 - finishes AI naming in the background and keeps the idempotency receipt on the renamed file
   ---
-  duration_ms: 257.978027
+  duration_ms: 263.555069
   type: 'test'
   ...
+# CORRECTED_RESPONSE_DEBUG 500 {"ok":false,"error":"An interrupted note move requires manual review","code":"NOTE_MOVE_RECOVERY_FAILED"}
 # Subtest: review API is durable, idempotent, conflict guarded, and never reports file failures as success
 not ok 3 - review API is durable, idempotent, conflict guarded, and never reports file failures as success
   ---
-  duration_ms: 155.566207
+  duration_ms: 159.389634
   type: 'test'
   location: '/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/outputs/kaoyan-schedule-app/scripts/__tests__/note-save-flow.test.cjs:326:1'
   failureType: 'testCodeFailure'
@@ -31,7 +32,7 @@ not ok 3 - review API is durable, idempotent, conflict guarded, and never report
   actual: 500
   operator: 'strictEqual'
   stack: |-
-    TestContext.<anonymous> (/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/outputs/kaoyan-schedule-app/scripts/__tests__/note-save-flow.test.cjs:426:12)
+    TestContext.<anonymous> (/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/outputs/kaoyan-schedule-app/scripts/__tests__/note-save-flow.test.cjs:427:12)
     process.processTicksAndRejections (node:internal/process/task_queues:103:5)
     async Test.run (node:internal/test_runner/test:1054:7)
     async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
@@ -44,4 +45,4 @@ not ok 3 - review API is durable, idempotent, conflict guarded, and never report
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 2653.57969
+# duration_ms 2670.767156
