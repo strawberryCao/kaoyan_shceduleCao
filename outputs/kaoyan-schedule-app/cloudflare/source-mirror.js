@@ -1,4 +1,4 @@
-import { readJsonFile, writeBinaryFile, writeJsonFile } from './github-store.js';
+import { readFile, readJsonFile, writeBinaryFile, writeJsonFile } from './github-store.js';
 
 const ROOT = 'source-notes/普通笔记';
 const META_ROOT = `${ROOT}/.metadata`;
@@ -42,10 +42,13 @@ export async function mirrorNewCloudImage(env, image, note, payload, timestamp) 
   const noteUid = safeUid(note.noteUid);
   const fileName = `${noteUid}.${image.extension}`;
   const imagePath = `${ROOT}/${fileName}`;
-  await writeBinaryFile(env, imagePath, image.bytes, {
-    createOnly: true,
-    message: `data: mirror cloud note ${noteUid}`,
-  });
+  const existing = await readFile(env, imagePath, { allowMissing: true, maxBytes: 20 * 1024 * 1024 });
+  if (!existing) {
+    await writeBinaryFile(env, imagePath, image.bytes, {
+      createOnly: true,
+      message: `data: mirror cloud note ${noteUid}`,
+    });
+  }
   await writeJsonFile(env, metadataPath(noteUid), mirrorMetadata(note, payload, fileName, timestamp), {
     message: `data: write cloud note metadata ${noteUid}`,
   });
