@@ -26,6 +26,13 @@ function Write-JsonAtomic([string]$Path, [object]$Value) {
   Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
+function Get-ObjectPropertyValue([object]$Object, [string]$Name, [object]$DefaultValue = $null) {
+  if ($null -eq $Object) { return $DefaultValue }
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $DefaultValue }
+  return $property.Value
+}
+
 function Set-GitAuthorizationFromTokenFile([string]$TokenPath, [string]$Username) {
   if (-not (Test-Path -LiteralPath $TokenPath)) { throw "Encrypted GitHub token was not found: $TokenPath" }
   $encrypted = (Get-Content -LiteralPath $TokenPath -Raw -Encoding UTF8).Trim()
@@ -75,10 +82,23 @@ function Invoke-Git(
   return [pscustomobject]@{ ExitCode = $exitCode; Output = $output.Trim() }
 }
 
+function Test-SecretPropertyName([string]$Name) {
+  return $Name -match '(?i)api.?key|token|secret|password|authorization|headers|base.?url|endpoint|proxy|local.*path|directory'
+}
+
 function Convert-ToSafeConfigValue([object]$Value) {
   if ($null -eq $Value) { return $null }
   if ($Value -is [string] -or $Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return $Value }
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary]) -and -not ($Value -is [pscustomobject])) {
+  if ($Value -is [System.Collections.IDictionary]) {
+    $dictionary = [ordered]@{}
+    foreach ($key in $Value.Keys) {
+      $name = [string]$key
+      if (Test-SecretPropertyName $name) { continue }
+      $dictionary[$name] = Convert-ToSafeConfigValue $Value[$key]
+    }
+    return [pscustomobject]$dictionary
+  }
+  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [pscustomobject])) {
     $items = @()
     foreach ($item in $Value) { $items += ,(Convert-ToSafeConfigValue $item) }
     return $items
@@ -86,7 +106,7 @@ function Convert-ToSafeConfigValue([object]$Value) {
   $result = [ordered]@{}
   foreach ($property in $Value.PSObject.Properties) {
     $name = [string]$property.Name
-    if ($name -match '(?i)api.?key|token|secret|password|authorization|headers|base.?url|endpoint|proxy|local.*path|directory') { continue }
+    if (Test-SecretPropertyName $name) { continue }
     $result[$name] = Convert-ToSafeConfigValue $property.Value
   }
   return [pscustomobject]$result
@@ -94,11 +114,14 @@ function Convert-ToSafeConfigValue([object]$Value) {
 
 function Ensure-QuestionSplittingTask([object]$AiConfig, [string]$AiConfigPath) {
   $changed = $false
-  if ($null -eq $AiConfig.tasks) {
-    $AiConfig | Add-Member -NotePropertyName tasks -NotePropertyValue ([pscustomobject]@{})
+  $tasks = Get-ObjectPropertyValue $AiConfig 'tasks' $null
+  if ($null -eq $tasks) {
+    $tasks = [pscustomobject]@{}
+    $AiConfig | Add-Member -NotePropertyName tasks -NotePropertyValue $tasks
     $changed = $true
   }
-  if ($null -eq $AiConfig.tasks.question_splitting) {
+  $questionSplitting = Get-ObjectPropertyValue $tasks 'question_splitting' $null
+  if ($null -eq $questionSplitting) {
     $task = [ordered]@{
       enabled = $true
       fallback = $true
@@ -116,7 +139,7 @@ function Ensure-QuestionSplittingTask([object]$AiConfig, [string]$AiConfigPath) 
         maxTokens = 1600
       }
     }
-    $AiConfig.tasks | Add-Member -NotePropertyName question_splitting -NotePropertyValue ([pscustomobject]$task)
+    $tasks | Add-Member -NotePropertyName question_splitting -NotePropertyValue ([pscustomobject]$task)
     $changed = $true
   }
   if ($changed) { Write-JsonAtomic $AiConfigPath $AiConfig }
@@ -140,12 +163,13 @@ function Get-FileHashOrEmpty([string]$Path) {
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Sync configuration was not found: $ConfigPath" }
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$assistantRoot = [Environment]::ExpandEnvironmentVariables($(if ($config.assistantRoot) { [string]$config.assistantRoot } else { 'C:\Users\ASUS\Desktop\考研桌面助手' }))
-$repository = [string]$config.repository
-$branch = [string]$config.branch
-$clonePath = [Environment]::ExpandEnvironmentVariables([string]$config.clonePath)
-$tokenPath = [Environment]::ExpandEnvironmentVariables([string]$config.tokenPath)
-$githubUsername = if ($config.githubUsername) { [string]$config.githubUsername } else { 'strawberryCao' }
+$assistantRootValue = Get-ObjectPropertyValue $config 'assistantRoot' 'C:\Users\ASUS\Desktop\考研桌面助手'
+$assistantRoot = [Environment]::ExpandEnvironmentVariables([string]$assistantRootValue)
+$repository = [string](Get-ObjectPropertyValue $config 'repository' 'strawberryCao/Caobijidata')
+$branch = [string](Get-ObjectPropertyValue $config 'branch' 'main')
+$clonePath = [Environment]::ExpandEnvironmentVariables([string](Get-ObjectPropertyValue $config 'clonePath' 'D:\kaoyandata\Caobijidata'))
+$tokenPath = [Environment]::ExpandEnvironmentVariables([string](Get-ObjectPropertyValue $config 'tokenPath' 'D:\kaoyandata\NoteFolderSync\github-token.dpapi'))
+$githubUsername = [string](Get-ObjectPropertyValue $config 'githubUsername' 'strawberryCao')
 $workRoot = [System.IO.Path]::GetDirectoryName($ConfigPath)
 $statusPath = Join-Path $workRoot 'config-status.json'
 $logPath = Join-Path $workRoot 'sync.log'
@@ -178,18 +202,20 @@ try {
   if (Test-Path -LiteralPath $aiConfigPath) {
     $aiConfig = Get-Content -LiteralPath $aiConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     [void](Ensure-QuestionSplittingTask $aiConfig $aiConfigPath)
+    $tasks = Get-ObjectPropertyValue $aiConfig 'tasks' ([pscustomobject]@{})
+    $routing = Get-ObjectPropertyValue $aiConfig 'routing' ([pscustomobject]@{})
     $core = [ordered]@{
       schemaVersion = 1
-      tasks = Convert-ToSafeConfigValue $aiConfig.tasks
-      routing = Convert-ToSafeConfigValue $aiConfig.routing
+      tasks = Convert-ToSafeConfigValue $tasks
+      routing = Convert-ToSafeConfigValue $routing
     }
     $remoteAiPath = Join-Path $configRoot 'global-ai-settings.json'
     $existing = Read-ExistingConfig $remoteAiPath
     $existingCore = if ($null -eq $existing) { $null } else {
       [ordered]@{
         schemaVersion = 1
-        tasks = $existing.tasks
-        routing = $existing.routing
+        tasks = Get-ObjectPropertyValue $existing 'tasks' ([pscustomobject]@{})
+        routing = Get-ObjectPropertyValue $existing 'routing' ([pscustomobject]@{})
       }
     }
     if ($null -eq $existingCore -or (Comparable-Json $core) -ne (Comparable-Json $existingCore)) {
