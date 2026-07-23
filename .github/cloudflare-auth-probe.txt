@@ -1,0 +1,1 @@
+This temporary same-repository PR only checks whether standard Cloudflare secrets are configured. It never prints secret values.
