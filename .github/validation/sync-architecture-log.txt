@@ -1,0 +1,228 @@
+## npm ci
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated @npmcli/move-file@2.0.1: This functionality has been moved to @npmcli/fs
+npm warn deprecated npmlog@6.0.2: This package is no longer supported.
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+npm warn deprecated glob@8.1.0: Glob versions prior to v9 are no longer supported
+npm warn deprecated are-we-there-yet@3.0.1: This package is no longer supported.
+npm warn deprecated boolean@3.2.0: Package no longer supported. Contact Support at https://www.npmjs.com/support for more info.
+npm warn deprecated gauge@4.0.4: This package is no longer supported.
+
+added 522 packages, and audited 523 packages in 12s
+
+82 packages are looking for funding
+  run `npm fund` for details
+
+19 vulnerabilities (1 moderate, 17 high, 1 critical)
+
+To address issues that do not require attention, run:
+  npm audit fix
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+## tests
+ok 142 - keeps an accepted AI proposal locked during later organizer runs
+  ---
+  duration_ms: 14.345556
+  type: 'test'
+  ...
+# Subtest: parses explicit assistant and output roots
+ok 143 - parses explicit assistant and output roots
+  ---
+  duration_ms: 2.107551
+  type: 'test'
+  ...
+# Subtest: prepares a deterministic, deduplicated and secret-free Cloudflare seed
+ok 144 - prepares a deterministic, deduplicated and secret-free Cloudflare seed
+  ---
+  duration_ms: 21.361275
+  type: 'test'
+  ...
+# Subtest: scan deduplicates noteUid, prefers the current enriched sidecar and indexes deterministic signals
+ok 145 - scan deduplicates noteUid, prefers the current enriched sidecar and indexes deterministic signals
+  ---
+  duration_ms: 28.564906
+  type: 'test'
+  ...
+# Subtest: default rebuild is preview-only and --apply flattens safely, backs up and atomically rebuilds the index
+ok 146 - default rebuild is preview-only and --apply flattens safely, backs up and atomically rebuilds the index
+  ---
+  duration_ms: 27.562389
+  type: 'test'
+  ...
+# Subtest: capturedAt and createdAt win over mtimes, then image mtime is used
+ok 147 - capturedAt and createdAt win over mtimes, then image mtime is used
+  ---
+  duration_ms: 0.198872
+  type: 'test'
+  ...
+# Subtest: deduplication prefers an older human decision over a newer AI sidecar
+ok 148 - deduplication prefers an older human decision over a newer AI sidecar
+  ---
+  duration_ms: 3.698966
+  type: 'test'
+  ...
+# Subtest: an empty learning index rebuilds ignored decisions from sidecars without cards
+ok 149 - an empty learning index rebuilds ignored decisions from sidecars without cards
+  ---
+  duration_ms: 4.944418
+  type: 'test'
+  ...
+# Subtest: accepted and corrected decisions survive a full rebuild from sidecars
+ok 150 - accepted and corrected decisions survive a full rebuild from sidecars
+  ---
+  duration_ms: 9.241813
+  type: 'test'
+  ...
+# Subtest: extracts page, question, tags, memory intent and explicit wrong reason
+ok 151 - extracts page, question, tags, memory intent and explicit wrong reason
+  ---
+  duration_ms: 4.304039
+  type: 'test'
+  ...
+# Subtest: normalizes page ranges and several question syntaxes
+ok 152 - normalizes page ranges and several question syntaxes
+  ---
+  duration_ms: 0.679461
+  type: 'test'
+  ...
+# Subtest: treats standalone memory prompts as strong intent without substring false positives
+ok 153 - treats standalone memory prompts as strong intent without substring false positives
+  ---
+  duration_ms: 2.126257
+  type: 'test'
+  ...
+# Subtest: unlinkFileIfExists removes a Windows file and treats a missing file as success
+ok 154 - unlinkFileIfExists removes a Windows file and treats a missing file as success
+  ---
+  duration_ms: 1.871009
+  type: 'test'
+  ...
+# Subtest: unlinkFileIfExists refuses to recursively delete a directory
+ok 155 - unlinkFileIfExists refuses to recursively delete a directory
+  ---
+  duration_ms: 0.633304
+  type: 'test'
+  ...
+# Subtest: parses supported upload flags
+ok 156 - parses supported upload flags
+  ---
+  duration_ms: 1.434181
+  type: 'test'
+  ...
+# Subtest: dry run verifies every object without invoking Wrangler or logging contents
+ok 157 - dry run verifies every object without invoking Wrangler or logging contents
+  ---
+  duration_ms: 3.570346
+  type: 'test'
+  ...
+# Subtest: uploads verified files with argument-array Wrangler calls
+ok 158 - uploads verified files with argument-array Wrangler calls
+  ---
+  duration_ms: 1.85037
+  type: 'test'
+  ...
+# Subtest: assigns safe content types for seed objects and downgrades SVG
+ok 159 - assigns safe content types for seed objects and downgrades SVG
+  ---
+  duration_ms: 4.45404
+  type: 'test'
+  ...
+# Subtest: refuses seed manifests that target any live canvas object
+ok 160 - refuses seed manifests that target any live canvas object
+  ---
+  duration_ms: 4.034394
+  type: 'test'
+  ...
+# Subtest: rejects executable SVG content types supplied by a manifest
+ok 161 - rejects executable SVG content types supplied by a manifest
+  ---
+  duration_ms: 1.110406
+  type: 'test'
+  ...
+# Subtest: validates the complete seed before making the first upload call
+ok 162 - validates the complete seed before making the first upload call
+  ---
+  duration_ms: 54.475618
+  type: 'test'
+  ...
+# Subtest: rejects manifest keys that escape the objects directory
+ok 163 - rejects manifest keys that escape the objects directory
+  ---
+  duration_ms: 1.161822
+  type: 'test'
+  ...
+1..163
+# tests 163
+# suites 0
+# pass 162
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3564.983678
+## build
+
+> kaoyan-schedule-app@1.0.0 build
+> tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs
+
+[36mvite v5.4.21 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 1641 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                           [39m[1m[2m    1.10 kB[22m[1m[22m[2m │ gzip:   0.67 kB[22m
+[2mdist/[22m[2massets/[22m[35mNoteDropApp-DZnlLnUQ.css      [39m[1m[2m   14.07 kB[22m[1m[22m[2m │ gzip:   3.34 kB[22m
+[2mdist/[22m[2massets/[22m[35mNoteCapturePage-CuafX0RS.css  [39m[1m[2m   30.88 kB[22m[1m[22m[2m │ gzip:   6.89 kB[22m
+[2mdist/[22m[2massets/[22m[35mScheduleApp-C1VlfHIx.css      [39m[1m[2m   36.17 kB[22m[1m[22m[2m │ gzip:   7.15 kB[22m
+[2mdist/[22m[2massets/[22m[35mindex-DI4RKelr.css            [39m[1m[2m  128.71 kB[22m[1m[22m[2m │ gzip:  23.73 kB[22m
+[2mdist/[22m[2massets/[22m[36mcircle-_C3MEFWi.js            [39m[1m[2m    0.29 kB[22m[1m[22m[2m │ gzip:   0.24 kB[22m
+[2mdist/[22m[2massets/[22m[36marrow-right-CQ3oxZNi.js       [39m[1m[2m    0.33 kB[22m[1m[22m[2m │ gzip:   0.27 kB[22m
+[2mdist/[22m[2massets/[22m[36mexternal-link-32RKgJXa.js     [39m[1m[2m    0.42 kB[22m[1m[22m[2m │ gzip:   0.30 kB[22m
+[2mdist/[22m[2massets/[22m[36mfolder-open-CdOukbVY.js       [39m[1m[2m    0.46 kB[22m[1m[22m[2m │ gzip:   0.32 kB[22m
+[2mdist/[22m[2massets/[22m[36mimage-plus-BygwAhlW.js        [39m[1m[2m    0.53 kB[22m[1m[22m[2m │ gzip:   0.35 kB[22m
+[2mdist/[22m[2massets/[22m[36mplus-D2H3ZZxX.js              [39m[1m[2m    0.57 kB[22m[1m[22m[2m │ gzip:   0.30 kB[22m
+[2mdist/[22m[2massets/[22m[36mlayers-Bj1U4tco.js            [39m[1m[2m    0.59 kB[22m[1m[22m[2m │ gzip:   0.34 kB[22m
+[2mdist/[22m[2massets/[22m[36mpencil-CuAGWZqN.js            [39m[1m[2m    0.69 kB[22m[1m[22m[2m │ gzip:   0.37 kB[22m
+[2mdist/[22m[2massets/[22m[36mtriangle-alert-BKqu_KFq.js    [39m[1m[2m    0.82 kB[22m[1m[22m[2m │ gzip:   0.42 kB[22m
+[2mdist/[22m[2massets/[22m[36mtrash-2-phlvy4-K.js           [39m[1m[2m    1.22 kB[22m[1m[22m[2m │ gzip:   0.49 kB[22m
+[2mdist/[22m[2massets/[22m[36mzoom-out-DzQaz6Bq.js          [39m[1m[2m    1.68 kB[22m[1m[22m[2m │ gzip:   0.53 kB[22m
+[2mdist/[22m[2massets/[22m[36mscheduleRecords-CP6OW6ca.js   [39m[1m[2m    3.77 kB[22m[1m[22m[2m │ gzip:   1.99 kB[22m
+[2mdist/[22m[2massets/[22m[36mAppHub-J5ByYByE.js            [39m[1m[2m    5.24 kB[22m[1m[22m[2m │ gzip:   2.33 kB[22m
+[2mdist/[22m[2massets/[22m[36mDesktopConsole-BjzTi6M2.js    [39m[1m[2m   12.37 kB[22m[1m[22m[2m │ gzip:   5.27 kB[22m
+[2mdist/[22m[2massets/[22m[36mAiConfigPage-Djmqh9P3.js      [39m[1m[2m   23.46 kB[22m[1m[22m[2m │ gzip:   9.31 kB[22m
+[2mdist/[22m[2massets/[22m[36mNoteDropApp-DLOr4n-e.js       [39m[1m[2m   25.87 kB[22m[1m[22m[2m │ gzip:   9.47 kB[22m
+[2mdist/[22m[2massets/[22m[36mDesktopWorkspace-DUAucFdD.js  [39m[1m[2m   29.48 kB[22m[1m[22m[2m │ gzip:  11.64 kB[22m
+[2mdist/[22m[2massets/[22m[36mScheduleApp-6WxDpMMp.js       [39m[1m[2m   85.66 kB[22m[1m[22m[2m │ gzip:  28.57 kB[22m
+[2mdist/[22m[2massets/[22m[36mNoteCapturePage-Idw9OxRo.js   [39m[1m[2m  100.50 kB[22m[1m[22m[2m │ gzip:  35.03 kB[22m
+[2mdist/[22m[2massets/[22m[36mindex-BblwqX4L.js             [39m[1m[2m  189.93 kB[22m[1m[22m[2m │ gzip:  61.66 kB[22m
+[2mdist/[22m[2massets/[22m[36mheic-to-fcHZpvsg.js           [39m[1m[33m2,996.26 kB[39m[22m[2m │ gzip: 734.44 kB[22m
+[33m
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Using dynamic import() to code-split the application
+- Use build.rollupOptions.output.manualChunks to improve chunking: https://rollupjs.org/configuration-options/#output-manualchunks
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.[39m
+[32m✓ built in 2.76s[39m
+## wrangler
+
+ ⛅️ wrangler 4.113.0
+────────────────────
+✨ Read 33 files from the assets directory /home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/outputs/kaoyan-schedule-app/dist
+Total Upload: 119.08 KiB / gzip: 28.46 KiB
+Your Worker has access to the following bindings:
+Binding                                        Resource                  
+env.AI                                         AI                        
+env.ASSETS                                     Assets                    
+env.APP_USERNAME ("caobiji")                   Environment Variable      
+env.PUBLIC_READ_ENABLED ("true")               Environment Variable      
+env.GITHUB_OWNER ("strawberryCao")             Environment Variable      
+env.GITHUB_REPO ("Caobijidata")                Environment Variable      
+env.GITHUB_BRANCH ("main")                     Environment Variable      
+
+--dry-run: exiting now.
+
+Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+## powershell
