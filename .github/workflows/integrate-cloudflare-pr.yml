@@ -99,7 +99,48 @@ jobs:
             echo "$unresolved" >&2
             exit 1
           fi
-          git diff --check
+
+          mapfile -d '' cmd_files < <(git diff --name-only -z "$BASE" "$OLD_REF" -- '*.cmd')
+          if (( ${#cmd_files[@]} > 0 )); then
+            git restore --source=HEAD --staged --worktree -- "${cmd_files[@]}"
+          fi
+
+          intended_files=(
+            ".github/workflows/apply-review-ai-data-ui-final.yml"
+            "outputs/kaoyan-schedule-app/scripts/ai-router.cjs"
+            "outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs"
+            "outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs"
+            "outputs/kaoyan-schedule-app/scripts/note-server.cjs"
+            "outputs/kaoyan-schedule-app/scripts/organize-notes.cjs"
+            "outputs/kaoyan-schedule-app/scripts/review-github-sync.cjs"
+            "outputs/kaoyan-schedule-app/src/ai-config.css"
+            "outputs/kaoyan-schedule-app/src/components/AiConfigPage.tsx"
+            "outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx"
+            "outputs/kaoyan-schedule-app/src/learning-center.css"
+            "outputs/kaoyan-schedule-app/src/utils/aiConfig.ts"
+            "outputs/kaoyan-schedule-app/src/utils/learningData.ts"
+          )
+          git add -- "${intended_files[@]}"
+
+          staged_files="$(git diff --cached --name-only)"
+          if [[ -z "$staged_files" ]]; then
+            echo "No merged changes were staged." >&2
+            exit 1
+          fi
+          while IFS= read -r file; do
+            allowed=false
+            for expected in "${intended_files[@]}"; do
+              if [[ "$file" == "$expected" ]]; then allowed=true; break; fi
+            done
+            if [[ "$allowed" != true ]]; then
+              echo "Unexpected staged file: $file" >&2
+              exit 1
+            fi
+          done <<< "$staged_files"
+
+          git diff --cached --check
+          git commit -m "merge: restore pre-cloudflare history [history-integrated]"
+          echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git status --short
 
       - name: Install dependencies
@@ -151,7 +192,7 @@ jobs:
         working-directory: outputs/kaoyan-schedule-app
         run: npx wrangler deploy --dry-run
 
-      - name: Commit and push validated merge
+      - name: Push validated merge
         if: steps.merge.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -160,15 +201,9 @@ jobs:
         run: |
           set +e
           publish_log="$RUNNER_TEMP/integration-publish.log"
-          {
-            git status --short
-            git commit -m "merge: restore pre-cloudflare history [history-integrated]"
-          } > "$publish_log" 2>&1
+          git restore --worktree -- '*.cmd' > "$publish_log" 2>&1
+          git push origin HEAD:integration/cloudflare-latest >> "$publish_log" 2>&1
           publish_status=$?
-          if (( publish_status == 0 )); then
-            git push origin HEAD:integration/cloudflare-latest >> "$publish_log" 2>&1
-            publish_status=$?
-          fi
           set -e
           if (( publish_status != 0 )); then
             {
