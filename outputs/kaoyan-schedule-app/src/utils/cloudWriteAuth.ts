@@ -1,6 +1,7 @@
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const STORAGE_KEY = 'kaoyan-cloud-write-authorization';
 const CLOUD_USERNAME = 'caobiji';
+const PUBLIC_API_PATHS = new Set(['/api/health', '/api/note-file']);
 
 const isLoopbackHostname = (hostname: string): boolean => (
   hostname === '127.0.0.1'
@@ -20,11 +21,8 @@ const readStoredAuthorization = (): string => {
     }
     return legacy;
   } catch {
-    try {
-      return window.sessionStorage.getItem(STORAGE_KEY) || '';
-    } catch {
-      return '';
-    }
+    try { return window.sessionStorage.getItem(STORAGE_KEY) || ''; }
+    catch { return ''; }
   }
 };
 
@@ -57,16 +55,17 @@ const encodeBasicAuthorization = (password: string): string => {
 
 const promptForPassword = (retry = false): string => {
   const message = retry
-    ? '编辑密码不正确，请重新输入。验证成功后此设备会记住，不再重复询问。'
-    : '首次修改需要输入编辑密码。验证成功后此设备会记住，不再重复询问：';
+    ? '密码不正确，请重新输入。验证成功后此设备会长期记住。'
+    : '首次访问学习数据需要输入密码。验证成功后此设备不再重复询问：';
   const password = window.prompt(message) || '';
   return password ? encodeBasicAuthorization(password) : '';
 };
 
-const isProtectedCloudWrite = (request: Request): boolean => {
-  if (!WRITE_METHODS.has(request.method.toUpperCase())) return false;
+const isProtectedCloudRequest = (request: Request): boolean => {
   const url = new URL(request.url, window.location.href);
-  return url.origin === window.location.origin && (url.pathname === '/api' || url.pathname.startsWith('/api/'));
+  if (url.origin !== window.location.origin || !(url.pathname === '/api' || url.pathname.startsWith('/api/'))) return false;
+  if (PUBLIC_API_PATHS.has(url.pathname)) return false;
+  return WRITE_METHODS.has(request.method.toUpperCase()) || request.method.toUpperCase() === 'GET';
 };
 
 const isAuthenticationFailure = async (response: Response): Promise<boolean> => {
@@ -90,7 +89,7 @@ export function installCloudWriteAuthentication(): void {
       ? new URL(String(input), window.location.href).toString()
       : input;
     const request = new Request(normalizedInput, init);
-    if (!isProtectedCloudWrite(request)) return originalFetch(request);
+    if (!isProtectedCloudRequest(request)) return originalFetch(request);
 
     const send = (authorization: string): Promise<Response> => {
       const headers = new Headers(request.headers);
