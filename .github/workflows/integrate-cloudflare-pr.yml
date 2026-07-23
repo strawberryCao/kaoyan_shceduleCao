@@ -107,7 +107,7 @@ jobs:
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
 
-      - name: Run complete Node test suite
+      - name: Run automated Node test suite
         if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
         env:
@@ -115,15 +115,21 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          if (( ${#test_files[@]} == 0 )); then
+            echo "No automated test files found." >&2
+            exit 1
+          fi
           set +e
-          node --test > "$RUNNER_TEMP/node-test.log" 2>&1
+          node --test "${test_files[@]}" > "$RUNNER_TEMP/node-test.log" 2>&1
           test_status=$?
           set -e
           if (( test_status != 0 )); then
             {
               echo "## Cloudflare 整合测试失败"
               echo
-              echo "以下是 Node 测试输出的最后 220 行："
+              echo "以下是自动化测试输出的最后 220 行："
               echo
               echo '```text'
               tail -n 220 "$RUNNER_TEMP/node-test.log"
