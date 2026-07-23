@@ -1,0 +1,2 @@
+Deploy public read mode, layered browser caching, and session-based write unlock.
+Release: 2026-07-23-public-read-cache-local-sync
