@@ -21,6 +21,7 @@ import {
   replaceLearningSnapshot,
   restoreNote,
 } from './learning.js';
+import { detectQuestions, renameNoteWithAi } from './ai.js';
 import { getNoteFile, saveNote } from './media.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
@@ -89,6 +90,11 @@ async function handleLearningRoute(request, env, pathname) {
     return json({ ok: true, revision: snapshot.revision, records });
   }
 
+  const noteRename = /^\/learning-data\/notes\/([^/]+)\/rename$/.exec(pathname);
+  if (noteRename && request.method === 'POST') {
+    await readJson(request, 64 * 1024);
+    return json(await renameNoteWithAi(env, decodeURIComponent(noteRename[1])));
+  }
   const noteRestore = /^\/learning-data\/notes\/([^/]+)\/restore$/.exec(pathname);
   if (noteRestore && request.method === 'POST') {
     return json(await restoreNote(env, decodeURIComponent(noteRestore[1]), await readJson(request)));
@@ -180,6 +186,9 @@ async function handleApi(request, env, pathname, url) {
       },
     });
   }
+  if (request.method === 'POST' && pathname === '/ai/detect-questions') {
+    return json(await detectQuestions(env, await readJson(request, 28 * 1024 * 1024)));
+  }
   const learningResponse = await handleLearningRoute(request, env, pathname);
   if (learningResponse) return learningResponse;
   const canvasResponse = await handleCanvasRoute(request, env, pathname);
@@ -240,6 +249,7 @@ export async function handleRequest(request, env) {
       githubConfigured: github.configured,
       repository: github.repository,
       branch: github.branch,
+      aiConfigured: Boolean(env.AI && typeof env.AI.run === 'function'),
       d1Bound: false,
       r2Bound: false,
     });
