@@ -55,6 +55,11 @@ jobs:
           echo "needed=true" >> "$GITHUB_OUTPUT"
 
           BASE="$(git merge-base HEAD "$OLD_REF")"
+          if ! git diff --quiet -- ':(glob)**/*.cmd'; then
+            git stash push -m ci-checkout-cmd-eol -- ':(glob)**/*.cmd'
+          fi
+          git status --short
+
           set +e
           git merge --no-commit --no-ff "$OLD_REF"
           merge_status=$?
@@ -70,6 +75,10 @@ jobs:
             "outputs/kaoyan-schedule-app/src/utils/learningData.ts"
           )
 
+          if (( merge_status != 0 && ${#conflicts[@]} == 0 )); then
+            echo "Merge failed before producing resolvable conflicts (exit $merge_status)." >&2
+            exit "$merge_status"
+          fi
           if (( merge_status != 0 )); then
             for file in "${conflicts[@]}"; do
               expected=false
@@ -143,6 +152,7 @@ jobs:
           git diff --cached --stat
           git commit -m "merge: restore pre-cloudflare history [history-integrated]"
           echo "commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git stash drop >/dev/null 2>&1 || true
           git status --short
 
       - name: Report merge integration failure
