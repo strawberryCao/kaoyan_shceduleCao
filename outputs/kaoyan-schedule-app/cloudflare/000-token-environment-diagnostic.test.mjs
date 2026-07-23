@@ -50,10 +50,14 @@ test('records the full-suite result with the production token environment retain
   if (!process.env.CAOBIJI_GITHUB_TOKEN) return;
   const appRoot = path.resolve(import.meta.dirname, '..');
   const files = [path.resolve(import.meta.dirname), path.resolve(appRoot, 'scripts')].flatMap(collect).sort();
+  const childEnv = { ...process.env, KAOYAN_DIAGNOSTIC_CHILD: '1' };
+  for (const key of Object.keys(childEnv)) {
+    if (key.startsWith('NODE_TEST')) delete childEnv[key];
+  }
   const result = spawnSync(process.execPath, ['--test', ...files], {
     cwd: appRoot,
     encoding: 'utf8',
-    env: { ...process.env, KAOYAN_DIAGNOSTIC_CHILD: '1' },
+    env: childEnv,
     maxBuffer: 32 * 1024 * 1024,
   });
   const payload = {
