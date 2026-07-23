@@ -1,0 +1,33 @@
+name: Probe Cloudflare credentials
+
+on:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths: [.github/workflows/probe-cloudflare-auth.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN_VALUE: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_API_TOKEN_VALUE: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID_VALUE: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CF_ACCOUNT_ID_VALUE: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - name: Report credential presence only
+        shell: bash
+        run: |
+          presence() {
+            if [[ -n "$2" ]]; then
+              echo "$1=present"
+            else
+              echo "$1=absent"
+            fi
+          }
+          presence CLOUDFLARE_API_TOKEN "$CLOUDFLARE_API_TOKEN_VALUE"
+          presence CF_API_TOKEN "$CF_API_TOKEN_VALUE"
+          presence CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID_VALUE"
+          presence CF_ACCOUNT_ID "$CF_ACCOUNT_ID_VALUE"
