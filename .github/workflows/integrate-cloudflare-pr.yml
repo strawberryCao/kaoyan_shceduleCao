@@ -96,17 +96,25 @@ jobs:
               "    }\n  }\n  return null;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
               "    }\n  }\n  return saved;\n}\n\nfunction findLearningNote(snapshot, noteUid) {",
           )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/organize-notes.cjs',
+              "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  fs.mkdirSync(destinationDir, { recursive: true });",
+              "function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {\n  ensureInside(notesRoot, imagePath, 'source image');\n  ensureInside(notesRoot, destinationDir, 'destination directory');\n  if (!fs.existsSync(imagePath) || !fs.statSync(imagePath).isFile()) {\n    const error = new Error(`Source image does not exist: ${imagePath}`);\n    error.code = 'NOTE_SOURCE_MISSING';\n    throw error;\n  }\n  fs.mkdirSync(destinationDir, { recursive: true });",
+          )
           PY
 
           git add -- \
             outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs \
-            outputs/kaoyan-schedule-app/scripts/note-server.cjs
+            outputs/kaoyan-schedule-app/scripts/note-server.cjs \
+            outputs/kaoyan-schedule-app/scripts/organize-notes.cjs
 
           git rm -f --ignore-unmatch \
             .github/workflows/integrate-cloudflare-history.yml \
             .github/integration-cloudflare-trigger.txt \
             .github/integration-cloudflare-pr-trigger.txt \
-            .github/review-api-test-source.txt
+            .github/review-api-test-source.txt \
+            .github/review-api-test-output.txt
 
           assert_contains() {
             local file="$1"
@@ -127,6 +135,7 @@ jobs:
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'if (saved && fs.existsSync(saved.filePath)) return saved;'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'wrongReasonSource'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'targetNoteUid'
+          assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'NOTE_SOURCE_MISSING'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonSource: string'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonConfidence: number | null'
           assert_contains outputs/kaoyan-schedule-app/src/utils/aiConfig.ts 'analyzeLearningNoteWrongReason'
