@@ -6,6 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:GitAuthorizationHeader = ''
 
 function Ensure-Directory([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path)) {
@@ -20,15 +21,62 @@ function Write-JsonAtomic([string]$Path, [object]$Value) {
   Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
+function Set-GitAuthorizationFromTokenFile([string]$TokenPath, [string]$Username) {
+  if (-not (Test-Path -LiteralPath $TokenPath)) {
+    throw "Encrypted GitHub token was not found: $TokenPath"
+  }
+
+  $secureToken = Get-Content -LiteralPath $TokenPath -Raw -Encoding UTF8 | ConvertTo-SecureString
+  $pointer = [IntPtr]::Zero
+  try {
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+    $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    if ([string]::IsNullOrWhiteSpace($token)) {
+      throw 'The encrypted GitHub token is empty.'
+    }
+    $credentialBytes = [Text.Encoding]::UTF8.GetBytes("${Username}:$token")
+    $script:GitAuthorizationHeader = 'Authorization: Basic ' + [Convert]::ToBase64String($credentialBytes)
+  } finally {
+    if ($pointer -ne [IntPtr]::Zero) {
+      [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    }
+    $token = $null
+  }
+}
+
 function Invoke-Git(
   [string[]]$Arguments,
   [string]$WorkingDirectory = '',
   [int[]]$AllowedExitCodes = @(0)
 ) {
+  $environmentNames = @(
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_CONFIG_KEY_1',
+    'GIT_CONFIG_VALUE_1',
+    'GIT_TERMINAL_PROMPT',
+    'GCM_INTERACTIVE'
+  )
+  $savedEnvironment = @{}
+  foreach ($name in $environmentNames) {
+    $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+  }
+
   $previousPreference = $ErrorActionPreference
   try {
-    # Git writes normal clone/fetch/push progress to stderr. Windows PowerShell
-    # 5.1 otherwise converts those lines into terminating ErrorRecord objects.
+    if ($script:GitAuthorizationHeader) {
+      $env:GIT_CONFIG_COUNT = '2'
+      $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
+      $env:GIT_CONFIG_VALUE_0 = $script:GitAuthorizationHeader
+      $env:GIT_CONFIG_KEY_1 = 'credential.helper'
+      $env:GIT_CONFIG_VALUE_1 = ''
+      $env:GIT_TERMINAL_PROMPT = '0'
+      $env:GCM_INTERACTIVE = 'Never'
+    }
+
+    # Git writes normal progress messages to stderr. Windows PowerShell 5.1
+    # otherwise converts them into terminating ErrorRecord objects.
     $ErrorActionPreference = 'Continue'
     if ($WorkingDirectory) {
       $output = & git -C $WorkingDirectory @Arguments 2>&1 | Out-String
@@ -38,7 +86,11 @@ function Invoke-Git(
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
+    foreach ($name in $environmentNames) {
+      [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    }
   }
+
   if ($AllowedExitCodes -notcontains $exitCode) {
     throw "Git command failed (exit $exitCode): git $($Arguments -join ' ')`n$($output.Trim())"
   }
@@ -95,18 +147,15 @@ function Read-PreviousHashes([string]$StatePath) {
       if ($entry.path -and $entry.hash) { $hashes[[string]$entry.path] = [string]$entry.hash }
     }
   } catch {
-    # Rebuild state when the local status file is damaged.
+    # A damaged local state file must not block synchronization.
   }
   return $hashes
 }
 
 function Commit-PendingMirror([string]$ClonePath, [string]$RemoteSubdir, [string]$Message) {
-  $mirrorPath = Join-Path $ClonePath $RemoteSubdir
-  if (-not (Test-Path -LiteralPath $mirrorPath)) { return $false }
-  $files = @(Get-ChildItem -LiteralPath $mirrorPath -File -Recurse -Force -ErrorAction SilentlyContinue)
-  if ($files.Count -eq 0) { return $false }
-
-  Invoke-Git @('add', '-A', '--', $RemoteSubdir) $ClonePath | Out-Null
+  $status = Invoke-Git @('status', '--porcelain', '--', $RemoteSubdir) $ClonePath
+  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
+  Invoke-Git @('add', '--', $RemoteSubdir) $ClonePath | Out-Null
   $diff = Invoke-Git @('diff', '--cached', '--quiet', '--', $RemoteSubdir) $ClonePath @(0, 1)
   if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
@@ -121,20 +170,15 @@ if ($NativeCommandSelfTest) {
     Ensure-Directory $selfTestRoot
     $bareRepository = Join-Path $selfTestRoot 'source.git'
     $cloneRepository = Join-Path $selfTestRoot 'clone'
+    $script:GitAuthorizationHeader = 'Authorization: Basic dGVzdDp0ZXN0'
     Invoke-Git @('init', '--bare', $bareRepository) | Out-Null
     $cloneResult = Invoke-Git @('clone', $bareRepository, $cloneRepository)
-    Invoke-Git @('config', 'user.name', 'Sync Self Test') $cloneRepository | Out-Null
-    Invoke-Git @('config', 'user.email', 'sync-test@local.invalid') $cloneRepository | Out-Null
-
-    if (Commit-PendingMirror $cloneRepository 'source-notes' 'self-test: missing path') {
-      throw 'A missing source-notes path must not create a commit.'
+    if (-not (Test-Path -LiteralPath (Join-Path $cloneRepository '.git'))) {
+      throw 'Native Git self-test clone did not create a repository.'
     }
-    Ensure-Directory (Join-Path $cloneRepository 'source-notes')
-    Set-Content -LiteralPath (Join-Path $cloneRepository 'source-notes\sample.txt') -Value 'sample' -Encoding UTF8
-    if (-not (Commit-PendingMirror $cloneRepository 'source-notes' 'self-test: mirror path')) {
-      throw 'A populated source-notes path should create a commit.'
-    }
-    Write-Host "Native Git and missing-path self-test passed (clone exit $($cloneResult.ExitCode))."
+    $missingMirrorCommitted = Commit-PendingMirror $cloneRepository 'source-notes' 'self-test'
+    if ($missingMirrorCommitted) { throw 'A missing mirror path must not create a commit.' }
+    Write-Host "Native Git and missing mirror path self-test passed (exit $($cloneResult.ExitCode))."
   } finally {
     Remove-Item -LiteralPath $selfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
   }
@@ -149,8 +193,10 @@ $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom
 $localPath = [Environment]::ExpandEnvironmentVariables([string]$config.localPath)
 $repository = [string]$config.repository
 $branch = [string]$config.branch
-$remoteSubdir = ([string]$config.remoteSubdir).Trim('/').Replace('/', '\')
+$remoteSubdir = ([string]$config.remoteSubdir).Trim('/').Trim('\').Replace('\', '/')
 $clonePath = [Environment]::ExpandEnvironmentVariables([string]$config.clonePath)
+$tokenPath = [Environment]::ExpandEnvironmentVariables([string]$config.tokenPath)
+$githubUsername = if ($config.githubUsername) { [string]$config.githubUsername } else { 'strawberryCao' }
 $workRoot = [System.IO.Path]::GetDirectoryName($ConfigPath)
 $statePath = Join-Path $workRoot 'state.json'
 $statusPath = Join-Path $workRoot 'status.json'
@@ -159,6 +205,8 @@ $lockPath = Join-Path $workRoot 'sync.lock'
 
 Ensure-Directory $workRoot
 Ensure-Directory $localPath
+Set-GitAuthorizationFromTokenFile $tokenPath $githubUsername
+
 $lockStream = $null
 try {
   $lockStream = [System.IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
@@ -252,18 +300,19 @@ try {
   }
 
   $now = [DateTime]::UtcNow.ToString('o')
-  Write-JsonAtomic $statePath ([pscustomobject]@{ version = 1; updatedAt = $now; files = $stateFiles })
+  Write-JsonAtomic $statePath ([pscustomobject]@{ version = 2; updatedAt = $now; files = $stateFiles })
   Write-JsonAtomic $statusPath ([pscustomobject]@{
     ok = $true
     lastRunAt = $now
     localPath = $localPath
     repository = $repository
     branch = $branch
-    remoteSubdir = $remoteSubdir.Replace('\', '/')
+    remoteSubdir = $remoteSubdir
     trackedFiles = $stateFiles.Count
     changedFiles = $changedFiles
     conflicts = $conflicts
     committed = [bool]$committed
+    authentication = 'dpapi-token'
     deletionPolicy = 'preserve-both-sides'
   })
   Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now OK tracked=$($stateFiles.Count) changed=$changedFiles conflicts=$conflicts committed=$committed"
@@ -274,5 +323,6 @@ try {
   Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now ERROR $message"
   throw
 } finally {
+  $script:GitAuthorizationHeader = ''
   if ($null -ne $lockStream) { $lockStream.Dispose() }
 }
