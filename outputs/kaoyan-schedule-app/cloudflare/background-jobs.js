@@ -1,6 +1,6 @@
 import { HttpError } from './http.js';
 import { findNote, getLearningSnapshot } from './learning.js';
-import { renameNoteWithAi } from './ai.js';
+import { runConfiguredRename } from './rename-job.js';
 import { readAppState, writeAppState } from './storage.js';
 
 const STATE_KEY = 'ai-background-jobs';
@@ -135,7 +135,7 @@ export async function processBackgroundJob(env, jobId) {
   });
 
   try {
-    const result = await renameNoteWithAi(env, job.noteUid, {
+    const result = await runConfiguredRename(env, job.noteUid, {
       baselineTitle: job.request.baselineTitle,
       baselineUpdatedAt: job.request.baselineUpdatedAt,
     });
