@@ -2,6 +2,14 @@ name: Deploy kaoyan study center to Cloudflare
 
 on:
   workflow_dispatch:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - 'outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx'
+      - 'outputs/kaoyan-schedule-app/src/note-drop-mobile.css'
+      - 'outputs/kaoyan-schedule-app/src/utils/notes.ts'
+      - 'outputs/kaoyan-schedule-app/cloudflare/media.js'
+      - '.github/workflows/deploy-kaoyan-cloudflare.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
     types: [opened, reopened, synchronize]
@@ -16,7 +24,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'deploy/cloudflare-production'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.head_ref == 'deploy/cloudflare-production'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -157,7 +165,9 @@ jobs:
               echo
               echo '```'
             } > "$RUNNER_TEMP/bootstrap-failure.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"
+            if [[ -n "$PR_NUMBER" ]]; then
+              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"
+            fi
             exit 1
           fi
 
@@ -182,7 +192,9 @@ jobs:
               echo
               echo '```'
             } > "$RUNNER_TEMP/learning-failure.md"
-            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"
+            if [[ -n "$PR_NUMBER" ]]; then
+              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"
+            fi
             exit 1
           fi
 
