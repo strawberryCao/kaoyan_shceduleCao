@@ -59,11 +59,19 @@ jobs:
             {
               echo '## GitHub storage migration tests failed'
               echo
+              echo '### First 140 lines'
               echo '```text'
-              grep -nE 'not ok|failureType|error:|expected:|actual:|AssertionError|ERR_' "$RUNNER_TEMP/github-storage-tests.log" | tail -n 120 || true
+              head -n 140 "$RUNNER_TEMP/github-storage-tests.log"
+              echo '```'
               echo
-              echo '--- last 220 lines ---'
-              tail -n 220 "$RUNNER_TEMP/github-storage-tests.log"
+              echo '### Failure index'
+              echo '```text'
+              grep -nE 'not ok|failureType|error:|expected:|actual:|AssertionError|ERR_|SyntaxError|ReferenceError|TypeError' "$RUNNER_TEMP/github-storage-tests.log" | tail -n 140 || true
+              echo '```'
+              echo
+              echo '### Last 100 lines'
+              echo '```text'
+              tail -n 100 "$RUNNER_TEMP/github-storage-tests.log"
               echo '```'
             } > "$RUNNER_TEMP/github-storage-test-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/github-storage-test-comment.md"
