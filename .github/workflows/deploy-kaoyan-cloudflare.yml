@@ -78,11 +78,33 @@ jobs:
       - name: Run automated tests
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
         run: |
           set -euo pipefail
           mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
           (( ${#test_files[@]} > 0 ))
           node --test "${test_files[@]}"
+
+      - name: Validate Windows synchronization scripts
+        working-directory: outputs/kaoyan-schedule-app
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @(
+            'scripts/windows-note-folder-sync.ps1',
+            'scripts/windows-assistant-config-sync.ps1',
+            'scripts/install-note-folder-sync.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if (@($errors).Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
 
       - name: Build and validate Worker bundle
         working-directory: outputs/kaoyan-schedule-app
@@ -236,7 +258,7 @@ jobs:
               echo "- Learning notes: $NOTES"
               echo "- Review cards: $CARDS"
               echo "- GitHub data revision: $REVISION"
-              echo "- Workers AI: configured"
+              echo '- Workers AI: configured'
               echo "- Storage: $DATA_REPOSITORY ($DATA_BRANCH), no D1 or R2"
             else
               echo '- Status: failed'
