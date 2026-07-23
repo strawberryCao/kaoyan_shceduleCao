@@ -1,0 +1,215 @@
+name: One-time kaoyan Cloudflare deployment
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/temp-deploy-kaoyan-cloudflare.yml]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: one-time-kaoyan-cloudflare-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      APP_USERNAME: caobiji
+      D1_NAME: kaoyan-study-data
+      R2_BUCKET: kaoyan-study-private
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Check out deployment source
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 1
+
+      - name: Check out Caobijidata
+        uses: actions/checkout@v4
+        with:
+          repository: strawberryCao/Caobijidata
+          ref: main
+          path: caobijidata
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Verify protected inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]]
+          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]]
+          [[ -n "$KAOYAN_APP_PASSWORD" ]]
+
+      - name: Install, test and build
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}"
+          npm run build
+          npx wrangler deploy --dry-run
+
+      - name: Verify Cloudflare authentication
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler whoami
+
+      - name: Create or reuse R2 bucket
+        id: r2
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set +e
+          npx wrangler r2 bucket info "$R2_BUCKET" --json > "$RUNNER_TEMP/r2-info.log" 2>&1
+          info_status=$?
+          if (( info_status == 0 )); then
+            echo 'R2 bucket already exists.'
+            exit 0
+          fi
+          npx wrangler r2 bucket create "$R2_BUCKET" > "$RUNNER_TEMP/r2-create.log" 2>&1
+          create_status=$?
+          cat "$RUNNER_TEMP/r2-info.log"
+          cat "$RUNNER_TEMP/r2-create.log"
+          exit "$create_status"
+
+      - name: Deploy Worker and provision D1
+        id: deploy
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          worker_url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | tail -n 1 || true)"
+          [[ -n "$worker_url" ]]
+          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
+
+      - name: Apply D1 migrations
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler d1 migrations apply "$D1_NAME" --remote
+
+      - name: Configure app password
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD
+
+      - name: Prepare Caobijidata seed
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node scripts/prepare-cloudflare-seed-from-caobijidata.cjs \
+            --source "$GITHUB_WORKSPACE/caobijidata" \
+            --output "$GITHUB_WORKSPACE/outputs/kaoyan-schedule-app/cloudflare/.seed"
+
+      - name: Upload seed objects
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+          const seedRoot = path.resolve('cloudflare/.seed');
+          const manifest = JSON.parse(fs.readFileSync(path.join(seedRoot, 'manifest.json'), 'utf8'));
+          if (!Array.isArray(manifest.files) || manifest.files.length === 0) throw new Error('Seed manifest is empty');
+          for (let index = 0; index < manifest.files.length; index += 1) {
+            const record = manifest.files[index];
+            const filePath = path.join(seedRoot, 'objects', ...record.r2Key.split('/'));
+            const result = spawnSync('npx', [
+              'wrangler', 'r2', 'object', 'put',
+              `${process.env.R2_BUCKET}/${record.r2Key}`,
+              '--file', filePath,
+              '--content-type', record.contentType,
+              '--remote',
+            ], { stdio: 'inherit' });
+            if (result.error) throw result.error;
+            if (result.status !== 0) throw new Error(`R2 upload failed: ${record.r2Key}`);
+            console.log(`Uploaded ${index + 1}/${manifest.files.length}`);
+          }
+          NODE
+
+      - name: Bootstrap and verify
+        id: verify
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_header="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
+          curl --fail --silent --show-error "$WORKER_URL/api/health" > "$RUNNER_TEMP/health.json"
+          curl --fail --silent --show-error -X POST -H "Authorization: $auth_header" "$WORKER_URL/api/admin/bootstrap" > "$RUNNER_TEMP/bootstrap.json"
+          curl --fail --silent --show-error -H "Authorization: $auth_header" "$WORKER_URL/api/learning-data" > "$RUNNER_TEMP/learning.json"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const health = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/health.json', 'utf8'));
+          const bootstrap = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/bootstrap.json', 'utf8'));
+          const snapshot = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/learning.json', 'utf8'));
+          const notes = Object.values(snapshot.days || {}).reduce((n, day) => n + (day.autoNotes?.length || 0), 0);
+          const cards = snapshot.cards?.length || 0;
+          if (!health.ok || !health.d1Bound || !health.r2Bound || !bootstrap.ok || notes < 1 || cards < 1) process.exit(1);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${notes}\ncards=${cards}\nrevision=${snapshot.revision}\n`);
+          NODE
+
+      - name: Report success
+        if: success()
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+          NOTES: ${{ steps.verify.outputs.notes }}
+          CARDS: ${{ steps.verify.outputs.cards }}
+          REVISION: ${{ steps.verify.outputs.revision }}
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/result.md" <<EOF
+          ## Cloudflare production deployment succeeded
+
+          - URL: $WORKER_URL
+          - Username: $APP_USERNAME
+          - Notes: $NOTES
+          - Cards: $CARDS
+          - D1 revision: $REVISION
+          EOF
+          gh pr comment 11 --body-file "$RUNNER_TEMP/result.md"
+
+      - name: Report failure details
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## Cloudflare production deployment failed'
+            echo
+            if [[ -f "$RUNNER_TEMP/r2-info.log" ]]; then
+              echo '### R2 info'
+              echo '```text'
+              tail -n 80 "$RUNNER_TEMP/r2-info.log"
+              echo '```'
+            fi
+            if [[ -f "$RUNNER_TEMP/r2-create.log" ]]; then
+              echo '### R2 create'
+              echo '```text'
+              tail -n 80 "$RUNNER_TEMP/r2-create.log"
+              echo '```'
+            fi
+            if [[ -f "$RUNNER_TEMP/deploy.log" ]]; then
+              echo '### Worker deploy'
+              echo '```text'
+              tail -n 80 "$RUNNER_TEMP/deploy.log"
+              echo '```'
+            fi
+          } > "$RUNNER_TEMP/failure.md"
+          gh pr comment 11 --body-file "$RUNNER_TEMP/failure.md"
