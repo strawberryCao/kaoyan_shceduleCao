@@ -53,3 +53,5 @@ jobs:
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Uninstall
+
+# Final validation trigger after Git stderr and uninstall compatibility fixes.
