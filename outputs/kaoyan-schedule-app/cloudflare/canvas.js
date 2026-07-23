@@ -1,8 +1,11 @@
-import { HttpError, sha256 } from './http.js';
-import { readAppState, resultChanges, SQL, writeAppState } from './storage.js';
+import { HttpError } from './http.js';
+import { commitFiles, getBranchHead, readJsonFile } from './github-store.js';
+import { readAppState, writeAppState } from './storage.js';
 
 const CANVAS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const MAX_CANVAS_BYTES = 24 * 1024 * 1024;
+const INDEX_PATH = 'data/cloud/canvas-index.json';
+const CANVAS_ROOT = 'data/cloud/canvases';
 
 function assertCanvasId(value) {
   if (typeof value !== 'string' || !CANVAS_ID.test(value) || value === '.' || value === '..') {
@@ -11,22 +14,31 @@ function assertCanvasId(value) {
   return value;
 }
 
-function parseSummary(row) {
-  try {
-    return JSON.parse(row.summary_json);
-  } catch {
-    return {};
-  }
+function canvasPath(projectId) {
+  return `${CANVAS_ROOT}/${assertCanvasId(projectId)}.json`;
 }
 
-function rowSummary(row) {
+function emptyIndex() {
+  return { version: 1, revision: 0, updatedAt: null, projects: [] };
+}
+
+function normalizeIndex(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const projects = Array.isArray(source.projects) ? source.projects : [];
   return {
-    ...parseSummary(row),
-    id: String(row.id),
-    title: String(row.title),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at),
-    syncRevision: Number(row.revision) || 0,
+    version: 1,
+    revision: Number.isInteger(Number(source.revision)) ? Math.max(0, Number(source.revision)) : 0,
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : null,
+    projects: projects.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map((item) => ({
+      ...item,
+      id: assertCanvasId(item.id),
+      title: typeof item.title === 'string' ? item.title.slice(0, 240) : '',
+      createdAt: typeof item.createdAt === 'string' ? item.createdAt : new Date(0).toISOString(),
+      updatedAt: typeof item.updatedAt === 'string' ? item.updatedAt : new Date(0).toISOString(),
+      syncRevision: Number.isInteger(Number(item.syncRevision ?? item.revision))
+        ? Math.max(0, Number(item.syncRevision ?? item.revision))
+        : 0,
+    })),
   };
 }
 
@@ -66,164 +78,132 @@ function validateDocument(document, projectId) {
   }
 }
 
+async function readIndex(env, options = {}) {
+  const file = await readJsonFile(env, INDEX_PATH, {
+    ref: options.ref,
+    allowMissing: true,
+    maxBytes: 4 * 1024 * 1024,
+  });
+  return normalizeIndex(file?.value ?? emptyIndex());
+}
+
 export async function listCanvasProjects(env) {
-  const result = await env.DB.prepare(SQL.listCanvas).all();
-  return (result?.results ?? []).map(rowSummary);
+  return (await readIndex(env)).projects;
 }
 
 export async function loadCanvasProject(env, projectId) {
   projectId = assertCanvasId(projectId);
-  const row = await env.DB.prepare(SQL.selectCanvas).bind(projectId).first();
-  if (!row) throw new HttpError(404, 'Canvas project not found.', 'CANVAS_NOT_FOUND');
-  const object = await env.BUCKET.get(String(row.r2_key));
-  if (!object?.body) throw new HttpError(404, 'Canvas document object is missing.', 'CANVAS_OBJECT_NOT_FOUND');
-  if (Number(object.size) > MAX_CANVAS_BYTES) throw new HttpError(413, 'Canvas document is too large.', 'CANVAS_TOO_LARGE');
-  let document;
-  try {
-    document = JSON.parse(await object.text());
-  } catch {
-    throw new HttpError(500, 'Stored canvas document is invalid.', 'CANVAS_DOCUMENT_READ_FAILED');
-  }
-  validateDocument(document, projectId);
-  return document;
+  const file = await readJsonFile(env, canvasPath(projectId), {
+    allowMissing: true,
+    maxBytes: MAX_CANVAS_BYTES,
+  });
+  if (!file) throw new HttpError(404, 'Canvas project not found.', 'CANVAS_NOT_FOUND');
+  validateDocument(file.value, projectId);
+  return file.value;
 }
 
 export async function saveCanvasProject(env, projectId, payload) {
   projectId = assertCanvasId(projectId);
   const source = payload?.document && typeof payload.document === 'object' ? payload.document : payload;
   validateDocument(source, projectId);
-  const expectedRevision = payload?.document && typeof payload.document === 'object'
-    ? payload.expectedRevision
-    : undefined;
+  const expectedRevision = payload?.document && typeof payload.document === 'object' ? payload.expectedRevision : undefined;
   if (expectedRevision !== undefined && (!Number.isInteger(expectedRevision) || expectedRevision < 0)) {
     throw new HttpError(400, 'expectedRevision must be a non-negative integer.', 'CANVAS_DOCUMENT_INVALID');
   }
-  const existing = await env.DB.prepare(SQL.selectCanvas).bind(projectId).first();
-  const actualRevision = Number(existing?.revision ?? 0);
-  if (expectedRevision !== undefined && expectedRevision !== actualRevision) {
-    throw new HttpError(409, `Canvas project revision changed from ${expectedRevision} to ${actualRevision}.`, 'CANVAS_REVISION_CONFLICT', {
-      expectedRevision,
-      actualRevision,
-    });
-  }
-  const updatedAt = new Date().toISOString();
-  const createdAt = typeof existing?.created_at === 'string'
-    ? existing.created_at
-    : typeof source.createdAt === 'string' ? source.createdAt : updatedAt;
-  const document = {
-    ...source,
-    id: projectId,
-    createdAt,
-    updatedAt,
-    syncRevision: actualRevision + 1,
-    relations: Array.isArray(source.relations) ? source.relations : [],
-    strokes: Array.isArray(source.strokes) ? source.strokes : [],
-  };
-  const serialized = JSON.stringify(document);
-  if (new TextEncoder().encode(serialized).byteLength > MAX_CANVAS_BYTES) {
-    throw new HttpError(413, 'Canvas document is too large.', 'CANVAS_TOO_LARGE');
-  }
-  const contentHash = await sha256(serialized);
-  const revisionLabel = String(document.syncRevision);
-  const r2Key = `canvases/${projectId}/revisions/${revisionLabel}-${contentHash}.json`;
-  let storedObject = await env.BUCKET.put(r2Key, serialized, {
-    onlyIf: { etagDoesNotMatch: '*' },
-    httpMetadata: { contentType: 'application/json; charset=utf-8', cacheControl: 'private, no-store' },
-    customMetadata: { canvasId: projectId, revision: String(document.syncRevision), contentHash },
-  });
-  if (!storedObject) {
-    storedObject = await env.BUCKET.head(r2Key);
-    if (storedObject?.customMetadata?.contentHash !== contentHash) {
-      throw new HttpError(409, 'Canvas version key is already occupied by different content.', 'CANVAS_REVISION_CONFLICT', {
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const head = await getBranchHead(env);
+    const index = await readIndex(env, { ref: head });
+    const existingIndex = index.projects.findIndex((item) => item.id === projectId);
+    const existing = existingIndex >= 0 ? index.projects[existingIndex] : null;
+    const actualRevision = Number(existing?.syncRevision ?? 0);
+    if (expectedRevision !== undefined && expectedRevision !== actualRevision) {
+      throw new HttpError(409, `Canvas project revision changed from ${expectedRevision} to ${actualRevision}.`, 'CANVAS_REVISION_CONFLICT', {
         expectedRevision,
         actualRevision,
       });
     }
-  }
-  const summary = summarize(document);
-  let result;
-  if (existing) {
-    result = await env.DB.prepare(SQL.updateCanvas).bind(
-      summary.title,
-      document.syncRevision,
-      r2Key,
-      storedObject.etag,
+    const updatedAt = new Date().toISOString();
+    const createdAt = existing?.createdAt || (typeof source.createdAt === 'string' ? source.createdAt : updatedAt);
+    const document = {
+      ...source,
+      id: projectId,
+      createdAt,
       updatedAt,
-      JSON.stringify(summary),
-      projectId,
-      actualRevision,
-    ).run();
-  } else {
-    try {
-      result = await env.DB.prepare(SQL.insertCanvas).bind(
-        projectId,
-        summary.title,
-        document.syncRevision,
-        r2Key,
-        storedObject.etag,
-        createdAt,
-        updatedAt,
-        JSON.stringify(summary),
-      ).run();
-    } catch {
-      result = null;
+      syncRevision: actualRevision + 1,
+      relations: Array.isArray(source.relations) ? source.relations : [],
+      strokes: Array.isArray(source.strokes) ? source.strokes : [],
+    };
+    const serialized = `${JSON.stringify(document, null, 2)}\n`;
+    if (new TextEncoder().encode(serialized).byteLength > MAX_CANVAS_BYTES) {
+      throw new HttpError(413, 'Canvas document is too large.', 'CANVAS_TOO_LARGE');
     }
-  }
-  if (!result || resultChanges(result) !== 1) {
-    throw new HttpError(409, 'Canvas metadata changed while saving.', 'CANVAS_REVISION_CONFLICT', {
-      expectedRevision,
-      actualRevision: Number((await env.DB.prepare(SQL.selectCanvas).bind(projectId).first())?.revision ?? actualRevision),
-    });
-  }
-  const previousKey = typeof existing?.r2_key === 'string' ? existing.r2_key : '';
-  const liveRevisionPrefix = `canvases/${projectId}/revisions/`;
-  const previousVersionName = previousKey.startsWith(liveRevisionPrefix)
-    ? previousKey.slice(liveRevisionPrefix.length)
-    : '';
-  if (
-    previousKey
-    && previousKey !== r2Key
-    && /^\d+-[a-f0-9]{64}\.json$/.test(previousVersionName)
-  ) {
+    const summary = summarize(document);
+    const projects = [...index.projects];
+    if (existingIndex >= 0) projects[existingIndex] = summary;
+    else projects.push(summary);
+    projects.sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+    const nextIndex = {
+      version: 1,
+      revision: index.revision + 1,
+      updatedAt,
+      projects,
+    };
     try {
-      await env.BUCKET.delete(previousKey);
+      await commitFiles(env, {
+        expectedHeadSha: head,
+        message: `cloud: save canvas ${projectId} revision ${document.syncRevision}`,
+        files: [
+          { path: canvasPath(projectId), content: serialized },
+          { path: INDEX_PATH, content: `${JSON.stringify(nextIndex, null, 2)}\n` },
+        ],
+      });
+      return { document, summary };
     } catch (error) {
-      console.error(JSON.stringify({
-        level: 'error',
-        event: 'canvas_previous_version_cleanup_failed',
-        projectId,
-        r2Key: previousKey,
-        error: error instanceof Error ? error.message : String(error),
-      }));
+      if (!(error instanceof HttpError) || error.code !== 'GITHUB_REVISION_CONFLICT' || attempt === 3) throw error;
     }
   }
-  return { document, summary };
+  throw new HttpError(409, 'Canvas metadata changed while saving.', 'CANVAS_REVISION_CONFLICT');
 }
 
-export async function deleteCanvasProject(env, projectId, payload) {
+export async function deleteCanvasProject(env, projectId, payload = {}) {
   projectId = assertCanvasId(projectId);
-  const row = await env.DB.prepare(SQL.selectCanvas).bind(projectId).first();
-  if (!row) throw new HttpError(404, 'Canvas project not found.', 'CANVAS_NOT_FOUND');
-  const actualRevision = Number(row.revision) || 0;
-  if (payload.expectedRevision !== undefined && Number(payload.expectedRevision) !== actualRevision) {
-    throw new HttpError(409, 'Canvas project changed before deletion.', 'CANVAS_REVISION_CONFLICT', {
-      expectedRevision: payload.expectedRevision,
-      actualRevision,
-    });
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const head = await getBranchHead(env);
+    const index = await readIndex(env, { ref: head });
+    const existing = index.projects.find((item) => item.id === projectId);
+    if (!existing) throw new HttpError(404, 'Canvas project not found.', 'CANVAS_NOT_FOUND');
+    const actualRevision = Number(existing.syncRevision) || 0;
+    if (payload.expectedRevision !== undefined && Number(payload.expectedRevision) !== actualRevision) {
+      throw new HttpError(409, 'Canvas project changed before deletion.', 'CANVAS_REVISION_CONFLICT', {
+        expectedRevision: payload.expectedRevision,
+        actualRevision,
+      });
+    }
+    const deletedAt = new Date().toISOString();
+    const nextIndex = {
+      ...index,
+      revision: index.revision + 1,
+      updatedAt: deletedAt,
+      projects: index.projects.filter((item) => item.id !== projectId),
+    };
+    try {
+      await commitFiles(env, {
+        expectedHeadSha: head,
+        message: `cloud: remove canvas ${projectId}`,
+        files: [{ path: INDEX_PATH, content: `${JSON.stringify(nextIndex, null, 2)}\n` }],
+      });
+      return { projectId, deletedAt, recoverable: true };
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.code !== 'GITHUB_REVISION_CONFLICT' || attempt === 3) throw error;
+    }
   }
-  const result = await env.DB.prepare(SQL.deleteCanvas).bind(projectId, actualRevision).run();
-  if (resultChanges(result) !== 1) {
-    throw new HttpError(409, 'Canvas project changed before deletion.', 'CANVAS_REVISION_CONFLICT', { actualRevision });
-  }
-  // Canvas objects are immutable versions. Retaining the pointed object avoids
-  // deleting bootstrap data and keeps a recovery path for accidental deletes.
-  const deletedAt = new Date().toISOString();
-  return { projectId, deletedAt, recoverable: false };
+  throw new HttpError(409, 'Canvas project changed before deletion.', 'CANVAS_REVISION_CONFLICT');
 }
 
 export async function setActiveCanvas(env, payload) {
   const projectId = assertCanvasId(payload.projectId);
-  if (!await env.DB.prepare(SQL.selectCanvas).bind(projectId).first()) {
+  if (!(await readIndex(env)).projects.some((item) => item.id === projectId)) {
     throw new HttpError(404, 'Canvas project not found.', 'CANVAS_NOT_FOUND');
   }
   const current = await readAppState(env, 'active-canvas');
@@ -242,64 +222,60 @@ export async function setActiveCanvas(env, payload) {
 export function normalizeCanvasIndex(value) {
   const source = Array.isArray(value) ? value : Array.isArray(value?.projects) ? value.projects : null;
   if (!source) throw new HttpError(400, 'Bootstrap canvas index must be an array.', 'INVALID_BOOTSTRAP');
-  const seenIds = new Set();
+  const seen = new Set();
   return source.map((item) => {
-    let id;
-    try {
-      id = assertCanvasId(item?.id);
-    } catch {
-      throw new HttpError(400, 'Bootstrap canvas index contains an invalid id.', 'INVALID_BOOTSTRAP');
-    }
-    if (seenIds.has(id)) throw new HttpError(400, `Bootstrap canvas id is duplicated: ${id}`, 'INVALID_BOOTSTRAP');
-    seenIds.add(id);
+    const id = assertCanvasId(item?.id);
+    if (seen.has(id)) throw new HttpError(400, `Bootstrap canvas id is duplicated: ${id}`, 'INVALID_BOOTSTRAP');
+    seen.add(id);
     const revision = Number.isInteger(Number(item.revision ?? item.syncRevision))
       ? Math.max(0, Number(item.revision ?? item.syncRevision))
       : 0;
     const createdAt = typeof item.createdAt === 'string' ? item.createdAt : new Date(0).toISOString();
     const updatedAt = typeof item.updatedAt === 'string' ? item.updatedAt : createdAt;
-    const summary = item.summary && typeof item.summary === 'object' ? item.summary : item;
-    const candidateKey = typeof item.r2Key === 'string' ? item.r2Key : '';
-    const bootstrapPrefix = `bootstrap/canvases/${id}/`;
-    const objectName = candidateKey.startsWith(bootstrapPrefix)
-      ? candidateKey.slice(bootstrapPrefix.length)
-      : '';
-    if (!/^[a-f0-9]{64}\.json$/.test(objectName)) {
-      throw new HttpError(400, `Bootstrap canvas key is invalid: ${id}`, 'INVALID_BOOTSTRAP');
-    }
     return {
+      ...(item.summary && typeof item.summary === 'object' ? item.summary : item),
       id,
       title: typeof item.title === 'string' ? item.title.slice(0, 240) : '',
-      revision,
-      r2Key: candidateKey,
-      r2Etag: typeof item.r2Etag === 'string' ? item.r2Etag : null,
       createdAt,
       updatedAt,
-      summary: {
-        ...summary,
-        id,
-        title: typeof item.title === 'string' ? item.title.slice(0, 240) : '',
-        createdAt,
-        updatedAt,
-        syncRevision: revision,
-      },
+      syncRevision: revision,
     };
   });
 }
 
 export async function upsertBootstrapCanvases(env, projects) {
-  let changed = 0;
-  for (const project of projects) {
-    const result = await env.DB.prepare(SQL.upsertCanvasBootstrap).bind(
-      project.id,
-      project.title,
-      project.revision,
-      project.r2Key,
-      project.r2Etag,
-      project.createdAt,
-      project.updatedAt,
-      JSON.stringify(project.summary),
-    ).run();
-    changed += resultChanges(result);
+  const normalized = normalizeCanvasIndex(projects);
+  if (normalized.length === 0) return 0;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const head = await getBranchHead(env);
+    const index = await readIndex(env, { ref: head });
+    const byId = new Map(index.projects.map((item) => [item.id, item]));
+    let changed = 0;
+    for (const project of normalized) {
+      const previous = byId.get(project.id);
+      if (!previous || Number(project.syncRevision) > Number(previous.syncRevision)) {
+        byId.set(project.id, project);
+        changed += 1;
+      }
+    }
+    if (changed === 0) return 0;
+    const updatedAt = new Date().toISOString();
+    const nextIndex = {
+      version: 1,
+      revision: index.revision + 1,
+      updatedAt,
+      projects: [...byId.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))),
+    };
+    try {
+      await commitFiles(env, {
+        expectedHeadSha: head,
+        message: 'cloud: import canvas index',
+        files: [{ path: INDEX_PATH, content: `${JSON.stringify(nextIndex, null, 2)}\n` }],
+      });
+      return changed;
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.code !== 'GITHUB_REVISION_CONFLICT' || attempt === 3) throw error;
+    }
   }
-  return changed;
+  return 0;
 }

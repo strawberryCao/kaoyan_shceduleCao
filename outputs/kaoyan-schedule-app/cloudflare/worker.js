@@ -22,6 +22,7 @@ import {
   restoreNote,
 } from './learning.js';
 import { getNoteFile, saveNote } from './media.js';
+import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 
 function apiPath(pathname) {
@@ -210,12 +211,17 @@ export async function handleRequest(request, env) {
   const url = new URL(request.url);
   const pathname = apiPath(url.pathname);
   if (pathname === '/health' && request.method === 'GET') {
+    const github = githubStorageInfo(env);
     return json({
       ok: true,
       runtime: 'cloudflare-workers',
+      storage: 'github',
       authConfigured: Boolean(env.APP_USERNAME && env.APP_PASSWORD),
-      d1Bound: Boolean(env.DB),
-      r2Bound: Boolean(env.BUCKET),
+      githubConfigured: github.configured,
+      repository: github.repository,
+      branch: github.branch,
+      d1Bound: false,
+      r2Bound: false,
     });
   }
 
