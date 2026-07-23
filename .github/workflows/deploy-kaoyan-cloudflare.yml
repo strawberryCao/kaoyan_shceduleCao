@@ -1,0 +1,227 @@
+name: Deploy kaoyan study center to Cloudflare
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: kaoyan-cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event_name == 'workflow_dispatch' || github.head_ref == 'deploy/cloudflare-production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      APP_USERNAME: caobiji
+      WORKER_NAME: kaoyan-study-center
+      D1_NAME: kaoyan-study-data
+      R2_BUCKET: kaoyan-study-private
+
+    steps:
+      - name: Check out deployment source
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 1
+
+      - name: Check out Caobijidata
+        uses: actions/checkout@v4
+        with:
+          repository: strawberryCao/Caobijidata
+          ref: main
+          path: caobijidata
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Verify protected deployment inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'CLOUDFLARE_API_TOKEN is missing' >&2; exit 2; }
+          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo 'CLOUDFLARE_ACCOUNT_ID is missing' >&2; exit 2; }
+          [[ -n "$KAOYAN_APP_PASSWORD" ]] || { echo 'KAOYAN_APP_PASSWORD is missing' >&2; exit 2; }
+          (( ${#KAOYAN_APP_PASSWORD} >= 12 )) || { echo 'KAOYAN_APP_PASSWORD must be at least 12 characters' >&2; exit 2; }
+          echo 'Cloudflare credentials and app password are configured.'
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Run automated tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+
+      - name: Build and validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          npm run build
+          npx wrangler deploy --dry-run
+
+      - name: Verify Cloudflare authentication
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler whoami
+
+      - name: Create or reuse private R2 bucket
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npx wrangler r2 bucket info "$R2_BUCKET" --json > "$RUNNER_TEMP/r2-info.json" 2>/dev/null; then
+            echo "Using existing R2 bucket: $R2_BUCKET"
+          else
+            npx wrangler r2 bucket create "$R2_BUCKET" --location apac
+          fi
+
+      - name: Deploy Worker and provision D1 binding
+        id: deploy
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          npx wrangler deploy 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          deploy_status=${PIPESTATUS[0]}
+          set -e
+          (( deploy_status == 0 )) || exit "$deploy_status"
+          worker_url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | tail -n 1 || true)"
+          [[ -n "$worker_url" ]] || {
+            echo 'Unable to determine workers.dev URL from Wrangler output.' >&2
+            tail -n 80 "$RUNNER_TEMP/wrangler-deploy.log" >&2
+            exit 3
+          }
+          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
+          echo "Worker URL: $worker_url"
+
+      - name: Apply D1 migrations
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler d1 migrations apply "$D1_NAME" --remote
+
+      - name: Configure private app password
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD
+
+      - name: Prepare Caobijidata seed
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node scripts/prepare-cloudflare-seed-from-caobijidata.cjs \
+            --source "$GITHUB_WORKSPACE/caobijidata" \
+            --output "$GITHUB_WORKSPACE/outputs/kaoyan-schedule-app/cloudflare/.seed"
+
+      - name: Upload verified seed objects to R2
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const { spawnSync } = require('node:child_process');
+
+          const seedRoot = path.resolve('cloudflare/.seed');
+          const manifest = JSON.parse(fs.readFileSync(path.join(seedRoot, 'manifest.json'), 'utf8'));
+          if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
+            throw new Error('Cloudflare seed manifest is empty');
+          }
+          for (let index = 0; index < manifest.files.length; index += 1) {
+            const record = manifest.files[index];
+            const filePath = path.join(seedRoot, 'objects', ...record.r2Key.split('/'));
+            const result = spawnSync('npx', [
+              'wrangler', 'r2', 'object', 'put',
+              `${process.env.R2_BUCKET}/${record.r2Key}`,
+              '--file', filePath,
+              '--content-type', record.contentType,
+              '--remote',
+            ], { stdio: 'inherit', encoding: 'utf8' });
+            if (result.error) throw result.error;
+            if (result.status !== 0) throw new Error(`R2 upload failed for ${record.r2Key}`);
+            console.log(`Uploaded ${index + 1}/${manifest.files.length}`);
+          }
+          console.log(`Uploaded ${manifest.files.length} verified R2 objects.`);
+          NODE
+
+      - name: Bootstrap and verify learning center
+        id: verify
+        shell: bash
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+        run: |
+          set -euo pipefail
+          auth_header="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
+
+          curl --fail --silent --show-error "$WORKER_URL/api/health" > "$RUNNER_TEMP/health.json"
+          node -e "const v=require(process.argv[1]); if(!v.ok||v.runtime!=='cloudflare-workers'||!v.d1Bound||!v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"
+
+          curl --fail --silent --show-error \
+            -X POST \
+            -H "Authorization: $auth_header" \
+            "$WORKER_URL/api/admin/bootstrap" > "$RUNNER_TEMP/bootstrap.json"
+
+          curl --fail --silent --show-error \
+            -H "Authorization: $auth_header" \
+            "$WORKER_URL/api/learning-data" > "$RUNNER_TEMP/learning-data.json"
+
+          node <<'NODE'
+          const fs = require('node:fs');
+          const bootstrap = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/bootstrap.json', 'utf8'));
+          const snapshot = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/learning-data.json', 'utf8'));
+          const notes = Object.values(snapshot.days || {}).reduce((total, day) => total + (Array.isArray(day.autoNotes) ? day.autoNotes.length : 0), 0);
+          const cards = Array.isArray(snapshot.cards) ? snapshot.cards.length : 0;
+          if (!bootstrap.ok || notes < 1 || cards < 1) {
+            throw new Error(`Bootstrap verification failed: notes=${notes}, cards=${cards}`);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${notes}\ncards=${cards}\nrevision=${snapshot.revision}\n`);
+          console.log(`Verified learning center: ${notes} notes, ${cards} cards, revision ${snapshot.revision}.`);
+          NODE
+
+      - name: Publish deployment summary
+        if: always()
+        shell: bash
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+          NOTES: ${{ steps.verify.outputs.notes }}
+          CARDS: ${{ steps.verify.outputs.cards }}
+          REVISION: ${{ steps.verify.outputs.revision }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Cloudflare production deployment'
+            echo
+            if [[ "${{ job.status }}" == 'success' ]]; then
+              echo "- Status: success"
+              echo "- URL: $WORKER_URL"
+              echo "- Login username: $APP_USERNAME"
+              echo "- Learning notes: $NOTES"
+              echo "- Review cards: $CARDS"
+              echo "- D1 revision: $REVISION"
+              echo "- Storage: D1 $D1_NAME + private R2 $R2_BUCKET"
+            else
+              echo "- Status: failed"
+              echo '- Inspect the failed workflow step; no credential values were logged.'
+            fi
+          } | tee "$RUNNER_TEMP/deployment-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
+            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/deployment-summary.md"
+          fi
