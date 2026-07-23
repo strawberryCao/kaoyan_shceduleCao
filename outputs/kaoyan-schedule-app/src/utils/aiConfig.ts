@@ -124,6 +124,10 @@ export interface ReviewSyncStatus {
   lastPullResult?: string;
   lastRemoteGeneratedAt?: string;
   lastError?: string | null;
+  runningAction?: 'push' | 'pull' | 'automatic' | null;
+  phase?: string;
+  progress?: number;
+  message?: string;
   settings?: {
     enabled?: boolean;
     repository?: string;
@@ -142,11 +146,11 @@ export async function fetchReviewSyncStatus(): Promise<ReviewSyncStatus> {
   return readReviewResponse<ReviewSyncStatus>(await fetch(`${NOTE_SERVER_URL}/ai/review/status`, { cache: 'no-store' }));
 }
 
-export async function pushReviewData(): Promise<{ ok: boolean; changed?: boolean; count?: number; skipped?: boolean; reason?: string }> {
+export async function pushReviewData(): Promise<{ ok: boolean; accepted?: boolean; running?: boolean; action?: string; changed?: boolean; count?: number; skipped?: boolean; reason?: string }> {
   return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/push`, { method: 'POST' }));
 }
 
-export async function pullReviewPdfs(): Promise<{ ok: boolean; downloaded?: number; outputDirectory?: string; skipped?: boolean; reason?: string }> {
+export async function pullReviewPdfs(): Promise<{ ok: boolean; accepted?: boolean; running?: boolean; action?: string; downloaded?: number; outputDirectory?: string; skipped?: boolean; reason?: string }> {
   return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/ai/review/pull`, { method: 'POST' }));
 }
 
@@ -156,4 +160,8 @@ export async function selectReviewOutputDirectory(initialPath = ''): Promise<{ o
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ initialPath }),
   }));
+}
+
+export async function analyzeLearningNoteWrongReason(noteUid: string): Promise<{ ok: boolean; queued: boolean; noteUid: string }> {
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/analyze-wrong-reason`, { method: 'POST' }));
 }

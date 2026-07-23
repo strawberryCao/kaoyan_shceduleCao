@@ -35,6 +35,7 @@ import type {
   LearningNotePatch,
   LearningNoteReviewAction,
 } from '../utils/learningData';
+import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
@@ -345,6 +346,8 @@ export function LearningCenter({
   const [thoughtDraft, setThoughtDraft] = useState('');
   const [thoughtEditor, setThoughtEditor] = useState<ThoughtEditorState | null>(null);
   const [thoughtSaving, setThoughtSaving] = useState(false);
+  const [wrongReasonEditor, setWrongReasonEditor] = useState<{ noteUid: string; text: string } | null>(null);
+  const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -505,6 +508,7 @@ export function LearningCenter({
     setFailedImagePath('');
     setThoughtDraft('');
     setThoughtEditor(null);
+    setWrongReasonEditor(null);
   }, [selectedNoteUid, selectedInboxKey, selectedCardId, view]);
 
   useEffect(() => {
@@ -707,6 +711,59 @@ export function LearningCenter({
         questionType: classificationDraft.questionType.trim(),
         wrongReason: classificationDraft.wrongReason.trim(),
     });
+  };
+
+  const wrongReasonSourceLabel = (note: LearningAutoNote): string => ({
+    manual: '手动填写',
+    manual_deleted: '已手动删除',
+    explicit_remark: '从备注明确提取',
+    explicit_image: '从图片明确提取',
+    ai_inferred: 'AI 根据过程推断',
+    none: '尚未识别',
+  }[note.wrongReasonSource] || (note.wrongReason ? '已有记录' : '尚未识别'));
+
+  const saveWrongReason = async (note: LearningAutoNote) => {
+    if (!wrongReasonEditor || wrongReasonSaving) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { wrongReason: wrongReasonEditor.text.trim() });
+      setWrongReasonEditor(null);
+      setFeedback(wrongReasonEditor.text.trim() ? '错因已保存，后续 AI 不会覆盖。' : '错因已删除，后续 AI 不会自动补回。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '错因没有保存，请稍后重试。');
+    } finally {
+      setWrongReasonSaving(false);
+    }
+  };
+
+  const deleteWrongReason = async (note: LearningAutoNote) => {
+    if (wrongReasonSaving || !window.confirm('确定删除这条错因吗？删除后 AI 不会自动补回，除非你主动重新分析。')) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { wrongReason: '' });
+      setWrongReasonEditor(null);
+      setFeedback('错因已删除。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '错因删除失败，请稍后重试。');
+    } finally {
+      setWrongReasonSaving(false);
+    }
+  };
+
+  const analyzeWrongReason = async (note: LearningAutoNote) => {
+    if (wrongReasonSaving) return;
+    try {
+      setWrongReasonSaving(true);
+      setFeedback('');
+      const result = await analyzeLearningNoteWrongReason(note.noteUid);
+      setFeedback(result.queued ? '已转入后台分析；完成后错因会自动更新。' : '这条笔记的分析任务已在队列中。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '无法启动错因分析。');
+    } finally {
+      setWrongReasonSaving(false);
+    }
   };
 
   const splitEditorTags = (value: string): string[] => uniqueText(

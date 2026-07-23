@@ -110,6 +110,8 @@ export interface LearningAutoNote {
   noteType: string;
   questionType: string;
   wrongReason: string;
+  wrongReasonSource: string;
+  wrongReasonConfidence: number | null;
   organizationStatus: LearningNoteOrganizationStatus;
   classificationSource: LearningNoteClassificationSource;
   reviewStatus: LearningNoteReviewStatus;
@@ -352,6 +354,10 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     noteType: typeof value.noteType === 'string' ? value.noteType : '',
     questionType: typeof value.questionType === 'string' ? value.questionType : '',
     wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',
+    wrongReasonSource: typeof value.wrongReasonSource === 'string' ? value.wrongReasonSource : '',
+    wrongReasonConfidence: Number.isFinite(Number(value.wrongReasonConfidence))
+      ? Math.min(1, Math.max(0, Number(value.wrongReasonConfidence)))
+      : null,
     organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
     classificationSource,
     reviewStatus,
