@@ -62,6 +62,34 @@ jobs:
             git restore --source="$PRE_MERGE_HEAD" --staged --worktree -- "${cmd_files[@]}"
           fi
 
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file_path = Path(path)
+              text = file_path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one compatibility target, found {count}')
+              file_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs',
+              "    'wrongReason',\n    'wrongReasonSource',\n    'wrongReasonConfidence',\n    'intent',",
+              "    'wrongReason',\n    'intent',",
+          )
+
+          replace_once(
+              'outputs/kaoyan-schedule-app/scripts/note-server.cjs',
+              "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) {\n    return null;\n  }",
+              "  if (!metadata || metadata.noteUid !== noteUid || typeof filePath !== 'string') {\n    return null;\n  }\n  const fileExists = fs.existsSync(filePath);\n  const namingInFlight = metadata.naming?.status === 'pending' && receipt.aiStatus === 'pending';\n  if (!fileExists && !namingInFlight) {\n    return null;\n  }",
+          )
+          PY
+
+          git add -- \
+            outputs/kaoyan-schedule-app/scripts/note-ai-analyzer.cjs \
+            outputs/kaoyan-schedule-app/scripts/note-server.cjs
+
           git rm -f --ignore-unmatch \
             .github/workflows/integrate-cloudflare-history.yml \
             .github/integration-cloudflare-trigger.txt \
@@ -82,6 +110,7 @@ jobs:
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'queueNoteEnrichment'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'analyze-wrong-reason'
           assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'reviewSync.startPush()'
+          assert_contains outputs/kaoyan-schedule-app/scripts/note-server.cjs 'namingInFlight'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'wrongReasonSource'
           assert_contains outputs/kaoyan-schedule-app/scripts/organize-notes.cjs 'targetNoteUid'
           assert_contains outputs/kaoyan-schedule-app/src/utils/learningData.ts 'wrongReasonSource: string'
