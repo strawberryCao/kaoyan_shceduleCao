@@ -12,6 +12,7 @@
   },
   "vars": {
     "APP_USERNAME": "caobiji",
+    "PUBLIC_READ_ENABLED": "true",
     "GITHUB_OWNER": "strawberryCao",
     "GITHUB_REPO": "Caobijidata",
     "GITHUB_BRANCH": "main"

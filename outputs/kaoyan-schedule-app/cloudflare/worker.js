@@ -25,9 +25,15 @@ import { getNoteFile, saveNote } from './media.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 
+const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
 function apiPath(pathname) {
   if (pathname === '/api') return '/';
   return pathname.startsWith('/api/') ? pathname.slice(4) : null;
+}
+
+function publicReadEnabled(env) {
+  return ['1', 'true', 'yes', 'on'].includes(String(env.PUBLIC_READ_ENABLED || '').trim().toLowerCase());
 }
 
 function unavailable(feature) {
@@ -35,7 +41,7 @@ function unavailable(feature) {
 }
 
 function enforceWriteRequest(request, url, pathname) {
-  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return;
+  if (!WRITE_METHODS.has(request.method)) return;
   const fetchSite = request.headers.get('sec-fetch-site')?.toLowerCase();
   const origin = request.headers.get('origin');
   if (fetchSite === 'cross-site' || (origin && origin !== url.origin)) {
@@ -194,13 +200,25 @@ async function handleApi(request, env, pathname, url) {
   return json({ ok: false, code: 'NOT_FOUND', error: 'API route not found.' }, 404);
 }
 
-async function serveAsset(request, env) {
+function assetCacheControl(request, response, isPublic) {
+  if (!isPublic) return 'private, no-cache';
+  if (!['GET', 'HEAD'].includes(request.method) || response.status !== 200) return 'public, no-store';
+  const pathname = new URL(request.url).pathname.toLowerCase();
+  if (pathname.startsWith('/assets/')) return 'public, max-age=31536000, immutable';
+  if (/\.(?:woff2?|ttf|otf|png|jpe?g|webp|avif|gif|svg|ico)$/.test(pathname)) {
+    return 'public, max-age=604800, stale-while-revalidate=86400';
+  }
+  if (/\.(?:js|css)$/.test(pathname)) return 'public, max-age=3600, stale-while-revalidate=86400';
+  return 'public, max-age=0, must-revalidate';
+}
+
+async function serveAsset(request, env, isPublic) {
   if (!env.ASSETS || typeof env.ASSETS.fetch !== 'function') {
     throw new HttpError(500, 'Static asset binding is unavailable.', 'ASSET_BINDING_MISSING');
   }
   const response = await env.ASSETS.fetch(request);
   const headers = new Headers(response.headers);
-  headers.set('Cache-Control', 'private, no-cache');
+  headers.set('Cache-Control', assetCacheControl(request, response, isPublic));
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('Referrer-Policy', 'same-origin');
   headers.set('X-Frame-Options', 'SAMEORIGIN');
@@ -210,12 +228,14 @@ async function serveAsset(request, env) {
 export async function handleRequest(request, env) {
   const url = new URL(request.url);
   const pathname = apiPath(url.pathname);
+  const isPublic = publicReadEnabled(env);
   if (pathname === '/health' && request.method === 'GET') {
     const github = githubStorageInfo(env);
     return json({
       ok: true,
       runtime: 'cloudflare-workers',
       storage: 'github',
+      publicRead: isPublic,
       authConfigured: Boolean(env.APP_USERNAME && env.APP_PASSWORD),
       githubConfigured: github.configured,
       repository: github.repository,
@@ -225,13 +245,20 @@ export async function handleRequest(request, env) {
     });
   }
 
-  const authResponse = await requireBasicAuth(request, env);
-  if (authResponse) return authResponse;
   if (pathname !== null) {
+    if (!isPublic || WRITE_METHODS.has(request.method)) {
+      const authResponse = await requireBasicAuth(request, env);
+      if (authResponse) return authResponse;
+    }
     enforceWriteRequest(request, url, pathname);
     return handleApi(request, env, pathname, url);
   }
-  return serveAsset(request, env);
+
+  if (!isPublic) {
+    const authResponse = await requireBasicAuth(request, env);
+    if (authResponse) return authResponse;
+  }
+  return serveAsset(request, env, isPublic);
 }
 
 export default {

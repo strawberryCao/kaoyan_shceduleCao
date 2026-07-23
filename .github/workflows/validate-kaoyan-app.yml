@@ -1,0 +1,61 @@
+name: Validate kaoyan app changes
+
+on:
+  push:
+    branches: [fix/public-read-cache-local-sync]
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - 'outputs/kaoyan-schedule-app/**'
+      - '.github/workflows/validate-kaoyan-app.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-kaoyan-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem outputs/kaoyan-schedule-app/scripts -Filter '*note-folder-sync.ps1' | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error ("{0}: {1}" -f $_.FullName, ($errors | ForEach-Object Message -join '; '))
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run automated tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
