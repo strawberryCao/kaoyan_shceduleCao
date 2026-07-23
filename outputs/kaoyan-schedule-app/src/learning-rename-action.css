@@ -1,57 +1,47 @@
 .learning-ai-rename-action {
-  position: fixed;
-  z-index: 11500;
-  right: 22px;
-  bottom: 22px;
-  display: flex;
-  max-width: min(420px, calc(100vw - 32px));
+  display: inline-flex;
+  min-width: 0;
   align-items: center;
   gap: 8px;
-  pointer-events: none;
+  margin-left: auto;
 }
 
 .learning-ai-rename-action > span {
   overflow: hidden;
-  border: 1px solid #e2e5e9;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 10px 30px rgba(24, 33, 47, 0.14);
-  color: #586370;
-  padding: 9px 11px;
+  max-width: 320px;
+  color: var(--lc-muted, #69727d);
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
-  backdrop-filter: blur(14px);
 }
 
 .learning-ai-rename-action > button {
   display: inline-flex;
-  min-height: 42px;
+  min-height: 38px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  border: 1px solid #dbc3ad;
-  border-radius: 999px;
-  background: #fff8f1;
-  box-shadow: 0 10px 30px rgba(83, 53, 31, 0.14);
-  color: #8c552e;
+  border: 1px solid var(--lc-border, #ded9d2);
+  border-radius: 12px;
+  background: var(--lc-panel, rgba(255, 255, 255, 0.82));
+  color: var(--lc-accent, #8c552e);
   cursor: pointer;
-  padding: 8px 13px;
+  padding: 7px 11px;
+  font: inherit;
   font-size: 12px;
-  font-weight: 900;
-  pointer-events: auto;
+  font-weight: 850;
 }
 
 .learning-ai-rename-action > button:hover:not(:disabled) {
-  border-color: #c99d77;
-  background: #f9ede2;
+  border-color: color-mix(in srgb, var(--lc-accent, #8c552e) 45%, var(--lc-border, #ded9d2));
+  background: color-mix(in srgb, var(--lc-accent-soft, #fff5eb) 72%, white);
 }
 
 .learning-ai-rename-action > button:disabled {
   cursor: wait;
-  opacity: 0.72;
+  opacity: 0.7;
 }
 
 .learning-ai-rename-action > button:disabled svg {
@@ -64,18 +54,20 @@
 
 @media (max-width: 760px) {
   .learning-ai-rename-action {
-    right: 12px;
-    bottom: calc(70px + env(safe-area-inset-bottom));
-    left: 12px;
-    justify-content: flex-end;
+    width: 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
   }
 
   .learning-ai-rename-action > span {
-    min-width: 0;
-    flex: 1;
+    order: 2;
+    width: 100%;
+    max-width: none;
+    white-space: normal;
   }
 
   .learning-ai-rename-action > button {
+    width: 100%;
     min-height: 44px;
   }
 }
