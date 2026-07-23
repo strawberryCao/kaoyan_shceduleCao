@@ -90,12 +90,12 @@ jobs:
 
           {
             echo '## npm ci'; tail -n 40 "$RUNNER_TEMP/npm-ci.log" || true
-            echo '## tests'; tail -n 100 "$RUNNER_TEMP/tests.log" || true
-            echo '## build'; tail -n 100 "$RUNNER_TEMP/build.log" || true
-            echo '## wrangler'; tail -n 60 "$RUNNER_TEMP/wrangler.log" || true
+            echo '## tests'; tail -n 140 "$RUNNER_TEMP/tests.log" || true
+            echo '## build'; tail -n 140 "$RUNNER_TEMP/build.log" || true
+            echo '## wrangler'; tail -n 80 "$RUNNER_TEMP/wrangler.log" || true
             echo '## powershell'; cat "$RUNNER_TEMP/powershell.log" || true
-          } > "$RUNNER_TEMP/validation-summary.log"
-          cat "$RUNNER_TEMP/validation-summary.log"
+          } > "$GITHUB_WORKSPACE/.github/validation/sync-architecture-log.txt"
+          cat "$GITHUB_WORKSPACE/.github/validation/sync-architecture-log.txt"
           echo "overall=$overall" >> "$GITHUB_OUTPUT"
           exit 0
 
@@ -106,7 +106,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/validation/sync-architecture-status.json
+          git add .github/validation/sync-architecture-status.json .github/validation/sync-architecture-log.txt
           if git diff --cached --quiet; then exit 0; fi
           git commit -m 'ci: record synchronized architecture validation'
           git push origin HEAD:fix/learning-detail-title-latex
