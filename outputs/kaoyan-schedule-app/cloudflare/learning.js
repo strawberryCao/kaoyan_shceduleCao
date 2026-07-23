@@ -85,7 +85,7 @@ async function mutateLearning(env, options, mutator) {
       return { snapshot: current.snapshot, outcome };
     }
     const updatedAt = new Date().toISOString();
-    const stored = await compareAndSwapLearningState(env, current.revision, snapshot, updatedAt);
+    const stored = await compareAndSwapLearningState(env, current, snapshot, updatedAt);
     if (stored) {
       try {
         await mirrorScheduleRecords(env, stored, outcome?.touchedDates);
@@ -187,6 +187,8 @@ function noteDefaults(input, noteUid, timestamp) {
     noteType,
     questionType: text(input.questionType, 60),
     wrongReason: text(input.wrongReason, 1000),
+    wrongReasonSource: text(input.wrongReason).trim() ? 'manual' : '',
+    wrongReasonConfidence: null,
     organizationStatus: 'confirmed',
     classificationSource: 'manual',
     reviewStatus: 'corrected',
@@ -357,7 +359,11 @@ export async function patchNote(env, noteUid, payload) {
       subject: nextSubject,
       knowledgePath: nextPath,
       ...(Object.hasOwn(patch, 'questionType') ? { questionType: text(patch.questionType, 60) } : {}),
-      ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: text(patch.wrongReason, 500) } : {}),
+      ...(Object.hasOwn(patch, 'wrongReason') ? {
+        wrongReason: text(patch.wrongReason, 500),
+        wrongReasonSource: 'manual',
+        wrongReasonConfidence: null,
+      } : {}),
       organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
       classificationSource: editsClassification ? 'manual' : note.classificationSource,
       reviewStatus,
@@ -660,8 +666,19 @@ export function normalizeBootstrapSnapshot(value) {
   };
   const noteAssetKey = (note, fallback = '') => {
     const current = text(note?.filePath || fallback, 2000).replaceAll('\\', '/');
-    if (/^r2:\/\/note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return current;
-    if (/^note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return `r2://${current}`;
+    const safeRelative = (value) => /^[A-Za-z0-9._/-]+$/.test(value) && !value.includes('..');
+    if (current.startsWith('github://data/assets/')) {
+      const relative = current.slice('github://data/assets/'.length);
+      return safeRelative(relative) ? current : '';
+    }
+    if (current.startsWith('data/assets/')) {
+      const relative = current.slice('data/assets/'.length);
+      return safeRelative(relative) ? `github://${current}` : '';
+    }
+    if (current.startsWith('r2://note-assets/')) {
+      const relative = current.slice('r2://note-assets/'.length);
+      return safeRelative(relative) ? `github://data/assets/${relative}` : '';
+    }
     return '';
   };
   for (const day of Object.values(snapshot.days)) {
@@ -691,7 +708,7 @@ export function createSavedImageNote(payload, file, timestamp) {
   const title = remark.trim().split(/\r?\n/)[0]?.slice(0, 120) || (payload.kind === 'canvas' ? '画布笔记' : '图片笔记');
   return {
     ...noteDefaults({ title, subject, remark, noteType: 'note' }, payload.noteUid, timestamp),
-    filePath: `r2://${file.r2Key}`,
+    filePath: `github://${file.repoPath}`,
     organizationStatus: 'pending',
     classificationSource: 'local',
     reviewStatus: 'pending',
