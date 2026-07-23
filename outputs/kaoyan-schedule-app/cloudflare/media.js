@@ -1,5 +1,5 @@
 import { HttpError, sha256 } from './http.js';
-import { createSavedImageNote, insertSavedImageNote } from './learning.js';
+import { createSavedImageNote, getLearningSnapshot, insertSavedImageNote } from './learning.js';
 import {
   assertRepoPath,
   publicFileResponse,
@@ -84,7 +84,11 @@ export async function saveNote(env, payload) {
     if (existingReceipt.requestHash !== requestHash) {
       throw new HttpError(409, 'noteUid was already used for another image.', 'SAVE_OPERATION_REUSED');
     }
-    return { ...existingReceipt.result, idempotentReplay: true };
+    return {
+      ...existingReceipt.result,
+      learningData: await getLearningSnapshot(env),
+      idempotentReplay: true,
+    };
   }
 
   const repoPath = `${ASSET_ROOT}${noteUid}.${image.extension}`;
@@ -121,7 +125,7 @@ export async function saveNote(env, payload) {
     provisional: false,
     idempotentReplay: learningResult.outcome.replayed === true,
   };
-  await saveReceipt(env, noteUid, requestHash, response);
+  await saveReceipt(env, noteUid, requestHash, { ...response, learningData: undefined });
   return response;
 }
 
