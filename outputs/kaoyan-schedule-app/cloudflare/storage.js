@@ -1,3 +1,15 @@
+import { HttpError } from './http.js';
+import {
+  commitFiles,
+  getBranchHead,
+  readJsonFile,
+  writeJsonFile,
+} from './github-store.js';
+
+const LEARNING_PATH = 'data/cloud/learning-data.json';
+const RECEIPT_ROOT = 'data/cloud/receipts';
+const APP_STATE_ROOT = 'data/cloud/app-state';
+
 const EMPTY_SNAPSHOT = Object.freeze({
   version: 1,
   revision: 0,
@@ -7,182 +19,133 @@ const EMPTY_SNAPSHOT = Object.freeze({
   deletedNotes: {},
 });
 
-export const SQL = Object.freeze({
-  insertLearning: `INSERT OR IGNORE INTO learning_state (id, revision, snapshot_json, updated_at)
-    VALUES (1, 0, ?1, NULL)`,
-  selectLearning: `SELECT revision, snapshot_json, updated_at FROM learning_state WHERE id = 1`,
-  updateLearning: `UPDATE learning_state
-    SET revision = ?1, snapshot_json = ?2, updated_at = ?3
-    WHERE id = 1 AND revision = ?4`,
-  upsertSchedule: `INSERT INTO schedule_records
-      (date, record_json, snapshot_revision, updated_at)
-    VALUES (?1, ?2, ?3, ?4)
-    ON CONFLICT(date) DO UPDATE SET
-      record_json = excluded.record_json,
-      snapshot_revision = excluded.snapshot_revision,
-      updated_at = excluded.updated_at
-    WHERE excluded.snapshot_revision >= schedule_records.snapshot_revision`,
-  selectReceipt: `SELECT scope, operation_id, entity_id, request_hash, result_json, created_at
-    FROM operation_receipts WHERE scope = ?1 AND operation_id = ?2`,
-  insertReceipt: `INSERT INTO operation_receipts
-      (scope, operation_id, entity_id, request_hash, result_json, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)`,
-  listCanvas: `SELECT id, title, revision, r2_key, r2_etag, created_at, updated_at, summary_json
-    FROM canvas_projects ORDER BY updated_at DESC`,
-  selectCanvas: `SELECT id, title, revision, r2_key, r2_etag, created_at, updated_at, summary_json
-    FROM canvas_projects WHERE id = ?1`,
-  insertCanvas: `INSERT INTO canvas_projects
-      (id, title, revision, r2_key, r2_etag, created_at, updated_at, summary_json)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)`,
-  updateCanvas: `UPDATE canvas_projects SET
-      title = ?1, revision = ?2, r2_key = ?3, r2_etag = ?4,
-      updated_at = ?5, summary_json = ?6
-    WHERE id = ?7 AND revision = ?8`,
-  deleteCanvas: `DELETE FROM canvas_projects WHERE id = ?1 AND revision = ?2`,
-  upsertCanvasBootstrap: `INSERT INTO canvas_projects
-      (id, title, revision, r2_key, r2_etag, created_at, updated_at, summary_json)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-    ON CONFLICT(id) DO UPDATE SET
-      title = excluded.title,
-      revision = excluded.revision,
-      r2_key = excluded.r2_key,
-      r2_etag = excluded.r2_etag,
-      created_at = excluded.created_at,
-      updated_at = excluded.updated_at,
-      summary_json = excluded.summary_json
-    WHERE excluded.revision > canvas_projects.revision`,
-  selectAppState: `SELECT key, value_json, revision, updated_at FROM app_state WHERE key = ?1`,
-  upsertAppState: `INSERT INTO app_state (key, value_json, revision, updated_at)
-    VALUES (?1, ?2, ?3, ?4)
-    ON CONFLICT(key) DO UPDATE SET
-      value_json = excluded.value_json,
-      revision = excluded.revision,
-      updated_at = excluded.updated_at`,
-  selectNoteFile: `SELECT note_uid, r2_key, file_name, mime_type, size, created_at
-    FROM note_files WHERE note_uid = ?1`,
-  selectNoteFileByKey: `SELECT note_uid, r2_key, file_name, mime_type, size, created_at
-    FROM note_files WHERE r2_key = ?1`,
-  upsertNoteFile: `INSERT INTO note_files
-      (note_uid, r2_key, file_name, mime_type, size, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-    ON CONFLICT(note_uid) DO UPDATE SET
-      r2_key = excluded.r2_key,
-      file_name = excluded.file_name,
-      mime_type = excluded.mime_type,
-      size = excluded.size`,
-});
+// Retained as an empty compatibility export for older tests and imports.
+export const SQL = Object.freeze({});
 
 export function emptySnapshot() {
   return structuredClone(EMPTY_SNAPSHOT);
 }
 
-function parseJson(value, fallback) {
-  if (typeof value !== 'string') return fallback;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
+function normalizeSnapshot(value, revisionOverride) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    ...source,
+    version: Number.isFinite(Number(source.version)) ? Number(source.version) : 1,
+    revision: Number.isInteger(Number(revisionOverride ?? source.revision))
+      ? Math.max(0, Number(revisionOverride ?? source.revision))
+      : 0,
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : null,
+    days: source.days && typeof source.days === 'object' && !Array.isArray(source.days) ? source.days : {},
+    cards: Array.isArray(source.cards) ? source.cards : [],
+    deletedNotes: source.deletedNotes && typeof source.deletedNotes === 'object' && !Array.isArray(source.deletedNotes)
+      ? source.deletedNotes
+      : {},
+  };
 }
 
-function changes(result) {
-  return Number(result?.meta?.changes ?? result?.changes ?? 0);
+function safeToken(value) {
+  const bytes = new TextEncoder().encode(String(value));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/g, '');
+}
+
+function receiptPath(scope, operationId) {
+  return `${RECEIPT_ROOT}/${safeToken(scope)}/${safeToken(operationId)}.json`;
+}
+
+function appStatePath(key) {
+  return `${APP_STATE_ROOT}/${safeToken(key)}.json`;
 }
 
 export async function readLearningState(env) {
-  await env.DB.prepare(SQL.insertLearning).bind(JSON.stringify(EMPTY_SNAPSHOT)).run();
-  const row = await env.DB.prepare(SQL.selectLearning).first();
-  if (!row) throw new Error('D1 learning_state row is unavailable');
-  const snapshot = parseJson(row.snapshot_json, null);
-  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
-    throw new Error('D1 learning_state contains invalid JSON');
-  }
-  snapshot.version = Number.isFinite(Number(snapshot.version)) ? Number(snapshot.version) : 1;
-  snapshot.revision = Number(row.revision) || 0;
-  snapshot.updatedAt = typeof row.updated_at === 'string' ? row.updated_at : null;
-  snapshot.days = snapshot.days && typeof snapshot.days === 'object' && !Array.isArray(snapshot.days)
-    ? snapshot.days
-    : {};
-  snapshot.cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
-  snapshot.deletedNotes = snapshot.deletedNotes
-    && typeof snapshot.deletedNotes === 'object'
-    && !Array.isArray(snapshot.deletedNotes)
-    ? snapshot.deletedNotes
-    : {};
+  const file = await readJsonFile(env, LEARNING_PATH, { allowMissing: true, maxBytes: 24 * 1024 * 1024 });
+  const snapshot = normalizeSnapshot(file?.value ?? EMPTY_SNAPSHOT);
   return { revision: snapshot.revision, snapshot };
 }
 
-export async function compareAndSwapLearningState(env, currentRevision, snapshot, updatedAt) {
-  const nextRevision = currentRevision + 1;
-  const stored = {
+export async function compareAndSwapLearningState(env, current, snapshot, updatedAt) {
+  const currentRevision = typeof current === 'object' && current !== null
+    ? Number(current.revision)
+    : Number(current);
+  const head = await getBranchHead(env);
+  const latestFile = await readJsonFile(env, LEARNING_PATH, {
+    ref: head,
+    allowMissing: true,
+    maxBytes: 24 * 1024 * 1024,
+  });
+  const latest = normalizeSnapshot(latestFile?.value ?? EMPTY_SNAPSHOT);
+  if (latest.revision !== currentRevision) return null;
+  const stored = normalizeSnapshot({
     ...snapshot,
-    version: Number.isFinite(Number(snapshot.version)) ? Number(snapshot.version) : 1,
-    revision: nextRevision,
+    revision: currentRevision + 1,
     updatedAt,
-  };
-  const result = await env.DB.prepare(SQL.updateLearning)
-    .bind(nextRevision, JSON.stringify(stored), updatedAt, currentRevision)
-    .run();
-  if (changes(result) !== 1) return null;
-  return stored;
+  }, currentRevision + 1);
+  try {
+    await commitFiles(env, {
+      expectedHeadSha: head,
+      message: `cloud: update learning data to revision ${stored.revision}`,
+      files: [{ path: LEARNING_PATH, content: `${JSON.stringify(stored, null, 2)}\n` }],
+    });
+    return stored;
+  } catch (error) {
+    if (error instanceof HttpError && error.code === 'GITHUB_REVISION_CONFLICT') return null;
+    throw error;
+  }
 }
 
-export async function mirrorScheduleRecords(env, snapshot, dates = Object.keys(snapshot.days ?? {})) {
-  const uniqueDates = [...new Set(dates)].filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date));
-  if (uniqueDates.length === 0) return;
-  const updatedAt = snapshot.updatedAt || new Date().toISOString();
-  const statements = uniqueDates.map((date) => env.DB.prepare(SQL.upsertSchedule).bind(
-    date,
-    JSON.stringify(snapshot.days?.[date]?.manual ?? {
-      completedTaskIds: [], note: '', debt: '', mistakes: '',
-    }),
-    snapshot.revision,
-    updatedAt,
-  ));
-  await env.DB.batch(statements);
-}
+// Schedule records already live inside the canonical learning snapshot, so no
+// second storage write is required.
+export async function mirrorScheduleRecords() {}
 
 export async function readReceipt(env, scope, operationId) {
-  const row = await env.DB.prepare(SQL.selectReceipt).bind(scope, operationId).first();
-  if (!row) return null;
+  const file = await readJsonFile(env, receiptPath(scope, operationId), {
+    allowMissing: true,
+    maxBytes: 256 * 1024,
+  });
+  if (!file?.value || typeof file.value !== 'object' || Array.isArray(file.value)) return null;
+  const receipt = file.value;
   return {
-    scope: String(row.scope),
-    operationId: String(row.operation_id),
-    entityId: String(row.entity_id),
-    requestHash: String(row.request_hash),
-    result: parseJson(row.result_json, null),
-    createdAt: String(row.created_at),
+    scope: String(receipt.scope ?? ''),
+    operationId: String(receipt.operationId ?? ''),
+    entityId: String(receipt.entityId ?? ''),
+    requestHash: String(receipt.requestHash ?? ''),
+    result: receipt.result ?? null,
+    createdAt: String(receipt.createdAt ?? ''),
   };
 }
 
 export async function writeReceipt(env, receipt) {
-  await env.DB.prepare(SQL.insertReceipt).bind(
-    receipt.scope,
-    receipt.operationId,
-    receipt.entityId,
-    receipt.requestHash,
-    JSON.stringify(receipt.result),
-    receipt.createdAt,
-  ).run();
+  await writeJsonFile(env, receiptPath(receipt.scope, receipt.operationId), receipt, {
+    createOnly: true,
+    message: `cloud: record ${String(receipt.scope).slice(0, 60)} operation`,
+  });
 }
 
 export async function readAppState(env, key) {
-  const row = await env.DB.prepare(SQL.selectAppState).bind(key).first();
-  if (!row) return null;
+  const file = await readJsonFile(env, appStatePath(key), { allowMissing: true, maxBytes: 2 * 1024 * 1024 });
+  if (!file?.value || typeof file.value !== 'object' || Array.isArray(file.value)) return null;
+  const value = file.value;
   return {
-    key: String(row.key),
-    value: parseJson(row.value_json, null),
-    revision: Number(row.revision) || 0,
-    updatedAt: String(row.updated_at),
+    key: String(value.key ?? key),
+    value: value.value ?? null,
+    revision: Number(value.revision) || 0,
+    updatedAt: String(value.updatedAt ?? ''),
   };
 }
 
 export async function writeAppState(env, key, value, revision, updatedAt) {
-  await env.DB.prepare(SQL.upsertAppState)
-    .bind(key, JSON.stringify(value), revision, updatedAt)
-    .run();
+  await writeJsonFile(env, appStatePath(key), { key, value, revision, updatedAt }, {
+    message: `cloud: update app state ${String(key).slice(0, 80)}`,
+  });
 }
 
 export function resultChanges(result) {
-  return changes(result);
+  return Number(result?.changes ?? result?.meta?.changes ?? 0);
 }
+
+export const STORAGE_PATHS = Object.freeze({
+  learning: LEARNING_PATH,
+  receipts: RECEIPT_ROOT,
+  appState: APP_STATE_ROOT,
+});
