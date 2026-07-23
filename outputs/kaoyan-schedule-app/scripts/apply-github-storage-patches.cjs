@@ -11,6 +11,13 @@ function replaceOnce(relativePath, before, after) {
   fs.writeFileSync(filePath, source.replace(before, after), 'utf8');
 }
 
+function replaceFirst(relativePath, before, after) {
+  const filePath = path.join(root, relativePath);
+  const source = fs.readFileSync(filePath, 'utf8');
+  if (!source.includes(before)) throw new Error(`${relativePath}: patch target is missing`);
+  fs.writeFileSync(filePath, source.replace(before, after), 'utf8');
+}
+
 replaceOnce(
   'cloudflare/learning.js',
   '    const stored = await compareAndSwapLearningState(env, current.revision, snapshot, updatedAt);',
@@ -23,7 +30,7 @@ replaceOnce(
   "    wrongReason: text(input.wrongReason, 1000),\n    wrongReasonSource: text(input.wrongReason).trim() ? 'manual' : '',\n    wrongReasonConfidence: null,\n    organizationStatus: 'confirmed',",
 );
 
-replaceOnce(
+replaceFirst(
   'cloudflare/learning.js',
   "      ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: text(patch.wrongReason, 500) } : {}),",
   "      ...(Object.hasOwn(patch, 'wrongReason') ? {\n        wrongReason: text(patch.wrongReason, 500),\n        wrongReasonSource: 'manual',\n        wrongReasonConfidence: null,\n      } : {}),",
@@ -44,7 +51,7 @@ replaceOnce(
 replaceOnce(
   'cloudflare/learning.js',
   '    filePath: `r2://${file.r2Key}`,',
-  "    filePath: `github://${file.repoPath}`,",
+  '    filePath: `github://${file.repoPath}`,'
 );
 
 replaceOnce(
