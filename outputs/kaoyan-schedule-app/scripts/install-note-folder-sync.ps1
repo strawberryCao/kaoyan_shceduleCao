@@ -39,9 +39,20 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Install-ScriptFile([string]$LocalName, [string]$Destination, [string]$RemoteUrl) {
+  $localPath = Join-Path $PSScriptRoot $LocalName
+  if (Test-Path -LiteralPath $localPath) {
+    Copy-Item -LiteralPath $localPath -Destination $Destination -Force
+  } else {
+    Invoke-WebRequest -UseBasicParsing -Uri $RemoteUrl -OutFile $Destination
+  }
+}
+
 $taskName = 'Kaoyan Note Folder Sync'
 $installRoot = Join-Path $DataRoot 'NoteFolderSync'
 $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
+$configSyncPath = Join-Path $installRoot 'windows-assistant-config-sync.ps1'
+$runnerPath = Join-Path $installRoot 'run-global-sync.ps1'
 $configPath = Join-Path $installRoot 'config.json'
 $tokenPath = Join-Path $installRoot 'github-token.dpapi'
 $launcherPath = Join-Path $installRoot 'silent-sync.vbs'
@@ -76,13 +87,19 @@ if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
   Remove-Item -LiteralPath $legacyRoot -Recurse -Force
 }
 
-$localRuntime = Join-Path $PSScriptRoot 'windows-note-folder-sync.ps1'
-if (Test-Path -LiteralPath $localRuntime) {
-  Copy-Item -LiteralPath $localRuntime -Destination $runtimePath -Force
-} else {
-  $runtimeUrl = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1?v=20260723-global-sync-v3'
-  Invoke-WebRequest -UseBasicParsing -Uri $runtimeUrl -OutFile $runtimePath
-}
+$codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
+Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=20260723-global-sync-v4"
+Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=20260723-global-sync-v4"
+
+# Configuration export is handled by the dedicated stable synchronizer below.
+# Disable the older inline exporter to avoid a new Git commit every five minutes
+# caused only by its generated updatedAt timestamp.
+$runtimeText = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
+$runtimeText = $runtimeText.Replace(
+  '  Export-SafeAssistantConfiguration $clonePath $assistantRoot',
+  '  # Assistant configuration synchronization is handled by windows-assistant-config-sync.ps1.'
+)
+Write-Utf8NoBom $runtimePath $runtimeText
 
 if ($ResetToken) { Remove-Item -LiteralPath $tokenPath -Force -ErrorAction SilentlyContinue }
 if (-not (Test-Path -LiteralPath $tokenPath)) {
@@ -97,7 +114,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 3
+  version = 4
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -111,21 +128,35 @@ $config = [ordered]@{
   deletionPolicy = 'windows-local-authoritative'
   cloudDeleteAllowed = $false
   safeConfigurationSync = $true
+  safeConfigurationFiles = @('data/config/global-ai-settings.json', 'data/config/note-taxonomy.json')
 }
 Write-Utf8NoBom $configPath (($config | ConvertTo-Json -Depth 8) + "`n")
 
-$runtimeEscaped = $runtimePath.Replace('"', '""')
+$runner = @"
+[CmdletBinding()]
+param([string]`$ConfigPath = '$($configPath.Replace("'", "''"))')
+`$ErrorActionPreference = 'Continue'
+& powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File '$($runtimePath.Replace("'", "''"))' -ConfigPath `$ConfigPath
+`$noteExit = `$LASTEXITCODE
+& powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File '$($configSyncPath.Replace("'", "''"))' -ConfigPath `$ConfigPath
+`$configExit = `$LASTEXITCODE
+if (`$noteExit -ne 0 -or `$configExit -ne 0) { exit 1 }
+exit 0
+"@
+Write-Utf8NoBom $runnerPath $runner
+
+$runnerEscaped = $runnerPath.Replace('"', '""')
 $configEscaped = $configPath.Replace('"', '""')
 $launcher = @"
 Set shell = CreateObject("WScript.Shell")
-command = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runtimeEscaped"" -ConfigPath ""$configEscaped"""
+command = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runnerEscaped"" -ConfigPath ""$configEscaped"""
 shell.Run command, 0, False
 "@
 Write-Utf8NoBom $launcherPath $launcher
 
 Write-Host ''
 Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
-& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runtimePath -ConfigPath $configPath
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
 if ($LASTEXITCODE -ne 0) {
   throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log'))
 }
@@ -148,6 +179,7 @@ Write-Host ('GitHub 数据：' + $Repository + '/' + $RemoteSubdir)
 Write-Host ('频率：每 ' + $IntervalMinutes + ' 分钟')
 Write-Host '运行方式：完全隐藏，不弹 PowerShell 窗口。'
 Write-Host '删除规则：只有 Windows 本地删除会向全局扩散；云端删除被拒绝。'
-Write-Host 'AI 配置：只上传脱敏后的任务规则、提示词和参数；API Key 不上传。'
-Write-Host ('状态：' + (Join-Path $installRoot 'status.json'))
+Write-Host 'AI 配置：只上传脱敏后的任务规则、提示词和参数；API Key、接口地址和本机路径不上传。'
+Write-Host ('笔记状态：' + (Join-Path $installRoot 'status.json'))
+Write-Host ('配置状态：' + (Join-Path $installRoot 'config-status.json'))
 Write-Host ('日志：' + (Join-Path $installRoot 'sync.log'))
