@@ -51,10 +51,18 @@ replaceSection(
   '  for (const day of Object.values(snapshot.days)) {',
   `  const noteAssetKey = (note, fallback = '') => {
     const current = text(note?.filePath || fallback, 2000).replaceAll('\\\\', '/');
-    if (/^github:\/\/data\/assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return current;
-    if (/^data\/assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) return \`github://\${current}\`;
-    if (/^r2:\/\/note-assets\/[A-Za-z0-9._/-]+$/.test(current) && !current.includes('..')) {
-      return \`github://data/assets/\${current.slice('r2://note-assets/'.length)}\`;
+    const safeRelative = (value) => /^[A-Za-z0-9._/-]+$/.test(value) && !value.includes('..');
+    if (current.startsWith('github://data/assets/')) {
+      const relative = current.slice('github://data/assets/'.length);
+      return safeRelative(relative) ? current : '';
+    }
+    if (current.startsWith('data/assets/')) {
+      const relative = current.slice('data/assets/'.length);
+      return safeRelative(relative) ? \`github://\${current}\` : '';
+    }
+    if (current.startsWith('r2://note-assets/')) {
+      const relative = current.slice('r2://note-assets/'.length);
+      return safeRelative(relative) ? \`github://data/assets/\${relative}\` : '';
     }
     return '';
   };
