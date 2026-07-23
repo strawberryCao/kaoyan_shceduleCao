@@ -126,10 +126,17 @@ export async function saveNote(env, payload) {
 
 function noteAssetPath(value) {
   const normalized = typeof value === 'string' ? value.trim().replaceAll('\\', '/') : '';
-  if (normalized.startsWith('github://')) return assertRepoPath(normalized.slice('github://'.length), ASSET_ROOT);
-  if (normalized.startsWith(ASSET_ROOT)) return assertRepoPath(normalized, ASSET_ROOT);
-  if (normalized.startsWith('r2://note-assets/')) {
-    return assertRepoPath(`${ASSET_ROOT}${normalized.slice('r2://note-assets/'.length)}`, ASSET_ROOT);
+  try {
+    if (normalized.startsWith('github://')) return assertRepoPath(normalized.slice('github://'.length), ASSET_ROOT);
+    if (normalized.startsWith(ASSET_ROOT)) return assertRepoPath(normalized, ASSET_ROOT);
+    if (normalized.startsWith('r2://note-assets/')) {
+      return assertRepoPath(`${ASSET_ROOT}${normalized.slice('r2://note-assets/'.length)}`, ASSET_ROOT);
+    }
+  } catch (error) {
+    if (error instanceof HttpError && ['GITHUB_PATH_INVALID', 'GITHUB_PATH_FORBIDDEN'].includes(error.code)) {
+      throw new HttpError(403, 'Only stored note assets can be read.', 'NOTE_PATH_FORBIDDEN');
+    }
+    throw error;
   }
   throw new HttpError(403, 'Only stored note assets can be read.', 'NOTE_PATH_FORBIDDEN');
 }
