@@ -14,6 +14,7 @@ import {
 import { createNoteUid, fileToDataUrl, IS_CLOUD_RUNTIME, NOTE_SERVER_URL, saveNoteImage } from '../utils/notes';
 import { saveLearningDataCache } from '../utils/learningData';
 import { fetchWithTimeout } from '../utils/localService';
+import '../note-drop-mobile.css';
 
 interface PendingImage {
   src: string;
