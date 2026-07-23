@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: validate-cloudflare-integration-pr
@@ -109,7 +110,30 @@ jobs:
       - name: Run complete Node test suite
         if: steps.merge.outputs.needed == 'true'
         working-directory: outputs/kaoyan-schedule-app
-        run: node --test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set +e
+          node --test > "$RUNNER_TEMP/node-test.log" 2>&1
+          test_status=$?
+          set -e
+          if (( test_status != 0 )); then
+            {
+              echo "## Cloudflare 整合测试失败"
+              echo
+              echo "以下是 Node 测试输出的最后 220 行："
+              echo
+              echo '```text'
+              tail -n 220 "$RUNNER_TEMP/node-test.log"
+              echo '```'
+            } > "$RUNNER_TEMP/test-failure-comment.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/test-failure-comment.md"
+            cat "$RUNNER_TEMP/test-failure-comment.md"
+            exit "$test_status"
+          fi
+          tail -n 60 "$RUNNER_TEMP/node-test.log"
 
       - name: Build production application
         if: steps.merge.outputs.needed == 'true'
