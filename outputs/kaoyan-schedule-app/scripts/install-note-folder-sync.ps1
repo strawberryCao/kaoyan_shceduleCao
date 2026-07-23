@@ -39,6 +39,10 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Write-Utf8Bom([string]$Path, [string]$Content) {
+  [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($true))
+}
+
 function Install-ScriptFile([string]$LocalName, [string]$Destination, [string]$RemoteUrl) {
   $localPath = Join-Path $PSScriptRoot $LocalName
   if (Test-Path -LiteralPath $localPath) {
@@ -88,8 +92,8 @@ if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
 }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=20260723-global-sync-v4"
-Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=20260723-global-sync-v4"
+Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=20260723-global-sync-v5"
+Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=20260723-global-sync-v5"
 
 # Configuration export is handled by the dedicated stable synchronizer below.
 # Disable the older inline exporter to avoid a new Git commit every five minutes
@@ -99,7 +103,10 @@ $runtimeText = $runtimeText.Replace(
   '  Export-SafeAssistantConfiguration $clonePath $assistantRoot',
   '  # Assistant configuration synchronization is handled by windows-assistant-config-sync.ps1.'
 )
-Write-Utf8NoBom $runtimePath $runtimeText
+# Windows PowerShell 5.1 requires a BOM to decode Chinese paths and messages reliably.
+Write-Utf8Bom $runtimePath $runtimeText
+$configSyncText = Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8
+Write-Utf8Bom $configSyncPath $configSyncText
 
 if ($ResetToken) { Remove-Item -LiteralPath $tokenPath -Force -ErrorAction SilentlyContinue }
 if (-not (Test-Path -LiteralPath $tokenPath)) {
@@ -114,7 +121,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 4
+  version = 5
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -143,7 +150,7 @@ param([string]`$ConfigPath = '$($configPath.Replace("'", "''"))')
 if (`$noteExit -ne 0 -or `$configExit -ne 0) { exit 1 }
 exit 0
 "@
-Write-Utf8NoBom $runnerPath $runner
+Write-Utf8Bom $runnerPath $runner
 
 $runnerEscaped = $runnerPath.Replace('"', '""')
 $configEscaped = $configPath.Replace('"', '""')
