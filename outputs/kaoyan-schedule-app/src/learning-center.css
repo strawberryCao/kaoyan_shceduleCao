@@ -2092,3 +2092,7 @@
 .lc-wrong-reason-view button.danger { color: #a04f48; }
 .lc-wrong-reason-fact form { display: grid; gap: 8px; }
 .lc-wrong-reason-fact textarea { width: 100%; resize: vertical; min-height: 72px; border: 1px solid #d8d2ca; border-radius: 9px; padding: 9px 10px; font: inherit; line-height: 1.55; }
+
+/* CLOUD_DELETE_DISABLED_UI: permanent deletion exists only in the Windows local app. */
+.is-cloud-runtime .lc-heading-actions > button.danger,
+.is-cloud-runtime .lc-card-controls > button.danger { display: none !important; }

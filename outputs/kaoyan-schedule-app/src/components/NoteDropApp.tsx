@@ -28,6 +28,7 @@ import {
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
+import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
 import '../note-drop-mobile.css';
@@ -41,7 +42,7 @@ interface BatchImage extends PendingImage {
   enabled: boolean;
 }
 
-type MobileStep = 'capture' | 'mode' | 'crop' | 'remark' | 'detecting' | 'batch' | 'batch-crop' | 'success';
+type MobileStep = 'capture' | 'mode' | 'crop' | 'multi-crop' | 'remark' | 'detecting' | 'batch' | 'batch-crop' | 'success';
 
 const imageFilePattern = /\.(jpe?g|png|webp)$/i;
 
@@ -95,6 +96,10 @@ export function NoteDropApp() {
     media.addEventListener?.('change', update);
     return () => media.removeEventListener?.('change', update);
   }, []);
+
+  useEffect(() => {
+    if (isMobileCapture) void resumeMultiQuestionJobs();
+  }, [isMobileCapture]);
 
   useEffect(() => {
     if (!window.kaoyanDesktop?.isElectron) return;
@@ -304,6 +309,24 @@ export function NoteDropApp() {
     }
   };
 
+  const confirmMultiPreCrop = async (crop: NormalizedCrop) => {
+    if (!sourceImage || saving) return;
+    try {
+      setSaving(true);
+      setDialogError('');
+      const src = await cropImageDataUrl(sourceImage.src, crop, 2200);
+      await enqueueMultiQuestionJob(src);
+      setSaved(true);
+      setStatus('已保存到后台队列，可以直接离开；系统会自动拆题、保存并命名');
+      setMobileStep('success');
+      setSourceImage(null);
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : '后台任务创建失败，请重试。');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const startMultiQuestion = async () => {
     if (!sourceImage || saving) return;
     try {
@@ -441,6 +464,17 @@ export function NoteDropApp() {
   );
 
   if (isMobileCapture) {
+    if (mobileStep === 'multi-crop' && sourceImage) {
+      return (
+        <ImageCropEditor
+          imageSrc={sourceImage.src}
+          title="预裁剪整页题目"
+          confirmLabel={saving ? '正在加入后台…' : '后台识别并保存'}
+          onCancel={() => setMobileStep('mode')}
+          onConfirm={(crop) => void confirmMultiPreCrop(crop)}
+        />
+      );
+    }
     if (mobileStep === 'crop' && sourceImage) {
       return <ImageCropEditor imageSrc={sourceImage.src} onCancel={() => setMobileStep('mode')} onConfirm={(crop) => void confirmSingleCrop(crop)} />;
     }
@@ -505,10 +539,10 @@ export function NoteDropApp() {
               <strong>单题模式</strong>
               <small>手动裁剪出一道完整题目</small>
             </button>
-            <button className="ai" type="button" onClick={() => void startMultiQuestion()}>
+            <button className="ai" type="button" onClick={() => setMobileStep('multi-crop')}>
               <span><Layers3 size={22} /></span>
               <strong>多题模式</strong>
-              <small>AI 识别多个题目并自动裁剪</small>
+              <small>先预裁剪整页，再由 AI 后台拆题、保存和命名</small>
               <em><Sparkles size={13} />AI</em>
             </button>
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}

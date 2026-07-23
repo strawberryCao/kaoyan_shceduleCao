@@ -37,7 +37,14 @@ const PROVIDER_MODEL_CATALOG = Object.freeze({
 
 const TASK_PROFILES = Object.freeze({
   note_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
+  question_splitting: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
+  question_splitting: Object.freeze({
+    label: '多题识别与自动裁剪',
+    description: '对预裁剪后的整页题目识别多个完整题目区域，并交给后台批量保存。',
+    active: true,
+    defaultTimeoutMs: 90_000,
+  }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_image_understanding: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   taxonomy: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json', 'longContext'] }),
@@ -61,6 +68,15 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'preferSpecificSubject', group: '识别依据', type: 'boolean', label: '优先具体科目', description: '内容可判断时尽量归入具体科目，确实无法判断才进入默认文件夹。', default: true }),
     Object.freeze({ id: 'rejectGenericTitle', group: '质量控制', type: 'boolean', label: '拒绝空泛标题', description: '阻止“待识别、图片笔记、截图”等无信息量标题落盘。', default: true }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '命名只需要短输出，调高通常不会提升识别质量。', default: 900, min: 300, max: 2400, step: 100, unit: 'tokens' }),
+  ]),
+  question_splitting: Object.freeze([
+    Object.freeze({ id: 'maxQuestions', group: '识别范围', type: 'number', label: '最多识别题目数', description: '一张整页图片最多拆分出的题目数量。', default: 24, min: 1, max: 24, step: 1, unit: '道' }),
+    Object.freeze({ id: 'includeQuestionNumber', group: '题目完整性', type: 'boolean', label: '保留题号', description: '裁剪区域必须包含题号或题目标识。', default: true }),
+    Object.freeze({ id: 'includeOptions', group: '题目完整性', type: 'boolean', label: '保留全部选项', description: '选择题必须包含完整选项。', default: true }),
+    Object.freeze({ id: 'includeDiagram', group: '题目完整性', type: 'boolean', label: '保留公式与配图', description: '题目相关公式、表格和配图必须与题干一起裁剪。', default: true }),
+    Object.freeze({ id: 'edgePaddingPercent', group: '裁剪质量', type: 'number', label: '边缘留白比例', description: '在 AI 边界外增加少量留白，避免切掉题号和公式。', default: 1.2, min: 0, max: 8, step: 0.2, unit: '%' }),
+    Object.freeze({ id: 'minimumRegionPercent', group: '裁剪质量', type: 'number', label: '最小题目区域', description: '过滤过小的误识别区域。', default: 3.5, min: 1, max: 20, step: 0.5, unit: '%' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '用于支持返回多个题目边界的结构化结果。', default: 1600, min: 500, max: 4000, step: 100, unit: 'tokens' }),
   ]),
   note_enrichment: Object.freeze([
     Object.freeze({ id: 'summaryDetail', group: '整理深度', type: 'select', label: '摘要详细度', description: '决定摘要与分项说明的浓缩程度。', default: 'standard', options: [
