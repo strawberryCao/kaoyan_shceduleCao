@@ -1,15 +1,16 @@
 name: Probe Cloudflare credentials
 
 on:
-  push:
+  pull_request:
     branches: [fix/learning-detail-title-latex]
-    paths: [.github/workflows/probe-cloudflare-auth.yml]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
 
 jobs:
   probe:
+    if: github.head_ref == 'probe/cloudflare-auth'
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN_VALUE: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -31,4 +32,3 @@ jobs:
           presence CF_API_TOKEN "$CF_API_TOKEN_VALUE"
           presence CLOUDFLARE_ACCOUNT_ID "$CLOUDFLARE_ACCOUNT_ID_VALUE"
           presence CF_ACCOUNT_ID "$CF_ACCOUNT_ID_VALUE"
-          echo "probe=complete"
