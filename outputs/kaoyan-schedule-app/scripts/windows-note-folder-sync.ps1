@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-  [string]$ConfigPath = "$env:LOCALAPPDATA\KaoyanStudyCenter\NoteFolderSync\config.json"
+  [string]$ConfigPath = "$env:LOCALAPPDATA\KaoyanStudyCenter\NoteFolderSync\config.json",
+  [switch]$NativeCommandSelfTest
 )
 
 Set-StrictMode -Version Latest
@@ -19,16 +20,33 @@ function Write-JsonAtomic([string]$Path, [object]$Value) {
   Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
-function Invoke-Git([string[]]$Arguments, [string]$WorkingDirectory = '') {
-  if ($WorkingDirectory) {
-    $output = & git -C $WorkingDirectory @Arguments 2>&1 | Out-String
-  } else {
-    $output = & git @Arguments 2>&1 | Out-String
+function Invoke-Git(
+  [string[]]$Arguments,
+  [string]$WorkingDirectory = '',
+  [int[]]$AllowedExitCodes = @(0)
+) {
+  # Git writes normal progress messages (clone/push/fetch) to stderr. Windows
+  # PowerShell 5.1 turns native stderr into ErrorRecord objects and can stop the
+  # script when the global ErrorActionPreference is Stop, even when Git exits 0.
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    if ($WorkingDirectory) {
+      $output = & git -C $WorkingDirectory @Arguments 2>&1 | Out-String
+    } else {
+      $output = & git @Arguments 2>&1 | Out-String
+    }
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
   }
-  if ($LASTEXITCODE -ne 0) {
-    throw "Git command failed: git $($Arguments -join ' ')`n$($output.Trim())"
+  if ($AllowedExitCodes -notcontains $exitCode) {
+    throw "Git command failed (exit $exitCode): git $($Arguments -join ' ')`n$($output.Trim())"
   }
-  return $output.Trim()
+  return [pscustomobject]@{
+    ExitCode = $exitCode
+    Output = $output.Trim()
+  }
 }
 
 function Get-RelativeFilePath([string]$Root, [string]$FullPath) {
@@ -88,12 +106,32 @@ function Read-PreviousHashes([string]$StatePath) {
 
 function Commit-PendingMirror([string]$ClonePath, [string]$RemoteSubdir, [string]$Message) {
   Invoke-Git @('add', '--', $RemoteSubdir) $ClonePath | Out-Null
-  & git -C $ClonePath diff --cached --quiet -- $RemoteSubdir
-  if ($LASTEXITCODE -ne 0) {
+  $diff = Invoke-Git @('diff', '--cached', '--quiet', '--', $RemoteSubdir) $ClonePath @(0, 1)
+  if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
     return $true
   }
   return $false
+}
+
+if ($NativeCommandSelfTest) {
+  $selfTestRoot = Join-Path $env:TEMP "kaoyan-note-sync-native-test-$PID"
+  try {
+    Ensure-Directory $selfTestRoot
+    $bareRepository = Join-Path $selfTestRoot 'source.git'
+    $cloneRepository = Join-Path $selfTestRoot 'clone'
+    Invoke-Git @('init', '--bare', $bareRepository) | Out-Null
+    # Cloning an empty repository exits 0 but emits progress/warning text on
+    # stderr, exactly reproducing the Windows PowerShell behavior that failed.
+    $cloneResult = Invoke-Git @('clone', $bareRepository, $cloneRepository)
+    if (-not (Test-Path -LiteralPath (Join-Path $cloneRepository '.git'))) {
+      throw 'Native Git self-test clone did not create a repository.'
+    }
+    Write-Host "Native Git stderr handling self-test passed (exit $($cloneResult.ExitCode))."
+  } finally {
+    Remove-Item -LiteralPath $selfTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+  }
+  exit 0
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
