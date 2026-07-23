@@ -1,3 +1,5 @@
+import type { LearningDataSnapshot } from './learningData';
+
 export type NoteKind = 'single' | 'canvas';
 
 export interface SaveNotePayload {
@@ -21,6 +23,7 @@ export interface SaveNoteResult {
       noteType?: string;
     };
   };
+  learningData?: LearningDataSnapshot;
   learningSyncError?: string | null;
   aiStatus?: 'pending' | 'complete' | 'failed' | 'unavailable';
   aiAvailable?: boolean;
