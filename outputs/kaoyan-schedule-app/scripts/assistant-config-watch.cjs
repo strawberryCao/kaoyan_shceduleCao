@@ -69,12 +69,20 @@ function log(message) {
   try { fs.appendFileSync(logPath, `${new Date().toISOString()} CONFIG_WATCH ${message}\n`, 'utf8'); } catch {}
 }
 
+function normalizeRelativePath(relativePath) {
+  return String(relativePath || '').replaceAll('\\', '/').replace(/^\.\//, '');
+}
+
 function relevant(relativePath) {
-  const normalized = String(relativePath || '').replaceAll('\\', '/');
+  const normalized = normalizeRelativePath(relativePath);
   if (!normalized.toLowerCase().endsWith('.json')) return false;
   if (/(?:^|\/)\.?(?:tmp|temp)(?:\/|$)/i.test(normalized)) return false;
   if (/\.(?:tmp|partial|download)\.json$/i.test(normalized)) return false;
   return true;
+}
+
+function requiresFullSync(relativePath) {
+  return normalizeRelativePath(relativePath).toLowerCase() === 'learning-data.json';
 }
 
 function selectedSyncScript() {
@@ -151,7 +159,8 @@ log(`started pid=${process.pid} root=${assistantRoot} debounceMs=${debounceMs} i
 
 try {
   const watcher = fs.watch(assistantRoot, { recursive: true }, (_event, filename) => {
-    if (relevant(filename)) schedule();
+    if (!relevant(filename)) return;
+    schedule({ full: requiresFullSync(filename) });
   });
   watcher.on('error', (error) => log(`watch-error=${error.message}`));
 } catch (error) {
