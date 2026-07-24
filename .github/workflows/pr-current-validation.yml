@@ -1,0 +1,65 @@
+name: Validate current production source
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.head_ref == 'deploy/cloudflare-production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --silent
+      - name: Run tests with compact failure output
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set +e
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}" > "$RUNNER_TEMP/tests.log" 2>&1
+          code=$?
+          if (( code != 0 )); then
+            echo '=== TEST FAILURES ==='
+            grep -n -A 35 -B 12 -E 'not ok|failureType|ERR_ASSERTION|AssertionError|SyntaxError|TypeError|ReferenceError' "$RUNNER_TEMP/tests.log" || tail -n 160 "$RUNNER_TEMP/tests.log"
+            exit "$code"
+          fi
+          tail -n 20 "$RUNNER_TEMP/tests.log"
+      - name: Validate PowerShell scripts
+        working-directory: outputs/kaoyan-schedule-app
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @(
+            'scripts/windows-note-folder-sync.ps1',
+            'scripts/windows-assistant-config-sync.ps1',
+            'scripts/install-note-folder-sync.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if (@($errors).Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Build and dry-run Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          npm run build
+          npx wrangler deploy --dry-run
