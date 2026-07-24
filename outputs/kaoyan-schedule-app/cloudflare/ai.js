@@ -52,9 +52,9 @@ function normalizeBox(object, imageWidth, imageHeight, settings) {
   const y1 = Math.max(0, Math.min(1, top / scale.y));
   const x2 = Math.max(0, Math.min(1, right / scale.x));
   const y2 = Math.max(0, Math.min(1, bottom / scale.y));
-  const minimum = Math.max(0.01, Number(settings.options.minimumRegionPercent || 3.5) / 100);
+  const minimum = Math.max(0.01, Number(settings.options.minimumRegionPercent ?? 3.5) / 100);
   if (x2 <= x1 || y2 <= y1 || x2 - x1 < minimum || y2 - y1 < minimum) return null;
-  const configuredPadding = Math.max(0, Math.min(0.08, Number(settings.options.edgePaddingPercent || 1.2) / 100));
+  const configuredPadding = Math.max(0, Math.min(0.08, Number(settings.options.edgePaddingPercent ?? 1.2) / 100));
   const padX = Math.min(configuredPadding, (x2 - x1) * 0.08);
   const padY = Math.min(configuredPadding, (y2 - y1) * 0.08);
   const paddedX1 = Math.max(0, x1 - padX);
@@ -146,7 +146,4 @@ export async function detectQuestions(env, payload) {
   };
 }
 
-export const questionDetectionInternals = Object.freeze({
-  normalizeRegions,
-  splittingPrompt,
-});
+export const questionDetectionInternals = Object.freeze({ normalizeRegions, splittingPrompt });
