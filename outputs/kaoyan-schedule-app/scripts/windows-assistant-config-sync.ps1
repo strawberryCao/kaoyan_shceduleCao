@@ -20,13 +20,12 @@ function Write-Utf8NoBom([string]$Path, [string]$Content) {
 }
 
 function Write-JsonAtomic([string]$Path, [object]$Value) {
-  Ensure-Directory ([System.IO.Path]::GetDirectoryName($Path))
   $temporary = "$Path.$PID.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).tmp"
   Write-Utf8NoBom $temporary (($Value | ConvertTo-Json -Depth 50) + "`n")
   Move-Item -LiteralPath $temporary -Destination $Path -Force
 }
 
-function Get-ObjectPropertyValue([object]$Object, [string]$Name, [object]$DefaultValue = $null) {
+function Get-Property([object]$Object, [string]$Name, [object]$DefaultValue = $null) {
   if ($null -eq $Object) { return $DefaultValue }
   $property = $Object.PSObject.Properties[$Name]
   if ($null -eq $property) { return $DefaultValue }
@@ -82,98 +81,30 @@ function Invoke-Git(
   return [pscustomobject]@{ ExitCode = $exitCode; Output = $output.Trim() }
 }
 
-function Test-SecretPropertyName([string]$Name) {
-  return $Name -match '(?i)api.?key|token|secret|password|authorization|headers|base.?url|endpoint|proxy|local.*path|directory'
-}
-
-function Convert-ToSafeConfigValue([object]$Value) {
-  if ($null -eq $Value) { return $null }
-  if ($Value -is [string] -or $Value -is [bool] -or $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) { return $Value }
-  if ($Value -is [System.Collections.IDictionary]) {
-    $dictionary = [ordered]@{}
-    foreach ($key in $Value.Keys) {
-      $name = [string]$key
-      if (Test-SecretPropertyName $name) { continue }
-      $dictionary[$name] = Convert-ToSafeConfigValue $Value[$key]
-    }
-    return [pscustomobject]$dictionary
-  }
-  if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [pscustomobject])) {
-    $items = @()
-    foreach ($item in $Value) { $items += ,(Convert-ToSafeConfigValue $item) }
-    return $items
-  }
-  $result = [ordered]@{}
-  foreach ($property in $Value.PSObject.Properties) {
-    $name = [string]$property.Name
-    if (Test-SecretPropertyName $name) { continue }
-    $result[$name] = Convert-ToSafeConfigValue $property.Value
-  }
-  return [pscustomobject]$result
-}
-
-function Ensure-QuestionSplittingTask([object]$AiConfig, [string]$AiConfigPath) {
-  $changed = $false
-  $tasks = Get-ObjectPropertyValue $AiConfig 'tasks' $null
-  if ($null -eq $tasks) {
-    $tasks = [pscustomobject]@{}
-    $AiConfig | Add-Member -NotePropertyName tasks -NotePropertyValue $tasks
-    $changed = $true
-  }
-  $questionSplitting = Get-ObjectPropertyValue $tasks 'question_splitting' $null
-  if ($null -eq $questionSplitting) {
-    $task = [ordered]@{
-      enabled = $true
-      fallback = $true
-      difficulty = 'medium'
-      temperature = 0.1
-      timeoutMs = 90000
-      customInstructions = '识别完整题目区域。每道题必须包含题号、完整题干、全部选项以及相关公式、表格和配图；不要把一道题拆成多个区域，也不要合并相邻的独立题目。'
-      options = [ordered]@{
-        maxQuestions = 24
-        includeQuestionNumber = $true
-        includeOptions = $true
-        includeDiagram = $true
-        edgePaddingPercent = 1.2
-        minimumRegionPercent = 3.5
-        maxTokens = 1600
-      }
-    }
-    $tasks | Add-Member -NotePropertyName question_splitting -NotePropertyValue ([pscustomobject]$task)
-    $changed = $true
-  }
-  if ($changed) { Write-JsonAtomic $AiConfigPath $AiConfig }
-  return $changed
-}
-
-function Comparable-Json([object]$Value) {
-  return ($Value | ConvertTo-Json -Depth 50 -Compress)
-}
-
-function Read-ExistingConfig([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) { return $null }
-  try { return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json }
-  catch { return $null }
-}
-
-function Get-FileHashOrEmpty([string]$Path) {
-  if (-not (Test-Path -LiteralPath $Path)) { return '' }
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+function Copy-DirectoryContent([string]$Source, [string]$Destination) {
+  if (-not (Test-Path -LiteralPath $Source)) { throw "Export directory was not created: $Source" }
+  $temporary = "$Destination.next.$PID"
+  Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
+  Ensure-Directory $temporary
+  Copy-Item -LiteralPath (Join-Path $Source '*') -Destination $temporary -Recurse -Force
+  Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
+  Move-Item -LiteralPath $temporary -Destination $Destination
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Sync configuration was not found: $ConfigPath" }
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$assistantRootValue = Get-ObjectPropertyValue $config 'assistantRoot' 'C:\Users\ASUS\Desktop\考研桌面助手'
-$assistantRoot = [Environment]::ExpandEnvironmentVariables([string]$assistantRootValue)
-$repository = [string](Get-ObjectPropertyValue $config 'repository' 'strawberryCao/Caobijidata')
-$branch = [string](Get-ObjectPropertyValue $config 'branch' 'main')
-$clonePath = [Environment]::ExpandEnvironmentVariables([string](Get-ObjectPropertyValue $config 'clonePath' 'D:\kaoyandata\Caobijidata'))
-$tokenPath = [Environment]::ExpandEnvironmentVariables([string](Get-ObjectPropertyValue $config 'tokenPath' 'D:\kaoyandata\NoteFolderSync\github-token.dpapi'))
-$githubUsername = [string](Get-ObjectPropertyValue $config 'githubUsername' 'strawberryCao')
+$assistantRoot = [Environment]::ExpandEnvironmentVariables([string](Get-Property $config 'assistantRoot' 'C:\Users\ASUS\Desktop\考研桌面助手'))
+$repository = [string](Get-Property $config 'repository' 'strawberryCao/Caobijidata')
+$branch = [string](Get-Property $config 'branch' 'main')
+$clonePath = [Environment]::ExpandEnvironmentVariables([string](Get-Property $config 'clonePath' 'D:\kaoyandata\Caobijidata'))
+$tokenPath = [Environment]::ExpandEnvironmentVariables([string](Get-Property $config 'tokenPath' 'D:\kaoyandata\NoteFolderSync\github-token.dpapi'))
+$githubUsername = [string](Get-Property $config 'githubUsername' 'strawberryCao')
 $workRoot = [System.IO.Path]::GetDirectoryName($ConfigPath)
+$exporterPath = [Environment]::ExpandEnvironmentVariables([string](Get-Property $config 'agentRuntimeExporter' (Join-Path $workRoot 'export-agent-runtime.cjs')))
 $statusPath = Join-Path $workRoot 'config-status.json'
 $logPath = Join-Path $workRoot 'sync.log'
-$lockPath = Join-Path $workRoot 'sync.lock'
+$lockPath = Join-Path $workRoot 'config-sync.lock'
+$exportRoot = Join-Path $workRoot 'agent-runtime-export'
 
 Ensure-Directory $workRoot
 Ensure-Directory $assistantRoot
@@ -185,6 +116,20 @@ catch { exit 0 }
 
 try {
   if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw 'Git for Windows is not installed or is not available in PATH.' }
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
+  if (-not (Test-Path -LiteralPath $exporterPath)) { throw "Agent runtime exporter was not found: $exporterPath" }
+
+  Remove-Item -LiteralPath $exportRoot -Recurse -Force -ErrorAction SilentlyContinue
+  $exportOutput = & $nodeCommand.Source $exporterPath '--assistant-root' $assistantRoot '--output-root' $exportRoot 2>&1 | Out-String
+  if ($LASTEXITCODE -ne 0) { throw "Agent runtime export failed.`n$($exportOutput.Trim())" }
+  $exportResult = $exportOutput.Trim() | ConvertFrom-Json
+  $manifestPath = Join-Path $exportRoot 'manifest.json'
+  $runtimePath = Join-Path $exportRoot 'agent-runtime.json'
+  if (-not (Test-Path -LiteralPath $manifestPath) -or -not (Test-Path -LiteralPath $runtimePath)) {
+    throw 'Agent runtime export did not produce manifest.json and agent-runtime.json.'
+  }
+
   if (-not (Test-Path -LiteralPath (Join-Path $clonePath '.git'))) {
     Ensure-Directory ([System.IO.Path]::GetDirectoryName($clonePath))
     if (Test-Path -LiteralPath $clonePath) { Remove-Item -LiteralPath $clonePath -Recurse -Force }
@@ -195,78 +140,43 @@ try {
   Invoke-Git @('config', 'user.name', 'Kaoyan Assistant Config Sync') $clonePath | Out-Null
   Invoke-Git @('config', 'user.email', 'assistant-config-sync@local.invalid') $clonePath | Out-Null
 
-  $configRoot = Join-Path $clonePath 'data\config'
-  Ensure-Directory $configRoot
-  $changed = $false
-  $aiConfigPath = Join-Path $assistantRoot 'ai-providers.json'
-  if (Test-Path -LiteralPath $aiConfigPath) {
-    $aiConfig = Get-Content -LiteralPath $aiConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    [void](Ensure-QuestionSplittingTask $aiConfig $aiConfigPath)
-    $tasks = Get-ObjectPropertyValue $aiConfig 'tasks' ([pscustomobject]@{})
-    $routing = Get-ObjectPropertyValue $aiConfig 'routing' ([pscustomobject]@{})
-    $core = [ordered]@{
-      schemaVersion = 1
-      tasks = Convert-ToSafeConfigValue $tasks
-      routing = Convert-ToSafeConfigValue $routing
-    }
-    $remoteAiPath = Join-Path $configRoot 'global-ai-settings.json'
-    $existing = Read-ExistingConfig $remoteAiPath
-    $existingCore = if ($null -eq $existing) { $null } else {
-      [ordered]@{
-        schemaVersion = 1
-        tasks = Get-ObjectPropertyValue $existing 'tasks' ([pscustomobject]@{})
-        routing = Get-ObjectPropertyValue $existing 'routing' ([pscustomobject]@{})
-      }
-    }
-    if ($null -eq $existingCore -or (Comparable-Json $core) -ne (Comparable-Json $existingCore)) {
-      $payload = [ordered]@{
-        schemaVersion = 1
-        updatedAt = [DateTime]::UtcNow.ToString('o')
-        tasks = $core.tasks
-        routing = $core.routing
-      }
-      Write-JsonAtomic $remoteAiPath $payload
-      $changed = $true
-    }
-  }
-
-  $localTaxonomyPath = Join-Path $assistantRoot 'note-taxonomy.json'
-  if (Test-Path -LiteralPath $localTaxonomyPath) {
-    $remoteTaxonomyPath = Join-Path $configRoot 'note-taxonomy.json'
-    if ((Get-FileHashOrEmpty $localTaxonomyPath) -ne (Get-FileHashOrEmpty $remoteTaxonomyPath)) {
-      Copy-Item -LiteralPath $localTaxonomyPath -Destination $remoteTaxonomyPath -Force
-      $changed = $true
-    }
-  }
-
+  $remoteRoot = Join-Path $clonePath 'data\config\local-assistant'
+  Copy-DirectoryContent $exportRoot $remoteRoot
+  Invoke-Git @('add', '--', 'data/config/local-assistant') $clonePath | Out-Null
+  $diff = Invoke-Git @('diff', '--cached', '--quiet', '--', 'data/config/local-assistant') $clonePath @(0, 1)
   $committed = $false
-  if ($changed) {
-    Invoke-Git @('add', '--', 'data/config') $clonePath | Out-Null
-    $diff = Invoke-Git @('diff', '--cached', '--quiet', '--', 'data/config') $clonePath @(0, 1)
-    if ($diff.ExitCode -eq 1) {
-      Invoke-Git @('commit', '-m', "config: synchronize sanitized assistant settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") $clonePath | Out-Null
-      Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null
-      $committed = $true
-    }
+  if ($diff.ExitCode -eq 1) {
+    Invoke-Git @('commit', '-m', "config: publish local Agent runtime $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") $clonePath | Out-Null
+    Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null
+    $committed = $true
   }
 
+  $manifest = Get-Content -LiteralPath (Join-Path $remoteRoot 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  $runtime = Get-Content -LiteralPath (Join-Path $remoteRoot 'agent-runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   $now = [DateTime]::UtcNow.ToString('o')
   Write-JsonAtomic $statusPath ([pscustomobject]@{
     ok = $true
     lastRunAt = $now
+    direction = 'local-to-github-only'
+    localConfigurationWasOverwritten = $false
     assistantRoot = $assistantRoot
     repository = $repository
     branch = $branch
-    changed = $changed
     committed = $committed
-    synchronizedFiles = @('data/config/global-ai-settings.json', 'data/config/note-taxonomy.json')
-    excludedSecrets = @('apiKey', 'token', 'password', 'authorization', 'headers', 'baseUrl', 'endpoint', 'proxy', 'localPath')
+    runtimeHash = [string]$manifest.runtimeHash
+    workflowHash = [string]$runtime.source.workflowHash
+    generatedFromJsonFiles = [int]$manifest.generatedFromJsonFiles
+    includedFiles = [int]$manifest.includedFiles
+    excludedFiles = [int]$manifest.excludedFiles
+    configuredTasks = @($runtime.tasks.PSObject.Properties.Name)
+    providerSecretRefs = @($runtime.providers.PSObject.Properties | ForEach-Object { $_.Value.secretRef })
+    remotePath = 'data/config/local-assistant'
   })
-  Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now CONFIG_OK changed=$changed committed=$committed"
+  Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now CONFIG_OK committed=$committed runtimeHash=$($manifest.runtimeHash) included=$($manifest.includedFiles) excluded=$($manifest.excludedFiles)"
 } catch {
   $now = [DateTime]::UtcNow.ToString('o')
   $message = $_.Exception.Message
-  Write-JsonAtomic $statusPath ([pscustomobject]@{ ok = $false; lastRunAt = $now; error = $message })
+  Write-JsonAtomic $statusPath ([pscustomobject]@{ ok = $false; lastRunAt = $now; direction = 'local-to-github-only'; error = $message })
   Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now CONFIG_ERROR $message"
   throw
 } finally {
