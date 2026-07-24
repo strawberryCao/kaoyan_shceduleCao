@@ -41,11 +41,23 @@ jobs:
           import sys
           path = Path(sys.argv[1])
           text = path.read_text(encoding='utf-8')
-          old = """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');"""
-          new = """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');"""
-          if old not in text:
-              raise SystemExit('learningData normalize-fields patch anchor not found in carrier')
-          path.write_text(text.replace(old, new), encoding='utf-8')
+          replacements = [
+              (
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');""",
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');""",
+                  'learningData normalize fields',
+              ),
+              (
+                  """`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(subject ? { subject } : {}),`,\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n             ...(subject ? { subject } : {}),`, 'local patch fields');""",
+                  """`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(subject ? { subject } : {}),`,\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n            ...(subject ? { subject } : {}),`, 'local patch fields');""",
+                  'local update fields indentation',
+              ),
+          ]
+          for old, new, name in replacements:
+              if old not in text:
+                  raise SystemExit(f'{name} patch anchor not found in carrier')
+              text = text.replace(old, new)
+          path.write_text(text, encoding='utf-8')
           PY
           node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
 
