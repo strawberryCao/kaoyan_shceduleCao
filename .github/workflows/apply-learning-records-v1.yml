@@ -1,0 +1,69 @@
+name: Apply real quick-note multi-material records
+
+on:
+  push:
+    branches: [deploy/cloudflare-production]
+    paths:
+      - 'tools/learning-records-patch/**'
+      - '.github/workflows/apply-learning-records-v1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-learning-records-v1
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: deploy/cloudflare-production
+          fetch-depth: 0
+
+      - name: Rebuild patch script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/learning-records-patch/part*.b64 | base64 --decode | gzip --decompress > "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+          node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+
+      - name: Apply to production source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/learning-detail-title-latex
+          git checkout -B fix/learning-detail-title-latex origin/fix/learning-detail-title-latex
+          node "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+
+      - name: Install and validate
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
+        run: |
+          set -euo pipefail
+          npm ci
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}"
+          npm run build
+          npx wrangler deploy --dry-run
+
+      - name: Commit real feature
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No source changes were produced.' >&2
+            exit 2
+          fi
+          git commit -m 'feat: add real quick-note multi-material records'
+          git push origin HEAD:fix/learning-detail-title-latex
