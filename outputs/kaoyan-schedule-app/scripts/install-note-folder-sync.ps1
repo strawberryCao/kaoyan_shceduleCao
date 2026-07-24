@@ -55,6 +55,7 @@ $installRoot = Join-Path $DataRoot 'NoteFolderSync'
 $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
 $configSyncPath = Join-Path $installRoot 'windows-assistant-config-sync.ps1'
 $exporterPath = Join-Path $installRoot 'export-agent-runtime.cjs'
+$learningMergePath = Join-Path $installRoot 'merge-learning-data.cjs'
 $watcherPath = Join-Path $installRoot 'assistant-config-watch.cjs'
 $runnerPath = Join-Path $installRoot 'run-global-sync.ps1'
 $configPath = Join-Path $installRoot 'config.json'
@@ -104,10 +105,11 @@ if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
 }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260724-agent-runtime-v8'
+$version = '20260724-learning-sync-v9'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
+Install-ScriptFile 'merge-learning-data.cjs' $learningMergePath "$codeRoot/merge-learning-data.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
 foreach ($dependency in @('ai-router.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
@@ -120,6 +122,19 @@ $runtimeText = $runtimeText.Replace(
   '  Export-SafeAssistantConfiguration $clonePath $assistantRoot',
   '  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.'
 )
+$runtimeText = $runtimeText.Replace(
+  '  $paths = @(''source-notes'', ''data/config'', ''data/deletions'', ''data/local-delete-recycle'', ''data/quarantine'')',
+  '  $paths = @(''source-notes'', ''data/cloud/learning-data.json'', ''data/config'', ''data/deletions'', ''data/local-delete-recycle'', ''data/quarantine'')'
+)
+$runtimeNode = $nodeCommand.Source.Replace("'", "''")
+$runtimeMerge = $learningMergePath.Replace("'", "''")
+$runtimeConfig = $configPath.Replace("'", "''")
+$mergeBlock = @"
+  Materialize-CloudNotes `$localPath `$remotePath
+  & '$runtimeNode' '$runtimeMerge' --config '$runtimeConfig' | Out-Null
+  if (`$LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
+"@
+$runtimeText = $runtimeText.Replace('  Materialize-CloudNotes $localPath $remotePath', $mergeBlock.TrimEnd())
 Write-Utf8Bom $runtimePath $runtimeText
 Write-Utf8Bom $configSyncPath (Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8)
 
@@ -135,7 +150,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 8
+  version = 9
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -150,6 +165,9 @@ $config = [ordered]@{
   cloudDeleteAllowed = $false
   configurationDirection = 'local-to-github-only'
   githubMayOverwriteLocalConfiguration = $false
+  learningDataDirection = 'bidirectional-structured-merge'
+  learningDataLocalPath = (Join-Path $AssistantRoot 'learning-data.json')
+  learningDataRemotePath = 'data/cloud/learning-data.json'
   agentRuntimeExporter = $exporterPath
   agentRuntimeRemotePath = 'data/config/local-assistant'
   strictAgentRuntime = $true
@@ -222,11 +240,13 @@ Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)
 Write-Host '配置方向：只允许本地配置发布到 GitHub；GitHub 不会覆盖本地配置。'
-Write-Host '实时配置：JSON 保存后约 7 秒发布；监听器自身每 5 分钟执行一次全局兜底同步。'
+Write-Host '学习数据：本地与 GitHub 按 noteUid、thought id、card id 和 review id 双向合并。'
+Write-Host '实时同步：learning-data.json 保存后约 7 秒执行完整同步；每隔指定分钟兜底检查。'
 Write-Host '启动方式：当前用户启动目录 + 隐藏监督进程，不需要管理员或计划任务权限。'
 Write-Host 'Agent 范围：代码中的全部任务合同、任务参数、本地任务设置、供应商非敏感信息和知识目录。'
 Write-Host '密钥规则：GitHub 只保存 secretRef；真实 API Key 不进入仓库。'
 Write-Host '运行方式：完全隐藏，不弹 PowerShell 窗口。'
 Write-Host ('笔记状态：' + (Join-Path $installRoot 'status.json'))
+Write-Host ('学习数据状态：' + (Join-Path $installRoot 'learning-data-sync-status.json'))
 Write-Host ('配置状态：' + (Join-Path $installRoot 'config-status.json'))
 Write-Host ('日志：' + (Join-Path $installRoot 'sync.log'))
