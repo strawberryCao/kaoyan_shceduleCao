@@ -72,7 +72,7 @@ jobs:
             tail -n 120 "$RUNNER_TEMP/apply.log"
             echo '```'
           } > "$RUNNER_TEMP/apply-failure.md"
-          gh pr comment 30 --body-file "$RUNNER_TEMP/apply-failure.md"
+          gh pr edit 30 --body-file "$RUNNER_TEMP/apply-failure.md"
           cat "$RUNNER_TEMP/apply-failure.md"
           exit 1
 
