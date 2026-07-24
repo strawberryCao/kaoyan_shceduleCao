@@ -17,10 +17,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-function Invoke-ScheduledTaskCommand(
-  [string[]]$Arguments,
-  [int[]]$AllowedExitCodes = @(0)
-) {
+function Invoke-ScheduledTaskCommand([string[]]$Arguments, [int[]]$AllowedExitCodes = @(0)) {
   $previousPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
@@ -44,69 +41,80 @@ function Write-Utf8Bom([string]$Path, [string]$Content) {
 }
 
 function Install-ScriptFile([string]$LocalName, [string]$Destination, [string]$RemoteUrl) {
-  $localPath = Join-Path $PSScriptRoot $LocalName
-  if (Test-Path -LiteralPath $localPath) {
-    Copy-Item -LiteralPath $localPath -Destination $Destination -Force
+  $localFile = Join-Path $PSScriptRoot $LocalName
+  if (Test-Path -LiteralPath $localFile) {
+    Copy-Item -LiteralPath $localFile -Destination $Destination -Force
   } else {
     Invoke-WebRequest -UseBasicParsing -Uri $RemoteUrl -OutFile $Destination
   }
 }
 
-$taskName = 'Kaoyan Note Folder Sync'
+$noteTaskName = 'Kaoyan Note Folder Sync'
+$watchTaskName = 'Kaoyan Assistant Config Watch'
 $installRoot = Join-Path $DataRoot 'NoteFolderSync'
 $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
 $configSyncPath = Join-Path $installRoot 'windows-assistant-config-sync.ps1'
+$exporterPath = Join-Path $installRoot 'export-agent-runtime.cjs'
+$watcherPath = Join-Path $installRoot 'assistant-config-watch.cjs'
 $runnerPath = Join-Path $installRoot 'run-global-sync.ps1'
 $configPath = Join-Path $installRoot 'config.json'
 $tokenPath = Join-Path $installRoot 'github-token.dpapi'
-$launcherPath = Join-Path $installRoot 'silent-sync.vbs'
+$syncLauncherPath = Join-Path $installRoot 'silent-sync.vbs'
+$watchLauncherPath = Join-Path $installRoot 'silent-config-watch.vbs'
 $clonePath = Join-Path $DataRoot 'Caobijidata'
 $legacyRoot = Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter\NoteFolderSync'
 $legacyStartup = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFolderSync.cmd'
 
 if ($Uninstall) {
-  Invoke-ScheduledTaskCommand @('/Delete', '/TN', $taskName, '/F') @(0, 1) | Out-Null
+  Invoke-ScheduledTaskCommand @('/Delete', '/TN', $noteTaskName, '/F') @(0, 1) | Out-Null
+  Invoke-ScheduledTaskCommand @('/Delete', '/TN', $watchTaskName, '/F') @(0, 1) | Out-Null
   Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
-  Write-Host '自动同步已关闭。' -ForegroundColor Yellow
+  Write-Host '自动同步与配置监听已关闭。' -ForegroundColor Yellow
   Write-Host ('本地笔记仍保留在：' + $LocalPath)
+  Write-Host ('本地配置仍保留在：' + $AssistantRoot)
   exit 0
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   throw '未找到 Git for Windows。请先安装 Git 并确保 git.exe 位于 PATH。'
 }
+$nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
 
 $driveRoot = [System.IO.Path]::GetPathRoot($DataRoot)
 if (-not $driveRoot -or -not (Test-Path -LiteralPath $driveRoot)) {
   throw "目标磁盘不可用：$driveRoot"
 }
-
-foreach ($path in @($LocalPath, $AssistantRoot, $installRoot)) {
-  if (-not (Test-Path -LiteralPath $path)) { New-Item -ItemType Directory -Path $path -Force | Out-Null }
+foreach ($folder in @($LocalPath, $AssistantRoot, $installRoot)) {
+  if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
 }
 
-Invoke-ScheduledTaskCommand @('/Delete', '/TN', $taskName, '/F') @(0, 1) | Out-Null
+Invoke-ScheduledTaskCommand @('/Delete', '/TN', $noteTaskName, '/F') @(0, 1) | Out-Null
+Invoke-ScheduledTaskCommand @('/Delete', '/TN', $watchTaskName, '/F') @(0, 1) | Out-Null
 Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
   Remove-Item -LiteralPath $legacyRoot -Recurse -Force
 }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=20260723-global-sync-v5"
-Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=20260723-global-sync-v5"
+$version = '20260724-agent-runtime-v6'
+Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
+Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
+Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
+Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
+foreach ($dependency in @('ai-router.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
+  Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/$dependency?v=$version"
+}
 
-# Configuration export is handled by the dedicated stable synchronizer below.
-# Disable the older inline exporter to avoid a new Git commit every five minutes
-# caused only by its generated updatedAt timestamp.
+# The dedicated Agent runtime publisher owns configuration export. The note
+# synchronizer must never copy GitHub configuration back into AssistantRoot.
 $runtimeText = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
 $runtimeText = $runtimeText.Replace(
   '  Export-SafeAssistantConfiguration $clonePath $assistantRoot',
-  '  # Assistant configuration synchronization is handled by windows-assistant-config-sync.ps1.'
+  '  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.'
 )
-# Windows PowerShell 5.1 requires a BOM to decode Chinese paths and messages reliably.
 Write-Utf8Bom $runtimePath $runtimeText
-$configSyncText = Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8
-Write-Utf8Bom $configSyncPath $configSyncText
+Write-Utf8Bom $configSyncPath (Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8)
 
 if ($ResetToken) { Remove-Item -LiteralPath $tokenPath -Force -ErrorAction SilentlyContinue }
 if (-not (Test-Path -LiteralPath $tokenPath)) {
@@ -115,13 +123,12 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
   Write-Host '权限要求：Contents - Read and write。Token 只在本机通过 Windows DPAPI 加密保存。'
   $secureToken = Read-Host 'GitHub PAT' -AsSecureString
   if ($secureToken.Length -lt 1) { throw '自动同步需要 GitHub PAT。' }
-  $encrypted = $secureToken | ConvertFrom-SecureString
-  Write-Utf8NoBom $tokenPath $encrypted.Trim()
+  Write-Utf8NoBom $tokenPath (($secureToken | ConvertFrom-SecureString).Trim())
   $secureToken.Dispose()
 }
 
 $config = [ordered]@{
-  version = 5
+  version = 6
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -134,8 +141,11 @@ $config = [ordered]@{
   authentication = 'dpapi-token'
   deletionPolicy = 'windows-local-authoritative'
   cloudDeleteAllowed = $false
-  safeConfigurationSync = $true
-  safeConfigurationFiles = @('data/config/global-ai-settings.json', 'data/config/note-taxonomy.json')
+  configurationDirection = 'local-to-github-only'
+  githubMayOverwriteLocalConfiguration = $false
+  agentRuntimeExporter = $exporterPath
+  agentRuntimeRemotePath = 'data/config/local-assistant'
+  strictAgentRuntime = $true
 }
 Write-Utf8NoBom $configPath (($config | ConvertTo-Json -Depth 8) + "`n")
 
@@ -154,39 +164,44 @@ Write-Utf8Bom $runnerPath $runner
 
 $runnerEscaped = $runnerPath.Replace('"', '""')
 $configEscaped = $configPath.Replace('"', '""')
-$launcher = @"
+$syncLauncher = @"
 Set shell = CreateObject("WScript.Shell")
 command = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runnerEscaped"" -ConfigPath ""$configEscaped"""
 shell.Run command, 0, False
 "@
-Write-Utf8NoBom $launcherPath $launcher
+Write-Utf8NoBom $syncLauncherPath $syncLauncher
+
+$nodeEscaped = $nodeCommand.Source.Replace('"', '""')
+$watcherEscaped = $watcherPath.Replace('"', '""')
+$installEscaped = $installRoot.Replace('"', '""')
+$watchLauncher = @"
+Set shell = CreateObject("WScript.Shell")
+command = "cmd.exe /d /c set KAOYAN_SYNC_ROOT=$installEscaped&& ""$nodeEscaped"" ""$watcherEscaped"""
+shell.Run command, 0, False
+"@
+Write-Utf8NoBom $watchLauncherPath $watchLauncher
 
 Write-Host ''
 Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
-if ($LASTEXITCODE -ne 0) {
-  throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log'))
-}
+if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log')) }
 
-$taskCommand = 'wscript.exe //B //Nologo "' + $launcherPath + '"'
-Invoke-ScheduledTaskCommand @(
-  '/Create',
-  '/TN', $taskName,
-  '/TR', $taskCommand,
-  '/SC', 'MINUTE',
-  '/MO', [string]$IntervalMinutes,
-  '/F'
-) | Out-Null
+$syncTaskCommand = 'wscript.exe //B //Nologo "' + $syncLauncherPath + '"'
+Invoke-ScheduledTaskCommand @('/Create', '/TN', $noteTaskName, '/TR', $syncTaskCommand, '/SC', 'MINUTE', '/MO', [string]$IntervalMinutes, '/F') | Out-Null
+$watchTaskCommand = 'wscript.exe //B //Nologo "' + $watchLauncherPath + '"'
+Invoke-ScheduledTaskCommand @('/Create', '/TN', $watchTaskName, '/TR', $watchTaskCommand, '/SC', 'ONLOGON', '/F') | Out-Null
+Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
 
 Write-Host ''
 Write-Host '全局同步已启用。' -ForegroundColor Green
 Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
-Write-Host ('GitHub 数据：' + $Repository + '/' + $RemoteSubdir)
-Write-Host ('频率：每 ' + $IntervalMinutes + ' 分钟')
+Write-Host ('GitHub 数据：' + $Repository)
+Write-Host '配置方向：只允许本地配置发布到 GitHub；GitHub 不会覆盖本地配置。'
+Write-Host '实时配置：JSON 保存后约 7 秒发布；每 5 分钟静默检查作为兜底。'
+Write-Host 'Agent 范围：代码中的全部任务合同、任务参数、本地任务设置、供应商非敏感信息和知识目录。'
+Write-Host '密钥规则：GitHub 只保存 secretRef；真实 API Key 不进入仓库。'
 Write-Host '运行方式：完全隐藏，不弹 PowerShell 窗口。'
-Write-Host '删除规则：只有 Windows 本地删除会向全局扩散；云端删除被拒绝。'
-Write-Host 'AI 配置：只上传脱敏后的任务规则、提示词和参数；API Key、接口地址和本机路径不上传。'
 Write-Host ('笔记状态：' + (Join-Path $installRoot 'status.json'))
 Write-Host ('配置状态：' + (Join-Path $installRoot 'config-status.json'))
 Write-Host ('日志：' + (Join-Path $installRoot 'sync.log'))
