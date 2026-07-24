@@ -89,21 +89,18 @@ async function fetchText(url) {
 }
 
 function makeMigrationIndentationTolerant(source) {
-  const compatibilityPatches = [
-    [
-      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');",
-      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');",
-    ],
-    [
-      "`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(subject ? { subject } : {}),`,\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n             ...(subject ? { subject } : {}),`, 'local patch fields');",
-      "`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(subject ? { subject } : {}),`,\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n            ...(subject ? { subject } : {}),`, 'local patch fields');",
-    ],
-  ];
   let next = source;
-  for (const [search, replacement] of compatibilityPatches) {
-    if (!next.includes(search)) throw new Error('Known migration compatibility anchor was not found.');
-    next = next.replace(search, replacement);
-  }
+  const marker = "'normalize fields');";
+  const markerIndex = next.indexOf(marker);
+  if (markerIndex < 0) throw new Error('normalize fields migration call was not found.');
+  const blockStart = next.lastIndexOf('replaceOnce(', markerIndex);
+  if (blockStart < 0) throw new Error('normalize fields replaceOnce call was not found.');
+  const blockEnd = markerIndex + marker.length;
+  const block = next.slice(blockStart, blockEnd);
+  const patchedBlock = block.replace(/(\n\s*)items:/g, '$1items,');
+  if (patchedBlock === block) throw new Error('normalize fields items anchor was not found.');
+  next = `${next.slice(0, blockStart)}${patchedBlock}${next.slice(blockEnd)}`;
+
   const exactGuard = "  if (!source.includes(search)) throw new Error(`${name}: anchor not found in ${file}`);";
   const flexibleGuard = String.raw`  if (!source.includes(search)) {
     const sourceLines = source.split('\n');
@@ -124,7 +121,7 @@ function makeMigrationIndentationTolerant(source) {
       const replacementLines = replacement.split('\n').map((line) => {
         if (!line.trim()) return '';
         const indent = (line.match(/^\s*/) || [''])[0].length;
-        return \`\${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}\${line.trimStart()}\`;
+        return ' '.repeat(Math.max(0, sourceIndent + indent - searchIndent)) + line.trimStart();
       });
       const rebuilt = [
         ...sourceLines.slice(0, start),
@@ -134,7 +131,7 @@ function makeMigrationIndentationTolerant(source) {
       require('node:fs').writeFileSync(file, rebuilt, 'utf8');
       return;
     }
-    throw new Error(\`\${name}: anchor not found in \${file}\`);
+    throw new Error(name + ': anchor not found in ' + file);
   }`;
   if (!next.includes(exactGuard)) throw new Error('Migration replaceOnce guard was not found.');
   return next.replace(exactGuard, flexibleGuard);
