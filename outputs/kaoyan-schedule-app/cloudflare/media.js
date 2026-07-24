@@ -7,7 +7,7 @@ import {
   writeBinaryFile,
 } from './github-store.js';
 import { readReceipt, writeReceipt } from './storage.js';
-import { mirrorNewCloudImage } from './source-mirror.js';
+import { mirrorNewCloudImage, mirroredCloudImagePaths } from './source-mirror.js';
 
 const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -68,7 +68,19 @@ async function saveReceipt(env, noteUid, requestHash, result) {
   }
 }
 
-export async function saveNote(env, payload) {
+function reportBackgroundFailure(event, noteUid, result) {
+  for (const item of result) {
+    if (item.status !== 'rejected') continue;
+    console.error(JSON.stringify({
+      level: 'error',
+      event,
+      noteUid,
+      error: item.reason instanceof Error ? item.reason.message : String(item.reason),
+    }));
+  }
+}
+
+export async function saveNote(env, payload, ctx) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const image = decodeImageDataUrl(payload.imageDataUrl);
   const imageHash = await sha256(image.bytes);
@@ -113,8 +125,8 @@ export async function saveNote(env, payload) {
   const timestamp = new Date().toISOString();
   const fileName = `${noteUid}.${image.extension}`;
   const note = createSavedImageNote({ ...payload, noteUid }, { repoPath }, timestamp);
-  const sourceMirror = await mirrorNewCloudImage(env, image, note, payload, timestamp);
   const learningResult = await insertSavedImageNote(env, note);
+  const sourceMirror = mirroredCloudImagePaths(noteUid, image.extension);
   const response = {
     ok: true,
     noteUid,
@@ -135,7 +147,14 @@ export async function saveNote(env, payload) {
     provisional: false,
     idempotentReplay: learningResult.outcome.replayed === true,
   };
-  await saveReceipt(env, noteUid, requestHash, { ...response, learningData: undefined });
+
+  const backgroundWork = Promise.allSettled([
+    mirrorNewCloudImage(env, image, note, payload, timestamp),
+    saveReceipt(env, noteUid, requestHash, { ...response, learningData: undefined }),
+  ]).then((result) => reportBackgroundFailure('cloud_note_post_save_failed', noteUid, result));
+  if (ctx?.waitUntil) ctx.waitUntil(backgroundWork);
+  else await backgroundWork;
+
   return response;
 }
 
