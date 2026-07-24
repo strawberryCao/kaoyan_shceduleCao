@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: apply-learning-records-v1
@@ -38,19 +39,34 @@ jobs:
           node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
 
       - name: Apply to production source branch
+        id: apply_source
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin fix/learning-detail-title-latex
           git checkout -B fix/learning-detail-title-latex origin/fix/learning-detail-title-latex
-          set +e
           node "$RUNNER_TEMP/apply-learning-records-v1.cjs" > "$RUNNER_TEMP/apply.log" 2>&1
-          code=$?
-          set -e
-          tail -n 80 "$RUNNER_TEMP/apply.log"
-          exit "$code"
+
+      - name: Report exact patch failure
+        if: steps.apply_source.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Real learning-record patch failed'
+            echo
+            echo '```text'
+            tail -n 120 "$RUNNER_TEMP/apply.log"
+            echo '```'
+          } > "$RUNNER_TEMP/apply-failure.md"
+          gh pr comment 30 --body-file "$RUNNER_TEMP/apply-failure.md"
+          cat "$RUNNER_TEMP/apply-failure.md"
+          exit 1
 
       - name: Install and validate
+        if: steps.apply_source.outcome == 'success'
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
         env:
@@ -64,6 +80,7 @@ jobs:
           npx wrangler deploy --dry-run
 
       - name: Commit real feature
+        if: steps.apply_source.outcome == 'success'
         shell: bash
         run: |
           set -euo pipefail
