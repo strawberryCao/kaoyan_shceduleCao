@@ -43,7 +43,12 @@ jobs:
           set -euo pipefail
           git fetch origin fix/learning-detail-title-latex
           git checkout -B fix/learning-detail-title-latex origin/fix/learning-detail-title-latex
-          node "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+          set +e
+          node "$RUNNER_TEMP/apply-learning-records-v1.cjs" > "$RUNNER_TEMP/apply.log" 2>&1
+          code=$?
+          set -e
+          tail -n 80 "$RUNNER_TEMP/apply.log"
+          exit "$code"
 
       - name: Install and validate
         working-directory: outputs/kaoyan-schedule-app
