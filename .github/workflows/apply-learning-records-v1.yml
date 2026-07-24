@@ -57,6 +57,42 @@ jobs:
               if old not in text:
                   raise SystemExit(f'{name} patch anchor not found in carrier')
               text = text.replace(old, new)
+
+          exact_guard = "  if (!source.includes(search)) throw new Error(`${name}: anchor not found in ${file}`);"
+          flexible_guard = r'''  if (!source.includes(search)) {
+    const sourceLines = source.split('\n');
+    const searchLines = search.split('\n');
+    let start = -1;
+    outer: for (let i = 0; i <= sourceLines.length - searchLines.length; i += 1) {
+      for (let j = 0; j < searchLines.length; j += 1) {
+        if (sourceLines[i + j].trim() !== searchLines[j].trim()) continue outer;
+      }
+      start = i;
+      break;
+    }
+    if (start >= 0) {
+      const firstSearch = searchLines.find((line) => line.trim()) || '';
+      const firstSource = sourceLines.slice(start, start + searchLines.length).find((line) => line.trim()) || '';
+      const searchIndent = (firstSearch.match(/^\s*/) || [''])[0].length;
+      const sourceIndent = (firstSource.match(/^\s*/) || [''])[0].length;
+      const replacementLines = replacement.split('\n').map((line) => {
+        if (!line.trim()) return '';
+        const indent = (line.match(/^\s*/) || [''])[0].length;
+        return `${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}${line.trimStart()}`;
+      });
+      const rebuilt = [
+        ...sourceLines.slice(0, start),
+        ...replacementLines,
+        ...sourceLines.slice(start + searchLines.length),
+      ].join('\n');
+      require('node:fs').writeFileSync(file, rebuilt, 'utf8');
+      return;
+    }
+    throw new Error(`${name}: anchor not found in ${file}`);
+  }'''
+          if exact_guard not in text:
+              raise SystemExit('replaceOnce exact guard not found in carrier')
+          text = text.replace(exact_guard, flexible_guard, 1)
           path.write_text(text, encoding='utf-8')
           PY
           node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
