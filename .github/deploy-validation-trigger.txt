@@ -1,2 +1,2 @@
 Validate current fix/learning-detail-title-latex source without merging this marker.
-2026-07-24T03:29:00Z
+2026-07-24T03:33:00Z
