@@ -8,8 +8,71 @@ export class HttpError extends Error {
   }
 }
 
+const NOTE_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'heic', 'heif']);
+
+function normalizedStoredPath(value) {
+  return typeof value === 'string' ? value.trim().replaceAll('\\', '/') : '';
+}
+
+function isRemoteNoteAssetPath(value) {
+  const normalized = normalizedStoredPath(value);
+  return normalized.startsWith('github://data/assets/')
+    || normalized.startsWith('data/assets/')
+    || normalized.startsWith('r2://note-assets/');
+}
+
+function publicNoteAssetPath(noteUid, value) {
+  const normalized = normalizedStoredPath(value);
+  if (!normalized || isRemoteNoteAssetPath(normalized)) return normalized;
+  const safeUid = typeof noteUid === 'string' ? noteUid.replace(/[^A-Za-z0-9._-]/g, '') : '';
+  if (!safeUid) return normalized;
+  const match = /\.([A-Za-z0-9]+)(?:[?#].*)?$/.exec(normalized);
+  const extension = match?.[1]?.toLowerCase() || 'png';
+  const safeExtension = NOTE_IMAGE_EXTENSIONS.has(extension) ? extension : 'png';
+  return `github://data/assets/${safeUid}.${safeExtension}`;
+}
+
+function normalizePublicPayload(value, seen = new WeakMap()) {
+  if (Array.isArray(value)) return value.map((item) => normalizePublicPayload(item, seen));
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const normalized = {};
+  seen.set(value, normalized);
+  for (const [key, item] of Object.entries(value)) {
+    normalized[key] = normalizePublicPayload(item, seen);
+  }
+
+  const noteUid = typeof normalized.noteUid === 'string' ? normalized.noteUid : '';
+  if (noteUid) {
+    if (Object.prototype.hasOwnProperty.call(normalized, 'filePath')) {
+      normalized.filePath = publicNoteAssetPath(noteUid, normalized.filePath);
+    }
+    if (Object.prototype.hasOwnProperty.call(normalized, 'sourceFilePath')) {
+      normalized.sourceFilePath = publicNoteAssetPath(noteUid, normalized.sourceFilePath);
+    }
+    if (
+      typeof normalized.subject === 'string'
+      && normalized.subject.trim().toLowerCase() === 'assets'
+      && normalized.classificationSource !== 'manual'
+    ) {
+      normalized.subject = '默认文件夹';
+      if (Array.isArray(normalized.knowledgePath)) {
+        normalized.knowledgePath = [
+          '默认文件夹',
+          ...normalized.knowledgePath.filter((item) => typeof item === 'string' && item.trim().toLowerCase() !== 'assets' && item !== '默认文件夹'),
+        ].slice(0, 3);
+      }
+      if (normalized.reviewStatus !== 'ignored') normalized.reviewStatus = 'pending';
+      if (normalized.organizationStatus !== 'ignored') normalized.organizationStatus = 'pending';
+    }
+  }
+
+  return normalized;
+}
+
 export function json(data, status = 200, extraHeaders = {}) {
-  return Response.json(data, {
+  return Response.json(normalizePublicPayload(data), {
     status,
     headers: {
       'Cache-Control': 'private, no-store',
