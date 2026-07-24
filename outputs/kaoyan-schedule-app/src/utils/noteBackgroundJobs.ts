@@ -122,6 +122,25 @@ const saveFailureFeedback = async (job: MultiQuestionJob, errorText: string): Pr
   return result.noteUid || noteUid;
 };
 
+const materializeFinalFailureFeedback = async (job: MultiQuestionJob): Promise<void> => {
+  if (!job.imageDataUrl || job.feedbackNoteUid) return;
+  try {
+    const feedbackNoteUid = await saveFailureFeedback(job, job.error || '历史自动裁剪任务失败。');
+    await patchJob(job.id, {
+      status: 'failed',
+      message: '自动裁剪失败，原图和原因已写入待确认',
+      feedbackNoteUid,
+    });
+  } catch (error) {
+    const feedbackError = error instanceof Error ? error.message : String(error);
+    await patchJob(job.id, {
+      status: 'failed',
+      message: '自动裁剪失败，反馈笔记保存也失败；任务仍保留，可再次打开重试',
+      error: [job.error, `反馈保存失败：${feedbackError}`].filter(Boolean).join('；'),
+    });
+  }
+};
+
 const processJob = async (id: string): Promise<void> => {
   if (activeJobs.has(id)) return;
   const initial = await readJob(id);
@@ -260,6 +279,10 @@ export const resumeMultiQuestionJobs = async (): Promise<void> => {
       continue;
     }
     if (job.status === 'processing') await patchJob(job.id, { status: 'queued', message: '正在恢复后台任务' });
+    if (job.status === 'failed' && job.attempts >= MAX_AUTO_ATTEMPTS && job.imageDataUrl && !job.feedbackNoteUid) {
+      window.setTimeout(() => { void materializeFinalFailureFeedback(job); }, 0);
+      continue;
+    }
     if (job.status === 'queued' || (job.status === 'failed' && job.attempts < MAX_AUTO_ATTEMPTS)) {
       window.setTimeout(() => { void processJob(job.id); }, 0);
     }
