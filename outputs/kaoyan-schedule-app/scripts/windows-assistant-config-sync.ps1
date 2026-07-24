@@ -164,15 +164,17 @@ try {
     branch = $branch
     committed = $committed
     runtimeHash = [string]$manifest.runtimeHash
+    configurationHash = [string]$manifest.configurationHash
     workflowHash = [string]$runtime.source.workflowHash
-    generatedFromJsonFiles = [int]$manifest.generatedFromJsonFiles
-    includedFiles = [int]$manifest.includedFiles
-    excludedFiles = [int]$manifest.excludedFiles
+    generatedFromJsonFiles = [int]$exportResult.generatedFromJsonFiles
+    includedFiles = [int]$exportResult.includedFiles
+    excludedFiles = [int]$exportResult.excludedFiles
+    excludedCounts = $exportResult.excludedCounts
     configuredTasks = @($runtime.tasks.PSObject.Properties.Name)
     providerSecretRefs = @($runtime.providers.PSObject.Properties | ForEach-Object { $_.Value.secretRef })
     remotePath = 'data/config/local-assistant'
   })
-  Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now CONFIG_OK committed=$committed runtimeHash=$($manifest.runtimeHash) included=$($manifest.includedFiles) excluded=$($manifest.excludedFiles)"
+  Add-Content -LiteralPath $logPath -Encoding UTF8 -Value "$now CONFIG_OK committed=$committed runtimeHash=$($manifest.runtimeHash) scanned=$($exportResult.generatedFromJsonFiles) included=$($exportResult.includedFiles) excluded=$($exportResult.excludedFiles)"
 } catch {
   $now = [DateTime]::UtcNow.ToString('o')
   $message = $_.Exception.Message
