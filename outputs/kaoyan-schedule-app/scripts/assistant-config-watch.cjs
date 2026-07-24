@@ -12,6 +12,30 @@ const logPath = path.join(installRoot, 'sync.log');
 const debounceMs = Math.max(2000, Math.min(30000, Number(process.env.KAOYAN_CONFIG_DEBOUNCE_MS) || 7000));
 
 fs.mkdirSync(installRoot, { recursive: true });
+
+function processExists(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function removeStaleLock() {
+  if (!fs.existsSync(lockPath)) return;
+  let previousPid = 0;
+  try {
+    previousPid = Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10);
+  } catch {}
+  if (processExists(previousPid)) process.exit(0);
+  try { fs.unlinkSync(lockPath); } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+removeStaleLock();
 let lockHandle;
 try {
   lockHandle = fs.openSync(lockPath, 'wx');
@@ -85,7 +109,9 @@ function schedule() {
 function cleanup() {
   if (timer) clearTimeout(timer);
   try { fs.closeSync(lockHandle); } catch {}
-  try { fs.unlinkSync(lockPath); } catch {}
+  try {
+    if (Number.parseInt(fs.readFileSync(lockPath, 'utf8').trim(), 10) === process.pid) fs.unlinkSync(lockPath);
+  } catch {}
 }
 
 process.once('exit', cleanup);
@@ -94,7 +120,7 @@ process.once('SIGTERM', () => { cleanup(); process.exit(0); });
 process.once('uncaughtException', (error) => { log(`fatal=${error.stack || error.message}`); cleanup(); process.exit(1); });
 
 if (!fs.existsSync(assistantRoot)) fs.mkdirSync(assistantRoot, { recursive: true });
-log(`started root=${assistantRoot} debounceMs=${debounceMs}`);
+log(`started pid=${process.pid} root=${assistantRoot} debounceMs=${debounceMs}`);
 
 try {
   const watcher = fs.watch(assistantRoot, { recursive: true }, (_event, filename) => {
