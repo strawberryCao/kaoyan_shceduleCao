@@ -12,6 +12,7 @@ import { mirrorNewCloudImage, mirroredCloudImagePaths } from './source-mirror.js
 const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const ASSET_ROOT = 'data/assets/';
+const SOURCE_NOTES_ROOT = 'source-notes/';
 const MIME_EXTENSIONS = new Map([
   ['image/jpeg', 'jpg'],
   ['image/png', 'png'],
@@ -22,6 +23,7 @@ const MIME_EXTENSIONS = new Map([
   ['image/heif', 'heif'],
 ]);
 const EXTENSION_MIME = new Map([...MIME_EXTENSIONS].map(([mime, extension]) => [extension, mime]));
+EXTENSION_MIME.set('jpeg', 'image/jpeg');
 
 function decodeImageDataUrl(value) {
   if (typeof value !== 'string') throw new HttpError(400, 'imageDataUrl is required.', 'INVALID_NOTE_IMAGE');
@@ -160,11 +162,24 @@ export async function saveNote(env, payload, ctx) {
 
 function noteAssetPath(value) {
   const normalized = typeof value === 'string' ? value.trim().replaceAll('\\', '/') : '';
+  let repoPath = '';
+  let prefix = '';
   try {
-    if (normalized.startsWith('github://')) return assertRepoPath(normalized.slice('github://'.length), ASSET_ROOT);
-    if (normalized.startsWith(ASSET_ROOT)) return assertRepoPath(normalized, ASSET_ROOT);
-    if (normalized.startsWith('r2://note-assets/')) {
-      return assertRepoPath(`${ASSET_ROOT}${normalized.slice('r2://note-assets/'.length)}`, ASSET_ROOT);
+    if (normalized.startsWith('github://data/assets/')) {
+      prefix = ASSET_ROOT;
+      repoPath = assertRepoPath(normalized.slice('github://'.length), prefix);
+    } else if (normalized.startsWith(ASSET_ROOT)) {
+      prefix = ASSET_ROOT;
+      repoPath = assertRepoPath(normalized, prefix);
+    } else if (normalized.startsWith('r2://note-assets/')) {
+      prefix = ASSET_ROOT;
+      repoPath = assertRepoPath(`${ASSET_ROOT}${normalized.slice('r2://note-assets/'.length)}`, prefix);
+    } else if (normalized.startsWith('github://source-notes/')) {
+      prefix = SOURCE_NOTES_ROOT;
+      repoPath = assertRepoPath(normalized.slice('github://'.length), prefix);
+    } else if (normalized.startsWith(SOURCE_NOTES_ROOT)) {
+      prefix = SOURCE_NOTES_ROOT;
+      repoPath = assertRepoPath(normalized, prefix);
     }
   } catch (error) {
     if (error instanceof HttpError && ['GITHUB_PATH_INVALID', 'GITHUB_PATH_FORBIDDEN'].includes(error.code)) {
@@ -172,15 +187,20 @@ function noteAssetPath(value) {
     }
     throw error;
   }
-  throw new HttpError(403, 'Only stored note assets can be read.', 'NOTE_PATH_FORBIDDEN');
+  if (!repoPath || !prefix) throw new HttpError(403, 'Only stored note assets can be read.', 'NOTE_PATH_FORBIDDEN');
+  const extension = repoPath.split('.').at(-1)?.toLowerCase() || '';
+  if (!EXTENSION_MIME.has(extension)) throw new HttpError(403, 'Only stored note images can be read.', 'NOTE_PATH_FORBIDDEN');
+  if (prefix === SOURCE_NOTES_ROOT && repoPath.split('/').includes('.metadata')) {
+    throw new HttpError(403, 'Metadata files are not public note images.', 'NOTE_PATH_FORBIDDEN');
+  }
+  return { repoPath, prefix, extension };
 }
 
 export async function getNoteFile(env, path) {
-  const repoPath = noteAssetPath(path);
-  const extension = repoPath.split('.').at(-1)?.toLowerCase() || '';
-  return publicFileResponse(env, repoPath, {
-    prefix: ASSET_ROOT,
-    contentType: EXTENSION_MIME.get(extension) || 'application/octet-stream',
+  const asset = noteAssetPath(path);
+  return publicFileResponse(env, asset.repoPath, {
+    prefix: asset.prefix,
+    contentType: EXTENSION_MIME.get(asset.extension) || 'application/octet-stream',
     cacheControl: 'private, max-age=31536000, immutable',
   });
 }
