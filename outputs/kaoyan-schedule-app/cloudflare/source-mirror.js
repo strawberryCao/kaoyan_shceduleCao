@@ -1,6 +1,6 @@
 import { readFile, readJsonFile, writeBinaryFile, writeJsonFile } from './github-store.js';
 
-const ROOT = 'source-notes/普通笔记';
+const ROOT = 'source-notes/默认文件夹';
 const META_ROOT = `${ROOT}/.metadata`;
 
 function safeUid(value) {
@@ -27,7 +27,7 @@ function mirrorMetadata(note, payload, fileName, timestamp) {
     sourceType: sourceType(note, payload),
     sourceBatchId: String(payload.sourceBatchId || note.sourceBatchId || '').slice(0, 160),
     sourceSplitIndex: Number(payload.sourceSplitIndex || note.sourceSplitIndex) || null,
-    subject: '普通笔记',
+    subject: '默认文件夹',
     title: String(note.title || '').slice(0, 240),
     remark: String(note.remark || '').slice(0, 8000),
     tags: Array.isArray(note.tags) ? [...new Set(note.tags.filter((item) => typeof item === 'string'))].slice(0, 40) : [],
@@ -38,21 +38,25 @@ function mirrorMetadata(note, payload, fileName, timestamp) {
   };
 }
 
+export function mirroredCloudImagePaths(noteUid, extension) {
+  const uid = safeUid(noteUid);
+  const fileName = `${uid}.${extension}`;
+  return { imagePath: `${ROOT}/${fileName}`, metadataPath: metadataPath(uid), fileName };
+}
+
 export async function mirrorNewCloudImage(env, image, note, payload, timestamp) {
-  const noteUid = safeUid(note.noteUid);
-  const fileName = `${noteUid}.${image.extension}`;
-  const imagePath = `${ROOT}/${fileName}`;
-  const existing = await readFile(env, imagePath, { allowMissing: true, maxBytes: 20 * 1024 * 1024 });
+  const paths = mirroredCloudImagePaths(note.noteUid, image.extension);
+  const existing = await readFile(env, paths.imagePath, { allowMissing: true, maxBytes: 20 * 1024 * 1024 });
   if (!existing) {
-    await writeBinaryFile(env, imagePath, image.bytes, {
+    await writeBinaryFile(env, paths.imagePath, image.bytes, {
       createOnly: true,
-      message: `data: mirror cloud note ${noteUid}`,
+      message: `data: mirror cloud note ${note.noteUid}`,
     });
   }
-  await writeJsonFile(env, metadataPath(noteUid), mirrorMetadata(note, payload, fileName, timestamp), {
-    message: `data: write cloud note metadata ${noteUid}`,
+  await writeJsonFile(env, paths.metadataPath, mirrorMetadata(note, payload, paths.fileName, timestamp), {
+    message: `data: write cloud note metadata ${note.noteUid}`,
   });
-  return { imagePath, metadataPath: metadataPath(noteUid), fileName };
+  return paths;
 }
 
 export async function updateMirroredCloudNote(env, note) {
@@ -63,6 +67,7 @@ export async function updateMirroredCloudNote(env, note) {
   const current = existing.value;
   const next = {
     ...current,
+    subject: '默认文件夹',
     sourceType: sourceType(note, current),
     sourceBatchId: String(note.sourceBatchId || current.sourceBatchId || '').slice(0, 160),
     sourceSplitIndex: Number(note.sourceSplitIndex || current.sourceSplitIndex) || null,
