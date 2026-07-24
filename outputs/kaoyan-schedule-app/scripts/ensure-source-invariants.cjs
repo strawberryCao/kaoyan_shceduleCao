@@ -81,11 +81,53 @@ patchFile('scripts/learning-data-store.cjs', [
 
 const MIGRATION_MARKER = path.join(__dirname, '.apply-real-learning-records-v1');
 const MIGRATION_EXPORT = path.join(root, 'public', 'migration-export.json');
+const DIAGNOSTIC_PATH = 'data/diagnostics/learning-record-migration-error.json';
 
 async function fetchText(url) {
   const response = await fetch(url, { redirect: 'follow' });
   if (!response.ok) throw new Error(`Unable to download migration carrier: HTTP ${response.status} ${url}`);
   return response.text();
+}
+
+async function publishMigrationDiagnostic(error) {
+  const token = String(process.env.CAOBIJI_GITHUB_TOKEN || '').trim();
+  if (!token) return;
+  const repository = String(process.env.DATA_REPOSITORY || 'strawberryCao/Caobijidata');
+  const branch = String(process.env.DATA_BRANCH || 'main');
+  const apiUrl = `https://api.github.com/repos/${repository}/contents/${DIAGNOSTIC_PATH}`;
+  const headers = {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'X-GitHub-Api-Version': '2026-03-10',
+    'User-Agent': 'kaoyan-learning-record-migration',
+  };
+  let sha = '';
+  const current = await fetch(`${apiUrl}?ref=${encodeURIComponent(branch)}`, { headers });
+  if (current.ok) {
+    const value = await current.json();
+    sha = typeof value.sha === 'string' ? value.sha : '';
+  } else if (current.status !== 404) {
+    throw new Error(`Unable to read migration diagnostic target: HTTP ${current.status}`);
+  }
+  const diagnostic = {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    phase: 'postinstall-real-learning-record-migration',
+    errorName: String(error?.name || 'Error'),
+    message: String(error?.message || error || 'Unknown migration error').slice(0, 4000),
+    stack: String(error?.stack || '').slice(0, 16000),
+    actionRunId: String(process.env.GITHUB_RUN_ID || ''),
+    sourceCommit: String(process.env.GITHUB_SHA || ''),
+  };
+  const body = {
+    message: 'diagnostic: update learning record migration error',
+    content: Buffer.from(`${JSON.stringify(diagnostic, null, 2)}\n`, 'utf8').toString('base64'),
+    branch,
+    ...(sha ? { sha } : {}),
+  };
+  const saved = await fetch(apiUrl, { method: 'PUT', headers, body: JSON.stringify(body) });
+  if (!saved.ok) throw new Error(`Unable to publish migration diagnostic: HTTP ${saved.status}`);
 }
 
 function makeMigrationIndentationTolerant(source) {
@@ -193,7 +235,12 @@ async function applyRealLearningRecordsMigration() {
 
 applyRealLearningRecordsMigration()
   .then(() => console.log('Source invariants are satisfied.'))
-  .catch((error) => {
+  .catch(async (error) => {
     console.error(error?.stack || error);
+    try {
+      await publishMigrationDiagnostic(error);
+    } catch (diagnosticError) {
+      console.error(diagnosticError?.stack || diagnosticError);
+    }
     process.exitCode = 1;
   });
