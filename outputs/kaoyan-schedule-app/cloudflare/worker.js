@@ -1,3 +1,4 @@
+import { getAgentRuntimeStatus } from './agent-runtime.js';
 import { bootstrapFromR2 } from './bootstrap.js';
 import {
   listCanvasProjects,
@@ -66,25 +67,15 @@ function enforceWriteRequest(request, url, pathname) {
 }
 
 async function handleLearningRoute(request, env, pathname, ctx) {
-  if (request.method === 'GET' && pathname === '/learning-data') {
-    return json(await getLearningSnapshot(env));
-  }
+  if (request.method === 'GET' && pathname === '/learning-data') return json(await getLearningSnapshot(env));
   if (request.method === 'POST' && pathname === '/learning-data/seed') {
     const payload = await readJson(request, 12 * 1024 * 1024);
     return json(await replaceLearningSnapshot(env, payload.snapshot ?? payload.learningData, payload.expectedRevision ?? 0));
   }
-  if (request.method === 'PATCH' && pathname === '/learning-data/day') {
-    return json(await patchDay(env, await readJson(request)));
-  }
-  if (request.method === 'PUT' && pathname === '/learning-data/manual-records') {
-    return json(await putManualRecords(env, await readJson(request)));
-  }
-  if (request.method === 'POST' && pathname === '/learning-data/notes') {
-    return json(await createNote(env, await readJson(request)), 201);
-  }
-  if (request.method === 'POST' && pathname === '/learning-data/cards') {
-    return json(await createCard(env, await readJson(request)), 201);
-  }
+  if (request.method === 'PATCH' && pathname === '/learning-data/day') return json(await patchDay(env, await readJson(request)));
+  if (request.method === 'PUT' && pathname === '/learning-data/manual-records') return json(await putManualRecords(env, await readJson(request)));
+  if (request.method === 'POST' && pathname === '/learning-data/notes') return json(await createNote(env, await readJson(request)), 201);
+  if (request.method === 'POST' && pathname === '/learning-data/cards') return json(await createCard(env, await readJson(request)), 201);
   if (request.method === 'POST' && pathname === '/learning-data/note-review-actions') {
     const payload = await readJson(request, 512 * 1024);
     const result = await applyReviewActions(env, payload.actions);
@@ -111,22 +102,16 @@ async function handleLearningRoute(request, env, pathname, ctx) {
     return json(await restoreNote(env, decodeURIComponent(noteRestore[1]), await readJson(request)));
   }
   const note = /^\/learning-data\/notes\/([^/]+)$/.exec(pathname);
-  if (note && request.method === 'PATCH') {
-    return json(await patchNote(env, decodeURIComponent(note[1]), await readJson(request)));
-  }
+  if (note && request.method === 'PATCH') return json(await patchNote(env, decodeURIComponent(note[1]), await readJson(request)));
   if (note && request.method === 'DELETE') cloudDeleteDisabled();
   const card = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
-  if (card && request.method === 'PATCH') {
-    return json(await patchCard(env, decodeURIComponent(card[1]), await readJson(request)));
-  }
+  if (card && request.method === 'PATCH') return json(await patchCard(env, decodeURIComponent(card[1]), await readJson(request)));
   if (card && request.method === 'DELETE') cloudDeleteDisabled();
   return null;
 }
 
 async function handleCanvasRoute(request, env, pathname) {
-  if (request.method === 'GET' && pathname === '/canvas-projects') {
-    return json({ ok: true, projects: await listCanvasProjects(env) });
-  }
+  if (request.method === 'GET' && pathname === '/canvas-projects') return json({ ok: true, projects: await listCanvasProjects(env) });
   if (request.method === 'GET' && pathname === '/canvas-projects/events') {
     return json({ ok: false, code: 'POLLING_REQUIRED', error: 'Cloud canvas synchronization uses save/load polling.' }, 501);
   }
@@ -205,9 +190,7 @@ async function handleApi(request, env, pathname, url, ctx) {
       },
     });
   }
-  if (request.method === 'GET' && pathname === '/ai/config') {
-    return json({ ok: true, ...(await getGlobalAiSettings(env)) });
-  }
+  if (request.method === 'GET' && pathname === '/ai/config') return json({ ok: true, ...(await getGlobalAiSettings(env)) });
   if (request.method === 'POST' && pathname === '/ai/detect-questions') {
     return json(await detectQuestions(env, await readJson(request, 28 * 1024 * 1024)));
   }
@@ -255,27 +238,51 @@ async function serveAsset(request, env, isPublic) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+async function healthPayload(env, isPublic) {
+  const github = githubStorageInfo(env);
+  let agentRuntime = {
+    configured: false,
+    strictMode: true,
+    failClosed: true,
+    configurationUpdatedAt: null,
+    configurationHash: null,
+    workflowHash: null,
+    configuredTasks: [],
+    activeTasks: [],
+    providerSecrets: {},
+    error: null,
+  };
+  try {
+    agentRuntime = { configured: true, ...(await getAgentRuntimeStatus(env)), error: null };
+  } catch (error) {
+    agentRuntime.error = error instanceof Error ? error.message : String(error);
+  }
+  const providerSecretValues = Object.values(agentRuntime.providerSecrets || {});
+  return {
+    ok: true,
+    runtime: 'cloudflare-workers',
+    syncArchitectureVersion: 6,
+    storage: 'github',
+    publicRead: isPublic,
+    authConfigured: Boolean(env.APP_USERNAME && env.APP_PASSWORD),
+    githubConfigured: github.configured,
+    repository: github.repository,
+    branch: github.branch,
+    aiConfigured: agentRuntime.configured,
+    aiExecutionReady: providerSecretValues.some((provider) => provider.configured && provider.cloudUsable),
+    workersAiBound: Boolean(env.AI && typeof env.AI.run === 'function'),
+    agentRuntime,
+    cloudDeleteEnabled: false,
+    d1Bound: false,
+    r2Bound: false,
+  };
+}
+
 export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   const pathname = apiPath(url.pathname);
   const isPublic = publicReadEnabled(env);
-  if (pathname === '/health' && request.method === 'GET') {
-    const github = githubStorageInfo(env);
-    return json({
-      ok: true,
-      runtime: 'cloudflare-workers',
-      storage: 'github',
-      publicRead: isPublic,
-      authConfigured: Boolean(env.APP_USERNAME && env.APP_PASSWORD),
-      githubConfigured: github.configured,
-      repository: github.repository,
-      branch: github.branch,
-      aiConfigured: Boolean(env.AI && typeof env.AI.run === 'function'),
-      cloudDeleteEnabled: false,
-      d1Bound: false,
-      r2Bound: false,
-    });
-  }
+  if (pathname === '/health' && request.method === 'GET') return json(await healthPayload(env, isPublic));
 
   if (pathname !== null) {
     // Static application files stay loadable, but all data/configuration APIs
