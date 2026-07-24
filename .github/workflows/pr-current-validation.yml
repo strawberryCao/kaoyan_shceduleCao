@@ -6,11 +6,137 @@ on:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
 
 jobs:
+  apply-real-learning-records:
+    if: github.head_ref == 'deploy/cloudflare-production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Check out migration carrier
+        uses: actions/checkout@v4
+        with:
+          ref: deploy/cloudflare-production
+          fetch-depth: 0
+      - name: Rebuild indentation-tolerant migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/learning-records-patch/part*.b64 | base64 --decode | gzip --decompress > "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+          python - "$RUNNER_TEMP/apply-learning-records-v1.cjs" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');""",
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');""",
+              ),
+              (
+                  """`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(subject ? { subject } : {}),`,\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n             ...(subject ? { subject } : {}),`, 'local patch fields');""",
+                  """`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(subject ? { subject } : {}),`,\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n            ...(subject ? { subject } : {}),`, 'local patch fields');""",
+              ),
+          ]
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit('known migration compatibility anchor not found')
+              text = text.replace(old, new)
+          exact = "  if (!source.includes(search)) throw new Error(`${name}: anchor not found in ${file}`);"
+          flexible = r'''  if (!source.includes(search)) {
+    const sourceLines = source.split('\n');
+    const searchLines = search.split('\n');
+    let start = -1;
+    outer: for (let i = 0; i <= sourceLines.length - searchLines.length; i += 1) {
+      for (let j = 0; j < searchLines.length; j += 1) {
+        if (sourceLines[i + j].trim() !== searchLines[j].trim()) continue outer;
+      }
+      start = i;
+      break;
+    }
+    if (start >= 0) {
+      const firstSearch = searchLines.find((line) => line.trim()) || '';
+      const firstSource = sourceLines.slice(start, start + searchLines.length).find((line) => line.trim()) || '';
+      const searchIndent = (firstSearch.match(/^\s*/) || [''])[0].length;
+      const sourceIndent = (firstSource.match(/^\s*/) || [''])[0].length;
+      const replacementLines = replacement.split('\n').map((line) => {
+        if (!line.trim()) return '';
+        const indent = (line.match(/^\s*/) || [''])[0].length;
+        return `${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}${line.trimStart()}`;
+      });
+      const rebuilt = [
+        ...sourceLines.slice(0, start),
+        ...replacementLines,
+        ...sourceLines.slice(start + searchLines.length),
+      ].join('\n');
+      require('node:fs').writeFileSync(file, rebuilt, 'utf8');
+      return;
+    }
+    throw new Error(`${name}: anchor not found in ${file}`);
+  }'''
+          if exact not in text:
+              raise SystemExit('replaceOnce guard not found')
+          path.write_text(text.replace(exact, flexible, 1), encoding='utf-8')
+          PY
+          node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+      - name: Apply migration to formal source
+        id: apply
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/learning-detail-title-latex
+          git checkout -B fix/learning-detail-title-latex origin/fix/learning-detail-title-latex
+          node "$RUNNER_TEMP/apply-learning-records-v1.cjs" > "$RUNNER_TEMP/apply.log" 2>&1
+      - name: Report migration failure
+        if: steps.apply.outcome == 'failure'
+        shell: bash
+        run: |
+          {
+            echo '## Real learning-record migration failed'
+            echo
+            echo '```text'
+            tail -n 160 "$RUNNER_TEMP/apply.log"
+            echo '```'
+          } > "$RUNNER_TEMP/apply-failure.md"
+          cat "$RUNNER_TEMP/apply-failure.md"
+          gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/apply-failure.md"
+          exit 1
+      - name: Install and validate migrated source
+        if: steps.apply.outcome == 'success'
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
+        run: |
+          set -euo pipefail
+          npm ci --silent
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}"
+          npm run build
+          npx wrangler deploy --dry-run
+      - name: Commit formal feature
+        if: steps.apply.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'Migration produced no changes.' >&2
+            exit 2
+          fi
+          git commit -m 'feat: add real quick-note multi-material records'
+          git push origin HEAD:fix/learning-detail-title-latex
+
   validate:
+    needs: apply-real-learning-records
     if: github.head_ref == 'deploy/cloudflare-production'
     runs-on: ubuntu-latest
     timeout-minutes: 35
