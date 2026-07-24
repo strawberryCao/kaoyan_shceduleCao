@@ -1,0 +1,66 @@
+name: Apply save and sync regression patch
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - 'outputs/kaoyan-schedule-app/scripts/patch-save-sync-feedback.cjs'
+      - '.github/workflows/apply-save-sync-feedback.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Apply patch
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/patch-save-sync-feedback.cjs
+
+      - name: Run focused regression tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/__tests__/save-sync-regressions.test.cjs
+
+      - name: Parse Windows PowerShell sync script
+        shell: pwsh
+        run: |
+          $path = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+
+      - name: Build
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add outputs/kaoyan-schedule-app
+          if git diff --cached --quiet; then
+            echo 'No changes to commit.'
+            exit 0
+          fi
+          git commit -m 'fix: speed cloud saves and complete note feedback sync'
+          git push origin HEAD:fix/learning-detail-title-latex
