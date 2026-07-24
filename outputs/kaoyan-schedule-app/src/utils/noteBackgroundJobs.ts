@@ -22,6 +22,7 @@ export interface MultiQuestionJob {
   completedAt: string;
   detectedCount: number;
   savedNoteUids: string[];
+  feedbackNoteUid: string;
 }
 
 const DB_NAME = 'kaoyan-note-background-v1';
@@ -92,12 +93,33 @@ const patchJob = async (id: string, patch: Partial<MultiQuestionJob>): Promise<M
   if (!current) throw new Error('后台多题任务不存在。');
   return putJob({
     ...current,
+    feedbackNoteUid: current.feedbackNoteUid || '',
     ...patch,
     updatedAt: new Date().toISOString(),
   });
 };
 
 const safeJobToken = (value: string): string => value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 80);
+
+const saveFailureFeedback = async (job: MultiQuestionJob, errorText: string): Promise<string> => {
+  const noteUid = `multi_failure_${safeJobToken(job.id)}`.slice(0, 150);
+  const result = await saveNoteImage({
+    imageDataUrl: job.imageDataUrl,
+    kind: 'single',
+    noteUid,
+    subject: '默认文件夹',
+    remark: [
+      'AI 自动裁剪失败，原图已保留到待确认。',
+      `失败原因：${errorText || '未知错误'}`,
+      '请重新打开快速记图重试，或按单题模式手动裁剪后保存。',
+    ].join('\n'),
+    sourceType: 'ai-multi-question-failure',
+    sourceBatchId: job.id,
+    tags: ['AI自动裁剪失败', '待确认'],
+  });
+  if (result.learningData) saveLearningDataCache(result.learningData);
+  return result.noteUid || noteUid;
+};
 
 const processJob = async (id: string): Promise<void> => {
   if (activeJobs.has(id)) return;
@@ -117,12 +139,16 @@ const processJob = async (id: string): Promise<void> => {
     });
 
     const detection = await detectQuestionRegions(initial.imageDataUrl);
+    if (!Array.isArray(detection.regions) || detection.regions.length < 1) {
+      throw new Error('AI 没有识别到可裁剪的完整题目区域。');
+    }
     await patchJob(id, {
       detectedCount: detection.regions.length,
       progress: 25,
       message: `已识别 ${detection.regions.length} 道题，正在自动裁剪`,
     });
     const images = await cropManyImages(initial.imageDataUrl, detection.regions);
+    if (images.length < 1) throw new Error('识别到了题目区域，但图片裁剪没有生成有效结果。');
     const savedNoteUids: string[] = [];
     const batchToken = safeJobToken(id);
 
@@ -136,7 +162,7 @@ const processJob = async (id: string): Promise<void> => {
         imageDataUrl: images[index],
         kind: 'single',
         noteUid,
-        subject: '普通笔记',
+        subject: '默认文件夹',
         remark: '',
         sourceType: 'ai-multi-question',
         sourceBatchId: id,
@@ -148,7 +174,7 @@ const processJob = async (id: string): Promise<void> => {
       try {
         await enqueueLearningNoteRename(result.noteUid || noteUid);
       } catch {
-        // The image is already durable. A failed enqueue can be retried from the note detail.
+        // 图片和学习数据已经持久化；命名可在笔记详情中重新触发。
       }
     }
 
@@ -164,13 +190,27 @@ const processJob = async (id: string): Promise<void> => {
     window.setTimeout(() => { void removeJob(completed.id); }, 24 * 60 * 60 * 1000);
   } catch (error) {
     const current = await readJob(id);
+    const errorText = error instanceof Error ? error.message : String(error);
+    const finalFailure = Number(current?.attempts || 0) >= MAX_AUTO_ATTEMPTS;
+    let feedbackNoteUid = current?.feedbackNoteUid || '';
+    let feedbackError = '';
+    if (finalFailure && initial.imageDataUrl && !feedbackNoteUid) {
+      try {
+        feedbackNoteUid = await saveFailureFeedback({ ...initial, ...current }, errorText);
+      } catch (feedbackFailure) {
+        feedbackError = feedbackFailure instanceof Error ? feedbackFailure.message : String(feedbackFailure);
+      }
+    }
     await patchJob(id, {
       status: 'failed',
       progress: current?.progress || 0,
-      message: current?.attempts && current.attempts >= MAX_AUTO_ATTEMPTS
-        ? '后台处理失败，可重新拍摄或再次打开快速记图重试'
+      message: finalFailure
+        ? feedbackNoteUid
+          ? '自动裁剪失败，原图和原因已写入待确认'
+          : '自动裁剪失败，反馈笔记保存也失败；任务仍保留，可再次打开重试'
         : '后台处理暂时失败，下次打开将自动重试',
-      error: error instanceof Error ? error.message : String(error),
+      error: [errorText, feedbackError ? `反馈保存失败：${feedbackError}` : ''].filter(Boolean).join('；'),
+      feedbackNoteUid,
     });
   } finally {
     activeJobs.delete(id);
@@ -193,6 +233,7 @@ export const enqueueMultiQuestionJob = async (imageDataUrl: string): Promise<Mul
     completedAt: '',
     detectedCount: 0,
     savedNoteUids: [],
+    feedbackNoteUid: '',
   };
   await putJob(job);
   window.setTimeout(() => { void processJob(id); }, 0);
