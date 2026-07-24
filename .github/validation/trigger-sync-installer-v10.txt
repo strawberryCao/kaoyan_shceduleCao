@@ -1,0 +1,2 @@
+Validate optional Git path filtering and Windows installer v10 without merging this marker.
+2026-07-24T13:00:00+08:00
