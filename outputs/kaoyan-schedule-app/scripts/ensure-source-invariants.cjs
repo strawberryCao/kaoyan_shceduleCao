@@ -91,12 +91,12 @@ async function fetchText(url) {
 function makeMigrationIndentationTolerant(source) {
   const compatibilityPatches = [
     [
-      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\\n    items:`,\\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\\n    attachments: normalizeAttachments(value.attachments),\\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\\n    items:`, 'normalize fields');",
-      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\\n    items,`,\\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\\n    attachments: normalizeAttachments(value.attachments),\\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\\n    items,`, 'normalize fields');",
+      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');",
+      "`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');",
     ],
     [
-      "`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\\n             ...(subject ? { subject } : {}),`,\\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\\n             ...(subject ? { subject } : {}),`, 'local patch fields');",
-      "`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\\n            ...(subject ? { subject } : {}),`,\\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\\n            ...(subject ? { subject } : {}),`, 'local patch fields');",
+      "`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(subject ? { subject } : {}),`,\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n             ...(subject ? { subject } : {}),`, 'local patch fields');",
+      "`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(subject ? { subject } : {}),`,\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n            ...(subject ? { subject } : {}),`, 'local patch fields');",
     ],
   ];
   let next = source;
@@ -124,7 +124,7 @@ function makeMigrationIndentationTolerant(source) {
       const replacementLines = replacement.split('\n').map((line) => {
         if (!line.trim()) return '';
         const indent = (line.match(/^\s*/) || [''])[0].length;
-        return \`${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}\${line.trimStart()}\`;
+        return \`\${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}\${line.trimStart()}\`;
       });
       const rebuilt = [
         ...sourceLines.slice(0, start),
@@ -134,7 +134,7 @@ function makeMigrationIndentationTolerant(source) {
       require('node:fs').writeFileSync(file, rebuilt, 'utf8');
       return;
     }
-    throw new Error(\`${name}: anchor not found in \${file}\`);
+    throw new Error(\`\${name}: anchor not found in \${file}\`);
   }`;
   if (!next.includes(exactGuard)) throw new Error('Migration replaceOnce guard was not found.');
   return next.replace(exactGuard, flexibleGuard);
