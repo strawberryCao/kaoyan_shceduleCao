@@ -7,12 +7,16 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   validate:
     if: github.head_ref == 'deploy/cloudflare-production'
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,8 +38,15 @@ jobs:
           node --test "${test_files[@]}" > "$RUNNER_TEMP/tests.log" 2>&1
           code=$?
           if (( code != 0 )); then
-            echo '=== TEST FAILURES ==='
-            grep -n -A 35 -B 12 -E 'not ok|failureType|ERR_ASSERTION|AssertionError|SyntaxError|TypeError|ReferenceError' "$RUNNER_TEMP/tests.log" || tail -n 160 "$RUNNER_TEMP/tests.log"
+            {
+              echo '## Current validation test failures'
+              echo
+              echo '```text'
+              grep -n -A 35 -B 12 -E 'not ok|failureType|ERR_ASSERTION|AssertionError|SyntaxError|TypeError|ReferenceError' "$RUNNER_TEMP/tests.log" || tail -n 160 "$RUNNER_TEMP/tests.log"
+              echo '```'
+            } > "$RUNNER_TEMP/test-failure.md"
+            cat "$RUNNER_TEMP/test-failure.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/test-failure.md"
             exit "$code"
           fi
           tail -n 20 "$RUNNER_TEMP/tests.log"
