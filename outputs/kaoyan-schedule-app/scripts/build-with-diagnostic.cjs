@@ -4,6 +4,7 @@ const { spawnSync } = require('child_process');
 
 const root = path.resolve(__dirname, '..');
 const diagnosticPath = 'data/diagnostics/learning-record-build-error.json';
+const migrationMarker = path.join(__dirname, '.apply-real-learning-records-v1');
 
 function runNodeScript(modulePath, args) {
   return spawnSync(process.execPath, [modulePath, ...args], {
@@ -66,6 +67,13 @@ async function main() {
     ['typescript', tsc, ['-p', 'tsconfig.json', '--noEmit']],
     ['vite', vite, ['build', '--config', 'vite.config.mjs']],
   ];
+  if (process.env.GITHUB_ACTIONS === 'true' && fs.existsSync(migrationMarker)) {
+    stages.push([
+      'wrangler-dry-run',
+      path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
+      ['deploy', '--dry-run'],
+    ]);
+  }
   for (const [phase, modulePath, args] of stages) {
     const result = runNodeScript(modulePath, args);
     if (result.stdout) process.stdout.write(result.stdout);
