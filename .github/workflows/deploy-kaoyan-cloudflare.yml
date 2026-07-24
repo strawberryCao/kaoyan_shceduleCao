@@ -29,6 +29,9 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
       CAOBIJI_GITHUB_TOKEN: ${{ secrets.CAOBIJI_GITHUB_TOKEN }}
+      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
       APP_USERNAME: caobiji
       WORKER_NAME: kaoyan-study-center
       DATA_REPOSITORY: strawberryCao/Caobijidata
@@ -104,6 +107,13 @@ jobs:
               $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
             }
           }
+          foreach ($file in @(
+            'scripts/export-agent-runtime.cjs',
+            'scripts/assistant-config-watch.cjs'
+          )) {
+            node --check $file
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
           if ($failed) { exit 1 }
 
       - name: Build and validate Worker bundle
@@ -140,6 +150,22 @@ jobs:
           printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD
           printf '%s' "$CAOBIJI_GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN
 
+          configured=()
+          for secret_name in QWEN_API_KEY GEMINI_API_KEY KIMI_API_KEY; do
+            secret_value="${!secret_name:-}"
+            if [[ -n "$secret_value" ]]; then
+              printf '%s' "$secret_value" | npx wrangler secret put "$secret_name"
+              configured+=("$secret_name")
+            else
+              echo "$secret_name is not configured in GitHub Actions; the existing Worker Secret is left unchanged."
+            fi
+          done
+          if (( ${#configured[@]} > 0 )); then
+            printf 'Configured Agent provider secrets: %s\n' "${configured[*]}"
+          else
+            echo 'No Agent provider secrets were supplied by GitHub Actions.'
+          fi
+
       - name: Bootstrap and verify GitHub-backed learning center
         id: verify
         shell: bash
@@ -153,13 +179,13 @@ jobs:
 
           for attempt in {1..12}; do
             health_status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
-            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||!v.aiConfigured||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
+            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||!v.aiConfigured||v.syncArchitectureVersion!==6||v.agentRuntime?.strictMode!==true||v.agentRuntime?.failClosed!==true||v.cloudDeleteEnabled||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
               break
             fi
             echo "Health attempt $attempt returned HTTP $health_status"
             sleep 5
           done
-          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||!v.aiConfigured) process.exit(1);" "$RUNNER_TEMP/health.json"
+          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||!v.aiConfigured||v.syncArchitectureVersion!==6||v.agentRuntime?.strictMode!==true||v.agentRuntime?.failClosed!==true) process.exit(1);" "$RUNNER_TEMP/health.json"
 
           bootstrap_ok=0
           for attempt in {1..12}; do
@@ -184,19 +210,14 @@ jobs:
               echo
               echo '```'
             } > "$RUNNER_TEMP/bootstrap-failure.md"
-            if [[ -n "$PR_NUMBER" ]]; then
-              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"
-            fi
+            if [[ -n "$PR_NUMBER" ]]; then gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"; fi
             exit 1
           fi
 
           learning_ok=0
           for attempt in {1..12}; do
             learning_status="$(curl --silent --show-error -o "$RUNNER_TEMP/learning-data.json" -w '%{http_code}' -H "Authorization: $auth_header" "$WORKER_URL/api/learning-data" || true)"
-            if [[ "$learning_status" == "200" ]]; then
-              learning_ok=1
-              break
-            fi
+            if [[ "$learning_status" == "200" ]]; then learning_ok=1; break; fi
             echo "Learning-data attempt $attempt returned HTTP $learning_status"
             sleep 5
           done
@@ -211,9 +232,7 @@ jobs:
               echo
               echo '```'
             } > "$RUNNER_TEMP/learning-failure.md"
-            if [[ -n "$PR_NUMBER" ]]; then
-              gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"
-            fi
+            if [[ -n "$PR_NUMBER" ]]; then gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"; fi
             exit 1
           fi
 
@@ -228,14 +247,15 @@ jobs:
           const fs = require('node:fs');
           const bootstrap = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/bootstrap.json', 'utf8'));
           const snapshot = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/learning-data.json', 'utf8'));
+          const health = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/health.json', 'utf8'));
           const githubFile = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/github-learning-file.json', 'utf8'));
           const notes = Object.values(snapshot.days || {}).reduce((total, day) => total + (Array.isArray(day.autoNotes) ? day.autoNotes.length : 0), 0);
           const cards = Array.isArray(snapshot.cards) ? snapshot.cards.length : 0;
-          if (!bootstrap.ok || notes < 1 || cards < 1 || !githubFile.sha) {
+          if (!bootstrap.ok || notes < 1 || cards < 1 || !githubFile.sha || !health.agentRuntime?.configurationHash || !health.agentRuntime?.workflowHash) {
             throw new Error(`GitHub bootstrap verification failed: notes=${notes}, cards=${cards}`);
           }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${notes}\ncards=${cards}\nrevision=${snapshot.revision}\n`);
-          console.log(`Verified GitHub-backed learning center: ${notes} notes, ${cards} cards, revision ${snapshot.revision}.`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${notes}\ncards=${cards}\nrevision=${snapshot.revision}\nconfiguration_hash=${health.agentRuntime.configurationHash}\nworkflow_hash=${health.agentRuntime.workflowHash}\nai_execution_ready=${health.aiExecutionReady}\n`);
+          console.log(`Verified strict local Agent runtime: ${health.agentRuntime.configuredTasks.length} tasks, executionReady=${health.aiExecutionReady}.`);
           NODE
 
       - name: Publish deployment summary
@@ -246,6 +266,9 @@ jobs:
           NOTES: ${{ steps.verify.outputs.notes }}
           CARDS: ${{ steps.verify.outputs.cards }}
           REVISION: ${{ steps.verify.outputs.revision }}
+          CONFIGURATION_HASH: ${{ steps.verify.outputs.configuration_hash }}
+          WORKFLOW_HASH: ${{ steps.verify.outputs.workflow_hash }}
+          AI_EXECUTION_READY: ${{ steps.verify.outputs.ai_execution_ready }}
           GH_TOKEN: ${{ github.token }}
         run: |
           {
@@ -258,7 +281,10 @@ jobs:
               echo "- Learning notes: $NOTES"
               echo "- Review cards: $CARDS"
               echo "- GitHub data revision: $REVISION"
-              echo '- Workers AI: configured'
+              echo '- Local Agent runtime: strict / fail-closed'
+              echo "- Configuration hash: $CONFIGURATION_HASH"
+              echo "- Workflow hash: $WORKFLOW_HASH"
+              echo "- Provider API ready: $AI_EXECUTION_READY"
               echo "- Storage: $DATA_REPOSITORY ($DATA_BRANCH), no D1 or R2"
             else
               echo '- Status: failed'
