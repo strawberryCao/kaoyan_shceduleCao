@@ -24,6 +24,12 @@ patchFile('cloudflare/worker.js', [{
   replacement: "const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024), ctx);",
 }]);
 
+patchFile('src/utils/notes.ts', [{
+  name: 'allow GitHub-backed cloud saves enough time to confirm core persistence',
+  search: 'const NOTE_SAVE_TIMEOUT_MS = 15_000;',
+  replacement: 'const NOTE_SAVE_TIMEOUT_MS = IS_CLOUD_RUNTIME ? 45_000 : 15_000;',
+}]);
+
 const normalizedPathLine = "  const normalizedFilePath = filePath.split(String.fromCharCode(92)).join('/').toLowerCase();";
 const remotePathReplacement = (filePathLine, subjectLine) => [
   filePathLine,
