@@ -7,6 +7,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
+    "postinstall": "node scripts/ensure-source-invariants.cjs",
     "dev": "vite --config vite.config.mjs",
     "runtime:build": "node scripts/ensure-web-build.cjs",
     "runtime:serve": "node scripts/web-server.cjs",
@@ -17,6 +18,7 @@
     "notes:index:preview": "node scripts/rebuild-note-index.cjs",
     "notes:folder-sync:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-note-folder-sync.ps1",
     "notes:folder-sync:run": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows-note-folder-sync.ps1",
+    "learning:merge": "node scripts/merge-learning-data.cjs",
     "review:push": "node scripts/review-github-sync.cjs push",
     "review:pull": "node scripts/review-github-sync.cjs pull",
     "review:status": "node scripts/review-github-sync.cjs status",
