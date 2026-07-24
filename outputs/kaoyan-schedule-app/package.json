@@ -24,7 +24,7 @@
     "review:status": "node scripts/review-github-sync.cjs status",
     "test:gemini": "node scripts/test-gemini.cjs",
     "test:kimi": "node scripts/test-kimi.cjs",
-    "build": "tsc -p tsconfig.json --noEmit && vite build --config vite.config.mjs",
+    "build": "node scripts/build-with-diagnostic.cjs",
     "cloudflare:types": "wrangler types",
     "cloudflare:dev": "npm run build && wrangler dev",
     "cloudflare:deploy": "npm run build && wrangler deploy",
