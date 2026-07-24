@@ -12,6 +12,16 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function runExport(assistantRoot, outputRoot) {
+  const script = path.resolve(__dirname, '..', 'export-agent-runtime.cjs');
+  const result = spawnSync(process.execPath, [script, '--assistant-root', assistantRoot, '--output-root', outputRoot], {
+    cwd: path.resolve(__dirname, '..'),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout.trim());
+}
+
 test('classifies uploaded assistant JSON by purpose instead of treating runtime data as Agent config', () => {
   assert.equal(classify('ai-providers.json'), 'agent-config');
   assert.equal(classify('qwen-config.json'), 'agent-config');
@@ -43,7 +53,7 @@ test('redacts secret values, local paths and local-only URLs while preserving st
   assert.equal(providerSecretRef('kimi'), 'KIMI_API_KEY');
 });
 
-test('exports every local Agent task contract and never publishes keys or runtime-state JSON', (t) => {
+test('exports every local Agent task contract, excludes runtime data, and stays stable when only receipts change', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-agent-export-'));
   const assistantRoot = path.join(root, 'assistant');
   const outputRoot = path.join(root, 'out');
@@ -78,15 +88,11 @@ test('exports every local Agent task contract and never publishes keys or runtim
   });
   writeJson(path.join(assistantRoot, 'canvas-projects', 'canvas-1', 'document.json'), { id: 'canvas-1' });
 
-  const script = path.resolve(__dirname, '..', 'export-agent-runtime.cjs');
-  const result = spawnSync(process.execPath, [script, '--assistant-root', assistantRoot, '--output-root', outputRoot], {
-    cwd: path.resolve(__dirname, '..'),
-    encoding: 'utf8',
-  });
-  assert.equal(result.status, 0, result.stderr);
-
+  const first = runExport(assistantRoot, outputRoot);
   const runtime = JSON.parse(fs.readFileSync(path.join(outputRoot, 'agent-runtime.json'), 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(path.join(outputRoot, 'manifest.json'), 'utf8'));
+  const firstRuntimeText = fs.readFileSync(path.join(outputRoot, 'agent-runtime.json'), 'utf8');
+  const firstManifestText = fs.readFileSync(path.join(outputRoot, 'manifest.json'), 'utf8');
   const serialized = JSON.stringify({ runtime, manifest });
 
   assert.equal(runtime.strictMode, true);
@@ -95,8 +101,15 @@ test('exports every local Agent task contract and never publishes keys or runtim
   assert.equal(runtime.tasks.note_naming.settings.customInstructions, '只输出中文标题');
   assert.equal(runtime.providers.kimi.secretRef, 'KIMI_API_KEY');
   assert.doesNotMatch(serialized, /do-not-publish|qwen-secret/);
-  assert.equal(manifest.categories['runtime-state'], 1);
-  assert.equal(manifest.categories['user-data'], 1);
+  assert.deepEqual(manifest.excludedByRule, ['backup', 'runtime-state', 'user-data', 'unclassified']);
+  assert.equal(first.excludedCounts['runtime-state'], 1);
+  assert.equal(first.excludedCounts['user-data'], 1);
   assert.equal(fs.existsSync(path.join(outputRoot, 'files', 'note-save-receipts', 'receipt.json')), false);
   assert.equal(fs.existsSync(path.join(outputRoot, 'files', 'canvas-projects', 'canvas-1', 'document.json')), false);
+
+  writeJson(path.join(assistantRoot, 'note-save-receipts', 'another-receipt.json'), { status: 'new' });
+  const second = runExport(assistantRoot, outputRoot);
+  assert.equal(second.runtimeHash, first.runtimeHash);
+  assert.equal(fs.readFileSync(path.join(outputRoot, 'agent-runtime.json'), 'utf8'), firstRuntimeText);
+  assert.equal(fs.readFileSync(path.join(outputRoot, 'manifest.json'), 'utf8'), firstManifestText);
 });
