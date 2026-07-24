@@ -1,0 +1,51 @@
+name: Diagnose current test failure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/workflows/diagnose-current-tests.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-detail-title-latex
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run and capture all tests
+        id: tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set +e
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}" > "$GITHUB_WORKSPACE/.github-current-tests.log" 2>&1
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Commit diagnostic log
+        shell: bash
+        run: |
+          mkdir -p .github/validation
+          cp .github-current-tests.log .github/validation/current-tests.log
+          printf '{"exitCode":%s,"generatedAt":"%s"}\n' '${{ steps.tests.outputs.exit_code }}' "$(date -u +%FT%TZ)" > .github/validation/current-tests-status.json
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/validation/current-tests.log .github/validation/current-tests-status.json
+          git commit -m 'ci: record current full test diagnostic' || exit 0
+          git push origin HEAD:fix/learning-detail-title-latex
