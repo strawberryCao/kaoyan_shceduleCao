@@ -78,6 +78,15 @@ jobs:
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
 
+      - name: Upload migrated source export
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: learning-record-migration-export-${{ github.run_id }}
+          path: outputs/kaoyan-schedule-app/public/migration-export.json
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Run automated tests
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
