@@ -24,9 +24,10 @@ patchFile('cloudflare/worker.js', [{
   replacement: "const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024), ctx);",
 }]);
 
+const normalizedPathLine = "  const normalizedFilePath = filePath.split(String.fromCharCode(92)).join('/').toLowerCase();";
 const remotePathReplacement = (filePathLine, subjectLine) => [
   filePathLine,
-  "  const normalizedFilePath = filePath.replaceAll(String.fromCharCode(92), '/').toLowerCase();",
+  normalizedPathLine,
   "  const isRemoteAssetPath = normalizedFilePath.startsWith('github://data/assets/')",
   "    || normalizedFilePath.startsWith('data/assets/')",
   "    || normalizedFilePath.startsWith('r2://note-assets/');",
@@ -41,7 +42,7 @@ patchFile('src/utils/learningData.ts', [
       "  const filePath = typeof value.filePath === 'string' ? value.filePath : '';",
       "  const storedSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';\n  const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;",
     ),
-    replacementMarker: "const normalizedFilePath = filePath.replaceAll(String.fromCharCode(92), '/')",
+    replacementMarker: normalizedPathLine.trim(),
   },
   {
     name: 'do not infer subject from remote storage path',
@@ -59,7 +60,7 @@ patchFile('scripts/learning-data-store.cjs', [
       '  const filePath = asString(value.filePath);',
       "  const storedSubject = asString(value.subject, '默认文件夹');\n  const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;",
     ),
-    replacementMarker: "const normalizedFilePath = filePath.replaceAll(String.fromCharCode(92), '/')",
+    replacementMarker: normalizedPathLine.trim(),
   },
   {
     name: 'do not infer local subject from remote storage path',
