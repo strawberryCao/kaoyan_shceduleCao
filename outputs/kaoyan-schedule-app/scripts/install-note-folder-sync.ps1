@@ -61,14 +61,18 @@ $configPath = Join-Path $installRoot 'config.json'
 $tokenPath = Join-Path $installRoot 'github-token.dpapi'
 $syncLauncherPath = Join-Path $installRoot 'silent-sync.vbs'
 $watchLauncherPath = Join-Path $installRoot 'silent-config-watch.vbs'
+$watchSupervisorPath = Join-Path $installRoot 'assistant-config-watch-supervisor.ps1'
 $clonePath = Join-Path $DataRoot 'Caobijidata'
 $legacyRoot = Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter\NoteFolderSync'
-$legacyStartup = Join-Path ([Environment]::GetFolderPath('Startup')) 'KaoyanNoteFolderSync.cmd'
+$startupFolder = [Environment]::GetFolderPath('Startup')
+$legacyStartup = Join-Path $startupFolder 'KaoyanNoteFolderSync.cmd'
+$startupLauncherPath = Join-Path $startupFolder 'KaoyanAssistantSync.vbs'
 
 if ($Uninstall) {
   Invoke-ScheduledTaskCommand @('/Delete', '/TN', $noteTaskName, '/F') @(0, 1) | Out-Null
   Invoke-ScheduledTaskCommand @('/Delete', '/TN', $watchTaskName, '/F') @(0, 1) | Out-Null
   Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContinue
   Write-Host '自动同步与配置监听已关闭。' -ForegroundColor Yellow
   Write-Host ('本地笔记仍保留在：' + $LocalPath)
   Write-Host ('本地配置仍保留在：' + $AssistantRoot)
@@ -85,19 +89,22 @@ $driveRoot = [System.IO.Path]::GetPathRoot($DataRoot)
 if (-not $driveRoot -or -not (Test-Path -LiteralPath $driveRoot)) {
   throw "目标磁盘不可用：$driveRoot"
 }
-foreach ($folder in @($LocalPath, $AssistantRoot, $installRoot)) {
+foreach ($folder in @($LocalPath, $AssistantRoot, $installRoot, $startupFolder)) {
   if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
 }
 
+# Old elevated tasks may be owned by another security context. Deletion is only
+# best-effort; the new installation does not require Task Scheduler permission.
 Invoke-ScheduledTaskCommand @('/Delete', '/TN', $noteTaskName, '/F') @(0, 1) | Out-Null
 Invoke-ScheduledTaskCommand @('/Delete', '/TN', $watchTaskName, '/F') @(0, 1) | Out-Null
 Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContinue
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
   Remove-Item -LiteralPath $legacyRoot -Recurse -Force
 }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260724-agent-runtime-v6'
+$version = '20260724-agent-runtime-v8'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
@@ -128,7 +135,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 6
+  version = 8
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -146,6 +153,8 @@ $config = [ordered]@{
   agentRuntimeExporter = $exporterPath
   agentRuntimeRemotePath = 'data/config/local-assistant'
   strictAgentRuntime = $true
+  persistenceMode = 'current-user-startup-hidden-watcher'
+  taskSchedulerRequired = $false
 }
 Write-Utf8NoBom $configPath (($config | ConvertTo-Json -Depth 8) + "`n")
 
@@ -171,25 +180,40 @@ shell.Run command, 0, False
 "@
 Write-Utf8NoBom $syncLauncherPath $syncLauncher
 
-$nodeEscaped = $nodeCommand.Source.Replace('"', '""')
-$watcherEscaped = $watcherPath.Replace('"', '""')
-$installEscaped = $installRoot.Replace('"', '""')
+$nodePathForPowerShell = $nodeCommand.Source.Replace("'", "''")
+$watcherPathForPowerShell = $watcherPath.Replace("'", "''")
+$installRootForPowerShell = $installRoot.Replace("'", "''")
+$assistantRootForPowerShell = $AssistantRoot.Replace("'", "''")
+$watchSupervisor = @"
+`$ErrorActionPreference = 'Continue'
+`$env:KAOYAN_SYNC_ROOT = '$installRootForPowerShell'
+`$env:KAOYAN_ASSISTANT_ROOT = '$assistantRootForPowerShell'
+`$env:KAOYAN_SYNC_INTERVAL_MINUTES = '$IntervalMinutes'
+while (`$true) {
+  & '$nodePathForPowerShell' '$watcherPathForPowerShell'
+  `$exitCode = `$LASTEXITCODE
+  if (`$exitCode -eq 0) { exit 0 }
+  Start-Sleep -Seconds 15
+}
+"@
+Write-Utf8Bom $watchSupervisorPath $watchSupervisor
+
+$supervisorEscaped = $watchSupervisorPath.Replace('"', '""')
 $watchLauncher = @"
 Set shell = CreateObject("WScript.Shell")
-command = "cmd.exe /d /c set KAOYAN_SYNC_ROOT=$installEscaped&& ""$nodeEscaped"" ""$watcherEscaped"""
+command = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$supervisorEscaped"""
 shell.Run command, 0, False
 "@
 Write-Utf8NoBom $watchLauncherPath $watchLauncher
+Copy-Item -LiteralPath $watchLauncherPath -Destination $startupLauncherPath -Force
 
 Write-Host ''
 Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
 if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log')) }
 
-$syncTaskCommand = 'wscript.exe //B //Nologo "' + $syncLauncherPath + '"'
-Invoke-ScheduledTaskCommand @('/Create', '/TN', $noteTaskName, '/TR', $syncTaskCommand, '/SC', 'MINUTE', '/MO', [string]$IntervalMinutes, '/F') | Out-Null
-$watchTaskCommand = 'wscript.exe //B //Nologo "' + $watchLauncherPath + '"'
-Invoke-ScheduledTaskCommand @('/Create', '/TN', $watchTaskName, '/TR', $watchTaskCommand, '/SC', 'ONLOGON', '/F') | Out-Null
+# Start the current-user hidden watcher now. At future logins Windows starts the
+# copied VBS from the user's Startup folder, so no elevation is required.
 Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
 
 Write-Host ''
@@ -198,7 +222,8 @@ Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)
 Write-Host '配置方向：只允许本地配置发布到 GitHub；GitHub 不会覆盖本地配置。'
-Write-Host '实时配置：JSON 保存后约 7 秒发布；每 5 分钟静默检查作为兜底。'
+Write-Host '实时配置：JSON 保存后约 7 秒发布；监听器自身每 5 分钟执行一次全局兜底同步。'
+Write-Host '启动方式：当前用户启动目录 + 隐藏监督进程，不需要管理员或计划任务权限。'
 Write-Host 'Agent 范围：代码中的全部任务合同、任务参数、本地任务设置、供应商非敏感信息和知识目录。'
 Write-Host '密钥规则：GitHub 只保存 secretRef；真实 API Key 不进入仓库。'
 Write-Host '运行方式：完全隐藏，不弹 PowerShell 窗口。'
