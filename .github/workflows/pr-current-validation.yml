@@ -71,6 +71,36 @@ jobs:
           if ($failed) { exit 1 }
       - name: Build and dry-run Worker
         working-directory: outputs/kaoyan-schedule-app
+        shell: bash
         run: |
-          npm run build
-          npx wrangler deploy --dry-run
+          set +e
+          npm run build > "$RUNNER_TEMP/build.log" 2>&1
+          build_code=$?
+          if (( build_code != 0 )); then
+            {
+              echo '## Current validation build failure'
+              echo
+              echo '```text'
+              tail -n 180 "$RUNNER_TEMP/build.log"
+              echo '```'
+            } > "$RUNNER_TEMP/build-failure.md"
+            cat "$RUNNER_TEMP/build-failure.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/build-failure.md"
+            exit "$build_code"
+          fi
+          npx wrangler deploy --dry-run > "$RUNNER_TEMP/wrangler.log" 2>&1
+          wrangler_code=$?
+          if (( wrangler_code != 0 )); then
+            {
+              echo '## Current validation Wrangler failure'
+              echo
+              echo '```text'
+              tail -n 180 "$RUNNER_TEMP/wrangler.log"
+              echo '```'
+            } > "$RUNNER_TEMP/wrangler-failure.md"
+            cat "$RUNNER_TEMP/wrangler-failure.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/wrangler-failure.md"
+            exit "$wrangler_code"
+          fi
+          tail -n 30 "$RUNNER_TEMP/build.log"
+          tail -n 30 "$RUNNER_TEMP/wrangler.log"
