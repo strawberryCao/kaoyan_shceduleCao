@@ -7,7 +7,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "postinstall": "node scripts/fix-learning-record-migration-runner.cjs && node scripts/ensure-source-invariants.cjs",
+    "postinstall": "node scripts/fix-learning-record-migration-runner.cjs && node scripts/ensure-source-invariants.cjs && node scripts/publish-learning-record-migration-export.cjs",
     "dev": "vite --config vite.config.mjs",
     "runtime:build": "node scripts/ensure-web-build.cjs",
     "runtime:serve": "node scripts/web-server.cjs",
