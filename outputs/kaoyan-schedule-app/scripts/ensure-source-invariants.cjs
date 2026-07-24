@@ -130,18 +130,40 @@ async function publishMigrationDiagnostic(error) {
   if (!saved.ok) throw new Error(`Unable to publish migration diagnostic: HTTP ${saved.status}`);
 }
 
+function replaceNamedMigrationCall(source, name, replacement) {
+  const marker = `'${name}');`;
+  const markerIndex = source.indexOf(marker);
+  if (markerIndex < 0) throw new Error(`${name} migration call was not found.`);
+  const blockStart = source.lastIndexOf('replaceOnce(', markerIndex);
+  if (blockStart < 0) throw new Error(`${name} replaceOnce call was not found.`);
+  const blockEnd = markerIndex + marker.length;
+  return `${source.slice(0, blockStart)}${replacement}${source.slice(blockEnd)}`;
+}
+
 function makeMigrationIndentationTolerant(source) {
   let next = source;
-  const marker = "'normalize fields');";
-  const markerIndex = next.indexOf(marker);
-  if (markerIndex < 0) throw new Error('normalize fields migration call was not found.');
-  const blockStart = next.lastIndexOf('replaceOnce(', markerIndex);
-  if (blockStart < 0) throw new Error('normalize fields replaceOnce call was not found.');
-  const blockEnd = markerIndex + marker.length;
-  const block = next.slice(blockStart, blockEnd);
-  const patchedBlock = block.replace(/(\n\s*)items:/g, '$1items,');
-  if (patchedBlock === block) throw new Error('normalize fields items anchor was not found.');
-  next = `${next.slice(0, blockStart)}${patchedBlock}${next.slice(blockEnd)}`;
+  const normalizeMarker = "'normalize fields');";
+  const normalizeMarkerIndex = next.indexOf(normalizeMarker);
+  if (normalizeMarkerIndex < 0) throw new Error('normalize fields migration call was not found.');
+  const normalizeBlockStart = next.lastIndexOf('replaceOnce(', normalizeMarkerIndex);
+  if (normalizeBlockStart < 0) throw new Error('normalize fields replaceOnce call was not found.');
+  const normalizeBlockEnd = normalizeMarkerIndex + normalizeMarker.length;
+  const normalizeBlock = next.slice(normalizeBlockStart, normalizeBlockEnd);
+  const patchedNormalizeBlock = normalizeBlock.replace(/(\n\s*)items:/g, '$1items,');
+  if (patchedNormalizeBlock === normalizeBlock) throw new Error('normalize fields items anchor was not found.');
+  next = `${next.slice(0, normalizeBlockStart)}${patchedNormalizeBlock}${next.slice(normalizeBlockEnd)}`;
+
+  next = replaceNamedMigrationCall(next, 'preserve synced fields', String.raw`replaceOnce(
+  'outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs',
+  \`      items: enrichment.items ?? existingNote?.items,
+      confidence: Number.isFinite(confidence) ? confidence : existingNote?.confidence,
+      cardIds,\`,
+  \`      attachments: existingNote?.attachments ?? [],
+      linkedKinds: existingNote?.linkedKinds ?? [],
+      items: enrichment.items ?? existingNote?.items,
+      confidence: Number.isFinite(confidence) ? confidence : existingNote?.confidence,
+      cardIds,\`,
+  'preserve synced fields');`);
 
   const exactGuard = "  if (!source.includes(search)) throw new Error(`${name}: anchor not found in ${file}`);";
   const flexibleGuard = String.raw`  if (!source.includes(search)) {
