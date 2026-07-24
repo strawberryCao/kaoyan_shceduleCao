@@ -86,7 +86,18 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error?.stack || error);
+main().catch(async (error) => {
+  const stack = String(error?.stack || error || 'Unknown build runner error');
+  console.error(stack);
+  try {
+    await publishDiagnostic('build-runner', {
+      status: 1,
+      signal: '',
+      stdout: '',
+      stderr: stack,
+    });
+  } catch (diagnosticError) {
+    console.error(diagnosticError?.stack || diagnosticError);
+  }
   process.exitCode = 1;
 });
