@@ -6,10 +6,25 @@ const { spawn } = require('child_process');
 const assistantRoot = path.resolve(process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手'));
 const installRoot = process.env.KAOYAN_SYNC_ROOT || 'D:\\kaoyandata\\NoteFolderSync';
 const configPath = process.env.KAOYAN_SYNC_CONFIG || path.join(installRoot, 'config.json');
-const syncScript = path.join(installRoot, 'windows-assistant-config-sync.ps1');
+const configSyncScript = path.join(installRoot, 'windows-assistant-config-sync.ps1');
+const globalSyncScript = path.join(installRoot, 'run-global-sync.ps1');
 const lockPath = path.join(installRoot, 'assistant-config-watch.lock');
 const logPath = path.join(installRoot, 'sync.log');
 const debounceMs = Math.max(2000, Math.min(30000, Number(process.env.KAOYAN_CONFIG_DEBOUNCE_MS) || 7000));
+
+function readIntervalMinutes() {
+  const fromEnvironment = Number(process.env.KAOYAN_SYNC_INTERVAL_MINUTES);
+  if (Number.isFinite(fromEnvironment)) return Math.max(2, Math.min(60, fromEnvironment));
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const configured = Number(config?.intervalMinutes);
+    if (Number.isFinite(configured)) return Math.max(2, Math.min(60, configured));
+  } catch {}
+  return 5;
+}
+
+const intervalMinutes = readIntervalMinutes();
+const intervalMs = intervalMinutes * 60_000;
 
 fs.mkdirSync(installRoot, { recursive: true });
 
@@ -48,6 +63,7 @@ try {
 let timer = null;
 let running = false;
 let pending = false;
+let pendingFullSync = false;
 
 function log(message) {
   try { fs.appendFileSync(logPath, `${new Date().toISOString()} CONFIG_WATCH ${message}\n`, 'utf8'); } catch {}
@@ -61,23 +77,31 @@ function relevant(relativePath) {
   return true;
 }
 
+function selectedSyncScript() {
+  if (pendingFullSync && fs.existsSync(globalSyncScript)) return globalSyncScript;
+  return configSyncScript;
+}
+
 function runSync() {
   if (running) {
     pending = true;
     return;
   }
-  if (!fs.existsSync(configPath) || !fs.existsSync(syncScript)) {
-    log('waiting-for-installed-syncer');
+  const script = selectedSyncScript();
+  if (!fs.existsSync(configPath) || !fs.existsSync(script)) {
+    log(`waiting-for-installed-syncer script=${script}`);
     return;
   }
+  const fullSync = script === globalSyncScript;
   running = true;
   pending = false;
+  pendingFullSync = false;
   const child = spawn('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
     '-WindowStyle', 'Hidden',
     '-ExecutionPolicy', 'Bypass',
-    '-File', syncScript,
+    '-File', script,
     '-ConfigPath', configPath,
   ], {
     cwd: installRoot,
@@ -86,24 +110,27 @@ function runSync() {
   });
   child.once('error', (error) => {
     running = false;
-    log(`spawn-error=${error.message}`);
+    log(`spawn-error full=${fullSync} error=${error.message}`);
     if (pending) schedule();
   });
   child.once('exit', (code) => {
     running = false;
-    log(`sync-exit=${code}`);
+    log(`sync-exit=${code} full=${fullSync}`);
     if (pending) schedule();
   });
 }
 
-function schedule() {
+function schedule(options = {}) {
   pending = true;
+  if (options.full === true) pendingFullSync = true;
   if (timer) clearTimeout(timer);
+  const delay = Number.isFinite(options.delayMs)
+    ? Math.max(250, Math.min(30000, options.delayMs))
+    : debounceMs;
   timer = setTimeout(() => {
     timer = null;
     runSync();
-  }, debounceMs);
-  timer.unref?.();
+  }, delay);
 }
 
 function cleanup() {
@@ -120,7 +147,7 @@ process.once('SIGTERM', () => { cleanup(); process.exit(0); });
 process.once('uncaughtException', (error) => { log(`fatal=${error.stack || error.message}`); cleanup(); process.exit(1); });
 
 if (!fs.existsSync(assistantRoot)) fs.mkdirSync(assistantRoot, { recursive: true });
-log(`started pid=${process.pid} root=${assistantRoot} debounceMs=${debounceMs}`);
+log(`started pid=${process.pid} root=${assistantRoot} debounceMs=${debounceMs} intervalMinutes=${intervalMinutes}`);
 
 try {
   const watcher = fs.watch(assistantRoot, { recursive: true }, (_event, filename) => {
@@ -133,6 +160,7 @@ try {
   process.exit(1);
 }
 
-// Keep the process alive. The five-minute scheduled task remains the fallback
-// when the local service is not running or Windows drops a file-system event.
-setInterval(() => {}, 60_000);
+// Run a hidden full synchronization shortly after login and then periodically.
+// This also acts as the no-admin fallback when Task Scheduler access is denied.
+schedule({ full: true, delayMs: 3000 });
+setInterval(() => schedule({ full: true, delayMs: 500 }), intervalMs);
