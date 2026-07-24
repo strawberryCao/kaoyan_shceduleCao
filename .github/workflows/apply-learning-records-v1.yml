@@ -6,6 +6,9 @@ on:
     paths:
       - 'tools/learning-records-patch/**'
       - '.github/workflows/apply-learning-records-v1.yml'
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +20,7 @@ concurrency:
 
 jobs:
   apply:
+    if: github.event_name != 'pull_request' || github.head_ref == 'deploy/cloudflare-production'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
