@@ -86,7 +86,7 @@ function Copy-DirectoryContent([string]$Source, [string]$Destination) {
   $temporary = "$Destination.next.$PID"
   Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue
   Ensure-Directory $temporary
-  Copy-Item -LiteralPath (Join-Path $Source '*') -Destination $temporary -Recurse -Force
+  Copy-Item -Path (Join-Path $Source '*') -Destination $temporary -Recurse -Force
   Remove-Item -LiteralPath $Destination -Recurse -Force -ErrorAction SilentlyContinue
   Move-Item -LiteralPath $temporary -Destination $Destination
 }
