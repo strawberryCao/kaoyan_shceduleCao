@@ -1,0 +1,2 @@
+Validate adaptive record workspace preview and production deployment.
+Triggered: 2026-07-24T16:30:00+08:00
