@@ -62,7 +62,7 @@ async function publishDiagnostic(phase, result) {
 
 async function main() {
   const tsc = require.resolve('typescript/bin/tsc');
-  const vite = require.resolve('vite/bin/vite.js');
+  const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
   const stages = [
     ['typescript', tsc, ['-p', 'tsconfig.json', '--noEmit']],
     ['vite', vite, ['build', '--config', 'vite.config.mjs']],
