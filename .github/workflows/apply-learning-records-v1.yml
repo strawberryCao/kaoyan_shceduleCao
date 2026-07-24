@@ -1,0 +1,149 @@
+name: Apply real quick-note multi-material records
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: apply-learning-records-v1
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event_name != 'pull_request' || github.head_ref == 'deploy/cloudflare-production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: deploy/cloudflare-production
+          fetch-depth: 0
+
+      - name: Rebuild patch script
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/learning-records-patch/part*.b64 | base64 --decode | gzip --decompress > "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+          python - "$RUNNER_TEMP/apply-learning-records-v1.cjs" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding='utf-8')
+          replacements = [
+              (
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');""",
+                  """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');""",
+                  'learningData normalize fields',
+              ),
+              (
+                  """`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(subject ? { subject } : {}),`,\n`             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n             ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n             ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n             ...(subject ? { subject } : {}),`, 'local patch fields');""",
+                  """`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(subject ? { subject } : {}),`,\n`            ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),\n            ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments) } : {}),\n            ...(Object.hasOwn(patch, 'linkedKinds') ? { linkedKinds: normalizeLinkedKinds(patch.linkedKinds) } : {}),\n            ...(subject ? { subject } : {}),`, 'local patch fields');""",
+                  'local update fields indentation',
+              ),
+          ]
+          for old, new, name in replacements:
+              if old not in text:
+                  raise SystemExit(f'{name} patch anchor not found in carrier')
+              text = text.replace(old, new)
+
+          exact_guard = "  if (!source.includes(search)) throw new Error(`${name}: anchor not found in ${file}`);"
+          flexible_guard = r'''  if (!source.includes(search)) {
+    const sourceLines = source.split('\n');
+    const searchLines = search.split('\n');
+    let start = -1;
+    outer: for (let i = 0; i <= sourceLines.length - searchLines.length; i += 1) {
+      for (let j = 0; j < searchLines.length; j += 1) {
+        if (sourceLines[i + j].trim() !== searchLines[j].trim()) continue outer;
+      }
+      start = i;
+      break;
+    }
+    if (start >= 0) {
+      const firstSearch = searchLines.find((line) => line.trim()) || '';
+      const firstSource = sourceLines.slice(start, start + searchLines.length).find((line) => line.trim()) || '';
+      const searchIndent = (firstSearch.match(/^\s*/) || [''])[0].length;
+      const sourceIndent = (firstSource.match(/^\s*/) || [''])[0].length;
+      const replacementLines = replacement.split('\n').map((line) => {
+        if (!line.trim()) return '';
+        const indent = (line.match(/^\s*/) || [''])[0].length;
+        return `${' '.repeat(Math.max(0, sourceIndent + indent - searchIndent))}${line.trimStart()}`;
+      });
+      const rebuilt = [
+        ...sourceLines.slice(0, start),
+        ...replacementLines,
+        ...sourceLines.slice(start + searchLines.length),
+      ].join('\n');
+      require('node:fs').writeFileSync(file, rebuilt, 'utf8');
+      return;
+    }
+    throw new Error(`${name}: anchor not found in ${file}`);
+  }'''
+          if exact_guard not in text:
+              raise SystemExit('replaceOnce exact guard not found in carrier')
+          text = text.replace(exact_guard, flexible_guard, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+          node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+
+      - name: Apply to production source branch
+        id: apply_source
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin fix/learning-detail-title-latex
+          git checkout -B fix/learning-detail-title-latex origin/fix/learning-detail-title-latex
+          node "$RUNNER_TEMP/apply-learning-records-v1.cjs" > "$RUNNER_TEMP/apply.log" 2>&1
+
+      - name: Report exact patch failure
+        if: steps.apply_source.outcome == 'failure'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '## Real learning-record patch failed'
+            echo
+            echo '```text'
+            tail -n 120 "$RUNNER_TEMP/apply.log"
+            echo '```'
+          } > "$RUNNER_TEMP/apply-failure.md"
+          gh pr edit 30 --body-file "$RUNNER_TEMP/apply-failure.md"
+          cat "$RUNNER_TEMP/apply-failure.md"
+          exit 1
+
+      - name: Install and validate
+        if: steps.apply_source.outcome == 'success'
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
+        run: |
+          set -euo pipefail
+          npm ci
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}"
+          npm run build
+          npx wrangler deploy --dry-run
+
+      - name: Commit real feature
+        if: steps.apply_source.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No source changes were produced.' >&2
+            exit 2
+          fi
+          git commit -m 'feat: add real quick-note multi-material records'
+          git push origin HEAD:fix/learning-detail-title-latex
