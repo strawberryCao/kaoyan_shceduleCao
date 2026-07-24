@@ -51,7 +51,7 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "typescript": "^5.6.3",
-    "wait-on": "^8.2.0",
+    "wait-on": "^8.0.1",
     "wrangler": "^4.113.0"
   },
   "build": {
