@@ -115,8 +115,8 @@ async function publishMigrationDiagnostic(error) {
     generatedAt: new Date().toISOString(),
     phase: 'postinstall-real-learning-record-migration',
     errorName: String(error?.name || 'Error'),
-    message: String(error?.message || error || 'Unknown migration error').slice(0, 4000),
-    stack: String(error?.stack || '').slice(0, 16000),
+    message: String(error?.message || error || 'Unknown migration error').slice(0, 12000),
+    stack: String(error?.stack || '').slice(0, 24000),
     actionRunId: String(process.env.GITHUB_RUN_ID || ''),
     sourceCommit: String(process.env.GITHUB_SHA || ''),
   };
@@ -225,7 +225,26 @@ async function applyRealLearningRecordsMigration() {
   const tempPath = path.join(repositoryRoot, '.apply-learning-records-v1.cjs');
   fs.writeFileSync(tempPath, migrationSource, 'utf8');
   try {
-    execFileSync(process.execPath, [tempPath], { cwd: repositoryRoot, stdio: 'inherit' });
+    try {
+      const output = execFileSync(process.execPath, [tempPath], {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      if (output.trim()) console.log(output.trim());
+    } catch (childError) {
+      const stdout = Buffer.isBuffer(childError?.stdout) ? childError.stdout.toString('utf8') : String(childError?.stdout || '');
+      const stderr = Buffer.isBuffer(childError?.stderr) ? childError.stderr.toString('utf8') : String(childError?.stderr || '');
+      const error = new Error([
+        'Migration child process failed.',
+        '--- stdout ---',
+        stdout.slice(-12000),
+        '--- stderr ---',
+        stderr.slice(-12000),
+      ].join('\n'));
+      error.name = 'MigrationChildError';
+      throw error;
+    }
   } finally {
     fs.rmSync(tempPath, { force: true });
   }
