@@ -33,10 +33,14 @@ function Invoke-ScheduledTaskCommand([string[]]$Arguments, [int[]]$AllowedExitCo
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Content) {
+  $parent = [System.IO.Path]::GetDirectoryName($Path)
+  if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
 function Write-Utf8Bom([string]$Path, [string]$Content) {
+  $parent = [System.IO.Path]::GetDirectoryName($Path)
+  if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
   [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($true))
 }
 
@@ -47,6 +51,11 @@ function Install-ScriptFile([string]$LocalName, [string]$Destination, [string]$R
   } else {
     Invoke-WebRequest -UseBasicParsing -Uri $RemoteUrl -OutFile $Destination
   }
+}
+
+function Replace-Required([string]$Text, [string]$Search, [string]$Replacement, [string]$Name) {
+  if (-not $Text.Contains($Search)) { throw "安装器无法修补运行脚本：$Name。请不要继续使用这个安装包。" }
+  return $Text.Replace($Search, $Replacement)
 }
 
 $noteTaskName = 'Kaoyan Note Folder Sync'
@@ -80,32 +89,24 @@ if ($Uninstall) {
   exit 0
 }
 
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-  throw '未找到 Git for Windows。请先安装 Git 并确保 git.exe 位于 PATH。'
-}
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) { throw '未找到 Git for Windows。请先安装 Git 并确保 git.exe 位于 PATH。' }
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
 
 $driveRoot = [System.IO.Path]::GetPathRoot($DataRoot)
-if (-not $driveRoot -or -not (Test-Path -LiteralPath $driveRoot)) {
-  throw "目标磁盘不可用：$driveRoot"
-}
+if (-not $driveRoot -or -not (Test-Path -LiteralPath $driveRoot)) { throw "目标磁盘不可用：$driveRoot" }
 foreach ($folder in @($LocalPath, $AssistantRoot, $installRoot, $startupFolder)) {
   if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
 }
 
-# Old elevated tasks may be owned by another security context. Deletion is only
-# best-effort; the new installation does not require Task Scheduler permission.
 Invoke-ScheduledTaskCommand @('/Delete', '/TN', $noteTaskName, '/F') @(0, 1) | Out-Null
 Invoke-ScheduledTaskCommand @('/Delete', '/TN', $watchTaskName, '/F') @(0, 1) | Out-Null
 Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContinue
-if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) {
-  Remove-Item -LiteralPath $legacyRoot -Recurse -Force
-}
+if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260724-learning-sync-v9'
+$version = '20260724-learning-sync-v10'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
@@ -115,17 +116,60 @@ foreach ($dependency in @('ai-router.cjs', 'qwen-config.cjs', 'note-ai-analyzer.
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 
-# The dedicated Agent runtime publisher owns configuration export. The note
-# synchronizer must never copy GitHub configuration back into AssistantRoot.
 $runtimeText = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
-$runtimeText = $runtimeText.Replace(
-  '  Export-SafeAssistantConfiguration $clonePath $assistantRoot',
-  '  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.'
-)
-$runtimeText = $runtimeText.Replace(
-  '  $paths = @(''source-notes'', ''data/config'', ''data/deletions'', ''data/local-delete-recycle'', ''data/quarantine'')',
-  '  $paths = @(''source-notes'', ''data/cloud/learning-data.json'', ''data/config'', ''data/deletions'', ''data/local-delete-recycle'', ''data/quarantine'')'
-)
+$runtimeText = Replace-Required $runtimeText `
+  '  Export-SafeAssistantConfiguration $clonePath $assistantRoot' `
+  '  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.' `
+  'disable reverse configuration export'
+
+$oldCommitPending = @'
+function Commit-Pending([string]$ClonePath, [string]$Message) {
+  $paths = @('source-notes', 'data/config', 'data/deletions', 'data/local-delete-recycle', 'data/quarantine')
+  $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
+  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
+  Invoke-Git (@('add', '--') + $paths) $ClonePath | Out-Null
+  $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
+  if ($diff.ExitCode -eq 1) {
+    Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
+    return $true
+  }
+  return $false
+}
+'@
+
+$newCommitPending = @'
+function Commit-Pending([string]$ClonePath, [string]$Message) {
+  $candidatePaths = @(
+    'source-notes',
+    'data/cloud/learning-data.json',
+    'data/config',
+    'data/deletions',
+    'data/local-delete-recycle',
+    'data/quarantine'
+  )
+  $paths = @()
+  foreach ($candidate in $candidatePaths) {
+    if (Test-Path -LiteralPath (Join-Path $ClonePath $candidate)) {
+      $paths += $candidate
+      continue
+    }
+    $tracked = Invoke-Git @('ls-files', '--', $candidate) $ClonePath
+    if (-not [string]::IsNullOrWhiteSpace($tracked.Output)) { $paths += $candidate }
+  }
+  if ($paths.Count -eq 0) { return $false }
+  $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
+  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
+  Invoke-Git (@('add', '-A', '--') + $paths) $ClonePath | Out-Null
+  $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
+  if ($diff.ExitCode -eq 1) {
+    Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
+    return $true
+  }
+  return $false
+}
+'@
+$runtimeText = Replace-Required $runtimeText $oldCommitPending $newCommitPending 'filter optional Git pathspecs'
+
 $runtimeNode = $nodeCommand.Source.Replace("'", "''")
 $runtimeMerge = $learningMergePath.Replace("'", "''")
 $runtimeConfig = $configPath.Replace("'", "''")
@@ -134,7 +178,7 @@ $mergeBlock = @"
   & '$runtimeNode' '$runtimeMerge' --config '$runtimeConfig' | Out-Null
   if (`$LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
 "@
-$runtimeText = $runtimeText.Replace('  Materialize-CloudNotes $localPath $remotePath', $mergeBlock.TrimEnd())
+$runtimeText = Replace-Required $runtimeText '  Materialize-CloudNotes $localPath $remotePath' $mergeBlock.TrimEnd() 'enable structured learning-data merge'
 Write-Utf8Bom $runtimePath $runtimeText
 Write-Utf8Bom $configSyncPath (Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8)
 
@@ -150,7 +194,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 9
+  version = 10
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -173,6 +217,7 @@ $config = [ordered]@{
   strictAgentRuntime = $true
   persistenceMode = 'current-user-startup-hidden-watcher'
   taskSchedulerRequired = $false
+  optionalGitPathsAreFiltered = $true
 }
 Write-Utf8NoBom $configPath (($config | ConvertTo-Json -Depth 8) + "`n")
 
@@ -229,23 +274,17 @@ Write-Host ''
 Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
 & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
 if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log')) }
-
-# Start the current-user hidden watcher now. At future logins Windows starts the
-# copied VBS from the user's Startup folder, so no elevation is required.
 Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
 
 Write-Host ''
-Write-Host '全局同步已启用。' -ForegroundColor Green
+Write-Host '全局同步 v10 已启用。' -ForegroundColor Green
 Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)
 Write-Host '配置方向：只允许本地配置发布到 GitHub；GitHub 不会覆盖本地配置。'
 Write-Host '学习数据：本地与 GitHub 按 noteUid、thought id、card id 和 review id 双向合并。'
-Write-Host '实时同步：learning-data.json 保存后约 7 秒执行完整同步；每隔指定分钟兜底检查。'
-Write-Host '启动方式：当前用户启动目录 + 隐藏监督进程，不需要管理员或计划任务权限。'
-Write-Host 'Agent 范围：代码中的全部任务合同、任务参数、本地任务设置、供应商非敏感信息和知识目录。'
-Write-Host '密钥规则：GitHub 只保存 secretRef；真实 API Key 不进入仓库。'
-Write-Host '运行方式：完全隐藏，不弹 PowerShell 窗口。'
+Write-Host 'Git 路径：不存在且未跟踪的可选目录会自动跳过；已跟踪删除仍会正常提交。'
+Write-Host '运行方式：当前用户启动目录 + 隐藏监督进程，不需要管理员或计划任务权限。'
 Write-Host ('笔记状态：' + (Join-Path $installRoot 'status.json'))
 Write-Host ('学习数据状态：' + (Join-Path $installRoot 'learning-data-sync-status.json'))
 Write-Host ('配置状态：' + (Join-Path $installRoot 'config-status.json'))
