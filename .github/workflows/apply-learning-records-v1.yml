@@ -36,6 +36,17 @@ jobs:
         run: |
           set -euo pipefail
           cat tools/learning-records-patch/part*.b64 | base64 --decode | gzip --decompress > "$RUNNER_TEMP/apply-learning-records-v1.cjs"
+          python - "$RUNNER_TEMP/apply-learning-records-v1.cjs" <<'PY'
+          from pathlib import Path
+          import sys
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding='utf-8')
+          old = """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items:`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items:`, 'normalize fields');"""
+          new = """`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    items,`,\n`    goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,\n    attachments: normalizeAttachments(value.attachments),\n    linkedKinds: normalizeLinkedKinds(value.linkedKinds),\n    items,`, 'normalize fields');"""
+          if old not in text:
+              raise SystemExit('learningData normalize-fields patch anchor not found in carrier')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
           node --check "$RUNNER_TEMP/apply-learning-records-v1.cjs"
 
       - name: Apply to production source branch
