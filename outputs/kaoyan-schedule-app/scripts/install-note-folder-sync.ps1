@@ -103,7 +103,7 @@ Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoo
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
 foreach ($dependency in @('ai-router.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
-  Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/$dependency?v=$version"
+  Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 
 # The dedicated Agent runtime publisher owns configuration export. The note
