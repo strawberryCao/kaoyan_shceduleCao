@@ -1,12 +1,6 @@
 name: Apply real quick-note multi-material records
 
-# trigger-after-base-workflow-activation: 2026-07-24T18:35+08:00
 on:
-  push:
-    branches: [deploy/cloudflare-production]
-    paths:
-      - 'tools/learning-records-patch/**'
-      - '.github/workflows/apply-learning-records-v1.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
     types: [opened, reopened, synchronize]
