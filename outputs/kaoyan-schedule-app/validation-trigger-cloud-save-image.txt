@@ -1,0 +1,1 @@
+Validation trigger for cloud save confirmation and synchronized source image reads.
