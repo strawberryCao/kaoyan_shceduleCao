@@ -26,19 +26,69 @@ function capabilities(value) {
   return [...new Set(source.map((item) => text(item, 40)).filter(Boolean))];
 }
 
+function inferModelCapabilities(modelId) {
+  const id = text(modelId, 160).toLowerCase();
+  const result = new Set(['text', 'json']);
+  if (/gemini/.test(id)) {
+    result.add('vision');
+    result.add('longContext');
+  }
+  if (/qwen.*(?:vl|vision)|qvq/.test(id)) {
+    result.add('vision');
+    result.add('longContext');
+  } else if (/^qwen/.test(id)) {
+    result.add('longContext');
+  }
+  if (/^kimi-(?:k3|k2\.(?:5|6))/.test(id)) {
+    result.add('vision');
+    result.add('longContext');
+    result.add('reasoning');
+  } else if (/^kimi/.test(id)) {
+    result.add('longContext');
+    result.add('reasoning');
+  }
+  if (/(?:thinking|reasoning|k3|max)/.test(id)) result.add('reasoning');
+  return [...result];
+}
+
 function modelEntries(provider) {
-  const source = Array.isArray(provider?.models) ? provider.models : [];
-  return source.map((item) => typeof item === 'string' ? { id: item } : item)
-    .filter(isObject)
-    .map((model) => ({
-      id: text(model.id || model.model, 160),
-      capabilities: capabilities(model.capabilities),
+  const byId = new Map();
+  const explicit = Array.isArray(provider?.models) ? provider.models : [];
+  for (const raw of explicit) {
+    const model = typeof raw === 'string' ? { id: raw } : raw;
+    if (!isObject(model)) continue;
+    const id = text(model.id || model.model, 160);
+    if (!id) continue;
+    const declared = capabilities(model.capabilities);
+    byId.set(id, {
+      id,
+      capabilities: declared.length > 0 ? declared : inferModelCapabilities(id),
       costTier: number(model.costTier, 2, 1, 3),
       qualityTier: number(model.qualityTier, 2, 1, 3),
       priority: number(model.priority, 0, -100, 100),
       supportsResponseFormat: model.supportsResponseFormat !== false,
-    }))
-    .filter((model) => Boolean(model.id));
+    });
+  }
+
+  const catalog = [
+    ...(Array.isArray(provider?.catalog) ? provider.catalog : []),
+    provider?.model,
+  ];
+  for (const raw of catalog) {
+    const id = text(typeof raw === 'string' ? raw : raw?.id || raw?.model, 160);
+    if (!id || byId.has(id)) continue;
+    const source = isObject(raw) ? raw : {};
+    const declared = capabilities(source.capabilities);
+    byId.set(id, {
+      id,
+      capabilities: declared.length > 0 ? declared : inferModelCapabilities(id),
+      costTier: number(source.costTier, 2, 1, 3),
+      qualityTier: number(source.qualityTier, 2, 1, 3),
+      priority: number(source.priority, 0, -100, 100),
+      supportsResponseFormat: source.supportsResponseFormat !== false,
+    });
+  }
+  return [...byId.values()];
 }
 
 function requiredCapabilities(task, request) {
@@ -261,6 +311,8 @@ export async function runLocalAgentTask(env, taskId, request = {}) {
 }
 
 export const agentProviderInternals = Object.freeze({
+  inferModelCapabilities,
+  modelEntries,
   normalizeUrl,
   parseJsonText,
   routeCandidates,
