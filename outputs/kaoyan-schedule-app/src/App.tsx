@@ -23,6 +23,7 @@ const NoteDropApp = lazy(() => import('./components/NoteDropApp').then((module) 
 const DesktopConsole = lazy(() => import('./desktop/DesktopConsole').then((module) => ({ default: module.DesktopConsole })));
 const DesktopWorkspace = lazy(() => import('./desktop/DesktopWorkspace').then((module) => ({ default: module.DesktopWorkspace })));
 const AiConfigPage = lazy(() => import('./components/AiConfigPage').then((module) => ({ default: module.AiConfigPage })));
+const LearningRecordWorkspacePreview = lazy(() => import('./components/LearningRecordWorkspacePreview').then((module) => ({ default: module.LearningRecordWorkspacePreview })));
 
 const deferred = (content: ReactNode) => <Suspense fallback={null}>{content}</Suspense>;
 
@@ -35,6 +36,11 @@ export default function App() {
   const isElectronNoteAppMode = isNoteAppMode && window.kaoyanDesktop?.isElectron === true;
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
+  const isRecordWorkspaceMode = params.get('recordWorkspace') === '1';
+
+  if (isRecordWorkspaceMode) {
+    return deferred(<LearningRecordWorkspacePreview />);
+  }
 
   if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode)) {
     return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
