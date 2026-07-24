@@ -9,6 +9,7 @@ export class HttpError extends Error {
 }
 
 const NOTE_IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'heic', 'heif']);
+const LOCAL_NOTE_MARKER = '/笔记/';
 
 function normalizedStoredPath(value) {
   return typeof value === 'string' ? value.trim().replaceAll('\\', '/') : '';
@@ -18,18 +19,36 @@ function isRemoteNoteAssetPath(value) {
   const normalized = normalizedStoredPath(value);
   return normalized.startsWith('github://data/assets/')
     || normalized.startsWith('data/assets/')
-    || normalized.startsWith('r2://note-assets/');
+    || normalized.startsWith('r2://note-assets/')
+    || normalized.startsWith('github://source-notes/')
+    || normalized.startsWith('source-notes/');
+}
+
+function imageExtension(value) {
+  const match = /\.([A-Za-z0-9]+)(?:[?#].*)?$/.exec(value);
+  const extension = match?.[1]?.toLowerCase() || '';
+  return NOTE_IMAGE_EXTENSIONS.has(extension) ? extension : '';
+}
+
+function synchronizedSourcePath(value) {
+  const normalized = normalizedStoredPath(value);
+  const markerIndex = normalized.lastIndexOf(LOCAL_NOTE_MARKER);
+  if (markerIndex < 0 || !imageExtension(normalized)) return '';
+  const relative = normalized.slice(markerIndex + LOCAL_NOTE_MARKER.length);
+  const segments = relative.split('/').map((item) => item.trim()).filter(Boolean);
+  if (segments.length < 2 || segments.some((item) => item === '.' || item === '..' || item === '.metadata')) return '';
+  return `github://source-notes/${segments.join('/')}`;
 }
 
 function publicNoteAssetPath(noteUid, value) {
   const normalized = normalizedStoredPath(value);
   if (!normalized || isRemoteNoteAssetPath(normalized)) return normalized;
+  const synchronized = synchronizedSourcePath(normalized);
+  if (synchronized) return synchronized;
   const safeUid = typeof noteUid === 'string' ? noteUid.replace(/[^A-Za-z0-9._-]/g, '') : '';
   if (!safeUid) return normalized;
-  const match = /\.([A-Za-z0-9]+)(?:[?#].*)?$/.exec(normalized);
-  const extension = match?.[1]?.toLowerCase() || 'png';
-  const safeExtension = NOTE_IMAGE_EXTENSIONS.has(extension) ? extension : 'png';
-  return `github://data/assets/${safeUid}.${safeExtension}`;
+  const extension = imageExtension(normalized) || 'png';
+  return `github://data/assets/${safeUid}.${extension}`;
 }
 
 function normalizePublicPayload(value, seen = new WeakMap()) {
@@ -143,7 +162,6 @@ async function timingSafeEqual(left, right) {
     return sameLength && equal;
   }
 
-  // Node's Web Crypto test runtime does not expose the Workers extension.
   const [leftDigest, rightDigest] = await Promise.all([
     crypto.subtle.digest('SHA-256', compareLeft),
     crypto.subtle.digest('SHA-256', rightBytes),
