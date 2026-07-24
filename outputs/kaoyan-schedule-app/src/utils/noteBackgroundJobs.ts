@@ -30,6 +30,7 @@ const STORE_NAME = 'multi-question-jobs';
 const DB_VERSION = 1;
 const EVENT_NAME = 'kaoyan-multi-question-job-changed';
 const MAX_AUTO_ATTEMPTS = 2;
+const AUTO_RETRY_DELAY_MS = 3_000;
 let databasePromise: Promise<IDBDatabase> | null = null;
 const activeJobs = new Set<string>();
 
@@ -128,6 +129,7 @@ const processJob = async (id: string): Promise<void> => {
   if (initial.attempts >= MAX_AUTO_ATTEMPTS && initial.status === 'failed') return;
 
   activeJobs.add(id);
+  let retryAfterFailure = false;
   try {
     const attempt = initial.attempts + 1;
     await patchJob(id, {
@@ -208,12 +210,16 @@ const processJob = async (id: string): Promise<void> => {
         ? feedbackNoteUid
           ? '自动裁剪失败，原图和原因已写入待确认'
           : '自动裁剪失败，反馈笔记保存也失败；任务仍保留，可再次打开重试'
-        : '后台处理暂时失败，下次打开将自动重试',
+        : '后台处理暂时失败，3 秒后自动重试',
       error: [errorText, feedbackError ? `反馈保存失败：${feedbackError}` : ''].filter(Boolean).join('；'),
       feedbackNoteUid,
     });
+    retryAfterFailure = !finalFailure;
   } finally {
     activeJobs.delete(id);
+    if (retryAfterFailure) {
+      window.setTimeout(() => { void processJob(id); }, AUTO_RETRY_DELAY_MS);
+    }
   }
 };
 
