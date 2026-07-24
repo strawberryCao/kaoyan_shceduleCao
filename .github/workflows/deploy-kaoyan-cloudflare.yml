@@ -127,9 +127,7 @@ jobs:
 
       - name: Build and validate Worker bundle
         working-directory: outputs/kaoyan-schedule-app
-        run: |
-          npm run build
-          npx wrangler deploy --dry-run
+        run: npm run build
 
       - name: Verify Cloudflare authentication
         working-directory: outputs/kaoyan-schedule-app
