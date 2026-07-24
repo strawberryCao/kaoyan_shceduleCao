@@ -2,7 +2,7 @@ name: Apply real quick-note multi-material records
 
 on:
   pull_request:
-    branches: [fix/learning-detail-title-latex]
+    branches: [main, fix/learning-detail-title-latex]
     types: [opened, reopened, synchronize]
   workflow_dispatch:
 
