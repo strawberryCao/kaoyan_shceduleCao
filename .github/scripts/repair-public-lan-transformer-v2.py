@@ -22,7 +22,7 @@ replace_once(
 replace_once(
     r"/function namingPrompt\(settings, remark, repairReason = ''\) \{[\s\S]*?\n\}/,",
     r"/function namingPrompt\(settings, remark, repairReason = ''\) \{[\s\S]*?\n\}\n\nfunction applyNamingRuleTemplate/,
-".rstrip('\n'),
+"[:-1],
     'naming function boundary',
 )
 replace_once(
