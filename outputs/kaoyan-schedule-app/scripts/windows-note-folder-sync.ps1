@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$ConfigPath = 'D:\kaoyandata\NoteFolderSync\config.json',
   [switch]$NativeCommandSelfTest
@@ -493,7 +493,8 @@ try {
   if (-not (Test-Path -LiteralPath $mergeScript)) { throw 'Learning data merger was not found.' }
   $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
-  & $nodeCommand.Source $mergeScript --config $ConfigPath | Out-Null
+  $nodeExecutable = [string]$nodeCommand.Source
+  & $nodeExecutable $mergeScript --config $ConfigPath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
   # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
