@@ -93,3 +93,15 @@ test('full enrichment preserves the naming-agent title and capture source tags',
   assert.match(learning, /Array\.isArray\(note\.tags\)/);
   assert.match(learning, /Array\.isArray\(input\.tags\)/);
 });
+
+
+test('mobile outbox commits IndexedDB transactions and recovers expired upload leases', () => {
+  const queue = text('src/utils/captureUploadQueue.ts');
+  const app = text('src/App.tsx');
+  assert.match(queue, /transactionDone/);
+  assert.match(queue, /await committed/);
+  assert.match(queue, /UPLOAD_LEASE_MS/);
+  assert.match(queue, /job\.status !== 'uploading'/);
+  assert.match(queue, /上次上传被系统中断/);
+  assert.match(app, /installCaptureUploadResumer/);
+});

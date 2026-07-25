@@ -45,7 +45,7 @@ const jobBytes = (job: CaptureUploadJob): number => job.payloads.reduce((sum, it
 
 const openDatabase = (): Promise<IDBDatabase> => {
   if (databasePromise) return databasePromise;
-  databasePromise = new Promise((resolve, reject) => {
+  const pending = new Promise<IDBDatabase>((resolve, reject) => {
     if (!window.indexedDB) {
       reject(new Error('当前浏览器不支持本地可靠上传队列。'));
       return;
@@ -59,11 +59,12 @@ const openDatabase = (): Promise<IDBDatabase> => {
       }
     };
     request.onsuccess = () => resolve(request.result);
-  }).catch((error) => {
+  }).catch((error): never => {
     databasePromise = null;
     throw error;
   });
-  return databasePromise;
+  databasePromise = pending;
+  return pending;
 };
 
 const requestResult = <T>(request: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
