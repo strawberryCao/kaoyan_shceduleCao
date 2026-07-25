@@ -12,6 +12,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  ArrowLeft,
   ChevronLeft,
   ChevronRight,
   ImageOff,
@@ -506,6 +507,10 @@ export function ImageViewer({
         <div className="image-viewer__counter" aria-live="polite">
           {safeIndex + 1} / {items.length}
         </div>
+
+        <button className="image-viewer__back" type="button" onClick={onClose} aria-label="返回学习中心">
+          <ArrowLeft size={20} /><span>返回</span>
+        </button>
 
         <button
           ref={closeButtonRef}

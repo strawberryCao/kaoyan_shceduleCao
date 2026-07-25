@@ -11,9 +11,10 @@ const {
   normalizeTaskConfigurations,
   resolveTaskOptions,
 } = require('./ai-router.cjs');
+const { buildPublicWorkflowContracts } = require('./agent-workflow-contracts.cjs');
 
 const SECRET_REFS = Object.freeze({ qwen: 'QWEN_API_KEY', gemini: 'GEMINI_API_KEY', kimi: 'KIMI_API_KEY' });
-const CONFIG_FILES = new Set(['ai-providers.json', 'qwen-config.json', 'note-taxonomy.json', 'desktop-layout.json']);
+const CONFIG_FILES = new Set(['ai-providers.json', 'qwen-config.json', 'agent-workflows.json', 'note-taxonomy.json', 'desktop-layout.json']);
 const DATA_PATTERNS = [/^learning-data\.json$/i, /^canvas-projects\//i];
 const RUNTIME_PATTERNS = [/^note-save-receipts\//i, /^review-github-sync\//i, /^note-organizer-state\.json$/i];
 const BACKUP_PATTERNS = [/^repair-backups\//i, /(?:^|\.)pre-rebuild-/i, /^canvas-projects\/\.trash\//i];
@@ -150,7 +151,7 @@ function sanitizeProviders(value, report) {
 }
 
 function workflowSourceRecords() {
-  return ['ai-router.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs']
+  return ['ai-router.cjs', 'agent-workflow-contracts.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs']
     .map((name) => path.join(__dirname, name))
     .filter(fs.existsSync)
     .map((filePath) => {
@@ -194,6 +195,7 @@ function main() {
   const safeFilesRoot = path.join(outputRoot, 'files');
   const includedFiles = [];
   const excludedCounts = {};
+  let latestConfigModifiedAt = 0;
 
   fs.rmSync(outputRoot, { recursive: true, force: true });
   fs.mkdirSync(safeFilesRoot, { recursive: true });
@@ -205,6 +207,7 @@ function main() {
       excludedCounts[category] = (excludedCounts[category] || 0) + 1;
       continue;
     }
+    try { latestConfigModifiedAt = Math.max(latestConfigModifiedAt, fs.statSync(filePath).mtimeMs); } catch {}
     const parsed = readJson(filePath, {});
     const sanitized = relativePath === 'ai-providers.json'
       ? { ...sanitizeValue(parsed, report), providers: sanitizeProviders(parsed.providers, report) }
@@ -236,9 +239,12 @@ function main() {
   }
 
   const tasks = buildTaskContracts(aiConfig.tasks);
+  const workflowOverrides = readJson(path.join(assistantRoot, 'agent-workflows.json'), aiConfig.workflows || {});
+  const workflows = buildPublicWorkflowContracts(workflowOverrides);
   const workflowSources = workflowSourceRecords();
   const configurationHash = sha256(stableJson(includedFiles.map(({ path: filePath, sha256: hash }) => ({ path: filePath, sha256: hash }))));
-  const workflowHash = sha256(stableJson({ tasks, workflowSources }));
+  const workflowHash = sha256(stableJson({ tasks, workflows, workflowSources }));
+  const publishedAt = latestConfigModifiedAt > 0 ? new Date(latestConfigModifiedAt).toISOString() : null;
   const runtime = {
     schemaVersion: 2,
     strictMode: true,
@@ -247,7 +253,9 @@ function main() {
     requireLocalWorkflow: true,
     source: {
       assistantRoot: '__LOCAL_PATH__',
-      updatedAt: null,
+      updatedAt: publishedAt,
+      publishedAt,
+      sourceDevice: os.hostname(),
       configurationHash,
       workflowHash,
       workflowSources,
@@ -255,6 +263,7 @@ function main() {
     providers,
     routing: sanitizeValue(aiConfig.routing || {}, report),
     tasks,
+    workflows,
   };
   const runtimeHash = sha256(stableJson(runtime));
   const manifest = {
@@ -266,6 +275,7 @@ function main() {
     configurationHash,
     workflowHash,
     runtimeHash,
+    publishedAt,
     files: includedFiles,
   };
 

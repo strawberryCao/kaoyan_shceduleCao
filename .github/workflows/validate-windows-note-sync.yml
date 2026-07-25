@@ -40,7 +40,7 @@ jobs:
               [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $script, $_.Message) }
+              $errors | ForEach-Object { Write-Error ("{0}: line {1}, column {2}: {3}" -f $script, $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message) }
               exit 1
             }
             Write-Host "Windows PowerShell parse OK: $script"
@@ -50,13 +50,14 @@ jobs:
         run: |
           $installer = Get-Content outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Raw
           $runtime = Get-Content outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -Raw
-          if ($installer -notmatch [regex]::Escape("[string]$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
+          if ($installer -notmatch [regex]::Escape("[string]`$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
           if ($installer -notmatch 'github-token\.dpapi') { throw 'DPAPI token path is missing.' }
           if ($runtime -notmatch 'credential\.helper') { throw 'Credential Manager bypass is missing.' }
           $tempToken = Join-Path $env:RUNNER_TEMP 'token.dpapi'
           $secure = ConvertTo-SecureString 'test-token' -AsPlainText -Force
           $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $tempToken -Encoding UTF8
-          $roundTrip = Get-Content -LiteralPath $tempToken -Raw | ConvertTo-SecureString
+          $encrypted = (Get-Content -LiteralPath $tempToken -Raw -Encoding UTF8).Trim()
+          $roundTrip = $encrypted | ConvertTo-SecureString
           if ($roundTrip.Length -ne 10) { throw 'DPAPI token round-trip failed.' }
       - name: Reproduce successful native Git stderr and missing mirror path
         shell: powershell

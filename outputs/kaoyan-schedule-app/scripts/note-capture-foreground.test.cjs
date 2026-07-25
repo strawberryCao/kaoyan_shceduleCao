@@ -8,14 +8,15 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'NoteDropApp.tsx'), 'utf8');
 
 test('mobile multi-question capture stays in the foreground', () => {
-  const start = source.indexOf('const confirmMultiPreCrop');
-  const end = source.indexOf('const startMultiQuestion', start);
+  const start = source.indexOf('const buildDetectedBatch');
+  const end = source.indexOf('const confirmBatchCrop', start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
   assert.match(block, /detectQuestionRegions\(src\)/);
   assert.match(block, /cropManyImages\(src, detection\.regions\)/);
   assert.doesNotMatch(block, /enqueueMultiQuestionJob/);
   assert.match(block, /setMobileStep\('batch'\)/);
+  assert.match(block, /detectionRunRef/);
 });
 
 test('single and batch image saves retry idempotently after mobile network loss', () => {

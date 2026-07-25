@@ -80,6 +80,19 @@ test('local catalog models are materialized only when a task explicitly selects 
 
 test('Cloudflare naming prompt retains the local Windows filename workflow and user constraints', () => {
   const prompt = renameWorkflowInternals.namingPrompt({
+    workflow: {
+      version: 'test-note-naming-v1',
+      steps: ['读取局域网配置', '调用命名模型', '校验文件名'],
+      prompt: {
+        instructions: [
+          '你是考研学习笔记整理助手。请生成适合 Windows 文件名的中文标题。',
+          'title 目标长度为 {titleMinLength} 到 {titleMaxLength} 个字符。',
+          '用户备注：{remark}',
+          '字段命名规则：{namingRules}',
+        ],
+        outputFormat: '只输出 JSON 对象。',
+      },
+    },
     customInstructions: '标题必须突出考点，不要出现英文句子。',
     namingRules: [{ id: 'rule-1', name: '题号', enabled: true, when: '有题号', extract: '读取题号', titleTemplate: '{value}' }],
     options: { titleMinLength: 8, titleMaxLength: 20, useRemark: true, preferSpecificSubject: true, rejectGenericTitle: true },
@@ -93,6 +106,17 @@ test('Cloudflare naming prompt retains the local Windows filename workflow and u
 
 test('multi-question prompt is constrained by local task options and emits normalized boxes', () => {
   const prompt = questionDetectionInternals.splittingPrompt({
+    workflow: {
+      version: 'test-question-splitting-v1',
+      steps: ['读取局域网配置', '识别区域', '规范化坐标'],
+      prompt: {
+        instructions: [
+          '最多返回 {maxQuestions} 个区域。',
+          'x、y、width、height 使用 0 到 1 的归一化坐标。',
+        ],
+        outputFormat: '只返回 JSON 对象。',
+      },
+    },
     customInstructions: '不要裁掉题目前的例题编号。',
     options: { maxQuestions: 12, includeQuestionNumber: true, includeOptions: true, includeDiagram: true },
   }, 1200, 1600);
@@ -105,4 +129,11 @@ test('multi-question prompt is constrained by local task options and emits norma
   }, 1200, 1600, { options: { maxQuestions: 12, minimumRegionPercent: 3.5, edgePaddingPercent: 0 } });
   assert.equal(regions.length, 1);
   assert.equal(regions[0].x, 0.1);
+});
+
+test('workflow contract is required for public naming and splitting tasks', () => {
+  const workflow = { version: 'v1', steps: ['route'], prompt: { instructions: ['instruction'], outputFormat: 'JSON' } };
+  const normalized = agentRuntimeInternals.normalizeWorkflow('question_splitting', workflow);
+  assert.equal(normalized.version, 'v1');
+  assert.equal(normalized.prompt.outputFormat, 'JSON');
 });

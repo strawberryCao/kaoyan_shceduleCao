@@ -388,10 +388,16 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
   }
   const confidence = Number(value.confidence);
   const filePath = typeof value.filePath === 'string' ? value.filePath : '';
-  const rawSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';
+  const normalizedFilePath = filePath.split(String.fromCharCode(92)).join('/').toLowerCase();
+  const isRemoteAssetPath = normalizedFilePath.startsWith('github://data/assets/')
+    || normalizedFilePath.startsWith('data/assets/')
+    || normalizedFilePath.startsWith('r2://note-assets/');
+  const storedSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';
+  const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;
   const pathParts = filePath.split(/[\\/]/).filter(Boolean);
   const fileSubject = pathParts.length > 1 ? pathParts[pathParts.length - 2].trim() : '';
   const inferredFromFile = value.classificationSource !== 'manual'
+    && !isRemoteAssetPath
     && DEFAULT_SUBJECT_NAMES.has(rawSubject)
     && fileSubject
     && !DEFAULT_SUBJECT_NAMES.has(fileSubject)

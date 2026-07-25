@@ -95,21 +95,28 @@ function normalizeRegions(result, width, height, settings) {
   return unique.slice(0, Number(settings.options.maxQuestions) || 24);
 }
 
+function fillTemplate(value, variables) {
+  return String(value || '').replace(/\{([A-Za-z0-9_]+)\}/g, (_match, key) => String(variables[key] ?? ''));
+}
+
 function splittingPrompt(settings, width, height) {
-  const requirements = [
-    settings.options.includeQuestionNumber !== false ? '必须包含题号或题目标识' : '',
-    settings.options.includeOptions !== false ? '选择题必须包含全部选项' : '',
-    settings.options.includeDiagram !== false ? '必须包含与题干相关的公式、表格和配图' : '',
-  ].filter(Boolean);
+  const workflow = settings.workflow;
+  if (!workflow?.prompt?.instructions?.length || !workflow.prompt.outputFormat) {
+    throw new HttpError(503, '局域网没有发布多题裁剪 Prompt 合同。', 'LOCAL_AGENT_WORKFLOW_MISSING');
+  }
+  const options = settings.options || {};
+  const variables = {
+    width: width || '未知',
+    height: height || '未知',
+    maxQuestions: Number(options.maxQuestions) || 24,
+    questionNumberRule: options.includeQuestionNumber !== false ? '必须包含题号或题目标识。' : '',
+    optionsRule: options.includeOptions !== false ? '选择题必须包含全部选项。' : '',
+    diagramRule: options.includeDiagram !== false ? '必须包含与题干相关的公式、表格和配图。' : '',
+  };
   return [
-    '你是考研题目区域识别器。请在用户已经预裁剪的整页图片中找出每一道完整且相互独立的题目。',
-    '不要把同一道题拆成多个区域；不要把相邻的不同题目合并。',
-    ...requirements,
-    `原图尺寸：${width || '未知'}×${height || '未知'}。`,
-    '只返回 JSON 对象，格式为：{"regions":[{"x":0.0,"y":0.0,"width":0.5,"height":0.3}]}。',
-    'x、y、width、height 使用 0 到 1 的归一化坐标；x、y 是左上角。按从上到下、同一行从左到右排序。',
-    `最多返回 ${Number(settings.options.maxQuestions) || 24} 个区域。没有可靠区域时返回 {"regions":[]}。`,
-    settings.customInstructions ? `局域网配置中心附加规则：${settings.customInstructions}` : '',
+    ...workflow.prompt.instructions.map((line) => fillTemplate(line, variables)).filter(Boolean),
+    fillTemplate(workflow.prompt.outputFormat, variables),
+    settings.customInstructions ? '局域网配置中心附加规则：' + settings.customInstructions : '',
   ].filter(Boolean).join('\n');
 }
 
