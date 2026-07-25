@@ -1,0 +1,67 @@
+name: Diagnose live note capture
+
+on:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths: ['.github/workflows/diagnose-live-note-capture-v2.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      APP_USERNAME: caobiji
+      KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      WORKER_URL: https://kaoyan-study-center.caoheming139.workers.dev
+    steps:
+      - name: Generate deterministic question image
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import binascii, struct, zlib
+          w, h = 900, 1200
+          rows=[]
+          for y in range(h):
+              row=bytearray([255]*(w*3))
+              def black(a,b):
+                  for x in range(max(0,a),min(w,b)): row[x*3:x*3+3]=b'\x10\x10\x10'
+              for top in (70,410,750):
+                  if top<=y<top+8: black(50,850)
+                  if top+45<=y<top+53: black(80,720)
+                  if top+95<=y<top+103: black(80,830)
+                  if top+150<=y<top+158: black(120,780)
+                  if top+220<=y<top+228: black(80,520)
+              rows.append(b'\x00'+bytes(row))
+          def chunk(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',binascii.crc32(t+d)&0xffffffff)
+          png=b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(b''.join(rows),9))+chunk(b'IEND',b'')
+          open('/tmp/probe.png','wb').write(png)
+          PY
+          base64 -w0 /tmp/probe.png > /tmp/probe.b64
+      - name: Probe authenticated production routes
+        shell: bash
+        run: |
+          set +e
+          auth="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
+          data_url="data:image/png;base64,$(cat /tmp/probe.b64)"
+          health_status=$(curl -sS -o /tmp/health.json -w '%{http_code}' "$WORKER_URL/api/health")
+          learning_status=$(curl -sS -o /tmp/learning.json -w '%{http_code}' -H "Authorization: $auth" "$WORKER_URL/api/learning-data")
+          cat > /tmp/save.json.in <<JSON
+          {"imageDataUrl":"$data_url","kind":"single","noteUid":"diagnostic_capture_probe_v1","subject":"系统诊断","remark":"线上拍题链路探针，可忽略","sourceType":"diagnostic-live-capture","tags":["系统诊断"]}
+          JSON
+          save_status=$(curl -sS -o /tmp/save.json -w '%{http_code}' -X POST -H "Authorization: $auth" -H 'Content-Type: application/json' --data-binary @/tmp/save.json.in "$WORKER_URL/api/save-note")
+          cat > /tmp/detect.json.in <<JSON
+          {"imageDataUrl":"$data_url","imageWidth":900,"imageHeight":1200}
+          JSON
+          detect_status=$(curl -sS -o /tmp/detect.json -w '%{http_code}' -X POST -H "Authorization: $auth" -H 'Content-Type: application/json' --data-binary @/tmp/detect.json.in "$WORKER_URL/api/ai/detect-questions")
+          echo "PROBE_STATUS health=$health_status learning=$learning_status save=$save_status detect=$detect_status"
+          for name in health learning save detect; do
+            echo "--- $name response ---"
+            head -c 12000 "/tmp/$name.json" || true
+            echo
+          done
+          [[ "$health_status" == 200 ]] || exit 10
+          [[ "$learning_status" == 200 ]] || exit 11
+          [[ "$save_status" == 200 || "$save_status" == 202 ]] || exit 12
+          [[ "$detect_status" == 200 || "$detect_status" == 422 ]] || exit 13
