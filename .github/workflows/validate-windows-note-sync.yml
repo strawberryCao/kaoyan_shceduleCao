@@ -49,6 +49,8 @@ jobs:
       - name: Parse scripts with Windows PowerShell 5.1
         shell: powershell
         run: |
+          $diagnosticPath = Join-Path $env:RUNNER_TEMP 'powershell-parse-errors.txt'
+          $diagnostics = New-Object 'System.Collections.Generic.List[string]'
           $scripts = @(
             'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1',
             'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
@@ -61,12 +63,25 @@ jobs:
               [ref]$tokens,
               [ref]$errors
             ) | Out-Null
-            if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error ("{0}: line {1}, column {2}: {3}" -f $script, $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message) }
-              exit 1
+            foreach ($parseError in @($errors)) {
+              $line = "{0}: line {1}, column {2}: {3}; text=[{4}]" -f $script, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message, $parseError.Extent.Text
+              [void]$diagnostics.Add($line)
+              Write-Host $line
             }
-            Write-Host "Windows PowerShell parse OK: $script"
           }
+          if ($diagnostics.Count -gt 0) {
+            [System.IO.File]::WriteAllLines($diagnosticPath, $diagnostics, [System.Text.UTF8Encoding]::new($true))
+            exit 1
+          }
+          'Windows PowerShell 5.1 parse OK.' | Set-Content -LiteralPath $diagnosticPath -Encoding UTF8
+      - name: Upload PowerShell parser diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-powershell-parser-${{ github.run_id }}
+          path: ${{ runner.temp }}/powershell-parse-errors.txt
+          if-no-files-found: warn
+          retention-days: 3
       - name: Verify D drive and DPAPI configuration
         shell: powershell
         run: |
