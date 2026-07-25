@@ -1,0 +1,66 @@
+name: Verify live local-first runtime
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/workflows/verify-live-local-first-runtime.yml'
+
+jobs:
+  verify:
+    if: github.head_ref == 'ci/verify-live-local-first-runtime'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Read public health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' 'https://kaoyan-study-center.caoheming139.workers.dev/api/health' || true)"
+            if [[ "$status" == '200' ]]; then break; fi
+            echo "health attempt $attempt returned HTTP $status"
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/health.json"
+      - name: Verify effective LAN workflow runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const health = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/health.json', 'utf8'));
+          const runtime = health.agentRuntime || {};
+          const versions = runtime.workflowVersions || {};
+          const expected = {
+            note_naming: 'note-naming-v3',
+            question_splitting: 'question-splitting-v3',
+            note_enrichment: 'note-enrichment-v4',
+            note_image_understanding: 'note-image-understanding-v4',
+          };
+          if (!health.ok || !health.aiConfigured || !health.aiExecutionReady) throw new Error('AI runtime is not execution-ready');
+          if (runtime.strictMode !== true || runtime.failClosed !== true) throw new Error('strict runtime policy is missing');
+          for (const [taskId, version] of Object.entries(expected)) {
+            if (versions[taskId] !== version) throw new Error(`${taskId} expected ${version}, got ${versions[taskId]}`);
+          }
+          const compatibility = runtime.compatibility || {};
+          if (compatibility.id !== 'legacy-v11-full-note-analysis') throw new Error(`unexpected compatibility id: ${compatibility.id}`);
+          if (compatibility.workflowSourceHash !== '511f580d975f781567f37c5bf7ad9410b50c420c6622340b821e8191c40c1c22') throw new Error('legacy source hash mismatch');
+          if (compatibility.workflowContentHash !== '7479f7a74979a537cbde8f6d207be7a9cbc568a4b21fa3a220baf13bd4cf4aa7') throw new Error('compatibility content hash mismatch');
+          if (!Array.isArray(compatibility.tasks) || !compatibility.tasks.includes('note_enrichment') || !compatibility.tasks.includes('note_image_understanding')) throw new Error('compatibility tasks missing');
+          if (!runtime.publishedWorkflowHash || !runtime.workflowHash || runtime.publishedWorkflowHash === runtime.workflowHash) throw new Error('effective workflow hash was not derived');
+          console.log(JSON.stringify({
+            ok: true,
+            workflowVersions: versions,
+            compatibility,
+            publishedWorkflowHash: runtime.publishedWorkflowHash,
+            effectiveWorkflowHash: runtime.workflowHash,
+          }, null, 2));
+          NODE
+      - name: Upload verified health payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-local-first-health-${{ github.run_id }}
+          path: ${{ runner.temp }}/health.json
+          if-no-files-found: error
+          retention-days: 3
