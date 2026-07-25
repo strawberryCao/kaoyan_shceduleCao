@@ -83,7 +83,7 @@ business_files=(
 )
 
 STAGE=fetch-reviewed-business
-git fetch origin "$repo_branch" "$business_branch"
+git fetch origin "$repo_branch" "$business_branch" "$clean_branch" || git fetch origin "$repo_branch" "$business_branch"
 git cat-file -e "$business_sha^{commit}"
 
 STAGE=prepare-clean-index
@@ -127,7 +127,7 @@ git commit -m 'fix: enforce LAN parity for public capture and sync'
 CLEAN_SHA="$(git rev-parse HEAD)"
 
 STAGE=push-clean-delivery
-git push origin "HEAD:$clean_branch"
+git push --force-with-lease origin "HEAD:$clean_branch"
 
 STATUS=success
 STAGE=completed
