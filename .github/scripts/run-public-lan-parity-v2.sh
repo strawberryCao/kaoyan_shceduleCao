@@ -64,8 +64,11 @@ PY
 trap finalize EXIT
 
 STAGE=repair-transformer
-python -m py_compile .github/scripts/repair-public-lan-transformer-v3.py .github/scripts/repair-public-lan-transformer-v4.py
-python .github/scripts/repair-public-lan-transformer-v4.py
+python -m py_compile \
+  .github/scripts/repair-public-lan-transformer-v3.py \
+  .github/scripts/repair-public-lan-transformer-v4.py \
+  .github/scripts/repair-public-lan-transformer-v5.py
+python .github/scripts/repair-public-lan-transformer-v5.py
 node --check .github/scripts/apply-public-lan-parity.cjs
 
 STAGE=apply-source
