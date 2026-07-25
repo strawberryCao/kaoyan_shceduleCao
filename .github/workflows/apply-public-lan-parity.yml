@@ -34,6 +34,18 @@ jobs:
         shell: bash
         run: |
           set +e
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/apply-public-lan-parity.cjs')
+          source = path.read_text(encoding='utf-8')
+          old = '''  "             <p>{batchProgress || 'AI 正在寻找每一道完整题目的边界。'}</p>\\n           </section>",
+            "             <p>{batchProgress || 'AI 正在寻找每一道完整题目的边界。'}</p>\\n             <ol className=\\"mobile-detecting-steps\\">\\n               <li>上传并压缩原图</li><li>读取局域网 AI 配置</li><li>识别题目边界</li><li>生成可调整裁剪</li>\\n             </ol>\\n           </section>",'''
+          new = '''  /(<p>\\{batchProgress \\|\\| 'AI 正在寻找每一道完整题目的边界。'\\}<\\/p>)(\\s*<\\/section>)/,
+            "$1\\n             <ol className=\\"mobile-detecting-steps\\">\\n               <li>上传并压缩原图</li><li>读取局域网 AI 配置</li><li>识别题目边界</li><li>生成可调整裁剪</li>\\n             </ol>$2",'''
+          if old not in source:
+              raise SystemExit('transformer mobile detection anchor patch was not found')
+          path.write_text(source.replace(old, new), encoding='utf-8')
+          PY
           node .github/scripts/apply-public-lan-parity.cjs > /tmp/public-lan-parity-apply.log 2>&1
           code=$?
           cat /tmp/public-lan-parity-apply.log
