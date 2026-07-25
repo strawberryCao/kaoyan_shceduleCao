@@ -94,3 +94,35 @@ jobs:
           fi
           git commit -m 'fix: align public capture with LAN control plane'
           git push origin HEAD:fix/public-lan-parity-control-plane
+      - name: Persist validation receipt
+        if: always()
+        shell: bash
+        env:
+          VALIDATION_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git reset --hard HEAD
+          git config user.name 'Kaoyan Parity Validator'
+          git config user.email 'kaoyan-parity@local.invalid'
+          mkdir -p .github/validation
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          payload = {
+              'schemaVersion': 1,
+              'status': os.environ['VALIDATION_STATUS'],
+              'runId': int(os.environ['RUN_ID']),
+              'runAttempt': int(os.environ['RUN_ATTEMPT']),
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'recordedAt': datetime.now(timezone.utc).isoformat(),
+          }
+          with open('.github/validation/public-lan-parity-status.json', 'w', encoding='utf-8') as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          PY
+          git add .github/validation/public-lan-parity-status.json
+          git commit -m 'ci: record public LAN parity validation'
+          git push origin HEAD:fix/public-lan-parity-control-plane
