@@ -2,8 +2,7 @@ import { runLocalAgentTask } from './agent-provider.js';
 import { getTaskSettings } from './ai-config.js';
 import { HttpError } from './http.js';
 import { assertRepoPath, readFile } from './github-store.js';
-import { findNote, getLearningSnapshot, patchNote } from './learning.js';
-import { updateMirroredCloudNote } from './source-mirror.js';
+import { applyAiNoteNaming, findNote, getLearningSnapshot } from './learning.js';
 
 const ASSET_ROOT = 'data/assets/';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -184,13 +183,14 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   if (latestEntry.note.title !== baselineTitle && (latestEntry.note.userEditedFields || []).includes('title')) {
     return { applied: false, reason: '你已经手动修改标题，AI 结果未覆盖', title: latestEntry.note.title, snapshot: latestSnapshot };
   }
-  const snapshot = await patchNote(env, noteUid, { patch: {
+  const snapshot = await applyAiNoteNaming(env, noteUid, {
     title: generated.title,
     subject: generated.subject,
-    knowledgePath: [generated.subject],
-  } });
-  const updatedNote = findNote(snapshot, noteUid)?.note;
-  if (updatedNote) await updateMirroredCloudNote(env, updatedNote);
+    provider: generated.provider,
+    model: generated.model,
+    configurationHash: generated.configurationHash,
+    workflowHash: generated.workflowHash,
+  });
   return {
     applied: true,
     title: generated.title,

@@ -33,7 +33,7 @@ test('mobile batch save no longer performs cloud saves one by one', () => {
   const start = app.indexOf('const saveBatch = async () =>');
   const end = app.indexOf('const cancelPending', start);
   const block = app.slice(start, end);
-  assert.match(block, /saveNoteImagesBatch|saveBatchReliably/);
-  assert.match(block, /正在一次性上传并归档/);
+  assert.match(block, /enqueueCaptureUpload\(payloads\)/);
+  assert.match(block, /本机后台队列|可以立即退出/);
   assert.match(app, /cropManyImages\(src, detection\.regions, 1800, 0\.9\)/);
 });

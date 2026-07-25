@@ -30,6 +30,7 @@ import {
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
 import { resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
+import { enqueueCaptureUpload, installCaptureUploadResumer, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
 import { QuickMaterialComposer } from './QuickMaterialComposer';
@@ -91,6 +92,7 @@ export function NoteDropApp() {
   const [dialogError, setDialogError] = useState('');
   const [batchProgress, setBatchProgress] = useState('');
   const [materialOpen, setMaterialOpen] = useState(false);
+  const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
   useEffect(() => {
     if (!IS_CLOUD_RUNTIME || typeof window.matchMedia !== 'function') return undefined;
@@ -104,6 +106,16 @@ export function NoteDropApp() {
   useEffect(() => {
     if (isMobileCapture) void resumeMultiQuestionJobs();
   }, [isMobileCapture]);
+
+  useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
+    const disposeResumer = installCaptureUploadResumer();
+    const disposeSubscription = subscribeCaptureUploads(setUploadSummary);
+    return () => {
+      disposeSubscription();
+      disposeResumer();
+    };
+  }, []);
 
   useEffect(() => {
     if (!window.kaoyanDesktop?.isElectron) return;
@@ -144,7 +156,7 @@ export function NoteDropApp() {
       setRemark('');
       setSaved(false);
       setDialogError('');
-      setStatus('');
+      setStatus(uploadSummary.message);
       if (isMobileCapture) {
         setSourceImage(next);
         setPendingImage(null);
@@ -296,35 +308,40 @@ export function NoteDropApp() {
 
   const saveSingle = async () => {
     if (!pendingImage || saving) return;
+    const payload = {
+      imageDataUrl: pendingImage.src,
+      kind: 'single' as const,
+      noteUid: pendingImage.noteUid,
+      remark,
+      sourceType: 'single-capture',
+    };
     try {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      setStatus(IS_CLOUD_RUNTIME ? '正在一次性保存图片与学习记录…' : '');
-      const result = await saveImageReliably({
-        imageDataUrl: pendingImage.src,
-        kind: 'single',
-        noteUid: pendingImage.noteUid,
-        remark,
-      }, setStatus);
+      if (IS_CLOUD_RUNTIME) {
+        await enqueueCaptureUpload([payload]);
+        setPendingImage(null);
+        setRemark('');
+        setSaved(true);
+        setStatus('已存入本机后台队列，可以立即退出；命名和完整分类会自动完成');
+        if (isMobileCapture) setMobileStep('success');
+        return;
+      }
+      const result = await saveImageReliably(payload, setStatus);
       if (result.learningData) saveLearningDataCache(result.learningData);
       setPendingImage(null);
       setRemark('');
       setDialogError('');
       setSaved(true);
-      if (IS_CLOUD_RUNTIME) {
-        setStatus(result.learningData ? '图片已保存；AI 正在后台按局域网规则命名' : '图片已保存；学习中心与 AI 命名正在后台同步');
-        if (isMobileCapture) setMobileStep('success');
-      } else {
-        const aiMessage = result.aiStatus === 'complete'
-          ? 'AI 整理完成'
-          : result.aiStatus === 'failed' ? 'AI 将在稍后整理' : 'AI 正在后台整理';
-        setStatus(`已保存 · ${aiMessage}`);
-      }
+      const aiMessage = result.aiStatus === 'complete'
+        ? 'AI 整理完成'
+        : result.aiStatus === 'failed' ? 'AI 将在稍后整理' : 'AI 正在后台整理';
+      setStatus(`已保存 · ${aiMessage}`);
     } catch (error) {
       const message = error instanceof Error
         ? `保存失败：${error.message}`
-        : IS_CLOUD_RUNTIME ? '保存失败，请稍后重试。' : '保存失败，请确认笔记服务已启动。';
+        : IS_CLOUD_RUNTIME ? '无法写入本机后台队列，请释放浏览器存储后重试。' : '保存失败，请确认笔记服务已启动。';
       setDialogError(message);
       setStatus(message);
     } finally {
@@ -444,23 +461,25 @@ export function NoteDropApp() {
       setSaving(true);
       setDialogError('');
       if (IS_CLOUD_RUNTIME) {
-        setBatchProgress(`正在一次性上传并归档 ${selected.length} 道题…`);
-        const result = await saveBatchReliably(payloads, setBatchProgress);
-        if (result.learningData) saveLearningDataCache(result.learningData);
-      } else {
-        let latestSnapshot = null;
-        for (let index = 0; index < payloads.length; index += 1) {
-          setBatchProgress(`正在保存 ${index + 1}/${payloads.length}…`);
-          const result = await saveImageReliably(payloads[index], setBatchProgress);
-          if (result.learningData) {
-            latestSnapshot = result.learningData;
-            saveLearningDataCache(result.learningData);
-          }
-        }
-        if (latestSnapshot) saveLearningDataCache(latestSnapshot);
+        await enqueueCaptureUpload(payloads);
+        setSaved(true);
+        setStatus(`${selected.length} 道题已存入本机后台队列，可以立即退出`);
+        setBatchProgress('');
+        setMobileStep('success');
+        return;
       }
+      let latestSnapshot = null;
+      for (let index = 0; index < payloads.length; index += 1) {
+        setBatchProgress(`正在保存 ${index + 1}/${payloads.length}…`);
+        const result = await saveImageReliably(payloads[index], setBatchProgress);
+        if (result.learningData) {
+          latestSnapshot = result.learningData;
+          saveLearningDataCache(result.learningData);
+        }
+      }
+      if (latestSnapshot) saveLearningDataCache(latestSnapshot);
       setSaved(true);
-      setStatus(`已保存 ${selected.length} 道题，AI 正在后台按局域网规则命名`);
+      setStatus(`已保存 ${selected.length} 道题，AI 正在后台按局域网规则整理`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {

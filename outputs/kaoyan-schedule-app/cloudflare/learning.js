@@ -479,6 +479,185 @@ export async function patchNote(env, noteUid, payload) {
   return result.snapshot;
 }
 
+
+function aiReviewStatus(note) {
+  if (['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(note?.reviewStatus)) return note.reviewStatus;
+  if (note?.organizationStatus === 'ignored') return 'ignored';
+  if (note?.classificationSource === 'manual') return 'corrected';
+  return note?.organizationStatus === 'confirmed' ? 'auto_applied' : 'pending';
+}
+
+function aiHumanDecision(note) {
+  return ['accepted', 'corrected', 'ignored'].includes(aiReviewStatus(note));
+}
+
+function aiCardId(noteUid, sourceKey, index) {
+  const key = text(sourceKey, 80).replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || `item-${index + 1}`;
+  return `card-${text(noteUid, 90)}-ai-${key}`.slice(0, 160);
+}
+
+function aiCardRecord(note, card, index, timestamp) {
+  const sourceKey = text(card.sourceKey, 160) || `ai:root:${index}`;
+  return {
+    id: aiCardId(note.noteUid, sourceKey, index),
+    noteUid: note.noteUid,
+    sourceKey,
+    kind: card.kind === 'mistake' ? 'mistake' : 'memory',
+    front: text(card.front, 500),
+    back: text(card.back, 2000),
+    subject: note.subject,
+    knowledgePath: uniqueStrings(note.knowledgePath).slice(0, 3),
+    tags: uniqueStrings(note.tags),
+    pageRefs: Array.isArray(note.pageRefs) ? note.pageRefs.slice(0, 100) : [],
+    sourceTitle: note.title,
+    sourceFilePath: note.filePath,
+    status: 'active',
+    dueDate: note.capturedDate,
+    reviewStep: 0,
+    reviewCount: 0,
+    lastReviewedAt: '',
+    lastReviewResult: '',
+    correctCount: 0,
+    incorrectCount: 0,
+    correctStreak: 0,
+    masteredAt: '',
+    reviewHistory: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    userEdited: false,
+  };
+}
+
+export async function applyAiNoteNaming(env, noteUid, input = {}) {
+  const timestamp = new Date().toISOString();
+  const result = await mutateLearning(env, {}, (snapshot) => {
+    const entry = findNote(snapshot, noteUid);
+    if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
+    const note = entry.note;
+    const userFields = new Set(Array.isArray(note.userEditedFields) ? note.userEditedFields : []);
+    const humanDecision = aiHumanDecision(note);
+    const generatedTitle = text(input.title, 240).trim();
+    const generatedSubject = text(input.subject, 120).trim();
+    const title = userFields.has('title') || !generatedTitle ? note.title : generatedTitle;
+    const subject = humanDecision || !generatedSubject ? note.subject : generatedSubject;
+    const reviewStatus = humanDecision ? aiReviewStatus(note) : subject === '默认文件夹' ? 'pending' : 'auto_applied';
+    const updated = {
+      ...note,
+      title,
+      subject,
+      knowledgePath: humanDecision
+        ? uniqueStrings(note.knowledgePath).slice(0, 3)
+        : [subject, ...uniqueStrings(note.knowledgePath).filter((item) => item !== note.subject && item !== subject)].slice(0, 3),
+      organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
+      classificationSource: humanDecision ? note.classificationSource || 'manual' : 'ai',
+      reviewStatus,
+      pendingAiOrganization: true,
+      aiNaming: {
+        provider: text(input.provider, 120),
+        model: text(input.model, 160),
+        configurationHash: text(input.configurationHash, 128),
+        workflowHash: text(input.workflowHash, 128),
+        completedAt: timestamp,
+      },
+      updatedAt: timestamp,
+    };
+    entry.day.autoNotes[entry.index] = updated;
+    snapshot.days[entry.date] = entry.day;
+    snapshot.cards = snapshot.cards.map((card) => card.noteUid !== noteUid ? card : {
+      ...card,
+      subject: updated.subject,
+      knowledgePath: updated.knowledgePath,
+      sourceTitle: updated.title,
+      updatedAt: timestamp,
+    });
+    return { touchedDates: [entry.date] };
+  });
+  const updated = findNote(result.snapshot, noteUid)?.note;
+  if (updated) await updateMirroredCloudNote(env, updated);
+  return result.snapshot;
+}
+
+export async function applyAiNoteEnrichment(env, noteUid, input = {}) {
+  const timestamp = new Date().toISOString();
+  const result = await mutateLearning(env, {}, (snapshot) => {
+    const entry = findNote(snapshot, noteUid);
+    if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
+    const note = entry.note;
+    const userFields = new Set(Array.isArray(note.userEditedFields) ? note.userEditedFields : []);
+    const humanDecision = aiHumanDecision(note);
+    const ignored = aiReviewStatus(note) === 'ignored';
+    const subjectCandidate = text(input.subject, 120).trim();
+    const subject = humanDecision || !subjectCandidate ? note.subject : subjectCandidate;
+    const knowledgePath = humanDecision
+      ? uniqueStrings(note.knowledgePath).slice(0, 3)
+      : [subject, ...uniqueStrings(input.knowledgePath).filter((item) => item !== subject)].slice(0, 3);
+    const titleCandidate = text(input.title, 240).trim();
+    const title = input.preserveTitle === true || userFields.has('title') || !titleCandidate ? note.title : titleCandidate;
+    const tags = userFields.has('tags') ? uniqueStrings(note.tags) : uniqueStrings(input.tags);
+    const noteType = userFields.has('noteType') ? note.noteType : text(input.noteType, 40) || note.noteType || 'note';
+    const wrongReason = humanDecision && note.wrongReasonSource === 'manual' ? note.wrongReason : text(input.wrongReason, 500);
+    const reviewStatus = humanDecision ? aiReviewStatus(note) : subject === '默认文件夹' ? 'pending' : 'auto_applied';
+    const updated = {
+      ...note,
+      title,
+      subject,
+      knowledgePath,
+      tags,
+      noteType,
+      questionType: humanDecision ? note.questionType : text(input.questionType, 60),
+      wrongReason,
+      wrongReasonSource: humanDecision && note.wrongReasonSource === 'manual'
+        ? 'manual'
+        : wrongReason ? text(input.wrongReasonSource, 40) || 'ai_inferred' : 'none',
+      wrongReasonConfidence: humanDecision && note.wrongReasonSource === 'manual'
+        ? null
+        : wrongReason && Number.isFinite(Number(input.wrongReasonConfidence))
+          ? Math.max(0, Math.min(1, Number(input.wrongReasonConfidence))) : wrongReason ? 0.55 : null,
+      organizationStatus: ignored ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
+      classificationSource: humanDecision ? note.classificationSource || 'manual' : 'ai',
+      reviewStatus,
+      goodQuestion: userFields.has('goodQuestion') ? note.goodQuestion : input.goodQuestion === true,
+      items: Array.isArray(input.items) ? input.items.slice(0, 24) : [],
+      confidence: Number.isFinite(Number(input.confidence)) ? Math.max(0, Math.min(1, Number(input.confidence))) : 0,
+      pendingAiOrganization: false,
+      facets: normalizeFacets(note.facets, {
+        ...note,
+        tags,
+        noteType,
+        goodQuestion: input.goodQuestion === true,
+      }),
+      aiAnalysis: {
+        taskId: text(input.taskId, 120),
+        provider: text(input.provider, 120),
+        model: text(input.model, 160),
+        reason: text(input.reason, 1000),
+        summary: text(input.summary, 2000),
+        configurationHash: text(input.configurationHash, 128),
+        workflowHash: text(input.workflowHash, 128),
+        completedAt: timestamp,
+      },
+      updatedAt: timestamp,
+    };
+
+    const preservedCards = snapshot.cards.filter((card) => card.noteUid !== noteUid || card.userEdited === true || !String(card.sourceKey || '').startsWith('ai:'));
+    const generatedCards = ignored ? [] : (Array.isArray(input.cards) ? input.cards : [])
+      .map((card, index) => aiCardRecord(updated, card, index, timestamp))
+      .filter((card) => card.front.length >= 4 && card.back.length >= 6 && card.front !== card.back);
+    const cardIds = [
+      ...preservedCards.filter((card) => card.noteUid === noteUid).map((card) => card.id),
+      ...generatedCards.map((card) => card.id),
+    ];
+    updated.cardIds = [...new Set(cardIds)];
+    entry.day.autoNotes[entry.index] = updated;
+    snapshot.days[entry.date] = entry.day;
+    snapshot.cards = [...preservedCards, ...generatedCards];
+    return { touchedDates: [entry.date] };
+  });
+  const updated = findNote(result.snapshot, noteUid)?.note;
+  if (updated) await updateMirroredCloudNote(env, updated);
+  return result.snapshot;
+}
+
 function addDays(date, days) {
   return shanghaiDate(new Date(date.getTime() + days * 86400000));
 }
