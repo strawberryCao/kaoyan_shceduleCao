@@ -1,2 +1,2 @@
 Trigger public/LAN parity V2 validation.
-Attempt: latest-base-5
+Attempt: stable-runtime-v11-6
