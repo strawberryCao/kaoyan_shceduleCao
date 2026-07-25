@@ -5,6 +5,7 @@ on:
     branches: [fix/learning-detail-title-latex]
     paths:
       - '.github/patches/apply-mobile-local-first-analysis.py'
+      - '.github/patches/update-mobile-local-first-tests.py'
       - '.github/workflows/apply-mobile-local-first-analysis.yml'
       - 'outputs/kaoyan-schedule-app/src/utils/captureUploadQueue.ts'
       - 'outputs/kaoyan-schedule-app/cloudflare/note-analysis-job.js'
@@ -35,8 +36,9 @@ jobs:
         run: |
           set -o pipefail
           {
-            python3 -m py_compile .github/patches/apply-mobile-local-first-analysis.py
+            python3 -m py_compile .github/patches/apply-mobile-local-first-analysis.py .github/patches/update-mobile-local-first-tests.py
             python3 .github/patches/apply-mobile-local-first-analysis.py
+            python3 .github/patches/update-mobile-local-first-tests.py
             node --check outputs/kaoyan-schedule-app/cloudflare/learning.js
             node --check outputs/kaoyan-schedule-app/cloudflare/rename-job.js
             node --check outputs/kaoyan-schedule-app/cloudflare/note-analysis-job.js
@@ -57,11 +59,13 @@ jobs:
         run: |
           set -euo pipefail
           rm -f .github/patches/apply-mobile-local-first-analysis.py
+          rm -f .github/patches/update-mobile-local-first-tests.py
           rm -f .github/workflows/apply-mobile-local-first-analysis.yml
           git config user.name 'Kaoyan Local First Fix'
           git config user.email 'local-first-fix@local.invalid'
           git add -A -- \
             .github/patches/apply-mobile-local-first-analysis.py \
+            .github/patches/update-mobile-local-first-tests.py \
             .github/workflows/apply-mobile-local-first-analysis.yml \
             outputs/kaoyan-schedule-app/src/utils/captureUploadQueue.ts \
             outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
@@ -72,6 +76,8 @@ jobs:
             outputs/kaoyan-schedule-app/cloudflare/note-analysis-job.js \
             outputs/kaoyan-schedule-app/cloudflare/rename-job.js \
             outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs \
+            outputs/kaoyan-schedule-app/scripts/cloud-capture-fast-pipeline.test.cjs \
+            outputs/kaoyan-schedule-app/scripts/public-lan-parity.test.cjs \
             outputs/kaoyan-schedule-app/scripts/mobile-local-first-analysis.test.cjs
           git commit -m 'feat: make mobile capture local-first with full LAN analysis'
       - name: Install dependencies
