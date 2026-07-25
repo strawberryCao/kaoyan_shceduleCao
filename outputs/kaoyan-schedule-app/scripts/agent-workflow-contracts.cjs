@@ -5,7 +5,7 @@ const NOTE_ANALYSIS_INSTRUCTIONS = Object.freeze([
   '目标不是机械匹配关键词，而是判断图片实际知识内容、题目类型、用户为何记录它，以及它是否值得记忆或重做。',
   '“记”“记住”“背”“要背”等是很强的记忆意图提示，但没有这些词时，也要依据定义、公式、结论、易混点和用户语义判断。',
   '分类规则：',
-  '1. subject 只能从以下标准考研一级科目选择：{supportedSubjects}。禁止创建、提议或输出其他一级科目。',
+  '1. subject 只能从 existingTaxonomy 中已有的标准考研一级科目选择：{supportedSubjects}。禁止创建、提议或输出其他一级科目。',
   '1.1 新领域或更细主题只能写入 knowledgePoint、tags 或 items；无法可靠归类时 subject 必须为“{fallbackSubject}”。',
   '1.2 只要图片或备注能可靠识别为某一标准科目，就不得因为信心不足退回默认分类。',
   '2. subject 与 knowledgePoint 是整张笔记的主分类；多题拆分后的图片通常只含一道题或一个知识单元。',
