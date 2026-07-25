@@ -1,2 +1,2 @@
 Trigger public/LAN parity V2 validation.
-Attempt: workflow-fixture-4
+Attempt: latest-base-5
