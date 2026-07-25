@@ -27,24 +27,31 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.sha }}
           fetch-depth: 0
-      - name: Apply Windows PowerShell 5.1-safe invocation
+      - name: Normalize scripts for Windows PowerShell 5.1
         if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/public-lan-parity-clean'
         shell: powershell
         run: |
-          $path = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
-          $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+          $runtimePath = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
+          $installerPath = 'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1'
+          $runtime = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
           $old = '  & $nodeCommand.Source $mergeScript --config $ConfigPath | Out-Null'
           $new = "  `$nodeExecutable = [string]`$nodeCommand.Source`r`n  & `$nodeExecutable `$mergeScript --config `$ConfigPath | Out-Null"
-          if ($content.Contains($old)) {
-            $content = $content.Replace($old, $new)
-            [System.IO.File]::WriteAllText((Resolve-Path $path), $content, [System.Text.UTF8Encoding]::new($true))
-            git config user.name 'Kaoyan Windows Compatibility'
-            git config user.email 'windows-compat@local.invalid'
-            git add -- $path
-            git commit -m 'fix: use PowerShell 5.1-safe node invocation'
-            git push origin HEAD:fix/public-lan-parity-clean
-          } elseif (-not $content.Contains('$nodeExecutable = [string]$nodeCommand.Source')) {
+          if ($runtime.Contains($old)) {
+            $runtime = $runtime.Replace($old, $new)
+          } elseif (-not $runtime.Contains('$nodeExecutable = [string]$nodeCommand.Source')) {
             throw 'Expected node invocation anchor was not found.'
+          }
+          $installer = Get-Content -LiteralPath $installerPath -Raw -Encoding UTF8
+          $utf8Bom = [System.Text.UTF8Encoding]::new($true)
+          [System.IO.File]::WriteAllText((Resolve-Path $runtimePath), $runtime, $utf8Bom)
+          [System.IO.File]::WriteAllText((Resolve-Path $installerPath), $installer, $utf8Bom)
+          git config user.name 'Kaoyan Windows Compatibility'
+          git config user.email 'windows-compat@local.invalid'
+          git add -- $runtimePath $installerPath
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m 'fix: preserve Windows PowerShell 5.1 encoding'
+            git push origin HEAD:fix/public-lan-parity-clean
           }
       - name: Parse scripts with Windows PowerShell 5.1
         shell: powershell
