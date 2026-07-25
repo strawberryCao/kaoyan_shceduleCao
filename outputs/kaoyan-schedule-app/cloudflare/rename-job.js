@@ -3,6 +3,7 @@ import { getTaskSettings } from './ai-config.js';
 import { HttpError } from './http.js';
 import { assertRepoPath, readFile } from './github-store.js';
 import { findNote, getLearningSnapshot, patchNote } from './learning.js';
+import { updateMirroredCloudNote } from './source-mirror.js';
 
 const ASSET_ROOT = 'data/assets/';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -11,11 +12,15 @@ const MIME_BY_EXTENSION = {
 };
 const ALLOWED_SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治', '默认文件夹'];
 
-function isAiMultiQuestionNote(note) {
+function isRenameEligibleNote(note) {
+  const sourceType = String(note?.sourceType || '');
+  const filePath = String(note?.filePath || '').replaceAll('\\', '/');
   return Boolean(note) && (
-    note.sourceType === 'ai-multi-question'
+    sourceType === 'ai-multi-question'
+    || sourceType === 'single-capture'
     || /^multi_[A-Za-z0-9_-]+/i.test(String(note.noteUid || ''))
     || (Array.isArray(note.tags) && note.tags.includes('AI多题拆分'))
+    || /^github:\/\/data\/assets\/.+\.(?:jpe?g|png|webp|gif|avif)$/i.test(filePath)
   );
 }
 
@@ -53,7 +58,15 @@ function namingRules(settings) {
     }));
 }
 
-function namingPrompt(settings, remark, repairReason = '') {
+function fillTemplate(value, variables) {
+  return String(value || '').replace(/\{([A-Za-z0-9_]+)\}/g, (_match, key) => String(variables[key] ?? ''));
+}
+
+function namingPrompt(settings, remark, repairReason = '', captureType = '手机单题拍照') {
+  const workflow = settings.workflow;
+  if (!workflow?.prompt?.instructions?.length || !workflow.prompt.outputFormat) {
+    throw new HttpError(503, '局域网没有发布拍照命名 Prompt 合同。', 'LOCAL_AGENT_WORKFLOW_MISSING');
+  }
   const options = settings.options || {};
   const titleMinLength = Math.max(4, Math.min(40, Number(options.titleMinLength) || 8));
   const titleMaxLength = Math.max(titleMinLength, Math.min(80, Number(options.titleMaxLength) || 22));
@@ -64,27 +77,26 @@ function namingPrompt(settings, remark, repairReason = '') {
     source_wording: '优先贴近原图中的准确措辞',
   }[options.titleStyle] || '优先使用知识点或核心概念名称';
   const rules = namingRules(settings);
+  const variables = {
+    allowedSubjects: ALLOWED_SUBJECTS.join('、'),
+    subjectSelectionRule: options.preferSpecificSubject === false
+      ? '按图片内容选择科目；确实不清晰或跨科时可选择“默认文件夹”。'
+      : '只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。',
+    titleMinLength,
+    titleMaxLength,
+    titleStyleText,
+    genericTitleRule: options.rejectGenericTitle === false
+      ? '没有规则匹配时，ruleId、ruleValue、ruleEvidence 输出空字符串；title 应尽量具体。'
+      : '没有规则匹配时，ruleId、ruleValue、ruleEvidence 输出空字符串；禁止使用“待识别、无法识别、未知内容、截图、图片笔记”等空泛标题。',
+    captureType,
+    remark: effectiveRemark || '无',
+    namingRules: rules.length ? JSON.stringify(rules) : '无',
+  };
   return [
-    '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
-    '要求：',
-    `1. 识别所属科目，只能从：${ALLOWED_SUBJECTS.join('、')} 中选择。`,
-    options.preferSpecificSubject === false
-      ? '1.1 按图片内容选择科目；确实不清晰或跨科时可选择“默认文件夹”。'
-      : '1.1 只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。不要因为不完全确定就退回默认。',
-    `2. title 目标长度为 ${titleMinLength} 到 ${titleMaxLength} 个字符，${titleStyleText}。`,
-    '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
-    '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
-    '5. 先逐条检查“字段命名规则”。只有图片中能直接看到规则要求的标签及对应值时才算匹配，严禁用相似编号、日期或其他字段猜测。',
-    '6. 如果匹配规则：ruleId 填规则 id，ruleValue 填原图中提取到的字段值，ruleEvidence 简述标签和值的位置；title 仍给出普通内容标题。程序会根据模板生成最终标题。',
-    options.rejectGenericTitle === false
-      ? '7. 如果没有规则匹配：ruleId、ruleValue、ruleEvidence 都输出空字符串；title 应尽量给出具体可见主题。'
-      : '7. 如果没有规则匹配：ruleId、ruleValue、ruleEvidence 都输出空字符串。禁止输出“待识别”“无法识别”“未知内容”“截图”“图片笔记”作为 title；应给出图片中最具体的可见主题。',
-    '8. 只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据","ruleId":"匹配规则id或空字符串","ruleValue":"提取值或空字符串","ruleEvidence":"原图证据或空字符串"}',
-    '保存类型：AI 多题拆分后的单题图片',
-    `用户备注：${effectiveRemark || '无'}`,
-    `字段命名规则：${rules.length ? JSON.stringify(rules) : '无'}`,
-    settings.customInstructions ? `局域网配置中心附加规则：${settings.customInstructions}` : '',
-    repairReason ? `上一版结果未通过程序校验：${repairReason}。必须修正后重新输出。` : '',
+    ...workflow.prompt.instructions.map((line) => fillTemplate(line, variables)).filter(Boolean),
+    fillTemplate(workflow.prompt.outputFormat, variables),
+    settings.customInstructions ? '局域网配置中心附加规则：' + settings.customInstructions : '',
+    repairReason ? '上一版结果未通过程序校验：' + repairReason + '。必须修正后重新输出。' : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -105,12 +117,12 @@ function titleProblem(title, settings) {
   return '';
 }
 
-async function generateTitle(env, image, settings, remark, repairReason = '') {
+async function generateTitle(env, image, settings, remark, repairReason = '', captureType = '手机单题拍照') {
   const response = await runLocalAgentTask(env, 'note_naming', {
     messages: [{
       role: 'user',
       content: [
-        { type: 'text', text: namingPrompt(settings, remark, repairReason) },
+        { type: 'text', text: namingPrompt(settings, remark, repairReason, captureType) },
         { type: 'image_url', image_url: { url: image } },
       ],
     }],
@@ -133,6 +145,7 @@ async function generateTitle(env, image, settings, remark, repairReason = '') {
     : aiTitle;
   return {
     title,
+    subject,
     problem: titleProblem(title, settings),
     provider: response.provider,
     model: response.model,
@@ -145,7 +158,7 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   const initialSnapshot = await getLearningSnapshot(env);
   const initialEntry = findNote(initialSnapshot, noteUid);
   if (!initialEntry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
-  if (!isAiMultiQuestionNote(initialEntry.note)) throw new HttpError(403, '只有 AI 多题拆分生成的笔记可以重新命名。', 'AI_RENAME_NOT_ALLOWED');
+  if (!isRenameEligibleNote(initialEntry.note)) throw new HttpError(403, '这条记录没有可供局域网命名 Agent 处理的云端原图。', 'AI_RENAME_NOT_ALLOWED');
 
   const settings = await getTaskSettings(env, 'note_naming');
   const normalized = String(initialEntry.note.filePath || '').trim().replaceAll('\\', '/');
@@ -157,8 +170,11 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   const beforeRequest = findNote(await getLearningSnapshot(env), noteUid)?.note || initialEntry.note;
   const remark = String(beforeRequest.remark || '').trim().slice(0, 4000);
 
-  let generated = await generateTitle(env, image, settings, remark);
-  if (generated.problem) generated = await generateTitle(env, image, settings, remark, generated.problem);
+  const captureType = isRenameEligibleNote(initialEntry.note) && initialEntry.note.sourceType === 'ai-multi-question'
+    ? 'AI 多题拆分后的单题图片'
+    : '手机单题拍照';
+  let generated = await generateTitle(env, image, settings, remark, '', captureType);
+  if (generated.problem) generated = await generateTitle(env, image, settings, remark, generated.problem, captureType);
   if (generated.problem) throw new HttpError(502, `AI 标题未通过校验：${generated.problem}`, 'AI_RENAME_INVALID');
 
   const latestSnapshot = await getLearningSnapshot(env);
@@ -168,7 +184,13 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   if (latestEntry.note.title !== baselineTitle && (latestEntry.note.userEditedFields || []).includes('title')) {
     return { applied: false, reason: '你已经手动修改标题，AI 结果未覆盖', title: latestEntry.note.title, snapshot: latestSnapshot };
   }
-  const snapshot = await patchNote(env, noteUid, { patch: { title: generated.title } });
+  const snapshot = await patchNote(env, noteUid, { patch: {
+    title: generated.title,
+    subject: generated.subject,
+    knowledgePath: [generated.subject],
+  } });
+  const updatedNote = findNote(snapshot, noteUid)?.note;
+  if (updatedNote) await updateMirroredCloudNote(env, updatedNote);
   return {
     applied: true,
     title: generated.title,
@@ -181,6 +203,7 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
 }
 
 export const renameWorkflowInternals = Object.freeze({
+  isRenameEligibleNote,
   namingPrompt,
   titleProblem,
 });
