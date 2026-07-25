@@ -93,7 +93,7 @@ function buildPrompt(contextPayload, options = {}) {
 pattern = re.compile(r"function buildPrompt\(contextPayload, options = \{\}\) \{[\s\S]*?\n\}\n\nfunction normalizeIntent")
 if len(pattern.findall(analyzer)) != 1:
     raise RuntimeError('shared buildPrompt boundary was not unique')
-analyzer = pattern.sub(new_build_prompt + '\n\nfunction normalizeIntent', analyzer, count=1)
+analyzer = pattern.sub(lambda _match: new_build_prompt + '\n\nfunction normalizeIntent', analyzer, count=1)
 write('scripts/note-ai-analyzer.cjs', analyzer)
 
 test_file = read('scripts/mobile-local-first-analysis.test.cjs')
