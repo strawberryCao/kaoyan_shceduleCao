@@ -7,12 +7,14 @@ const scriptsRoot = path.resolve(__dirname, '..');
 const installer = fs.readFileSync(path.join(scriptsRoot, 'install-note-folder-sync.ps1'), 'utf8');
 const runtime = fs.readFileSync(path.join(scriptsRoot, 'windows-note-folder-sync.ps1'), 'utf8');
 
-test('v11 installer deploys the source-complete synchronization runtime', () => {
-  assert.match(installer, /20260725-public-lan-parity-v11/);
-  assert.match(installer, /version = 11/);
+test('v12 installer deploys the source-complete synchronization runtime', () => {
+  assert.match(installer, /20260726-mobile-local-first-v12/);
+  assert.match(installer, /version = 12/);
   assert.match(installer, /optionalGitPathsAreFiltered = \$true/);
   assert.match(installer, /learningDataDirection = 'bidirectional-structured-merge'/);
   assert.match(installer, /agent-workflow-contracts\.cjs/);
+  assert.match(installer, /note-ai-analyzer\.cjs/);
+  assert.doesNotMatch(installer, /20260725-public-lan-parity-v11/);
   assert.doesNotMatch(installer, /enable structured learning-data merge/);
 });
 
