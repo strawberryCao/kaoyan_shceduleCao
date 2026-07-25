@@ -82,7 +82,7 @@ jobs:
               echo '## 语义变换生成结果校验失败'
               echo
               echo '```text'
-              tail -n 120 "$RUNNER_TEMP/validation.log"
+              tail -n 160 "$RUNNER_TEMP/validation.log"
               echo '```'
             } > "$RUNNER_TEMP/validation-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/validation-comment.md"
@@ -100,10 +100,30 @@ jobs:
         shell: bash
         env:
           CAOBIJI_GITHUB_TOKEN: ''
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set +e
           mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
-          (( ${#test_files[@]} > 0 ))
-          node --test "${test_files[@]}"
+          if (( ${#test_files[@]} == 0 )); then
+            echo 'No automated tests found.' > "$RUNNER_TEMP/full-suite.log"
+            status=2
+          else
+            node --test "${test_files[@]}" > "$RUNNER_TEMP/full-suite.log" 2>&1
+            status=$?
+          fi
+          cat "$RUNNER_TEMP/full-suite.log"
+          if (( status != 0 )) && [[ -n "${PR_NUMBER:-}" ]]; then
+            {
+              echo '## 仓库全量测试失败'
+              echo
+              echo '```text'
+              tail -n 220 "$RUNNER_TEMP/full-suite.log"
+              echo '```'
+            } > "$RUNNER_TEMP/full-suite-comment.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/full-suite-comment.md"
+          fi
+          exit "$status"
 
       - name: Build application
         working-directory: outputs/kaoyan-schedule-app
@@ -121,7 +141,7 @@ jobs:
               echo '## 多资料数据层构建失败'
               echo
               echo '```text'
-              tail -n 160 "$RUNNER_TEMP/build.log"
+              tail -n 200 "$RUNNER_TEMP/build.log"
               echo '```'
             } > "$RUNNER_TEMP/build-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/build-comment.md"
