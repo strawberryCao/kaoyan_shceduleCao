@@ -106,7 +106,7 @@ Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContin
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260725-public-lan-parity-v11'
+$version = '20260726-mobile-local-first-v12'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
@@ -132,7 +132,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 11
+  version = 12
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -215,7 +215,7 @@ if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Pa
 Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
 
 Write-Host ''
-Write-Host '全局同步 v11 已启用。' -ForegroundColor Green
+Write-Host '全局同步 v12 已启用。' -ForegroundColor Green
 Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)
