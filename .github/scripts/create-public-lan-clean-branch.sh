@@ -3,10 +3,12 @@ set -Eeuo pipefail
 
 repo_branch='fix/learning-detail-title-latex'
 clean_branch='fix/public-lan-parity-clean'
+business_branch='review/public-lan-parity-business'
 business_sha='7bf7971049aa946c485d1ecfb4e51356116fba8f'
 
 # The business SHA has already passed 193/193 tests, production build and Worker dry-run.
-git fetch origin "$repo_branch" "$business_sha"
+git fetch origin "$repo_branch" "$business_branch"
+git cat-file -e "$business_sha^{commit}"
 git checkout -B "$clean_branch" "$business_sha"
 git reset --soft "origin/$repo_branch"
 
