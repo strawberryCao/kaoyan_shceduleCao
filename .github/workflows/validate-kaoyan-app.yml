@@ -41,6 +41,16 @@ jobs:
       - name: Apply and validate public LAN parity
         if: (github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane') || (github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane')
         run: bash .github/scripts/run-public-lan-parity-v2.sh
+      - name: Upload public LAN parity diagnostics
+        if: always() && ((github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane') || (github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-lan-parity-v2-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 3
+          path: |
+            .github/validation/public-lan-parity-v2-status.json
+            /tmp/public-lan-parity-v2.log
       - name: Validate PowerShell syntax
         if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         shell: pwsh
