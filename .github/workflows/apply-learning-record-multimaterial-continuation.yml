@@ -46,7 +46,7 @@ jobs:
           NODE_PATH: ${{ github.workspace }}/outputs/kaoyan-schedule-app/node_modules
         run: node scripts/apply-multimaterial-continuation.cjs
 
-      - name: Normalize generated whitespace
+      - name: Normalize generated source compatibility
         shell: python
         run: |
           from pathlib import Path
@@ -60,6 +60,8 @@ jobs:
           ]
           for path in paths:
               text = path.read_text(encoding='utf-8')
+              if path.name == 'learningData.ts':
+                  text = text.replace(".replaceAll('\\\\', '/')", ".replace(/\\\\/g, '/')")
               normalized = '\n'.join(line.rstrip(' \t') for line in text.split('\n'))
               path.write_text(normalized, encoding='utf-8')
 
