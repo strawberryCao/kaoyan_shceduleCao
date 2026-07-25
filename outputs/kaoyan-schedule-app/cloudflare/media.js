@@ -8,6 +8,7 @@ import {
 } from './github-store.js';
 import { readReceipt, writeReceipt } from './storage.js';
 import { mirrorNewCloudImage, mirroredCloudImagePaths } from './source-mirror.js';
+import { enqueueRenameJob, processBackgroundJob } from './background-jobs.js';
 
 const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -177,7 +178,7 @@ export async function saveNote(env, payload, ctx) {
 
   const timestamp = new Date().toISOString();
   const fileName = `${noteUid}.${image.extension}`;
-  const note = createSavedImageNote({ ...payload, noteUid }, { repoPath }, timestamp);
+  const note = createSavedImageNote({ ...payload, sourceType: payload.sourceType || 'single-capture', noteUid }, { repoPath }, timestamp);
   const learningResult = await insertSavedImageNote(env, note);
   const sourceMirror = mirroredCloudImagePaths(noteUid, image.extension);
   const response = {
@@ -195,8 +196,8 @@ export async function saveNote(env, payload, ctx) {
     },
     learningData: learningResult.snapshot,
     learningSyncError: null,
-    aiStatus: note.sourceType === 'ai-multi-question' ? 'pending' : 'unavailable',
-    aiAvailable: note.sourceType === 'ai-multi-question',
+    aiStatus: 'pending',
+    aiAvailable: true,
     provisional: false,
     idempotentReplay: learningResult.outcome.replayed === true,
   };
@@ -204,7 +205,15 @@ export async function saveNote(env, payload, ctx) {
   const backgroundWork = Promise.allSettled([
     mirrorNewCloudImage(env, image, note, payload, timestamp),
     saveReceipt(env, 'save-note', noteUid, requestHash, { ...response, learningData: undefined }),
-  ]).then((result) => reportBackgroundFailure('cloud_note_post_save_failed', noteUid, result));
+  ]).then(async (result) => {
+    reportBackgroundFailure('cloud_note_post_save_failed', noteUid, result);
+    try {
+      const queued = await enqueueRenameJob(env, noteUid);
+      await processBackgroundJob(env, queued.job.id);
+    } catch (error) {
+      console.error(JSON.stringify({ level: 'error', event: 'cloud_note_naming_failed', noteUid, error: error instanceof Error ? error.message : String(error) }));
+    }
+  });
   if (ctx?.waitUntil) ctx.waitUntil(backgroundWork);
   else await backgroundWork;
 

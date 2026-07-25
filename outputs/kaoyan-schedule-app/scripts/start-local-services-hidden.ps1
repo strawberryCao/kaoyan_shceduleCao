@@ -11,6 +11,33 @@ function Test-ListeningPort([int]$Port) {
   }
 }
 
+function Refresh-SyncRuntime {
+  $syncRoot = if ($env:KAOYAN_SYNC_ROOT) { $env:KAOYAN_SYNC_ROOT } else { 'D:\kaoyandata\NoteFolderSync' }
+  $configPath = Join-Path $syncRoot 'config.json'
+  if (-not (Test-Path -LiteralPath $configPath)) { return }
+  foreach ($name in @(
+    'windows-note-folder-sync.ps1',
+    'windows-assistant-config-sync.ps1',
+    'merge-learning-data.cjs',
+    'export-agent-runtime.cjs',
+    'agent-workflow-contracts.cjs',
+    'assistant-config-watch.cjs',
+    'ai-router.cjs',
+    'qwen-config.cjs',
+    'note-ai-analyzer.cjs',
+    'canvas-ai-organizer.cjs',
+    'review-github-sync.cjs',
+    'note-server.cjs'
+  )) {
+    $source = Join-Path $projectRoot (Join-Path 'scripts' $name)
+    if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $syncRoot $name) -Force }
+  }
+  $runner = Join-Path $syncRoot 'run-global-sync.ps1'
+  if (Test-Path -LiteralPath $runner) {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-ConfigPath', $configPath) -WindowStyle Hidden
+  }
+}
+
 function Start-HiddenNodeProcess([string]$ScriptPath) {
   Start-Process `
     -FilePath $nodeCommand.Source `
@@ -18,6 +45,8 @@ function Start-HiddenNodeProcess([string]$ScriptPath) {
     -WorkingDirectory $projectRoot `
     -WindowStyle Hidden
 }
+
+Refresh-SyncRuntime
 
 if (-not (Test-ListeningPort 5174)) {
   Start-HiddenNodeProcess (Join-Path $projectRoot 'scripts\note-server.cjs')

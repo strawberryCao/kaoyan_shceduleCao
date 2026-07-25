@@ -24,7 +24,6 @@ import {
   fileToDataUrl,
   IS_CLOUD_RUNTIME,
   NOTE_SERVER_URL,
-  renameLearningNoteWithAi,
   saveNoteImage,
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
@@ -74,6 +73,7 @@ export function NoteDropApp() {
   const dialogRef = useRef<HTMLFormElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const dragDepthRef = useRef(0);
+  const detectionRunRef = useRef(0);
   const [isMobileCapture, setIsMobileCapture] = useState(() => (
     IS_CLOUD_RUNTIME && typeof window.matchMedia === 'function' && window.matchMedia(mobileMediaQuery).matches
   ));
@@ -295,7 +295,7 @@ export function NoteDropApp() {
       setDialogError('');
       setSaved(true);
       if (IS_CLOUD_RUNTIME) {
-        setStatus(result.learningData ? '已保存，学习中心已更新' : '已保存，学习中心正在同步');
+        setStatus(result.learningData ? '图片已保存；AI 正在后台按局域网规则命名' : '图片已保存；学习中心与 AI 命名正在后台同步');
         if (isMobileCapture) setMobileStep('success');
       } else {
         const aiMessage = result.aiStatus === 'complete'
@@ -329,6 +329,27 @@ export function NoteDropApp() {
     }
   };
 
+  const buildDetectedBatch = async (src: string, sourceUid: string) => {
+    const runId = ++detectionRunRef.current;
+    setMobileStep('detecting');
+    setBatchProgress('2/4 已上传，正在按局域网控制面选择模型…');
+    const slowTimer = window.setTimeout(() => {
+      if (detectionRunRef.current === runId) setBatchProgress('2/4 AI 仍在识别复杂页面，结果会在当前页返回…');
+    }, 15_000);
+    try {
+      const detection = await detectQuestionRegions(src);
+      if (detectionRunRef.current !== runId) return;
+      setBatchProgress(('3/4 ' + (detection.provider || '') + ' ' + (detection.model || '') + ' 已识别 ' + detection.regions.length + ' 道题，正在生成裁剪结果…').replace(/\s+/g, ' ').trim());
+      const images = await cropManyImages(src, detection.regions);
+      if (detectionRunRef.current !== runId) return;
+      setBatchImages(images.map((imageSrc) => ({ src: imageSrc, noteUid: createNoteUid(), enabled: true })));
+      setBatchProgress('4/4 裁剪完成，请检查每一道题。');
+      setMobileStep('batch');
+    } finally {
+      window.clearTimeout(slowTimer);
+    }
+  };
+
   const confirmMultiPreCrop = async (crop: NormalizedCrop) => {
     if (!sourceImage || saving) return;
     try {
@@ -336,17 +357,12 @@ export function NoteDropApp() {
       setSaved(false);
       setDialogError('');
       setMobileStep('detecting');
-      setBatchProgress('正在预裁剪整页…');
+      setBatchProgress('1/4 正在压缩并上传整页图片…');
       const src = await cropImageDataUrl(sourceImage.src, crop, 2200);
       setSourceImage({ src, noteUid: sourceImage.noteUid });
-      setBatchProgress('AI 正在识别题目边界…');
-      const detection = await detectQuestionRegions(src);
-      setBatchProgress(`已识别 ${detection.regions.length} 道题，正在裁剪…`);
-      const images = await cropManyImages(src, detection.regions);
-      setBatchImages(images.map((imageSrc) => ({ imageSrc, src: imageSrc, noteUid: createNoteUid(), enabled: true })).map(({ imageSrc: _imageSrc, ...item }) => item));
-      setBatchProgress('');
-      setMobileStep('batch');
+      await buildDetectedBatch(src, sourceImage.noteUid);
     } catch (error) {
+      if (detectionRunRef.current === 0) return;
       setDialogError(error instanceof Error ? error.message : 'AI 多题识别失败，请调整范围后重试。');
       setBatchProgress('');
       setMobileStep('mode');
@@ -359,16 +375,11 @@ export function NoteDropApp() {
     if (!sourceImage || saving) return;
     try {
       setSaving(true);
-      setMobileStep('detecting');
       setDialogError('');
-      setBatchProgress('AI 正在识别题目边界…');
-      const detection = await detectQuestionRegions(sourceImage.src);
-      setBatchProgress(`已识别 ${detection.regions.length} 道题，正在裁剪…`);
-      const images = await cropManyImages(sourceImage.src, detection.regions);
-      setBatchImages(images.map((src) => ({ src, noteUid: createNoteUid(), enabled: true })));
-      setMobileStep('batch');
-      setBatchProgress('');
+      setBatchProgress('1/4 正在压缩并上传整页图片…');
+      await buildDetectedBatch(sourceImage.src, sourceImage.noteUid);
     } catch (error) {
+      if (detectionRunRef.current === 0) return;
       setDialogError(error instanceof Error ? error.message : 'AI 多题识别失败，请改用单题模式。');
       setMobileStep('mode');
       setBatchProgress('');
@@ -402,38 +413,32 @@ export function NoteDropApp() {
       setSaving(true);
       setDialogError('');
       let latestSnapshot = null;
-      let renameFailures = 0;
       for (let index = 0; index < selected.length; index += 1) {
         const item = selected[index];
-        setBatchProgress(`正在保存 ${index + 1}/${selected.length}…`);
+        setBatchProgress('正在保存 ' + (index + 1) + '/' + selected.length + '；命名会在后台按局域网规则完成…');
         const result = await saveImageReliably({
           imageDataUrl: item.src,
           kind: 'single',
           noteUid: item.noteUid,
-          subject: '普通笔记',
+          subject: '默认文件夹',
           remark: '',
+          sourceType: 'ai-multi-question',
+          sourceBatchId: sourceImage?.noteUid || '',
+          sourceSplitIndex: index + 1,
+          tags: ['AI多题拆分'],
         }, setBatchProgress);
         if (result.learningData) {
           latestSnapshot = result.learningData;
           saveLearningDataCache(result.learningData);
         }
-        try {
-          setBatchProgress(`正在自动命名 ${index + 1}/${selected.length}…`);
-          latestSnapshot = await renameLearningNoteWithAi(item.noteUid);
-          saveLearningDataCache(latestSnapshot);
-        } catch {
-          renameFailures += 1;
-        }
       }
       if (latestSnapshot) saveLearningDataCache(latestSnapshot);
       setSaved(true);
-      setStatus(renameFailures > 0
-        ? `已保存 ${selected.length} 道题，其中 ${renameFailures} 条可稍后在普通笔记中重新 AI 命名`
-        : `已保存并自动命名 ${selected.length} 道题`);
+      setStatus('已保存 ' + selected.length + ' 道题，AI 正在后台按局域网规则命名');
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {
-      setDialogError(error instanceof Error ? `批量保存失败：${error.message}` : '批量保存失败，请重试。');
+      setDialogError(error instanceof Error ? '批量保存失败：' + error.message : '批量保存失败，请重试。');
       setBatchProgress('');
     } finally {
       setSaving(false);
@@ -501,7 +506,7 @@ export function NoteDropApp() {
         <ImageCropEditor
           imageSrc={sourceImage.src}
           title="预裁剪整页题目"
-          confirmLabel={saving ? '正在加入后台…' : '后台识别并保存'}
+          confirmLabel={saving ? '正在准备…' : '开始 AI 识别'}
           onCancel={() => setMobileStep('mode')}
           onConfirm={(crop) => void confirmMultiPreCrop(crop)}
         />
@@ -527,6 +532,13 @@ export function NoteDropApp() {
         <header className="mobile-capture-header">
           {mobileStep !== 'capture' && mobileStep !== 'success' ? (
             <button type="button" onClick={() => {
+              if (mobileStep === 'detecting') {
+                detectionRunRef.current += 1;
+                setSaving(false);
+                setBatchProgress('');
+                setMobileStep('mode');
+                return;
+              }
               if (saving) return;
               if (mobileStep === 'remark') setMobileStep('crop');
               else if (mobileStep === 'batch') setMobileStep('mode');
@@ -577,7 +589,7 @@ export function NoteDropApp() {
             <button className="ai" type="button" onClick={() => setMobileStep('multi-crop')}>
               <span><Layers3 size={22} /></span>
               <strong>多题模式</strong>
-              <small>先预裁剪整页，再由 AI 后台拆题、保存和命名</small>
+              <small>先预裁剪整页；AI 在当前页识别，保存后后台命名</small>
               <em><Sparkles size={13} />AI</em>
             </button>
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
@@ -590,6 +602,9 @@ export function NoteDropApp() {
             <span><LoaderCircle size={34} /></span>
             <h1>正在拆分题目</h1>
             <p>{batchProgress || 'AI 正在寻找每一道完整题目的边界。'}</p>
+             <ol className="mobile-detecting-steps">
+               <li>上传并压缩原图</li><li>读取局域网 AI 配置</li><li>识别题目边界</li><li>生成可调整裁剪</li>
+             </ol>
           </section>
         )}
 

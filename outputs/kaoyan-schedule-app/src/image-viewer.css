@@ -256,3 +256,28 @@
     transition: none;
   }
 }
+
+/* public-lan-parity-mobile-back */
+.image-viewer__back {
+  position: absolute;
+  z-index: 7;
+  top: 18px;
+  left: 18px;
+  display: none;
+  align-items: center;
+  gap: 6px;
+}
+@media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
+  .image-viewer__back {
+    display: inline-flex;
+    top: max(10px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
+    min-height: 40px;
+    padding: 0 13px;
+    border-radius: 999px;
+  }
+  .image-viewer__close {
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+  }
+}

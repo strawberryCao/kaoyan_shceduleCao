@@ -3,20 +3,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
 
-const installerPath = path.resolve(__dirname, '..', 'install-note-folder-sync.ps1');
-const source = fs.readFileSync(installerPath, 'utf8');
+const scriptsRoot = path.resolve(__dirname, '..');
+const installer = fs.readFileSync(path.join(scriptsRoot, 'install-note-folder-sync.ps1'), 'utf8');
+const runtime = fs.readFileSync(path.join(scriptsRoot, 'windows-note-folder-sync.ps1'), 'utf8');
 
-test('v10 installer filters absent optional Git paths without losing tracked deletions', () => {
-  assert.match(source, /version = 10/);
-  assert.match(source, /optionalGitPathsAreFiltered = \$true/);
-  assert.match(source, /Test-Path -LiteralPath \(Join-Path \$ClonePath \$candidate\)/);
-  assert.match(source, /Invoke-Git @\('ls-files', '--', \$candidate\)/);
-  assert.match(source, /Invoke-Git \(@\('add', '-A', '--'\) \+ \$paths\)/);
-  assert.match(source, /'data\/cloud\/learning-data\.json'/);
+test('v11 installer deploys the source-complete synchronization runtime', () => {
+  assert.match(installer, /20260725-public-lan-parity-v11/);
+  assert.match(installer, /version = 11/);
+  assert.match(installer, /optionalGitPathsAreFiltered = \$true/);
+  assert.match(installer, /learningDataDirection = 'bidirectional-structured-merge'/);
+  assert.match(installer, /agent-workflow-contracts\.cjs/);
+  assert.doesNotMatch(installer, /enable structured learning-data merge/);
 });
 
-test('v10 installer fails closed when the runtime patch anchor changes', () => {
-  assert.match(source, /function Replace-Required/);
-  assert.match(source, /安装器无法修补运行脚本/);
-  assert.doesNotMatch(source, /New-Item[^\n]+data\\deletions/);
+test('source runtime filters absent optional Git paths and merges cloud learning data directly', () => {
+  assert.match(runtime, /Test-Path -LiteralPath \(Join-Path \$ClonePath \$candidate\)/);
+  assert.match(runtime, /Invoke-Git @\('ls-files', '--', \$candidate\)/);
+  assert.match(runtime, /Invoke-Git \(@\('add', '-A', '--'\) \+ \$paths\)/);
+  assert.match(runtime, /'data\/cloud\/learning-data\.json'/);
+  assert.match(runtime, /merge-learning-data\.cjs/);
+  assert.match(runtime, /Learning data merge failed/);
 });

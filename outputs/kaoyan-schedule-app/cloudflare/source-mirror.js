@@ -67,7 +67,7 @@ export async function updateMirroredCloudNote(env, note) {
   const current = existing.value;
   const next = {
     ...current,
-    subject: '默认文件夹',
+    subject: String(note.subject || current.subject || '默认文件夹').slice(0, 80),
     sourceType: sourceType(note, current),
     sourceBatchId: String(note.sourceBatchId || current.sourceBatchId || '').slice(0, 160),
     sourceSplitIndex: Number(note.sourceSplitIndex || current.sourceSplitIndex) || null,

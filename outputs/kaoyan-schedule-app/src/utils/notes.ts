@@ -68,7 +68,10 @@ export interface SaveNoteResult {
 
 export interface DetectQuestionResult {
   ok: boolean;
+  provider?: string;
   model?: string;
+  configurationHash?: string;
+  workflowHash?: string;
   regions: NormalizedCrop[];
   error?: string;
 }
@@ -120,8 +123,8 @@ const resolveNoteServerUrl = (): string => {
 };
 
 export const NOTE_SERVER_URL = resolveNoteServerUrl();
-const NOTE_SAVE_TIMEOUT_MS = 15_000;
-const AI_REQUEST_TIMEOUT_MS = 45_000;
+const NOTE_SAVE_TIMEOUT_MS = IS_CLOUD_RUNTIME ? 45_000 : 15_000;
+const AI_REQUEST_TIMEOUT_MS = 180_000;
 const AI_ENQUEUE_TIMEOUT_MS = 12_000;
 
 export const createNoteUid = () => {

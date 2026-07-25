@@ -31,15 +31,31 @@ function isInside(rootPath, candidatePath) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function resolveNoteFile(notesRoot, requestedPath) {
+function resolveNoteFile(notesRoot, requestedPath, options = {}) {
   if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
     const error = new Error('缺少笔记文件路径');
     error.code = 'NOTE_PATH_REQUIRED';
     throw error;
   }
 
-  const filePath = path.resolve(requestedPath);
-  if (!isInside(notesRoot, filePath)) {
+  const normalized = requestedPath.trim().replaceAll('\\', '/');
+  const cloneRoot = path.resolve(options.cloneRoot || process.env.KAOYAN_DATA_CLONE_PATH || 'D:\\kaoyandata\\Caobijidata');
+  let filePath;
+  let allowedRoot;
+  if (normalized.startsWith('github://data/assets/')) {
+    allowedRoot = path.join(cloneRoot, 'data', 'assets');
+    filePath = path.resolve(cloneRoot, normalized.slice('github://'.length));
+  } else if (normalized.startsWith('github://source-notes/')) {
+    allowedRoot = path.join(cloneRoot, 'source-notes');
+    filePath = path.resolve(cloneRoot, normalized.slice('github://'.length));
+  } else if (normalized.startsWith('data/assets/')) {
+    allowedRoot = path.join(cloneRoot, 'data', 'assets');
+    filePath = path.resolve(cloneRoot, normalized);
+  } else {
+    allowedRoot = path.resolve(notesRoot);
+    filePath = path.resolve(requestedPath);
+  }
+  if (!isInside(allowedRoot, filePath)) {
     const error = new Error('不允许访问笔记目录以外的文件');
     error.code = 'NOTE_PATH_FORBIDDEN';
     throw error;

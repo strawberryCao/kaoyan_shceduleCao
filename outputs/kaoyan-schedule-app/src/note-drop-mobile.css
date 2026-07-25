@@ -802,3 +802,19 @@ body:has(.mobile-crop-editor),
     animation: none;
   }
 }
+
+/* public-lan-parity-detection-steps */
+.mobile-detecting-steps {
+  margin: 18px auto 0;
+  padding: 0;
+  width: min(340px, 88vw);
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+}
+.mobile-detecting-steps li {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}

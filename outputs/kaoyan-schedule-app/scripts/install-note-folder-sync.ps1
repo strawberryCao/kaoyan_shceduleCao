@@ -106,79 +106,17 @@ Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContin
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260724-learning-sync-v10'
+$version = '20260725-public-lan-parity-v11'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
 Install-ScriptFile 'merge-learning-data.cjs' $learningMergePath "$codeRoot/merge-learning-data.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
-foreach ($dependency in @('ai-router.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
+foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 
 $runtimeText = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
-$runtimeText = Replace-Required $runtimeText `
-  '  Export-SafeAssistantConfiguration $clonePath $assistantRoot' `
-  '  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.' `
-  'disable reverse configuration export'
-
-$oldCommitPending = @'
-function Commit-Pending([string]$ClonePath, [string]$Message) {
-  $paths = @('source-notes', 'data/config', 'data/deletions', 'data/local-delete-recycle', 'data/quarantine')
-  $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
-  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
-  Invoke-Git (@('add', '--') + $paths) $ClonePath | Out-Null
-  $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
-  if ($diff.ExitCode -eq 1) {
-    Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
-    return $true
-  }
-  return $false
-}
-'@
-
-$newCommitPending = @'
-function Commit-Pending([string]$ClonePath, [string]$Message) {
-  $candidatePaths = @(
-    'source-notes',
-    'data/cloud/learning-data.json',
-    'data/config',
-    'data/deletions',
-    'data/local-delete-recycle',
-    'data/quarantine'
-  )
-  $paths = @()
-  foreach ($candidate in $candidatePaths) {
-    if (Test-Path -LiteralPath (Join-Path $ClonePath $candidate)) {
-      $paths += $candidate
-      continue
-    }
-    $tracked = Invoke-Git @('ls-files', '--', $candidate) $ClonePath
-    if (-not [string]::IsNullOrWhiteSpace($tracked.Output)) { $paths += $candidate }
-  }
-  if ($paths.Count -eq 0) { return $false }
-  $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
-  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
-  Invoke-Git (@('add', '-A', '--') + $paths) $ClonePath | Out-Null
-  $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
-  if ($diff.ExitCode -eq 1) {
-    Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
-    return $true
-  }
-  return $false
-}
-'@
-$runtimeText = Replace-Required $runtimeText $oldCommitPending $newCommitPending 'filter optional Git pathspecs'
-
-$runtimeNode = $nodeCommand.Source.Replace("'", "''")
-$runtimeMerge = $learningMergePath.Replace("'", "''")
-$runtimeConfig = $configPath.Replace("'", "''")
-$mergeBlock = @"
-  Materialize-CloudNotes `$localPath `$remotePath
-  & '$runtimeNode' '$runtimeMerge' --config '$runtimeConfig' | Out-Null
-  if (`$LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
-"@
-$runtimeText = Replace-Required $runtimeText '  Materialize-CloudNotes $localPath $remotePath' $mergeBlock.TrimEnd() 'enable structured learning-data merge'
 Write-Utf8Bom $runtimePath $runtimeText
 Write-Utf8Bom $configSyncPath (Get-Content -LiteralPath $configSyncPath -Raw -Encoding UTF8)
 
@@ -194,7 +132,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 10
+  version = 11
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -277,7 +215,7 @@ if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Pa
 Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
 
 Write-Host ''
-Write-Host '全局同步 v10 已启用。' -ForegroundColor Green
+Write-Host '全局同步 v11 已启用。' -ForegroundColor Green
 Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)

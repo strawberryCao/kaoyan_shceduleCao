@@ -70,6 +70,7 @@ function validateRuntime(value) {
   if (!text(value.source?.configurationHash, 128)) errors.push('缺少 configurationHash');
   if (!isObject(value.tasks) || Object.keys(value.tasks).length === 0) errors.push('缺少 Agent 任务合同');
   if (!isObject(value.providers)) errors.push('providers 必须是对象');
+  if (value.workflows !== undefined && !isObject(value.workflows)) errors.push('workflows 必须是对象');
   return errors;
 }
 
@@ -91,6 +92,20 @@ function normalizeTask(taskId, value) {
   };
 }
 
+function normalizeWorkflow(taskId, value) {
+  if (!isObject(value)) return null;
+  const prompt = isObject(value.prompt) ? value.prompt : {};
+  const instructions = Array.isArray(prompt.instructions)
+    ? prompt.instructions.map((item) => text(item, 2000)).filter(Boolean).slice(0, 40)
+    : [];
+  const steps = Array.isArray(value.steps)
+    ? value.steps.map((item) => text(item, 400)).filter(Boolean).slice(0, 30)
+    : [];
+  const outputFormat = text(prompt.outputFormat, 4000);
+  if (!text(value.version, 120) || instructions.length === 0 || !outputFormat || steps.length === 0) return null;
+  return { id: taskId, version: text(value.version, 120), steps, prompt: { instructions, outputFormat } };
+}
+
 export async function getAgentRuntime(env) {
   const file = await readJsonFile(env, LOCAL_AGENT_RUNTIME_PATH, {
     allowMissing: true,
@@ -110,6 +125,9 @@ export async function getAgentRuntime(env) {
   const providers = Object.fromEntries(Object.entries(file.value.providers)
     .map(([providerId, value]) => [providerId, normalizeProvider(providerId, value, preferredModelIds)])
     .filter(([, value]) => Boolean(value)));
+  const workflows = Object.fromEntries(Object.entries(file.value.workflows || {})
+    .map(([taskId, value]) => [taskId, normalizeWorkflow(taskId, value)])
+    .filter(([, value]) => Boolean(value)));
   return {
     schemaVersion: Number(file.value.schemaVersion),
     strictMode: true,
@@ -125,6 +143,7 @@ export async function getAgentRuntime(env) {
     providers,
     routing: isObject(file.value.routing) ? file.value.routing : {},
     tasks,
+    workflows,
   };
 }
 
@@ -134,7 +153,11 @@ export async function getAgentTask(env, taskId) {
   if (!task) throw new HttpError(503, `局域网运行时没有发布 Agent 任务：${taskId}`, 'LOCAL_AGENT_TASK_MISSING');
   if (task.active !== true) throw new HttpError(403, `Agent 任务已在局域网版本停用：${task.label}`, 'AI_TASK_DISABLED');
   if (task.settings.enabled === false) throw new HttpError(403, `Agent 任务已在局域网配置中心停用：${task.label}`, 'AI_TASK_DISABLED');
-  return { runtime, task, settings: task.settings };
+  const workflow = runtime.workflows?.[taskId] || null;
+  if (['note_naming', 'question_splitting'].includes(taskId) && !workflow) {
+    throw new HttpError(503, `局域网运行时没有发布完整工作流：${taskId}`, 'LOCAL_AGENT_WORKFLOW_MISSING');
+  }
+  return { runtime, task, settings: task.settings, workflow };
 }
 
 export function providerSecretStatus(env, runtime) {
@@ -160,6 +183,7 @@ export async function getAgentRuntimeStatus(env) {
     workflowHash: runtime.source.workflowHash,
     configuredTasks: Object.keys(runtime.tasks),
     activeTasks: Object.values(runtime.tasks).filter((task) => task.active).map((task) => task.id),
+    workflowVersions: Object.fromEntries(Object.entries(runtime.workflows || {}).map(([taskId, workflow]) => [taskId, workflow.version])),
     providerSecrets: providerSecretStatus(env, runtime),
   };
 }
@@ -167,4 +191,5 @@ export async function getAgentRuntimeStatus(env) {
 export const agentRuntimeInternals = Object.freeze({
   inferCapabilities,
   normalizeProvider,
+  normalizeWorkflow,
 });
