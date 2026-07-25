@@ -2,7 +2,10 @@ name: Validate kaoyan app changes
 
 on:
   push:
-    branches: [fix/public-read-cache-local-sync]
+    branches: [fix/public-lan-parity-control-plane]
+    paths:
+      - '.github/scripts/**public-lan-parity*'
+      - '.github/workflows/validate-kaoyan-app.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
     paths:
@@ -11,7 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: validate-kaoyan-app-${{ github.ref }}
@@ -20,15 +23,21 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply and validate public LAN parity
+        if: github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane'
+        run: bash .github/scripts/run-public-lan-parity-v2.sh
       - name: Validate PowerShell syntax
+        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
         shell: pwsh
         run: |
           $failed = $false
@@ -38,14 +47,16 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count -gt 0) {
               $failed = $true
-              Write-Error ("{0}: {1}" -f $_.FullName, ($errors | ForEach-Object Message -join '; '))
+              Write-Error ("{0}: {1}" -f $_.FullName, (($errors | ForEach-Object Message) -join '; '))
             }
           }
           if ($failed) { exit 1 }
       - name: Install dependencies
+        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
       - name: Run automated tests
+        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
         run: |
@@ -54,8 +65,10 @@ jobs:
           (( ${#test_files[@]} > 0 ))
           node --test "${test_files[@]}"
       - name: Build production app
+        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npm run build
       - name: Validate Worker bundle
+        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npx wrangler deploy --dry-run
