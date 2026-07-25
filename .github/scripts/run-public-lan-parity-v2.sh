@@ -7,7 +7,8 @@ STAGE=initializing
 FAILED_COMMAND=''
 BUSINESS_SHA=''
 : > "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
+exec 3>&1 4>&2
+exec >> "$LOG_FILE" 2>&1
 
 on_error() {
   FAILED_COMMAND="$BASH_COMMAND"
@@ -19,9 +20,18 @@ finalize() {
   set +e
   trap - ERR EXIT
   [[ "$code" -eq 0 ]] && STATUS=success
-  detail="$(tail -n 80 "$LOG_FILE" 2>/dev/null || true)"
+  detail="$(tail -n 120 "$LOG_FILE" 2>/dev/null || true)"
   business_sha="${BUSINESS_SHA:-$(git rev-parse HEAD 2>/dev/null)}"
-  git reset --hard HEAD >/dev/null 2>&1 || true
+
+  {
+    echo '===== PUBLIC LAN PARITY V2 SUMMARY ====='
+    echo "status=$STATUS stage=$STAGE exitCode=$code"
+    echo "failedCommand=$FAILED_COMMAND"
+    echo "$detail"
+    echo '===== END SUMMARY ====='
+  } >&3
+
+  git reset --hard HEAD >> "$LOG_FILE" 2>&1 || true
   git config user.name 'Kaoyan Parity Validator'
   git config user.email 'kaoyan-parity@local.invalid'
   mkdir -p .github/validation
@@ -39,7 +49,7 @@ payload = {
     'runAttempt': int(os.environ.get('GITHUB_RUN_ATTEMPT', '0')),
     'sourceSha': os.environ.get('GITHUB_SHA', ''),
     'businessSha': os.environ.get('BUSINESS_SHA', ''),
-    'detail': os.environ.get('DETAIL', '')[-12000:],
+    'detail': os.environ.get('DETAIL', '')[-16000:],
     'recordedAt': datetime.now(timezone.utc).isoformat(),
 }
 with open('.github/validation/public-lan-parity-v2-status.json', 'w', encoding='utf-8') as file:
@@ -47,8 +57,8 @@ with open('.github/validation/public-lan-parity-v2-status.json', 'w', encoding='
     file.write('\n')
 PY
   git add .github/validation/public-lan-parity-v2-status.json
-  git commit -m 'ci: record public LAN parity V2 validation' >/dev/null 2>&1 || true
-  git push origin HEAD:fix/public-lan-parity-control-plane >/dev/null 2>&1 || true
+  git commit -m 'ci: record public LAN parity V2 validation' >> "$LOG_FILE" 2>&1 || true
+  git push origin HEAD:fix/public-lan-parity-control-plane >&3 2>&4 || true
   exit "$code"
 }
 trap finalize EXIT
