@@ -32,6 +32,7 @@ const EVENT_NAME = 'kaoyan-capture-outbox-changed';
 const MAX_JOBS = 36;
 const MAX_TOTAL_BYTES = 110 * 1024 * 1024;
 const COMPLETED_RETENTION_MS = 24 * 60 * 60 * 1000;
+const UPLOAD_LEASE_MS = 2 * 60 * 1000;
 const RETRY_DELAYS_MS = [1_200, 3_000, 10_000, 30_000, 90_000, 5 * 60_000];
 
 let databasePromise: Promise<IDBDatabase> | null = null;
@@ -58,6 +59,9 @@ const openDatabase = (): Promise<IDBDatabase> => {
       }
     };
     request.onsuccess = () => resolve(request.result);
+  }).catch((error) => {
+    databasePromise = null;
+    throw error;
   });
   return databasePromise;
 };
@@ -65,6 +69,12 @@ const openDatabase = (): Promise<IDBDatabase> => {
 const requestResult = <T>(request: IDBRequest<T>): Promise<T> => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error ?? new Error('本地上传队列读写失败。'));
+});
+
+const transactionDone = (transaction: IDBTransaction): Promise<void> => new Promise((resolve, reject) => {
+  transaction.oncomplete = () => resolve();
+  transaction.onabort = () => reject(transaction.error ?? new Error('本地上传队列事务已中止。'));
+  transaction.onerror = () => reject(transaction.error ?? new Error('本地上传队列事务失败。'));
 });
 
 const readJobs = async (): Promise<CaptureUploadJob[]> => {
@@ -76,13 +86,17 @@ const readJobs = async (): Promise<CaptureUploadJob[]> => {
 const putJob = async (job: CaptureUploadJob): Promise<void> => {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).put(job));
+  await committed;
 };
 
 const deleteJob = async (id: string): Promise<void> => {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
+  const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).delete(id));
+  await committed;
 };
 
 const emit = async (): Promise<void> => {
@@ -115,10 +129,25 @@ const patchJob = async (job: CaptureUploadJob, patch: Partial<CaptureUploadJob>)
   return updated;
 };
 
+const isRunnable = (job: CaptureUploadJob, now = Date.now()): boolean => {
+  if (job.status === 'queued' || job.status === 'failed') return job.nextAttemptAt <= now;
+  if (job.status !== 'uploading') return false;
+  const updatedAt = new Date(job.updatedAt || job.createdAt).getTime();
+  const leaseExpiresAt = Number.isFinite(updatedAt) ? updatedAt + UPLOAD_LEASE_MS : job.nextAttemptAt;
+  return Math.min(job.nextAttemptAt || leaseExpiresAt, leaseExpiresAt) <= now;
+};
+
+const runnableAt = (job: CaptureUploadJob): number => {
+  if (job.status !== 'uploading') return job.nextAttemptAt;
+  const updatedAt = new Date(job.updatedAt || job.createdAt).getTime();
+  const leaseExpiresAt = Number.isFinite(updatedAt) ? updatedAt + UPLOAD_LEASE_MS : Date.now();
+  return Math.min(job.nextAttemptAt || leaseExpiresAt, leaseExpiresAt);
+};
+
 const nextRunnable = (jobs: CaptureUploadJob[]): CaptureUploadJob | null => {
   const now = Date.now();
   return jobs
-    .filter((job) => ['queued', 'failed'].includes(job.status) && job.nextAttemptAt <= now)
+    .filter((job) => isRunnable(job, now))
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null;
 };
 
@@ -127,10 +156,10 @@ const scheduleNext = async (): Promise<void> => {
   retryTimer = null;
   const jobs = await readJobs();
   const waiting = jobs
-    .filter((job) => ['queued', 'failed'].includes(job.status))
-    .sort((left, right) => left.nextAttemptAt - right.nextAttemptAt)[0];
+    .filter((job) => ['queued', 'failed', 'uploading'].includes(job.status))
+    .sort((left, right) => runnableAt(left) - runnableAt(right))[0];
   if (!waiting) return;
-  const delay = Math.max(250, waiting.nextAttemptAt - Date.now());
+  const delay = Math.max(250, runnableAt(waiting) - Date.now());
   retryTimer = window.setTimeout(() => {
     retryTimer = null;
     void resumeCaptureUploads();
@@ -142,10 +171,14 @@ const processOutbox = async (): Promise<void> => {
     const jobs = await prune();
     const job = nextRunnable(jobs);
     if (!job) break;
+    const recovering = job.status === 'uploading';
     const uploading = await patchJob(job, {
       status: 'uploading',
       attempts: job.attempts + 1,
-      message: job.payloads.length > 1 ? `正在后台上传 ${job.payloads.length} 道题` : '正在后台上传图片',
+      nextAttemptAt: Date.now() + UPLOAD_LEASE_MS,
+      message: recovering
+        ? '上次上传被系统中断，正在从本机队列自动续传'
+        : job.payloads.length > 1 ? `正在后台上传 ${job.payloads.length} 道题` : '正在后台上传图片',
       error: '',
     });
     try {
@@ -260,3 +293,9 @@ export const installCaptureUploadResumer = (): (() => void) => {
     document.removeEventListener('visibilitychange', resume);
   };
 };
+
+export const captureUploadQueueInternals = Object.freeze({
+  isRunnable,
+  runnableAt,
+  uploadLeaseMs: UPLOAD_LEASE_MS,
+});
