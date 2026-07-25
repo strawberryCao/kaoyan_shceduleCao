@@ -40,6 +40,14 @@ const replacements = [
     "write('outputs/kaoyan-schedule-app/learning-center.css', learningCss);",
     "write('outputs/kaoyan-schedule-app/src/learning-center.css', learningCss);",
   ],
+  [
+    "const mediaSource = `",
+    "const mediaSource = String.raw`",
+  ],
+  [
+    "`;\nwrite('outputs/kaoyan-schedule-app/cloudflare/media.js', mediaSource);",
+    "`.replace(/\\\\`/g, '`').replace(/\\\\\\$\\{/g, '${');\nwrite('outputs/kaoyan-schedule-app/cloudflare/media.js', mediaSource);",
+  ],
 ];
 
 for (const [before, after] of replacements) {
