@@ -1,0 +1,41 @@
+name: Diagnose local-first build
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/workflows/diagnose-local-first-build.yml'
+      - 'outputs/kaoyan-schedule-app/src/App.tsx'
+      - 'outputs/kaoyan-schedule-app/src/utils/captureUploadQueue.ts'
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'fix/mobile-local-first-analysis-parity'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/mobile-local-first-analysis-parity
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Build with captured diagnostics
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/local-first-build.log
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-first-build-${{ github.run_id }}
+          path: /tmp/local-first-build.log
+          if-no-files-found: error
+          retention-days: 3
