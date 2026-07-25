@@ -1,0 +1,35 @@
+name: Apply public LAN parity V2
+
+on:
+  push:
+    branches: [fix/public-lan-parity-control-plane]
+    paths:
+      - '.github/scripts/run-public-lan-parity-v2.sh'
+      - '.github/scripts/repair-public-lan-transformer-v3.py'
+      - '.github/scripts/apply-public-lan-parity.cjs'
+      - '.github/workflows/apply-public-lan-parity-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-lan-parity-v2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-and-apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/public-lan-parity-control-plane
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Run parity migration and validation
+        run: bash .github/scripts/run-public-lan-parity-v2.sh
