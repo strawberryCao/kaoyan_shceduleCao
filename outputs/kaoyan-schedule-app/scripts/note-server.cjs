@@ -29,7 +29,7 @@ const {
   rebuildMetadataIndex,
   recoverMoves,
 } = require('./organize-notes.cjs');
-const { resolveNoteImage, revealNoteImage } = require('./note-file-access.cjs');
+const { resolveNoteFile, revealNoteImage } = require('./note-file-access.cjs');
 const {
   atomicWriteJson,
   ensureKnowledgePoint,
@@ -57,6 +57,19 @@ const CANVAS_AI_MAX_BODY_BYTES = 9 * 1024 * 1024;
 const LIVE_STROKE_MAX_POINTS = 4096;
 const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
+const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
+const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
+const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
+const MAX_MATERIAL_FILES = 8;
+const MATERIAL_MIME_BY_EXT = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'], ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'], ['.bmp', 'image/bmp'], ['.avif', 'image/avif'], ['.heic', 'image/heic'], ['.heif', 'image/heif'],
+  ['.pdf', 'application/pdf'], ['.doc', 'application/msword'],
+  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],
+]);
+const MATERIAL_EXT_BY_MIME = new Map([...MATERIAL_MIME_BY_EXT].map(([extension, mime]) => [mime, extension]));
 const DEFAULT_SUBJECT = '默认文件夹';
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const qwen = loadQwenConfig();
@@ -237,7 +250,7 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
-  if (method === 'POST' && pathname === '/save-note') return true;
+  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-material-note')) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
   if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
   if (method === 'POST' && pathname === '/learning-data/note-review-actions') return true;
@@ -1712,6 +1725,212 @@ async function handleSave(req, res) {
   queueAiNamingJob(noteUid);
 }
 
+function materialReceiptPath(noteUid) {
+  return path.join(MATERIAL_NOTE_RECEIPTS_ROOT, `${noteUid}.json`);
+}
+
+function materialKind(mime, extension) {
+  if (mime.startsWith('image/')) return 'image';
+  if (mime === 'application/pdf') return 'pdf';
+  if (extension === '.doc' || extension === '.docx') return 'word';
+  if (extension === '.html' || extension === '.htm') return 'html';
+  return 'file';
+}
+
+function safeMaterialFileName(input, index, mimeType) {
+  const raw = String(input || '').normalize('NFKC').trim();
+  const cleaned = raw
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/^\.+|\.+$/g, '')
+    .slice(0, 120);
+  let extension = path.extname(cleaned).toLowerCase();
+  if (!MATERIAL_MIME_BY_EXT.has(extension)) extension = MATERIAL_EXT_BY_MIME.get(String(mimeType || '').toLowerCase()) || '';
+  if (!extension || !MATERIAL_MIME_BY_EXT.has(extension)) {
+    const error = new Error('不支持的资料文件类型');
+    error.code = 'NOTE_FILE_UNSUPPORTED';
+    throw error;
+  }
+  const stem = (path.basename(cleaned, path.extname(cleaned)).trim() || `资料-${index + 1}`).slice(0, 96);
+  return `${stem}${extension}`;
+}
+
+function decodeMaterialFile(input, index) {
+  if (!input || typeof input !== 'object') {
+    const error = new Error('资料文件无效');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const match = /^data:([A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/.exec(String(input.dataUrl || ''));
+  if (!match) {
+    const error = new Error('资料文件必须使用 base64 data URL');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const suppliedMime = match[1].toLowerCase();
+  const fileName = safeMaterialFileName(input.name, index, suppliedMime);
+  const extension = path.extname(fileName).toLowerCase();
+  const mime = MATERIAL_MIME_BY_EXT.get(extension);
+  const buffer = Buffer.from(match[2].replace(/[\r\n]/g, ''), 'base64');
+  if (buffer.length > MAX_MATERIAL_FILE_BYTES) {
+    const error = new Error(`${fileName} 超过 8 MB`);
+    error.code = 'PAYLOAD_TOO_LARGE';
+    throw error;
+  }
+  return { fileName, extension, mime, buffer, kind: materialKind(mime, extension) };
+}
+
+function findMaterialLearningNote(snapshot, noteUid) {
+  for (const day of Object.values(snapshot?.days || {})) {
+    const found = Array.isArray(day?.autoNotes) ? day.autoNotes.find((note) => note?.noteUid === noteUid) : null;
+    if (found) return found;
+  }
+  return null;
+}
+
+function readMaterialReceipt(noteUid) {
+  const receipt = readJson(materialReceiptPath(noteUid), null);
+  if (!receipt || receipt.noteUid !== noteUid || typeof receipt.requestHash !== 'string') return null;
+  if (!Array.isArray(receipt.attachments) || !receipt.attachments.every((item) => typeof item?.filePath === 'string' && fs.existsSync(item.filePath))) return null;
+  return receipt;
+}
+
+function writeMaterialReceipt(receipt) {
+  fs.mkdirSync(MATERIAL_NOTE_RECEIPTS_ROOT, { recursive: true });
+  atomicWriteJson(materialReceiptPath(receipt.noteUid), receipt);
+}
+
+async function handleSaveMaterial(req, res) {
+  const raw = await readBody(req, 24 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  const noteUid = normalizeNoteUid(payload.noteUid);
+  const rawFiles = Array.isArray(payload.files) ? payload.files : [];
+  if (rawFiles.length > MAX_MATERIAL_FILES) {
+    const error = new Error('资料文件最多 8 个');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const files = rawFiles.map(decodeMaterialFile);
+  const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
+  if (totalBytes > MAX_MATERIAL_TOTAL_BYTES) {
+    const error = new Error('资料文件合计超过 16 MB');
+    error.code = 'PAYLOAD_TOO_LARGE';
+    throw error;
+  }
+  const title = typeof payload.title === 'string' ? payload.title.trim().slice(0, 240) : '';
+  const remark = typeof payload.remark === 'string' ? payload.remark.trim().slice(0, 8000) : '';
+  if (!title && !remark && files.length === 0) {
+    const error = new Error('至少写一点文字，或加入一个资料文件');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const facets = Array.isArray(payload.facets)
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    : ['quick'];
+  const tags = Array.isArray(payload.tags)
+    ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
+    : [];
+  const fileHashes = files.map((file) => crypto.createHash('sha256').update(file.buffer).digest('hex'));
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({
+    noteUid,
+    title,
+    remark,
+    subject,
+    facets,
+    tags,
+    files: files.map((file, index) => ({ name: file.fileName, mime: file.mime, hash: fileHashes[index] })),
+  })).digest('hex');
+  const existing = readMaterialReceipt(noteUid);
+  if (existing) {
+    if (existing.requestHash !== requestHash) {
+      const error = new Error('这个 noteUid 已用于另一条资料记录');
+      error.code = 'SAVE_OPERATION_REUSED';
+      throw error;
+    }
+    sendJson(res, 200, {
+      ok: true,
+      noteUid,
+      attachments: existing.attachments,
+      learningData: learningData.getSnapshot(),
+      idempotentReplay: true,
+    });
+    return;
+  }
+
+  const finalDir = path.join(MATERIAL_FILES_ROOT, noteUid);
+  const stagingDir = path.join(MATERIAL_FILES_ROOT, `.staging-${noteUid}-${crypto.randomUUID()}`);
+  if (fs.existsSync(finalDir)) {
+    const error = new Error('资料目录已存在但缺少有效保存凭据');
+    error.code = 'SAVE_OPERATION_REUSED';
+    throw error;
+  }
+  fs.mkdirSync(stagingDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  let snapshot;
+  try {
+    const staged = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const storedName = `${String(index + 1).padStart(2, '0')}-${file.fileName}`;
+      const filePath = path.join(stagingDir, storedName);
+      fs.writeFileSync(filePath, file.buffer, { flag: 'wx' });
+      staged.push({ file, storedName });
+    }
+    fs.mkdirSync(MATERIAL_FILES_ROOT, { recursive: true });
+    fs.renameSync(stagingDir, finalDir);
+    const attachments = staged.map(({ file, storedName }, index) => ({
+      id: `material-${index + 1}`,
+      kind: file.kind,
+      name: file.fileName,
+      mimeType: file.mime,
+      size: file.buffer.length,
+      filePath: path.join(finalDir, storedName),
+      previewPath: '',
+      posterPath: '',
+      createdAt,
+    }));
+    const noteType = facets.includes('mistake') ? 'mistake'
+      : facets.includes('memory') ? 'memory'
+        : facets.includes('knowledge') ? 'knowledge' : 'quick';
+    snapshot = learningData.createNote({
+      noteUid,
+      capturedDate: typeof payload.capturedDate === 'string' ? payload.capturedDate : undefined,
+      title: title || remark.split(/\r?\n/)[0]?.slice(0, 120) || attachments[0]?.name || '快速记录',
+      subject,
+      remark,
+      tags,
+      facets: facets.length > 0 ? facets : ['quick'],
+      noteType,
+      goodQuestion: facets.includes('good'),
+      attachments,
+      createCard: false,
+    });
+    const storedNote = findMaterialLearningNote(snapshot, noteUid);
+    const storedAttachments = storedNote?.attachments || attachments;
+    writeMaterialReceipt({
+      schemaVersion: 1,
+      noteUid,
+      requestHash,
+      attachments: storedAttachments,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    broadcastLearningData(snapshot);
+    sendJson(res, 201, {
+      ok: true,
+      noteUid,
+      attachments: storedAttachments,
+      learningData: snapshot,
+      idempotentReplay: false,
+    });
+  } catch (error) {
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function publicCanvasOrganizationJob(job) {
   if (!job) return null;
   const { previewDataUrl: _previewDataUrl, ...safe } = job;
@@ -2460,15 +2679,17 @@ const server = http.createServer(async (req, res) => {
     if (await handleOrganizerRoute(req, res, pathname)) return;
 
     if (req.method === 'GET' && pathname === '/note-file') {
-      const image = resolveNoteImage(NOTES_ROOT, requestUrl.searchParams.get('path'));
-      const stat = fs.statSync(image.filePath);
+      const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));
+      const stat = fs.statSync(file.filePath);
+      const fileName = path.basename(file.filePath);
       res.writeHead(200, {
-        'Content-Type': image.mime,
+        'Content-Type': file.mime,
         'Content-Length': stat.size,
+        'Content-Disposition': file.inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
       });
-      fs.createReadStream(image.filePath).pipe(res);
+      fs.createReadStream(file.filePath).pipe(res);
       return;
     }
 
@@ -2588,7 +2809,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === 'POST' && req.url === '/save-note') {
+    if (req.method === 'POST' && pathname === '/save-material-note') {
+      await handleSaveMaterial(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/save-note') {
       await handleSave(req, res);
       return;
     }
@@ -2608,16 +2834,17 @@ const server = http.createServer(async (req, res) => {
         ? 500
       : error instanceof LearningDataConflictError
       ? 409
-      : ['NOTE_ALREADY_EXISTS', 'CARD_ALREADY_EXISTS', 'NOTE_DELETED'].includes(error?.code) ? 409
+      : ['NOTE_ALREADY_EXISTS', 'CARD_ALREADY_EXISTS', 'NOTE_DELETED', 'SAVE_OPERATION_REUSED'].includes(error?.code) ? 409
       : error?.code === 'CANVAS_AI_ALREADY_RUNNING' ? 409
       : error?.code === 'CANVAS_AI_PROJECT_NOT_FOUND' ? 404
       : error?.code === 'CANVAS_AI_EMPTY' ? 400
-      : ['INVALID_LEARNING_NOTE', 'INVALID_LEARNING_CARD'].includes(error?.code) ? 400
+      : ['INVALID_LEARNING_NOTE', 'INVALID_LEARNING_CARD', 'INVALID_MATERIAL_NOTE'].includes(error?.code) ? 400
       : error?.code === 'INVALID_NOTE_REVIEW_ACTION' ? 400
       : ['NOTE_REVIEW_CONFLICT', 'NOTE_REVIEW_PROPOSAL_CONFLICT', 'REVIEW_OPERATION_REUSED', 'ORGANIZER_LOCKED'].includes(error?.code) ? 409
       : error?.code === 'LEARNING_DATA_BUSY' ? 503
       : error?.code === 'NOTE_PATH_FORBIDDEN' ? 403
       : error?.code === 'NOTE_FILE_NOT_FOUND' ? 404
+      : error?.code === 'PAYLOAD_TOO_LARGE' ? 413
       : error?.code === 'NOTE_FILE_UNSUPPORTED' ? 415
       : error?.code === 'NOTE_REVEAL_UNSUPPORTED' ? 501
       : error?.code === 'NOTE_REVEAL_LAUNCH_FAILED' ? 503
