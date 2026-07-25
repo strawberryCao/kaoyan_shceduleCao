@@ -1,2 +1,2 @@
 Trigger public/LAN parity clean delivery.
-Attempt: clean-branch-7
+Attempt: clean-branch-ref-8
