@@ -1,0 +1,25 @@
+name: Record mobile capture hotfix
+
+on:
+  workflow_run:
+    workflows: ['Apply mobile capture Load failed hotfix']
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const branch = 'fix/mobile-capture-load-failed';
+            const path = 'deployment-receipts/mobile-capture-hotfix-run.json';
+            const value = {schemaVersion:1,runId:run.id,runNumber:run.run_number,conclusion:run.conclusion,sourceCommit:run.head_sha,runUrl:run.html_url,createdAt:run.created_at,updatedAt:run.updated_at,recordedAt:new Date().toISOString()};
+            let sha;
+            try { const current=await github.rest.repos.getContent({owner:context.repo.owner,repo:context.repo.repo,path,ref:branch}); if(!Array.isArray(current.data)) sha=current.data.sha; }
+            catch(error){ if(error.status!==404) throw error; }
+            await github.rest.repos.createOrUpdateFileContents({owner:context.repo.owner,repo:context.repo.repo,path,branch,message:`diagnostic: record mobile capture hotfix run ${run.run_number} (${run.conclusion})`,content:Buffer.from(`${JSON.stringify(value,null,2)}\n`).toString('base64'),...(sha?{sha}:{})});
