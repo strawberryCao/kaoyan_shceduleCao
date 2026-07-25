@@ -2,7 +2,7 @@ import { HttpError, sha256 } from './http.js';
 import { readJsonFile } from './github-store.js';
 
 export const LOCAL_AGENT_RUNTIME_PATH = 'data/config/local-assistant/agent-runtime.json';
-export const LEGACY_V11_WORKFLOW_COMPAT_PATH = 'data/config/local-assistant/legacy-v11-analysis-workflows.json';
+export const LEGACY_V11_WORKFLOW_COMPAT_PATH = 'control-plane/compatibility/legacy-v11-analysis-workflows.json';
 
 const LEGACY_V11_WORKFLOW_SOURCE_HASH = '511f580d975f781567f37c5bf7ad9410b50c420c6622340b821e8191c40c1c22';
 const REQUIRED_COMPLETE_WORKFLOWS = Object.freeze(['note_enrichment', 'note_image_understanding']);

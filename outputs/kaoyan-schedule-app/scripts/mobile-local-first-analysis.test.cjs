@@ -105,3 +105,13 @@ test('mobile outbox commits IndexedDB transactions and recovers expired upload l
   assert.match(queue, /上次上传被系统中断/);
   assert.match(app, /installCaptureUploadResumer/);
 });
+
+
+test('V11 config synchronization cannot delete the compatibility control-plane file', () => {
+  const sync = text('scripts/windows-assistant-config-sync.ps1');
+  const runtime = text('cloudflare/agent-runtime.js');
+  assert.match(sync, /data\\config\\local-assistant/);
+  assert.match(sync, /git.*add.*data\/config\/local-assistant/s);
+  assert.match(runtime, /control-plane\/compatibility\/legacy-v11-analysis-workflows\.json/);
+  assert.doesNotMatch(runtime, /data\/config\/local-assistant\/legacy-v11-analysis-workflows\.json/);
+});

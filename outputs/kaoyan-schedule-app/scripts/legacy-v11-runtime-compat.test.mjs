@@ -19,7 +19,7 @@ test('legacy V11 compatibility is bound to an exact local workflow source hash',
     },
   };
   assert.equal(agentRuntimeInternals.runtimeWorkflowSourceHash(runtime), legacySourceHash);
-  assert.equal(LEGACY_V11_WORKFLOW_COMPAT_PATH, 'data/config/local-assistant/legacy-v11-analysis-workflows.json');
+  assert.equal(LEGACY_V11_WORKFLOW_COMPAT_PATH, 'control-plane/compatibility/legacy-v11-analysis-workflows.json');
   assert.match(runtimeSource, /sourceHash !== LEGACY_V11_WORKFLOW_SOURCE_HASH/);
   assert.match(runtimeSource, /expiresWhenWorkflowSourceChanges !== true/);
 });
@@ -39,4 +39,10 @@ test('only missing full-analysis workflows are supplied by the compatibility con
   assert.match(runtimeSource, /workflows: \{ \.\.\.workflows, \.\.\.compatible \}/);
   assert.match(runtimeSource, /publishedWorkflowHash/);
   assert.match(runtimeSource, /compatibilityWorkflowHash/);
+});
+
+
+test('legacy compatibility path is outside every V11 synchronization-owned directory', () => {
+  assert.ok(!LEGACY_V11_WORKFLOW_COMPAT_PATH.startsWith('data/config/local-assistant/'));
+  assert.equal(LEGACY_V11_WORKFLOW_COMPAT_PATH, 'control-plane/compatibility/legacy-v11-analysis-workflows.json');
 });
