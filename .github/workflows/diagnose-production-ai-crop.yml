@@ -42,12 +42,11 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const image = fs.readFileSync(process.env.RUNNER_TEMP + '/probe.jpg');
-          const payload = {
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/payload.json', JSON.stringify({
             imageDataUrl: `data:image/jpeg;base64,${image.toString('base64')}`,
             imageWidth: 2200,
             imageHeight: 3000,
-          };
-          fs.writeFileSync(process.env.RUNNER_TEMP + '/payload.json', JSON.stringify(payload));
+          }));
           NODE
           status="$(curl --silent --show-error \
             --max-time 310 \
@@ -58,6 +57,7 @@ jobs:
             -H 'Content-Type: application/json' \
             --data-binary "@$RUNNER_TEMP/payload.json" \
             "$WORKER_URL/api/ai/detect-questions" || true)"
+          export PROBE_STATUS="$status"
           node <<'NODE'
           const fs = require('node:fs');
           const responsePath = process.env.RUNNER_TEMP + '/response.json';
@@ -73,8 +73,6 @@ jobs:
           fs.writeFileSync('ai-crop-probe-result.json', JSON.stringify(receipt, null, 2) + '\n');
           console.log(JSON.stringify(receipt, null, 2));
           NODE
-        env:
-          PROBE_STATUS: ${{ env.PROBE_STATUS }}
       - name: Persist probe result
         if: always()
         uses: actions/github-script@v7
