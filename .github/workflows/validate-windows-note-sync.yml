@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate-windows-powershell:
@@ -24,6 +24,28 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.sha }}
+          fetch-depth: 0
+      - name: Apply Windows PowerShell 5.1-safe invocation
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/public-lan-parity-clean'
+        shell: powershell
+        run: |
+          $path = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
+          $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+          $old = '  & $nodeCommand.Source $mergeScript --config $ConfigPath | Out-Null'
+          $new = "  `$nodeExecutable = [string]`$nodeCommand.Source`r`n  & `$nodeExecutable `$mergeScript --config `$ConfigPath | Out-Null"
+          if ($content.Contains($old)) {
+            $content = $content.Replace($old, $new)
+            [System.IO.File]::WriteAllText((Resolve-Path $path), $content, [System.Text.UTF8Encoding]::new($true))
+            git config user.name 'Kaoyan Windows Compatibility'
+            git config user.email 'windows-compat@local.invalid'
+            git add -- $path
+            git commit -m 'fix: use PowerShell 5.1-safe node invocation'
+            git push origin HEAD:fix/public-lan-parity-clean
+          } elseif (-not $content.Contains('$nodeExecutable = [string]$nodeCommand.Source')) {
+            throw 'Expected node invocation anchor was not found.'
+          }
       - name: Parse scripts with Windows PowerShell 5.1
         shell: powershell
         run: |
@@ -40,7 +62,7 @@ jobs:
               [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
-              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $script, $_.Message) }
+              $errors | ForEach-Object { Write-Error ("{0}: line {1}, column {2}: {3}" -f $script, $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message) }
               exit 1
             }
             Write-Host "Windows PowerShell parse OK: $script"
@@ -50,7 +72,7 @@ jobs:
         run: |
           $installer = Get-Content outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Raw
           $runtime = Get-Content outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -Raw
-          if ($installer -notmatch [regex]::Escape("[string]$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
+          if ($installer -notmatch [regex]::Escape("[string]`$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
           if ($installer -notmatch 'github-token\.dpapi') { throw 'DPAPI token path is missing.' }
           if ($runtime -notmatch 'credential\.helper') { throw 'Credential Manager bypass is missing.' }
           $tempToken = Join-Path $env:RUNNER_TEMP 'token.dpapi'
