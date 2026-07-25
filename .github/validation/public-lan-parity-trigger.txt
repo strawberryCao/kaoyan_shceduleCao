@@ -1,2 +1,2 @@
 Trigger public/LAN parity V2 validation.
-Attempt: compact-log-2
+Attempt: artifact-3
