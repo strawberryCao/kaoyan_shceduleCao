@@ -6,6 +6,7 @@ on:
     branches: [fix/learning-record-multimaterial-continuation]
     paths:
       - 'scripts/apply-multimaterial-media-ui.cjs'
+      - 'scripts/repair-multimaterial-media-ui-transform.cjs'
       - '.github/workflows/apply-multimaterial-media-ui.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
@@ -38,6 +39,9 @@ jobs:
       - name: Install dependencies
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci --ignore-scripts
+
+      - name: Repair transform source
+        run: node scripts/repair-multimaterial-media-ui-transform.cjs
 
       - name: Apply media and UI continuation
         env:
