@@ -16,6 +16,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Re-run after persistent control-plane compatibility deployment.
           for attempt in {1..12}; do
             status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' 'https://kaoyan-study-center.caoheming139.workers.dev/api/health' || true)"
             if [[ "$status" == '200' ]]; then break; fi
