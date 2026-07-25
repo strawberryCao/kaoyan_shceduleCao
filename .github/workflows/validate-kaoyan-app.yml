@@ -4,7 +4,7 @@ on:
   push:
     branches: [fix/public-lan-parity-control-plane]
     paths:
-      - '.github/scripts/**public-lan-parity*'
+      - '.github/scripts/**public-lan*'
       - '.github/workflows/validate-kaoyan-app.yml'
   pull_request:
     branches:
@@ -41,6 +41,16 @@ jobs:
       - name: Create clean public LAN parity delivery branch
         if: (github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane') || (github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane')
         run: bash .github/scripts/create-public-lan-clean-branch.sh
+      - name: Upload clean delivery diagnostics
+        if: always() && ((github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane') || (github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane'))
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-lan-clean-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 3
+          path: |
+            .github/validation/public-lan-clean-status.json
+            /tmp/public-lan-clean.log
       - name: Validate PowerShell syntax
         if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         shell: pwsh
