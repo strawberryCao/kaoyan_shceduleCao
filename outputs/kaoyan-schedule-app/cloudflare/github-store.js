@@ -295,6 +295,7 @@ export async function publicFileResponse(env, path, options = {}) {
   headers.set('Cache-Control', options.cacheControl || 'private, max-age=300');
   headers.set('X-Content-Type-Options', 'nosniff');
   if (options.contentType) headers.set('Content-Type', options.contentType);
+  if (options.contentDisposition) headers.set('Content-Disposition', options.contentDisposition);
   return new Response(response.body, { status: 200, headers });
 }
 

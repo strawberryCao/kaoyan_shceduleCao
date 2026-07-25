@@ -7,6 +7,7 @@ import {
   Crop,
   ExternalLink,
   FileImage,
+  FilePlus2,
   ImagePlus,
   Images,
   Layers3,
@@ -31,6 +32,7 @@ import { saveLearningDataCache } from '../utils/learningData';
 import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
+import { QuickMaterialComposer } from './QuickMaterialComposer';
 import '../note-drop-mobile.css';
 
 interface PendingImage {
@@ -87,6 +89,7 @@ export function NoteDropApp() {
   const [status, setStatus] = useState('');
   const [dialogError, setDialogError] = useState('');
   const [batchProgress, setBatchProgress] = useState('');
+  const [materialOpen, setMaterialOpen] = useState(false);
 
   useEffect(() => {
     if (!IS_CLOUD_RUNTIME || typeof window.matchMedia !== 'function') return undefined;
@@ -463,6 +466,10 @@ export function NoteDropApp() {
     </>
   );
 
+  if (materialOpen) {
+    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;
+  }
+
   if (isMobileCapture) {
     if (mobileStep === 'multi-crop' && sourceImage) {
       return (
@@ -521,6 +528,9 @@ export function NoteDropApp() {
               </button>
               <button type="button" onClick={() => void pasteFromClipboard()}>
                 <ClipboardPaste size={21} /><span><strong>粘贴图片</strong><small>使用刚复制的截图</small></span>
+              </button>
+              <button type="button" onClick={() => setMaterialOpen(true)}>
+                <FilePlus2 size={21} /><span><strong>文字 / 多资料速记</strong><small>可附 PDF、Word、HTML 或多张图片</small></span>
               </button>
             </div>
             <button className="mobile-canvas-link" type="button" onClick={openCanvas}><ExternalLink size={17} />打开笔记大画布</button>
@@ -683,6 +693,7 @@ export function NoteDropApp() {
             <button type="button" onClick={() => cameraInputRef.current?.click()}><Camera size={15} /><span>拍照</span></button>
             <button type="button" onClick={() => galleryInputRef.current?.click()}><Images size={15} /><span>相册</span></button>
             <button type="button" onClick={() => void pasteFromClipboard()}><ClipboardPaste size={15} /><span>粘贴</span></button>
+            <button type="button" onClick={() => setMaterialOpen(true)}><FilePlus2 size={15} /><span>资料</span></button>
           </div>
         </div>
         <button className="note-canvas-launch" type="button" onClick={openCanvas} title="在浏览器打开笔记大画布" aria-label="在浏览器打开笔记大画布">

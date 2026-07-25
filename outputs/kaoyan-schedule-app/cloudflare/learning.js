@@ -26,6 +26,84 @@ function uniqueStrings(value) {
     ? [...new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
     : [];
 }
+const LEARNING_ATTACHMENT_KINDS = new Set(['image', 'pdf', 'word', 'html', 'file']);
+const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+
+function attachmentKind(name, mimeType) {
+  const mime = text(mimeType).toLowerCase();
+  const extension = text(name).toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+  if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.heic', '.heif'].includes(extension)) return 'image';
+  if (mime === 'application/pdf' || extension === '.pdf') return 'pdf';
+  if (mime.includes('word') || mime.includes('officedocument.wordprocessingml') || ['.doc', '.docx'].includes(extension)) return 'word';
+  if (mime === 'text/html' || ['.html', '.htm'].includes(extension)) return 'html';
+  return 'file';
+}
+
+function attachmentMime(kind, name, value) {
+  const explicit = text(value, 160).trim();
+  if (explicit) return explicit;
+  const extension = text(name).toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+  if (kind === 'image') return extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+  if (kind === 'pdf') return 'application/pdf';
+  if (kind === 'word') return extension === '.doc' ? 'application/msword' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (kind === 'html') return 'text/html';
+  return 'application/octet-stream';
+}
+
+function normalizeAttachments(value, legacy = {}) {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = source.filter(isObject).slice(0, 32).map((item, index) => {
+    const filePath = text(item.filePath ?? item.path ?? item.url, 2000);
+    const fallbackName = filePath.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? '';
+    const name = (text(item.name, 240).trim() || fallbackName || `资料 ${index + 1}`).slice(0, 240);
+    const inferred = attachmentKind(name, item.mimeType);
+    const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind) ? item.kind : inferred;
+    const size = Number(item.size);
+    return {
+      id: (text(item.id, 160).trim() || `attachment-${index + 1}`), kind, name,
+      mimeType: attachmentMime(kind, name, item.mimeType),
+      size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
+      filePath,
+      previewPath: text(item.previewPath, 2000),
+      posterPath: text(item.posterPath, 2000),
+      createdAt: text(item.createdAt || legacy.createdAt || legacy.firstSyncedAt, 80),
+    };
+  }).filter((item) => item.filePath || item.name);
+  const legacyPath = text(legacy.filePath, 2000);
+  if (legacyPath && !normalized.some((item) => item.filePath === legacyPath)) {
+    const name = legacyPath.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
+    const kind = attachmentKind(name, '');
+    normalized.unshift({
+      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, previewPath: '', posterPath: '', createdAt: text(legacy.firstSyncedAt || legacy.createdAt, 80),
+    });
+  }
+  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+}
+
+function normalizeFacets(value, note = {}) {
+  const facets = new Set(uniqueStrings(value).filter((item) => LEARNING_RECORD_FACETS.has(item)));
+  const noteType = text(note.noteType).toLowerCase();
+  if (noteType === 'quick') facets.add('quick');
+  if (noteType === 'mistake') facets.add('mistake');
+  if (noteType === 'memory') facets.add('memory');
+  if (noteType === 'knowledge') facets.add('knowledge');
+  if (note.goodQuestion === true) facets.add('good');
+  for (const tag of uniqueStrings(note.tags)) {
+    if (tag.includes('错题')) facets.add('mistake');
+    if (tag.includes('好题')) facets.add('good');
+    if (tag.includes('背诵') || tag.includes('记忆')) facets.add('memory');
+    if (tag.includes('速记')) facets.add('quick');
+    if (tag.includes('知识')) facets.add('knowledge');
+  }
+  return [...facets];
+}
+
+function primaryAttachmentPath(value) {
+  return normalizeAttachments(value)[0]?.filePath || '';
+}
+
+
 
 function manualRecord(value, fallback = DEFAULT_MANUAL) {
   const source = isObject(value) ? value : {};
@@ -181,7 +259,7 @@ function noteDefaults(input, noteUid, timestamp) {
     createdAt: timestamp,
     updatedAt: timestamp,
     firstSyncedAt: timestamp,
-    filePath: '',
+    filePath: primaryAttachmentPath(input.attachments),
     pageRefs: Array.isArray(input.pageRefs) ? input.pageRefs.slice(0, 100) : [],
     tags: uniqueStrings(input.tags),
     knowledgePath,
@@ -205,6 +283,9 @@ function noteDefaults(input, noteUid, timestamp) {
     studyNotes: [],
     confidence: null,
     cardIds: [],
+
+    attachments: normalizeAttachments(input.attachments, { filePath: primaryAttachmentPath(input.attachments), createdAt: timestamp, firstSyncedAt: timestamp }),
+    facets: normalizeFacets(input.facets, input),
   };
 }
 
@@ -328,7 +409,7 @@ function updateThoughts(note, action, timestamp) {
 
 export async function patchNote(env, noteUid, payload) {
   const patch = isObject(payload.patch) ? payload.patch : {};
-  const allowed = ['title', 'remark', 'tags', 'noteType', 'subject', 'knowledgePath', 'questionType', 'wrongReason', 'organizationStatus', 'goodQuestion', 'thoughtAction'];
+  const allowed = ['title', 'remark', 'tags', 'noteType', 'subject', 'knowledgePath', 'questionType', 'wrongReason', 'organizationStatus', 'goodQuestion', 'thoughtAction', 'attachments', 'facets'];
   if (!allowed.some((key) => Object.hasOwn(patch, key))) {
     throw new HttpError(400, 'Empty note update.', 'INVALID_LEARNING_NOTE');
   }
@@ -349,7 +430,7 @@ export async function patchNote(env, noteUid, payload) {
       : patch.organizationStatus === 'ignored' ? 'ignored'
         : patch.organizationStatus === 'confirmed' ? 'accepted'
           : patch.organizationStatus === 'pending' ? 'pending' : note.reviewStatus;
-    const contentEdited = ['title', 'remark', 'tags', 'noteType', 'goodQuestion'].filter((key) => Object.hasOwn(patch, key));
+    const contentEdited = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'attachments', 'facets'].filter((key) => Object.hasOwn(patch, key));
     const updated = {
       ...note,
       ...(Object.hasOwn(patch, 'title') ? { title: text(patch.title, 240) } : {}),
@@ -373,6 +454,9 @@ export async function patchNote(env, noteUid, payload) {
       userEditedFields: [...new Set([...(note.userEditedFields ?? []), ...contentEdited])],
       studyNotes: Object.hasOwn(patch, 'thoughtAction') ? updateThoughts(note, patch.thoughtAction, timestamp) : note.studyNotes,
       updatedAt: timestamp,
+
+      ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments, note), filePath: primaryAttachmentPath(patch.attachments) || note.filePath } : {}),
+      ...(Object.hasOwn(patch, 'facets') ? { facets: normalizeFacets(patch.facets, { ...note, ...patch }) } : {}),
     };
     entry.day.autoNotes[entry.index] = updated;
     snapshot.days[entry.date] = entry.day;
@@ -729,6 +813,8 @@ export function createSavedImageNote(payload, file, timestamp) {
     reviewedAt: '',
     manualCreated: false,
     userEditedFields: remark ? ['remark'] : [],
+
+    attachments: normalizeAttachments([{ id: 'primary-image', kind: 'image', name: file.repoPath.split('/').at(-1), mimeType: '', filePath: `github://${file.repoPath}`, createdAt: timestamp }]),
   };
 }
 

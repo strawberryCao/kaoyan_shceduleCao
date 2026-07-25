@@ -20,6 +20,7 @@ const AppHub = lazy(() => import('./components/AppHub').then((module) => ({ defa
 const ScheduleApp = lazy(() => import('./components/ScheduleApp').then((module) => ({ default: module.ScheduleApp })));
 const NoteCapturePage = lazy(() => import('./components/NoteCapturePage').then((module) => ({ default: module.NoteCapturePage })));
 const NoteDropApp = lazy(() => import('./components/NoteDropApp').then((module) => ({ default: module.NoteDropApp })));
+const LearningRecordWorkspacePreview = lazy(() => import('./components/LearningRecordWorkspacePreview').then((module) => ({ default: module.LearningRecordWorkspacePreview })));
 const DesktopConsole = lazy(() => import('./desktop/DesktopConsole').then((module) => ({ default: module.DesktopConsole })));
 const DesktopWorkspace = lazy(() => import('./desktop/DesktopWorkspace').then((module) => ({ default: module.DesktopWorkspace })));
 const AiConfigPage = lazy(() => import('./components/AiConfigPage').then((module) => ({ default: module.AiConfigPage })));
@@ -35,6 +36,11 @@ export default function App() {
   const isElectronNoteAppMode = isNoteAppMode && window.kaoyanDesktop?.isElectron === true;
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
+  const workspaceNoteUid = params.get('workspaceNote')?.trim() || '';
+
+  if (workspaceNoteUid) {
+    return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />);
+  }
 
   if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode)) {
     return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;

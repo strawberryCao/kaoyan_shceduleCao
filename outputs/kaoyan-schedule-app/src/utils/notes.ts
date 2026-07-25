@@ -16,6 +16,35 @@ export interface SaveNotePayload {
   tags?: string[];
 }
 
+export interface MaterialFilePayload {
+  name: string;
+  mimeType: string;
+  size: number;
+  dataUrl: string;
+}
+
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+
+export interface SaveMaterialPayload {
+  noteUid?: string;
+  capturedDate?: string;
+  title?: string;
+  remark?: string;
+  subject?: string;
+  tags?: string[];
+  facets?: LearningRecordFacet[];
+  files?: File[];
+}
+
+export interface SaveMaterialResult {
+  ok: boolean;
+  noteUid: string;
+  attachments?: Array<{ id: string; kind: string; name: string; mimeType: string; size: number | null; filePath: string }>;
+  learningData?: LearningDataSnapshot;
+  idempotentReplay?: boolean;
+  error?: string;
+}
+
 export interface SaveNoteResult {
   ok: boolean;
   noteUid?: string;
@@ -157,6 +186,19 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
   const result = (await response.json()) as SaveNoteResult;
   if (!response.ok || !result.ok) throw new Error(result.error || '保存失败');
   return result;
+};
+
+export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promise<SaveMaterialResult> => {
+  const noteUid = payload.noteUid || createNoteUid();
+  const files: MaterialFilePayload[] = [];
+  for (const file of payload.files ?? []) {
+    files.push({ name: file.name, mimeType: file.type || 'application/octet-stream', size: file.size, dataUrl: await fileToDataUrl(file) });
+  }
+  return fetchJsonWithTimeout<SaveMaterialResult>(`${NOTE_SERVER_URL}/save-material-note`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, files, noteUid }),
+  }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
 };
 
 export const detectQuestionRegions = async (imageDataUrl: string): Promise<DetectQuestionResult> => {

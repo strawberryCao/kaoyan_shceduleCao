@@ -178,6 +178,86 @@ function normalizeLearningItems(value) {
     },
   }));
 }
+const LEARNING_ATTACHMENT_KINDS = new Set(['image', 'pdf', 'word', 'html', 'file']);
+const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+
+function attachmentKind(name, mimeType) {
+  const mime = asString(mimeType).toLowerCase();
+  const extension = path.extname(asString(name)).toLowerCase();
+  if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.heic', '.heif'].includes(extension)) return 'image';
+  if (mime === 'application/pdf' || extension === '.pdf') return 'pdf';
+  if (mime.includes('word') || mime.includes('officedocument.wordprocessingml') || ['.doc', '.docx'].includes(extension)) return 'word';
+  if (mime === 'text/html' || ['.html', '.htm'].includes(extension)) return 'html';
+  return 'file';
+}
+
+function attachmentMime(kind, name, value) {
+  const explicit = asOptionalString(value);
+  if (explicit) return explicit.slice(0, 160);
+  const extension = path.extname(asString(name)).toLowerCase();
+  if (kind === 'image') return extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+  if (kind === 'pdf') return 'application/pdf';
+  if (kind === 'word') return extension === '.doc' ? 'application/msword' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (kind === 'html') return 'text/html';
+  return 'application/octet-stream';
+}
+
+function normalizeAttachments(value, legacy = {}) {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = source.filter(isPlainObject).slice(0, 32).map((item, index) => {
+    const filePath = asString(item.filePath ?? item.path ?? item.url).slice(0, 2000);
+    const name = (asOptionalString(item.name) || (filePath ? path.basename(filePath.replaceAll('\\', '/')) : '') || `资料 ${index + 1}`).slice(0, 240);
+    const inferred = attachmentKind(name, item.mimeType);
+    const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind) ? item.kind : inferred;
+    const size = Number(item.size);
+    return {
+      id: (asOptionalString(item.id) || `attachment-${index + 1}`).slice(0, 160),
+      kind,
+      name,
+      mimeType: attachmentMime(kind, name, item.mimeType),
+      size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
+      filePath,
+      previewPath: asString(item.previewPath).slice(0, 2000),
+      posterPath: asString(item.posterPath).slice(0, 2000),
+      createdAt: asString(item.createdAt || legacy.createdAt || legacy.firstSyncedAt),
+    };
+  }).filter((item) => item.filePath || item.name);
+  const legacyPath = asString(legacy.filePath).slice(0, 2000);
+  if (legacyPath && !normalized.some((item) => item.filePath === legacyPath)) {
+    const name = path.basename(legacyPath.replaceAll('\\', '/')) || '原始资料';
+    const kind = attachmentKind(name, '');
+    normalized.unshift({
+      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, previewPath: '', posterPath: '',
+      createdAt: asString(legacy.firstSyncedAt || legacy.createdAt),
+    });
+  }
+  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+}
+
+function normalizeFacets(value, note = {}) {
+  const facets = new Set(uniqueStrings(value).filter((item) => LEARNING_RECORD_FACETS.has(item)));
+  const noteType = asString(note.noteType).toLowerCase();
+  if (noteType === 'quick') facets.add('quick');
+  if (noteType === 'mistake') facets.add('mistake');
+  if (noteType === 'memory') facets.add('memory');
+  if (noteType === 'knowledge') facets.add('knowledge');
+  if (note.goodQuestion === true) facets.add('good');
+  for (const tag of uniqueStrings(note.tags)) {
+    if (tag.includes('错题')) facets.add('mistake');
+    if (tag.includes('好题')) facets.add('good');
+    if (tag.includes('背诵') || tag.includes('记忆')) facets.add('memory');
+    if (tag.includes('速记')) facets.add('quick');
+    if (tag.includes('知识')) facets.add('knowledge');
+  }
+  return [...facets];
+}
+
+function primaryAttachmentPath(value) {
+  return normalizeAttachments(value)[0]?.filePath || '';
+}
+
+
 
 function normalizeAutoNote(value) {
   if (!isPlainObject(value)) {
@@ -248,6 +328,14 @@ function normalizeAutoNote(value) {
     studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: uniqueStrings(value.cardIds),
+
+    sourceType: asString(value.sourceType).slice(0, 80),
+    sourceBatchId: asString(value.sourceBatchId).slice(0, 160),
+    sourceSplitIndex: Number.isFinite(Number(value.sourceSplitIndex)) ? Math.max(1, Math.round(Number(value.sourceSplitIndex))) : null,
+    attachments: normalizeAttachments(value.attachments, { filePath, createdAt: value.createdAt, firstSyncedAt: value.firstSyncedAt }),
+    facets: normalizeFacets(value.facets, value),
+    wrongReasonSource: asString(value.wrongReasonSource).slice(0, 80),
+    wrongReasonConfidence: Number.isFinite(Number(value.wrongReasonConfidence)) ? Math.min(1, Math.max(0, Number(value.wrongReasonConfidence))) : null,
   };
 }
 
@@ -798,6 +886,14 @@ function createLearningDataStore(options = {}) {
       items: enrichment.items ?? existingNote?.items,
       confidence: Number.isFinite(confidence) ? confidence : existingNote?.confidence,
       cardIds,
+
+      sourceType: metadata.sourceType ?? enrichment.sourceType ?? existingNote?.sourceType,
+      sourceBatchId: metadata.sourceBatchId ?? enrichment.sourceBatchId ?? existingNote?.sourceBatchId,
+      sourceSplitIndex: metadata.sourceSplitIndex ?? enrichment.sourceSplitIndex ?? existingNote?.sourceSplitIndex,
+      attachments: enrichment.attachments ?? metadata.attachments ?? existingNote?.attachments,
+      facets: enrichment.facets ?? metadata.facets ?? existingNote?.facets,
+      wrongReasonSource: enrichment.wrongReasonSource ?? existingNote?.wrongReasonSource,
+      wrongReasonConfidence: enrichment.wrongReasonConfidence ?? existingNote?.wrongReasonConfidence,
     });
 
     const targetDay = normalizeDay(snapshot.days[capturedDate]);
@@ -921,7 +1017,7 @@ function createLearningDataStore(options = {}) {
         createdAt: timestamp,
         updatedAt: timestamp,
         firstSyncedAt: timestamp,
-        filePath: '',
+        filePath: primaryAttachmentPath(input.attachments),
         pageRefs: normalizePageRefs(input.pageRefs),
         tags,
         knowledgePath: normalizedPath,
@@ -950,6 +1046,9 @@ function createLearningDataStore(options = {}) {
         items: normalizeLearningItems(input.items),
         confidence: null,
         cardIds: [],
+
+        attachments: input.attachments,
+        facets: input.facets,
       });
       if (input.createCard === true && (noteType === 'mistake' || noteType === 'memory')) {
         const sourceKey = 'manual:create';
@@ -1097,7 +1196,7 @@ function createLearningDataStore(options = {}) {
       throw learningError('Invalid note organization status', 'INVALID_LEARNING_NOTE');
     }
     const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
-    const contentKeys = ['title', 'remark', 'tags', 'noteType', 'goodQuestion'];
+    const contentKeys = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'attachments', 'facets'];
     const editableKeys = [...classificationKeys, ...contentKeys];
     const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
     const thoughtAction = isPlainObject(patch.thoughtAction) ? patch.thoughtAction : null;
@@ -1126,7 +1225,13 @@ function createLearningDataStore(options = {}) {
     }
     if (Object.hasOwn(patch, 'goodQuestion') && typeof patch.goodQuestion !== 'boolean') {
       throw learningError('Invalid good question flag', 'INVALID_LEARNING_NOTE');
+    }    if (Object.hasOwn(patch, 'attachments') && !Array.isArray(patch.attachments)) {
+      throw learningError('Invalid note attachments', 'INVALID_LEARNING_NOTE');
     }
+    if (Object.hasOwn(patch, 'facets') && !Array.isArray(patch.facets)) {
+      throw learningError('Invalid note facets', 'INVALID_LEARNING_NOTE');
+    }
+
     return commit((snapshot) => {
       let found = false;
       const timestamp = now().toISOString();
@@ -1146,11 +1251,15 @@ function createLearningDataStore(options = {}) {
           const userEditedFields = new Set(note.userEditedFields);
           const normalizedPatchValue = (key) => {
             if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(uniqueStrings(patch[key]));
+            if (key === 'attachments') return JSON.stringify(normalizeAttachments(patch.attachments));
+            if (key === 'facets') return JSON.stringify(normalizeFacets(patch.facets, { ...note, ...patch }));
             if (key === 'goodQuestion') return String(patch[key] === true);
             return asString(patch[key]).trim();
           };
           const normalizedNoteValue = (key) => {
             if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(note[key] || []);
+            if (key === 'attachments') return JSON.stringify(normalizeAttachments(note.attachments, note));
+            if (key === 'facets') return JSON.stringify(normalizeFacets(note.facets, note));
             if (key === 'goodQuestion') return String(note[key] === true);
             return asString(note[key]).trim();
           };
@@ -1205,6 +1314,9 @@ function createLearningDataStore(options = {}) {
             userEditedFields: [...userEditedFields],
             studyNotes,
             updatedAt: timestamp,
+
+            ...(Object.hasOwn(patch, 'attachments') ? { attachments: patch.attachments, filePath: primaryAttachmentPath(patch.attachments) || note.filePath } : {}),
+            ...(Object.hasOwn(patch, 'facets') ? { facets: patch.facets } : {}),
           });
         });
       }
