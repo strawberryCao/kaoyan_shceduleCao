@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
   [string]$LocalPath = 'C:\Users\ASUS\Desktop\笔记',
   [string]$AssistantRoot = 'C:\Users\ASUS\Desktop\考研桌面助手',
