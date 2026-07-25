@@ -2,6 +2,21 @@ import type { DayRecord, RecordsByDate } from '../types';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 import { fetchWithTimeout } from './localService';
 
+export type LearningAttachmentKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+
+export interface LearningAttachment {
+  id: string;
+  kind: LearningAttachmentKind;
+  name: string;
+  mimeType: string;
+  size: number | null;
+  filePath: string;
+  previewPath: string;
+  posterPath: string;
+  createdAt: string;
+}
+
 export type LearningCardStatus = 'draft' | 'active' | 'archived';
 export type LearningCardKind = 'memory' | 'mistake';
 export type LearningNoteOrganizationStatus = 'pending' | 'confirmed' | 'ignored';
@@ -40,6 +55,9 @@ export interface LearningNotePatch {
   organizationStatus?: LearningNoteOrganizationStatus;
   goodQuestion?: boolean;
   thoughtAction?: LearningThoughtAction;
+
+  attachments?: LearningAttachment[];
+  facets?: LearningRecordFacet[];
 }
 
 export interface LearningNoteReviewAction {
@@ -86,6 +104,9 @@ export interface LearningNoteCreateInput {
   items?: LearningAutoNote['items'];
   createCard?: boolean;
   goodQuestion?: boolean;
+
+  attachments?: LearningAttachment[];
+  facets?: LearningRecordFacet[];
 }
 
 export interface LearningPageRef {
@@ -143,6 +164,9 @@ export interface LearningAutoNote {
   studyNotes: LearningStudyThought[];
   confidence: number | null;
   cardIds: string[];
+
+  attachments: LearningAttachment[];
+  facets: LearningRecordFacet[];
 }
 
 export interface LearningCard {
@@ -281,6 +305,82 @@ const normalizeReviewHistory = (value: unknown): LearningReviewEntry[] => Array.
       thought: typeof item.thought === 'string' ? item.thought.slice(0, 4000) : '',
     }))
   : [];
+const LEARNING_ATTACHMENT_KINDS = new Set<LearningAttachmentKind>(['image', 'pdf', 'word', 'html', 'file']);
+const LEARNING_RECORD_FACETS = new Set<LearningRecordFacet>(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+
+const attachmentKind = (name: string, mimeType: string): LearningAttachmentKind => {
+  const mime = mimeType.toLowerCase();
+  const extension = name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+  if (mime.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.heic', '.heif'].includes(extension)) return 'image';
+  if (mime === 'application/pdf' || extension === '.pdf') return 'pdf';
+  if (mime.includes('word') || mime.includes('officedocument.wordprocessingml') || ['.doc', '.docx'].includes(extension)) return 'word';
+  if (mime === 'text/html' || ['.html', '.htm'].includes(extension)) return 'html';
+  return 'file';
+};
+
+const attachmentMime = (kind: LearningAttachmentKind, name: string, value: unknown): string => {
+  if (typeof value === 'string' && value.trim()) return value.slice(0, 160);
+  const extension = name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] ?? '';
+  if (kind === 'image') return extension === '.png' ? 'image/png' : extension === '.webp' ? 'image/webp' : 'image/jpeg';
+  if (kind === 'pdf') return 'application/pdf';
+  if (kind === 'word') return extension === '.doc' ? 'application/msword' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (kind === 'html') return 'text/html';
+  return 'application/octet-stream';
+};
+
+const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = {}): LearningAttachment[] => {
+  const source = Array.isArray(value) ? value : [];
+  const normalized = source.filter(isObject).slice(0, 32).map((item, index) => {
+    const filePath = typeof (item.filePath ?? item.path ?? item.url) === 'string' ? String(item.filePath ?? item.path ?? item.url).slice(0, 2000) : '';
+    const fallbackName = filePath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '';
+    const name = (typeof item.name === 'string' && item.name.trim() ? item.name.trim() : fallbackName || `资料 ${index + 1}`).slice(0, 240);
+    const inferred = attachmentKind(name, typeof item.mimeType === 'string' ? item.mimeType : '');
+    const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind as LearningAttachmentKind) ? item.kind as LearningAttachmentKind : inferred;
+    const size = Number(item.size);
+    return {
+      id: (typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `attachment-${index + 1}`).slice(0, 160),
+      kind,
+      name,
+      mimeType: attachmentMime(kind, name, item.mimeType),
+      size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
+      filePath,
+      previewPath: typeof item.previewPath === 'string' ? item.previewPath.slice(0, 2000) : '',
+      posterPath: typeof item.posterPath === 'string' ? item.posterPath.slice(0, 2000) : '',
+      createdAt: typeof item.createdAt === 'string' ? item.createdAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
+    };
+  }).filter((item) => item.filePath || item.name);
+  const legacyPath = typeof legacy.filePath === 'string' ? legacy.filePath.slice(0, 2000) : '';
+  if (legacyPath && !normalized.some((item) => item.filePath === legacyPath)) {
+    const name = legacyPath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
+    const kind = attachmentKind(name, '');
+    normalized.unshift({
+      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, previewPath: '', posterPath: '',
+      createdAt: typeof legacy.firstSyncedAt === 'string' ? legacy.firstSyncedAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
+    });
+  }
+  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+};
+
+const normalizeFacets = (value: unknown, note: Record<string, unknown> = {}): LearningRecordFacet[] => {
+  const facets = new Set(strings(value).filter((item): item is LearningRecordFacet => LEARNING_RECORD_FACETS.has(item as LearningRecordFacet)));
+  const noteType = typeof note.noteType === 'string' ? note.noteType.toLowerCase() : '';
+  if (noteType === 'quick') facets.add('quick');
+  if (noteType === 'mistake') facets.add('mistake');
+  if (noteType === 'memory') facets.add('memory');
+  if (noteType === 'knowledge') facets.add('knowledge');
+  if (note.goodQuestion === true) facets.add('good');
+  for (const tag of strings(note.tags)) {
+    if (tag.includes('错题')) facets.add('mistake');
+    if (tag.includes('好题')) facets.add('good');
+    if (tag.includes('背诵') || tag.includes('记忆')) facets.add('memory');
+    if (tag.includes('速记')) facets.add('quick');
+    if (tag.includes('知识')) facets.add('knowledge');
+  }
+  return [...facets];
+};
+
+
 
 const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
   if (!isObject(value) || typeof value.noteUid !== 'string' || !value.noteUid) {
@@ -381,6 +481,9 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
     cardIds: strings(value.cardIds),
+
+    attachments: normalizeAttachments(value.attachments, { filePath, createdAt: value.createdAt, firstSyncedAt: value.firstSyncedAt }),
+    facets: normalizeFacets(value.facets, value),
   };
 };
 
