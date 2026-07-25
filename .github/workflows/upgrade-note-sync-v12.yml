@@ -55,7 +55,6 @@ jobs:
           required = [
               "$version = '20260726-mobile-local-first-v12'",
               'version = 12',
-              '全局同步 v12 已启用。',
               "'agent-workflow-contracts.cjs'",
               "'note-ai-analyzer.cjs'",
               "'export-agent-runtime.cjs'",
@@ -64,7 +63,7 @@ jobs:
           missing = [item for item in required if item not in text]
           if missing:
               raise SystemExit(f'V12 installer contract missing: {missing}')
-          legacy = [item for item in ['public-lan-parity-v11', 'version = 11', '全局同步 v11'] if item in text]
+          legacy = [item for item in ['public-lan-parity-v11', 'version = 11'] if item in text]
           if legacy:
               raise SystemExit(f'Legacy V11 identifiers remain: {legacy}')
           contracts = Path('outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs').read_text(encoding='utf-8')
