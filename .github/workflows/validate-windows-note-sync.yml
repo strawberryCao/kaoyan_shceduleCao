@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   validate-windows-powershell:
@@ -24,40 +24,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.sha }}
-          fetch-depth: 0
-      - name: Normalize scripts for Windows PowerShell 5.1
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.ref == 'fix/public-lan-parity-clean'
-        shell: powershell
-        run: |
-          $runtimePath = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
-          $installerPath = 'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1'
-          $runtime = Get-Content -LiteralPath $runtimePath -Raw -Encoding UTF8
-          $old = '  & $nodeCommand.Source $mergeScript --config $ConfigPath | Out-Null'
-          $new = "  `$nodeExecutable = [string]`$nodeCommand.Source`r`n  & `$nodeExecutable `$mergeScript --config `$ConfigPath | Out-Null"
-          if ($runtime.Contains($old)) {
-            $runtime = $runtime.Replace($old, $new)
-          } elseif (-not $runtime.Contains('$nodeExecutable = [string]$nodeCommand.Source')) {
-            throw 'Expected node invocation anchor was not found.'
-          }
-          $installer = Get-Content -LiteralPath $installerPath -Raw -Encoding UTF8
-          $utf8Bom = [System.Text.UTF8Encoding]::new($true)
-          [System.IO.File]::WriteAllText((Resolve-Path $runtimePath), $runtime, $utf8Bom)
-          [System.IO.File]::WriteAllText((Resolve-Path $installerPath), $installer, $utf8Bom)
-          git config user.name 'Kaoyan Windows Compatibility'
-          git config user.email 'windows-compat@local.invalid'
-          git add -- $runtimePath $installerPath
-          git diff --cached --quiet
-          if ($LASTEXITCODE -ne 0) {
-            git commit -m 'fix: preserve Windows PowerShell 5.1 encoding'
-            git push origin HEAD:fix/public-lan-parity-clean
-          }
       - name: Parse scripts with Windows PowerShell 5.1
         shell: powershell
         run: |
-          $diagnosticPath = Join-Path $env:RUNNER_TEMP 'windows-sync-diagnostics.txt'
-          $diagnostics = New-Object 'System.Collections.Generic.List[string]'
           $scripts = @(
             'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1',
             'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
@@ -65,50 +34,30 @@ jobs:
           foreach ($script in $scripts) {
             $tokens = $null
             $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$tokens, [ref]$errors) | Out-Null
-            foreach ($parseError in @($errors)) {
-              [void]$diagnostics.Add(("PARSE ERROR: {0}: line {1}, column {2}: {3}; text=[{4}]" -f $script, $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message, $parseError.Extent.Text))
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error ("{0}: {1}" -f $script, $_.Message) }
+              exit 1
             }
+            Write-Host "Windows PowerShell parse OK: $script"
           }
-          if ($diagnostics.Count -gt 0) {
-            [System.IO.File]::WriteAllLines($diagnosticPath, $diagnostics, [System.Text.UTF8Encoding]::new($true))
-            $diagnostics | ForEach-Object { Write-Host $_ }
-            exit 1
-          }
-          'PARSE OK: Windows PowerShell 5.1 accepted both scripts.' | Set-Content -LiteralPath $diagnosticPath -Encoding UTF8
       - name: Verify D drive and DPAPI configuration
         shell: powershell
         run: |
-          $diagnosticPath = Join-Path $env:RUNNER_TEMP 'windows-sync-diagnostics.txt'
-          try {
-            $installer = Get-Content outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Raw
-            $runtime = Get-Content outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -Raw
-            $expectedDataRoot = "[string]`$DataRoot = 'D:\kaoyandata'"
-            if (-not $installer.Contains($expectedDataRoot)) { throw "D drive default is missing: $expectedDataRoot" }
-            Add-Content -LiteralPath $diagnosticPath -Value 'D DRIVE OK: default is D:\kaoyandata.' -Encoding UTF8
-            if ($installer -notmatch 'github-token\.dpapi') { throw 'DPAPI token path is missing.' }
-            Add-Content -LiteralPath $diagnosticPath -Value 'DPAPI PATH OK: github-token.dpapi is configured.' -Encoding UTF8
-            if ($runtime -notmatch 'credential\.helper') { throw 'Credential Manager bypass is missing.' }
-            Add-Content -LiteralPath $diagnosticPath -Value 'GIT AUTH OK: credential.helper bypass is configured.' -Encoding UTF8
-            $tempToken = Join-Path $env:RUNNER_TEMP 'token.dpapi'
-            $secure = ConvertTo-SecureString 'test-token' -AsPlainText -Force
-            $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $tempToken -Encoding UTF8
-            $encrypted = (Get-Content -LiteralPath $tempToken -Raw -Encoding UTF8).Trim()
-            $roundTrip = $encrypted | ConvertTo-SecureString
-            if ($roundTrip.Length -ne 10) { throw "DPAPI token round-trip length was $($roundTrip.Length), expected 10." }
-            Add-Content -LiteralPath $diagnosticPath -Value 'DPAPI ROUNDTRIP OK: encrypted token restored for the same Windows user.' -Encoding UTF8
-          } catch {
-            Add-Content -LiteralPath $diagnosticPath -Value ('ENVIRONMENT ERROR: ' + $_.Exception.Message) -Encoding UTF8
-            throw
-          }
-      - name: Upload Windows sync diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-sync-diagnostics-${{ github.run_id }}
-          path: ${{ runner.temp }}/windows-sync-diagnostics.txt
-          if-no-files-found: warn
-          retention-days: 3
+          $installer = Get-Content outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Raw
+          $runtime = Get-Content outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -Raw
+          if ($installer -notmatch [regex]::Escape("[string]`$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
+          if ($installer -notmatch 'github-token\.dpapi') { throw 'DPAPI token path is missing.' }
+          if ($runtime -notmatch 'credential\.helper') { throw 'Credential Manager bypass is missing.' }
+          $tempToken = Join-Path $env:RUNNER_TEMP 'token.dpapi'
+          $secure = ConvertTo-SecureString 'test-token' -AsPlainText -Force
+          $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $tempToken -Encoding UTF8
+          $roundTrip = Get-Content -LiteralPath $tempToken -Raw | ConvertTo-SecureString
+          if ($roundTrip.Length -ne 10) { throw 'DPAPI token round-trip failed.' }
       - name: Reproduce successful native Git stderr and missing mirror path
         shell: powershell
         run: |
