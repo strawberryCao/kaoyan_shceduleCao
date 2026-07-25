@@ -16,8 +16,8 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: learning-record-multimaterial-continuation
-  cancel-in-progress: false
+  group: learning-record-multimaterial-continuation-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   apply-and-verify:
