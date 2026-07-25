@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
   "workflow": "Deploy kaoyan study center to Cloudflare",
-  "runId": 30171172797,
-  "runNumber": 291,
+  "runId": 30171545115,
+  "runNumber": 295,
   "event": "push",
   "conclusion": "success",
   "sourceBranch": "fix/learning-detail-title-latex",
-  "sourceCommit": "6e457f2a93271f21a4a6e60d694fb8f71b70438c",
-  "runUrl": "https://github.com/strawberryCao/kaoyan_shceduleCao/actions/runs/30171172797",
-  "createdAt": "2026-07-25T19:13:11Z",
-  "updatedAt": "2026-07-25T19:14:34Z",
-  "recordedAt": "2026-07-25T19:14:42.308Z"
+  "sourceCommit": "5f9b52902892f2681e40a013df1c701ddbe118d2",
+  "runUrl": "https://github.com/strawberryCao/kaoyan_shceduleCao/actions/runs/30171545115",
+  "createdAt": "2026-07-25T19:24:45Z",
+  "updatedAt": "2026-07-25T19:26:00Z",
+  "recordedAt": "2026-07-25T19:26:06.790Z"
 }
