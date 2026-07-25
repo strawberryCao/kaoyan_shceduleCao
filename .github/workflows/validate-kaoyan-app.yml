@@ -7,10 +7,14 @@ on:
       - '.github/scripts/**public-lan-parity*'
       - '.github/workflows/validate-kaoyan-app.yml'
   pull_request:
-    branches: [fix/learning-detail-title-latex]
+    branches:
+      - fix/learning-detail-title-latex
+      - fix/public-lan-parity-control-plane
     paths:
       - 'outputs/kaoyan-schedule-app/**'
+      - '.github/scripts/**public-lan-parity*'
       - '.github/workflows/validate-kaoyan-app.yml'
+      - '.github/validation/public-lan-parity-trigger.txt'
   workflow_dispatch:
 
 permissions:
@@ -27,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane' && github.event.pull_request.base.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -34,10 +39,10 @@ jobs:
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
       - name: Apply and validate public LAN parity
-        if: github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane'
+        if: (github.event_name == 'push' && github.ref_name == 'fix/public-lan-parity-control-plane') || (github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane')
         run: bash .github/scripts/run-public-lan-parity-v2.sh
       - name: Validate PowerShell syntax
-        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
+        if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         shell: pwsh
         run: |
           $failed = $false
@@ -52,11 +57,11 @@ jobs:
           }
           if ($failed) { exit 1 }
       - name: Install dependencies
-        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
+        if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npm ci
       - name: Run automated tests
-        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
+        if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
         run: |
@@ -65,10 +70,10 @@ jobs:
           (( ${#test_files[@]} > 0 ))
           node --test "${test_files[@]}"
       - name: Build production app
-        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
+        if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npm run build
       - name: Validate Worker bundle
-        if: github.event_name != 'push' || github.ref_name != 'fix/public-lan-parity-control-plane'
+        if: github.event_name != 'push' && github.base_ref != 'fix/public-lan-parity-control-plane'
         working-directory: outputs/kaoyan-schedule-app
         run: npx wrangler deploy --dry-run
