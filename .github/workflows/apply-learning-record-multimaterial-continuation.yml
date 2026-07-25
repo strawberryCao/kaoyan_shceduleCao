@@ -7,6 +7,9 @@ on:
     paths:
       - 'scripts/apply-multimaterial-continuation.cjs'
       - '.github/workflows/apply-learning-record-multimaterial-continuation.yml'
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -69,6 +72,7 @@ jobs:
         run: npm run build
 
       - name: Commit verified generated source
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
