@@ -184,6 +184,12 @@ const pageRefText = (note: LearningAutoNote): string => note.pageRefs
   .filter(Boolean)
   .join(' · ');
 
+const noteAttachments = (note: LearningAutoNote) => note.attachments.length > 0
+  ? note.attachments
+  : note.filePath ? [{ id: 'legacy-primary', kind: 'image' as const, name: '原图', mimeType: 'image/jpeg', size: null, filePath: note.filePath, previewPath: '', posterPath: '', createdAt: note.createdAt }] : [];
+const noteImageAttachment = (note: LearningAutoNote) => noteAttachments(note).find((attachment) => attachment.kind === 'image');
+const noteFileUrl = (filePath: string): string => `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}`;
+
 const noteSearchFields = (date: string, note: LearningAutoNote): WeightedSearchField[] => [
   { text: note.title, weight: 10 },
   { text: note.knowledgePath.join(' '), weight: 8 },
@@ -1039,20 +1045,20 @@ export function LearningCenter({
     </div>
   );
 
-  const noteViewerItems = (entries: IndexedNote[]): ImageViewerItem[] => entries
-    .filter(({ note }) => Boolean(note.filePath))
-    .map(({ note }) => ({
-      id: `note:${note.noteUid}`,
-      src: `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(note.filePath)}`,
-      alt: `${note.title || '笔记'}原图`,
-    }));
+  const noteViewerItems = (entries: IndexedNote[]): ImageViewerItem[] => entries.flatMap(({ note }) => noteAttachments(note)
+    .filter((attachment) => attachment.kind === 'image' && attachment.filePath)
+    .map((attachment) => ({
+      id: `note:${note.noteUid}:${attachment.id}`,
+      src: noteFileUrl(attachment.filePath),
+      alt: `${note.title || '笔记'} · ${attachment.name}`,
+    })));
 
   const openNoteViewer = (
     note: LearningAutoNote,
     context: 'mistake' | 'good' | 'memory' | 'library' | 'inbox',
   ) => {
     const items = noteViewerItems(context === 'inbox' ? pendingNotes : noteListForView);
-    const index = items.findIndex((item) => item.id === `note:${note.noteUid}`);
+    const index = items.findIndex((item) => item.id.startsWith(`note:${note.noteUid}:`));
     if (index >= 0) setImageViewer({ items, index });
   };
 
@@ -1075,7 +1081,7 @@ export function LearningCenter({
       setSelectedCardId(item.id.slice(5));
       setRevealed(false);
     } else if (item.id.startsWith('note:')) {
-      const noteUid = item.id.slice(5);
+      const noteUid = item.id.slice(5).split(':')[0];
       if (view === 'inbox') setSelectedInboxKey(`note:${noteUid}`);
       else setSelectedNoteUid(noteUid);
     }
@@ -1089,9 +1095,8 @@ export function LearningCenter({
     const active = context === 'inbox'
       ? selectedInboxKey === `note:${note.noteUid}`
       : selectedNoteUid === note.noteUid;
-    const thumbnailUrl = note.filePath
-      ? `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(note.filePath)}`
-      : '';
+    const thumbnailAttachment = noteImageAttachment(note);
+    const thumbnailUrl = thumbnailAttachment?.filePath ? noteFileUrl(thumbnailAttachment.filePath) : '';
     return (
       <button
         className={`lc-note-button ${active ? 'active' : ''}`}
@@ -1149,7 +1154,10 @@ export function LearningCenter({
     const wrongReasons = noteWrongReasons(note);
     const itemSummary = note.items.slice(0, 8);
     const isEditingClassification = editingClassificationUid === note.noteUid && classificationDraft;
-    const imageUrl = note.filePath ? `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(note.filePath)}` : '';
+    const attachments = noteAttachments(note);
+    const imageAttachment = noteImageAttachment(note);
+    const imagePath = imageAttachment?.filePath || '';
+    const imageUrl = imagePath ? noteFileUrl(imagePath) : '';
     const detailFacts = [
       !isDefaultNoteBucket(note.subject) ? { label: '科目', value: displaySubject(note.subject) } : null,
       pages ? { label: '页码 / 题号', value: pages } : null,
@@ -1159,23 +1167,23 @@ export function LearningCenter({
         ? { label: '错因', value: wrongReasons.join('；'), wide: true }
         : null,
     ].filter((fact): fact is { label: string; value: string; wide?: boolean } => fact !== null);
-    const sourcePreview = note.filePath ? (
+    const sourcePreview = imagePath ? (
       <figure className="lc-source-preview is-question-first">
-        {imageUrl && failedImagePath !== note.filePath ? (
+        {imageUrl && failedImagePath !== imagePath ? (
           <button
             className="lc-source-preview-open"
             type="button"
             onClick={() => openNoteViewer(note, context)}
             aria-label="打开原图"
           >
-            <img src={imageUrl} alt={`${note.title || '笔记'}原图`} loading="eager" decoding="async" onError={() => setFailedImagePath(note.filePath)} />
+            <img src={imageUrl} alt={`${note.title || '笔记'}原图`} loading="eager" decoding="async" onError={() => setFailedImagePath(imagePath)} />
             <span aria-hidden="true"><ZoomIn size={16} /></span>
           </button>
         ) : (
           <div>
             <FileImage size={28} />
             <strong>原图加载失败</strong>
-            {failedImagePath === note.filePath && (
+            {failedImagePath === imagePath && (
               <button type="button" onClick={() => {
                 setFailedImagePath('');
               }}>重试</button>
@@ -1190,6 +1198,18 @@ export function LearningCenter({
           <ChevronLeft size={20} />
         </button>
         {sourcePreview}
+        {attachments.length > 0 && (
+          <section className="lc-attachments" aria-label="资料附件">
+            <div><h3>资料附件</h3><span>{attachments.length}</span></div>
+            <ul>{attachments.map((attachment) => (
+              <li key={attachment.id}>
+                <FileText size={17} aria-hidden="true" />
+                <span><strong>{attachment.name}</strong><small>{attachment.kind === 'image' ? '图片' : attachment.kind === 'pdf' ? 'PDF' : attachment.kind === 'word' ? 'Word' : attachment.kind === 'html' ? 'HTML' : '文件'}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
+                <a href={noteFileUrl(attachment.filePath)} download={attachment.name}><FileDown size={15} />打开 / 下载</a>
+              </li>
+            ))}</ul>
+          </section>
+        )}
 
         <header className="lc-detail-heading">
           <h2>{note.title || '未命名笔记'}</h2>

@@ -28,7 +28,7 @@ import {
   listBackgroundJobs,
   processBackgroundJob,
 } from './background-jobs.js';
-import { getNoteFile, saveNote } from './media.js';
+import { getNoteFile, saveMaterialNote, saveNote } from './media.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 
@@ -201,8 +201,12 @@ async function handleApi(request, env, pathname, url, ctx) {
   const canvasResponse = await handleCanvasRoute(request, env, pathname);
   if (canvasResponse) return canvasResponse;
   if (request.method === 'POST' && pathname === '/save-note') {
-    const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024));
+    const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024), ctx);
     return json(result, result.idempotentReplay ? 200 : 202);
+  }
+  if (request.method === 'POST' && pathname === '/save-material-note') {
+    const result = await saveMaterialNote(env, await readJson(request, 24 * 1024 * 1024));
+    return json(result, result.idempotentReplay ? 200 : 201);
   }
   if (request.method === 'GET' && pathname === '/note-file') return getNoteFile(env, url.searchParams.get('path'));
   if (pathname === '/notes/reveal') unavailable('Windows file reveal');

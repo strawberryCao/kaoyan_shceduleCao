@@ -1544,6 +1544,21 @@ function queueNoteEnrichment(noteUid) {
   return true;
 }
 
+async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    try {
+      return acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+    } catch (error) {
+      if (error?.code !== 'ORGANIZER_LOCKED') throw error;
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError || Object.assign(new Error('Note organizer is still running'), { code: 'ORGANIZER_LOCKED' });
+}
+
 function queueAiNamingJob(noteUid) {
   if (aiNamingJobs.has(noteUid)) return;
   const job = aiNamingQueue.then(async () => {
@@ -2215,7 +2230,10 @@ async function handleLearningDataRoute(req, res, pathname) {
         : patch.organizationStatus === 'confirmed' ? 'accept' : null;
     let snapshot;
     if (reviewAction) {
-      const releaseOrganizerLock = acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+      // AI naming immediately queues a one-note organizer pass. A human correction
+      // submitted at that moment must wait for the short-lived filesystem lock,
+      // rather than surfacing a false 409 conflict to the user.
+      const releaseOrganizerLock = await acquireOrganizerLockForHumanAction();
       try {
         snapshot = learningData.getSnapshot();
         if (
