@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const target = path.join(__dirname, 'apply-multimaterial-media-ui.cjs');
 let source = fs.readFileSync(target, 'utf8');
@@ -23,12 +24,23 @@ const replacements = [
     "aria-label={`移除 ${file.name}`}",
     "aria-label={'移除 ' + file.name}",
   ],
+  [
+    "noteDrop = replaceOnce(noteDrop, \"  if (isMobileCapture) {\", \"  if (materialOpen) {\\n    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;\\n  }\\n\\n  if (isMobileCapture) {\", 'note drop composer branch');",
+    "noteDrop = replaceOnce(noteDrop, \"  if (isMobileCapture) {\\n    if (mobileStep === 'multi-crop'\", \"  if (materialOpen) {\\n    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;\\n  }\\n\\n  if (isMobileCapture) {\\n    if (mobileStep === 'multi-crop'\", 'note drop composer branch');",
+  ],
 ];
 
 for (const [before, after] of replacements) {
-  if (!source.includes(before)) throw new Error(`Missing transform repair anchor: ${before}`);
+  if (!source.includes(before)) {
+    if (source.includes(after)) continue;
+    throw new Error(`Missing transform repair anchor: ${before}`);
+  }
   source = source.replace(before, after);
 }
 
 fs.writeFileSync(target, source, 'utf8');
-console.log('Repaired nested templates in multimaterial transform.');
+const checked = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' });
+if (checked.status !== 0) {
+  throw new Error(checked.stderr || checked.stdout || 'Transform syntax check failed');
+}
+console.log('Repaired and syntax-checked multimaterial transform.');
