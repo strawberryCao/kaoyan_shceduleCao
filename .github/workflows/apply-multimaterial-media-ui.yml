@@ -1,0 +1,115 @@
+name: Apply multimaterial media and capture UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/learning-record-multimaterial-continuation]
+    paths:
+      - 'scripts/apply-multimaterial-media-ui.cjs'
+      - '.github/workflows/apply-multimaterial-media-ui.yml'
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: multimaterial-media-ui-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/learning-record-multimaterial-continuation
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+
+      - name: Apply media and UI continuation
+        run: node scripts/apply-multimaterial-media-ui.cjs
+
+      - name: Normalize generated whitespace
+        shell: python
+        run: |
+          from pathlib import Path
+          paths = [
+              Path('outputs/kaoyan-schedule-app/cloudflare/media.js'),
+              Path('outputs/kaoyan-schedule-app/cloudflare/github-store.js'),
+              Path('outputs/kaoyan-schedule-app/cloudflare/worker.js'),
+              Path('outputs/kaoyan-schedule-app/cloudflare/media-material.test.mjs'),
+              Path('outputs/kaoyan-schedule-app/src/utils/notes.ts'),
+              Path('outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx'),
+              Path('outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx'),
+              Path('outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx'),
+              Path('outputs/kaoyan-schedule-app/quick-material-composer.css'),
+              Path('outputs/kaoyan-schedule-app/learning-center.css'),
+          ]
+          for path in paths:
+              text = path.read_text(encoding='utf-8')
+              path.write_text('\n'.join(line.rstrip(' \t') for line in text.split('\n')), encoding='utf-8')
+
+      - name: Validate generated source
+        run: |
+          node --check outputs/kaoyan-schedule-app/cloudflare/media.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/github-store.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/worker.js
+          git diff --check
+
+      - name: Run material tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node --test cloudflare/media-material.test.mjs cloudflare/learning-multimaterial.test.mjs
+          node --test scripts/learning-multimaterial.test.cjs
+
+      - name: Run full automated suite
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
+        run: |
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+
+      - name: Build application
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit verified generated source
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            outputs/kaoyan-schedule-app/cloudflare/media.js \
+            outputs/kaoyan-schedule-app/cloudflare/github-store.js \
+            outputs/kaoyan-schedule-app/cloudflare/worker.js \
+            outputs/kaoyan-schedule-app/cloudflare/media-material.test.mjs \
+            outputs/kaoyan-schedule-app/src/utils/notes.ts \
+            outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx \
+            outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
+            outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx \
+            outputs/kaoyan-schedule-app/quick-material-composer.css \
+            outputs/kaoyan-schedule-app/learning-center.css
+          if git diff --cached --quiet; then
+            echo 'No generated source changes remain.'
+            exit 0
+          fi
+          git commit -m 'feat: add text and multimaterial learning capture'
+          git push origin HEAD:fix/learning-record-multimaterial-continuation
