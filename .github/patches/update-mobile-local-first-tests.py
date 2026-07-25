@@ -27,4 +27,9 @@ replace_once(
     "assert.match(rename, /updateMirroredCloudNote/);",
     "assert.match(text('cloudflare/learning.js'), /updateMirroredCloudNote/);",
 )
+replace_once(
+    'public-lan-parity.test.cjs',
+    "assert.match(media, /enqueueRenameJob/);",
+    "assert.match(media, /enqueueNotePipelineJob/);",
+)
 print('legacy mobile capture assertions updated for local-first pipeline')
