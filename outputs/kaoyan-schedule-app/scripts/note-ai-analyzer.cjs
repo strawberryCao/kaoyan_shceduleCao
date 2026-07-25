@@ -8,6 +8,7 @@ const {
   resolveAiSubject,
 } = require('./ai-subject-policy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
+const { NOTE_ANALYSIS_INSTRUCTIONS, NOTE_ANALYSIS_OUTPUT } = require('./agent-workflow-contracts.cjs');
 
 const ANALYZER_VERSION = 'note-ai-analyzer-v4';
 const DEFAULT_TAXONOMY_MAX_CHARS = 12_000;
@@ -267,6 +268,10 @@ function makePromptContext(context, parsed, hints, taxonomy) {
   };
 }
 
+function fillAnalysisTemplate(value, variables) {
+  return String(value || '').replace(/\{([A-Za-z0-9_]+)\}/g, (_match, key) => String(variables[key] ?? ''));
+}
+
 function buildPrompt(contextPayload, options = {}) {
   const maxItems = Math.max(1, Math.min(12, Number(options.maxItems) || 12));
   const requestedMaxCards = Number(options.maxCards);
@@ -279,44 +284,34 @@ function buildPrompt(contextPayload, options = {}) {
     standard: '摘要兼顾核心结论、必要依据与可复习性。',
   }[options.summaryDetail] || '摘要兼顾核心结论、必要依据与可复习性。';
   const mistakeRule = options.mistakePolicy === 'explicit_only'
-    ? 'intent.isMistake 只在用户备注、标签或本地解析结果明确表示错题/易错时为 true，不得由 AI 自行推断。'
-    : 'intent.isMistake 可结合用户备注、图片订正痕迹和解题语义判断，但不能把普通练习题一律当作错题。';
+    ? 'intent.isMistake 只在用户备注、标签或本地解析结果明确表示错题或易错时为 true，不得自行扩大。'
+    : 'intent.isMistake 可结合备注、图片订正痕迹和解题语义判断，但不能把普通练习一律当作错题。';
   const goodRule = options.goodQuestionPolicy === 'ai_high_value'
-    ? 'intent.isGood 可在用户明确标记时为 true，也可为具有明显方法价值、代表性且值得二刷的题目为 true；必须在 reason 中说明价值。'
-    : 'intent.isGood 只在用户备注或人工标签明确写了“好题、经典题、典型题、精品题”时为 true，禁止 AI 仅凭题目质量自行加入好题。';
+    ? 'intent.isGood 可在用户明确标记时为 true，也可用于具有明显方法价值且值得二刷的题目；必须说明价值。'
+    : 'intent.isGood 只在用户备注或标签明确标记好题、经典题、典型题或精品题时为 true。';
   const memorizeRule = options.memorizePolicy === 'explicit_only'
     ? 'intent.shouldMemorize 只在用户明确要求背诵、熟记或主动回忆时为 true。'
-    : 'intent.shouldMemorize 可依据定义、公式、结论、易混点和用户语义判断是否需要主动回忆。';
+    : 'intent.shouldMemorize 可依据定义、公式、结论、易混点和用户语义判断。';
   const cardRule = options.cardPolicy === 'disabled'
-    ? '不要生成任何 cards，必须返回空数组。'
+    ? 'cards 必须为空数组。'
     : options.cardPolicy === 'high_value'
-      ? `最多生成 ${maxCards} 张高价值卡片；可以覆盖普通笔记，但必须能主动回忆、答案明确且不重复，宁缺毋滥。`
-      : `只有整张或对应 item 存在明确错题意图或记忆意图时才生成 cards；普通参考笔记必须为空。每份最多 ${maxCards} 张，优先只生成最有价值、能主动回忆且答案明确的卡片；不要逐项铺量。`;
+      ? `最多生成 ${maxCards} 张高价值主动回忆卡片；答案必须明确且不重复，宁缺毋滥。`
+      : `只有整张或对应分项存在明确错题意图或记忆意图时才生成 cards；最多 ${maxCards} 张。`;
+  const variables = {
+    supportedSubjects: AI_SUPPORTED_SUBJECTS.join('、'),
+    fallbackSubject: AI_FALLBACK_SUBJECT,
+    maxItems,
+    maxCards,
+    summaryRule,
+    mistakeRule,
+    goodRule,
+    memorizeRule,
+    cardRule,
+    contextPayload: JSON.stringify(contextPayload),
+  };
   return [
-    '你是考研笔记的语义整理器。请同时阅读图片与备注，输出严格 JSON。',
-    '目标不是机械匹配关键词，而是判断图片实际知识内容、题目类型、用户为何记录它，以及它是否值得记忆或重做。',
-    '“记”“记住”“背”“要背”等是很强的记忆意图提示，但没有这些词时，也要依据定义、公式、结论、易混点和用户语义判断；不能只靠固定词表。',
-    '分类规则：',
-    `1. subject 只能从 existingTaxonomy 中已有的标准考研一级科目选择：${AI_SUPPORTED_SUBJECTS.join('、')}。禁止创建、提议或输出其他一级科目。`,
-    `1.1 新领域或更细的主题只能写入 knowledgePoint/tags/items，绝不能写入 subject；无法可靠归入上述科目时 subject 必须为“${AI_FALLBACK_SUBJECT}”。`,
-    '1.2 你必须做出最合理的科目判断。只要图片或备注能可靠识别为上述任一标准考研科目，就不得因为信心不足而退回默认分类；默认分类只用于图片不可读、没有学习内容、跨科歧义或确实无法判断。',
-    '2. aliases 只放与规范分类真正同义的名称，不要放上下位概念或无关标签。',
-    '3. subject/knowledgePoint 是整张笔记用于归档的主分类。canvas 含多道题时选共同或最主要分类，并在 items 中逐项描述。',
-    `4. single 通常是一道题或一个知识单元；除非图片明显包含多个独立题目，不要拆成多个 items。canvas 可以返回多个 items，但最多 ${maxItems} 项，不要机械逐段拆分。`,
-    '5. questionType 概括题型（如极限计算、证明题、选择题、代码分析）；不是题目则为 null。',
-    '5.0 错因按证据优先级处理：备注明确写出错因时只做忠实提取，wrongReasonSource=explicit_remark；图片中明确标注、划改或订正能直接证明错因时为 explicit_image；前两者都没有、但可从可见错误步骤与订正可靠推断时，才允许给出一句简短推断并标记 ai_inferred；证据不足必须返回 null/none，禁止猜测。',
-    '5.0.1 wrongReason 最多一句话，描述具体错误动作，不写完整解法、不教学、不扩展知识。wrongReasonConfidence 只表示错因判断可靠度。',
-    `5.1 ${summaryRule}`,
-    `6. ${mistakeRule}`,
-    `6.1 ${goodRule}`,
-    `6.2 ${memorizeRule} 错题和好题可以并存。`,
-    `7. ${cardRule}`,
-    '8. confidence 衡量主分类和语义判断的可靠程度；置信度只用于记录可靠性，不用于要求用户确认，也不能替代你的最佳分类判断。图片不清晰或跨多个不相关主题时应降低。',
-    '9. 所有文字使用简洁中文。不要输出 Markdown，不要解释 JSON 之外的内容。',
-    '必须严格使用以下 JSON 结构；没有错因时 wrongReason 为 null，没有分项或卡片时用空数组：',
-    '{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"wrongReasonSource":"none","wrongReasonConfidence":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}',
-    '输入上下文：',
-    JSON.stringify(contextPayload),
+    ...NOTE_ANALYSIS_INSTRUCTIONS.map((line) => fillAnalysisTemplate(line, variables)).filter(Boolean),
+    fillAnalysisTemplate(NOTE_ANALYSIS_OUTPUT, variables),
   ].join('\n');
 }
 

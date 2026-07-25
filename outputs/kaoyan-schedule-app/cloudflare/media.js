@@ -11,7 +11,7 @@ import {
 } from './github-store.js';
 import { readReceipt, STORAGE_PATHS, writeReceipt } from './storage.js';
 import { mirrorNewCloudImage, mirroredCloudImagePaths } from './source-mirror.js';
-import { enqueueRenameJob, processBackgroundJob } from './background-jobs.js';
+import { enqueueNotePipelineJob, processBackgroundJob } from './background-jobs.js';
 
 const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -223,10 +223,10 @@ async function finishSavedImagesInBackground(env, staged, responses, timestamp) 
   reportBackgroundFailure('cloud_note_batch_post_save_failed', staged.map((item) => item.noteUid).join(','), postSave);
 
   const naming = await Promise.allSettled(staged.map(async (item) => {
-    const queued = await enqueueRenameJob(env, item.noteUid);
+    const queued = await enqueueNotePipelineJob(env, item.noteUid);
     await processBackgroundJob(env, queued.job.id);
   }));
-  reportBackgroundFailure('cloud_note_batch_naming_failed', staged.map((item) => item.noteUid).join(','), naming);
+  reportBackgroundFailure('cloud_note_batch_ai_pipeline_failed', staged.map((item) => item.noteUid).join(','), naming);
 }
 
 export async function saveNoteBatch(env, payload, ctx) {

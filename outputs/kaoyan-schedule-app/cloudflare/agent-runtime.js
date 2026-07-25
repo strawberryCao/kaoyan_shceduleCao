@@ -154,7 +154,7 @@ export async function getAgentTask(env, taskId) {
   if (task.active !== true) throw new HttpError(403, `Agent 任务已在局域网版本停用：${task.label}`, 'AI_TASK_DISABLED');
   if (task.settings.enabled === false) throw new HttpError(403, `Agent 任务已在局域网配置中心停用：${task.label}`, 'AI_TASK_DISABLED');
   const workflow = runtime.workflows?.[taskId] || null;
-  if (['note_naming', 'question_splitting'].includes(taskId) && !workflow) {
+  if (['note_naming', 'question_splitting', 'note_enrichment', 'note_image_understanding'].includes(taskId) && !workflow) {
     throw new HttpError(503, `局域网运行时没有发布完整工作流：${taskId}`, 'LOCAL_AGENT_WORKFLOW_MISSING');
   }
   return { runtime, task, settings: task.settings, workflow };

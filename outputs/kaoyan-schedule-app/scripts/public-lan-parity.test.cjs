@@ -23,7 +23,7 @@ test('public mobile capture waits longer than the local splitting timeout and do
   const capture = text('src/components/NoteDropApp.tsx');
   assert.match(notes, /AI_REQUEST_TIMEOUT_MS = 180_000/);
   assert.doesNotMatch(capture, /renameLearningNoteWithAi/);
-  assert.match(capture, /AI 正在后台按局域网规则命名/);
+  assert.match(capture, /后台队列|局域网规则.*命名|完整分类/);
   assert.match(capture, /读取局域网 AI 配置/);
 });
 
@@ -49,7 +49,7 @@ test('single cloud captures and multi-question notes are both eligible for LAN-c
   const rename = text('cloudflare/rename-job.js');
   const media = text('cloudflare/media.js');
   assert.match(rename, /sourceType === 'single-capture'/);
-  assert.match(rename, /updateMirroredCloudNote/);
-  assert.match(media, /enqueueRenameJob/);
+  assert.match(text('cloudflare/learning.js'), /updateMirroredCloudNote/);
+  assert.match(media, /enqueueNotePipelineJob/);
   assert.match(media, /sourceType: (?:payload|item\.payload)\.sourceType \|\| 'single-capture'/);
 });

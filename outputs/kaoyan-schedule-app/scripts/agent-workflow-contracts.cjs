@@ -1,6 +1,61 @@
 'use strict';
 
+const NOTE_ANALYSIS_INSTRUCTIONS = Object.freeze([
+  '你是考研笔记的语义整理器。请同时阅读图片与备注，输出严格 JSON。',
+  '目标不是机械匹配关键词，而是判断图片实际知识内容、题目类型、用户为何记录它，以及它是否值得记忆或重做。',
+  '“记”“记住”“背”“要背”等是很强的记忆意图提示，但没有这些词时，也要依据定义、公式、结论、易混点和用户语义判断。',
+  '分类规则：',
+  '1. subject 只能从 existingTaxonomy 中已有的标准考研一级科目选择：{supportedSubjects}。禁止创建、提议或输出其他一级科目。',
+  '1.1 新领域或更细主题只能写入 knowledgePoint、tags 或 items；无法可靠归类时 subject 必须为“{fallbackSubject}”。',
+  '1.2 只要图片或备注能可靠识别为某一标准科目，就不得因为信心不足退回默认分类。',
+  '2. subject 与 knowledgePoint 是整张笔记的主分类；多题拆分后的图片通常只含一道题或一个知识单元。',
+  '3. questionType 概括题型；不是题目则为 null。',
+  '4. 错因按证据优先级处理：备注明确写出时标记 explicit_remark；图片划改或订正能直接证明时标记 explicit_image；只有可见步骤足以支持时才允许 ai_inferred；证据不足必须为 null/none。',
+  '4.1 wrongReason 最多一句话，只描述具体错误动作，不写完整解法。',
+  '5. {summaryRule}',
+  '6. {mistakeRule}',
+  '6.1 {goodRule}',
+  '6.2 {memorizeRule} 错题和好题可以并存。',
+  '7. {cardRule}',
+  '8. single 通常不要拆成多个 items；只有图片明显包含多个独立知识单元时才拆分，最多 {maxItems} 项。',
+  '9. confidence 衡量主分类和语义判断可靠度；低置信度不能代替最佳分类判断。',
+  '10. 所有文字使用简洁中文，不要输出 Markdown，不要解释 JSON 之外的内容。',
+  '输入上下文：{contextPayload}',
+]);
+
+const NOTE_ANALYSIS_OUTPUT = '只输出 JSON：{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"wrongReasonSource":"none","wrongReasonConfidence":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}；没有错因时 wrongReason 为 null，没有分项或卡片时使用空数组。';
+
 const DEFAULT_WORKFLOWS = Object.freeze({
+  note_enrichment: Object.freeze({
+    version: 'note-enrichment-v4',
+    steps: Object.freeze([
+      '读取局域网 note_enrichment 任务设置与现有分类目录',
+      '合并图片、备注、标签与强意图提示',
+      '按局域网 Provider/模型/回退约束路由',
+      '生成科目、知识点、题型、错因、意图、分项和卡片',
+      '应用局域网分类政策并保护用户手动修改字段',
+      '更新学习记录、卡片与 source-notes 镜像',
+    ]),
+    prompt: Object.freeze({
+      instructions: NOTE_ANALYSIS_INSTRUCTIONS,
+      outputFormat: NOTE_ANALYSIS_OUTPUT,
+    }),
+  }),
+  note_image_understanding: Object.freeze({
+    version: 'note-image-understanding-v4',
+    steps: Object.freeze([
+      '读取局域网 note_image_understanding 与 note_enrichment 任务设置',
+      '在没有备注时独立理解题目、公式、手写过程和订正痕迹',
+      '按局域网 Provider/模型/推理强度与回退约束路由',
+      '生成与 note_enrichment 相同的完整结构化结果',
+      '应用局域网分类政策并保护用户手动修改字段',
+      '更新学习记录、卡片与 source-notes 镜像',
+    ]),
+    prompt: Object.freeze({
+      instructions: NOTE_ANALYSIS_INSTRUCTIONS,
+      outputFormat: NOTE_ANALYSIS_OUTPUT,
+    }),
+  }),
   note_naming: Object.freeze({
     version: 'note-naming-v3',
     steps: Object.freeze([
@@ -75,7 +130,7 @@ function normalizeWorkflow(taskId, value, fallback) {
     steps: cleanLines(input.steps, fallback.steps),
     prompt: {
       instructions: cleanLines(prompt.instructions, fallback.prompt.instructions),
-      outputFormat: cleanText(prompt.outputFormat, 4000) || fallback.prompt.outputFormat,
+      outputFormat: cleanText(prompt.outputFormat, 12000) || fallback.prompt.outputFormat,
     },
   };
 }
@@ -90,5 +145,7 @@ function buildPublicWorkflowContracts(overrides = {}) {
 
 module.exports = {
   DEFAULT_WORKFLOWS,
+  NOTE_ANALYSIS_INSTRUCTIONS,
+  NOTE_ANALYSIS_OUTPUT,
   buildPublicWorkflowContracts,
 };
