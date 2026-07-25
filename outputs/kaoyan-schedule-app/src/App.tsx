@@ -1,6 +1,7 @@
-import { lazy, Suspense, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, type ReactNode } from 'react';
 import { CommandPalette } from './components/CommandPalette';
 import { WebAppShell } from './components/WebAppShell';
+import { installCaptureUploadResumer } from './utils/captureUploadQueue';
 import { IS_CLOUD_RUNTIME } from './utils/notes';
 import './wallpaper.css';
 import './notes.css';
@@ -28,6 +29,11 @@ const AiConfigPage = lazy(() => import('./components/AiConfigPage').then((module
 const deferred = (content: ReactNode) => <Suspense fallback={null}>{content}</Suspense>;
 
 export default function App() {
+  useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
+    return installCaptureUploadResumer();
+  }, []);
+
   const params = new URLSearchParams(window.location.search);
   const isWallpaperMode = params.get('wallpaper') === '1';
   const isConsoleMode = params.get('console') === '1';
