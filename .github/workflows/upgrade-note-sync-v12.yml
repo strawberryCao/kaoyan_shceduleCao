@@ -23,18 +23,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Apply and validate V12 with Windows PowerShell 5.1
+      - name: Apply V12 installer update
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           python .github/patches/upgrade-note-sync-v12.py
-
+      - name: Validate UTF-8 BOM and Windows PowerShell 5.1 syntax
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
           $installer = Resolve-Path 'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1'
           $bytes = [System.IO.File]::ReadAllBytes($installer)
           if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
             throw 'install-note-folder-sync.ps1 must be UTF-8 with BOM for Windows PowerShell 5.1.'
           }
-
           $tokens = $null
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile($installer, [ref]$tokens, [ref]$errors) | Out-Null
@@ -42,24 +44,36 @@ jobs:
             $errors | ForEach-Object { Write-Error ("line {0}, column {1}: {2}" -f $_.Extent.StartLineNumber, $_.Extent.StartColumnNumber, $_.Message) }
             throw 'V12 installer failed Windows PowerShell 5.1 parsing.'
           }
-
-          $text = Get-Content -LiteralPath $installer -Raw -Encoding UTF8
-          foreach ($required in @(
-            "`$version = '20260726-mobile-local-first-v12'",
-            'version = 12',
-            '全局同步 v12 已启用。',
-            "'agent-workflow-contracts.cjs'",
-            "'note-ai-analyzer.cjs'",
-            "'export-agent-runtime.cjs'",
-            'Install-ScriptFile $dependency'
-          )) {
-            if (-not $text.Contains($required)) { throw "V12 installer contract is missing: $required" }
-          }
-          if ($text.Contains('public-lan-parity-v11') -or $text.Contains('version = 11') -or $text.Contains('全局同步 v11')) {
-            throw 'Legacy V11 installer identifiers remain.'
-          }
-
-          node -e "const fs=require('fs'); const p='outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs'; const s=fs.readFileSync(p,'utf8'); for(const v of ['note-enrichment-v4','note-image-understanding-v4','note-naming-v3','question-splitting-v3']) if(!s.includes(v)) throw new Error('missing '+v); console.log('Shared LAN workflow contracts verified.');"
+      - name: Validate V12 installer and shared workflow contracts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          from pathlib import Path
+          path = Path('outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1')
+          text = path.read_text(encoding='utf-8-sig')
+          required = [
+              "$version = '20260726-mobile-local-first-v12'",
+              'version = 12',
+              '全局同步 v12 已启用。',
+              "'agent-workflow-contracts.cjs'",
+              "'note-ai-analyzer.cjs'",
+              "'export-agent-runtime.cjs'",
+              'Install-ScriptFile $dependency',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'V12 installer contract missing: {missing}')
+          legacy = [item for item in ['public-lan-parity-v11', 'version = 11', '全局同步 v11'] if item in text]
+          if legacy:
+              raise SystemExit(f'Legacy V11 identifiers remain: {legacy}')
+          contracts = Path('outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs').read_text(encoding='utf-8')
+          versions = ['note-enrichment-v4', 'note-image-understanding-v4', 'note-naming-v3', 'question-splitting-v3']
+          missing_versions = [item for item in versions if item not in contracts]
+          if missing_versions:
+              raise SystemExit(f'Shared LAN workflow contracts missing: {missing_versions}')
+          print('V12 installer and shared LAN workflow contracts verified.')
+          '@ | python -
       - name: Commit validated V12 installer
         shell: powershell
         run: |
