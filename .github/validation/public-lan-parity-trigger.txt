@@ -1,2 +1,2 @@
 Trigger public/LAN parity clean delivery.
-Attempt: self-report-clean-9
+Attempt: whitelist-clean-10
