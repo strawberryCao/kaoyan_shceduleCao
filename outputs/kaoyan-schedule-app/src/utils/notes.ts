@@ -66,6 +66,14 @@ export interface SaveNoteResult {
   error?: string;
 }
 
+export interface SaveNoteBatchResult {
+  ok: boolean;
+  notes: SaveNoteResult[];
+  learningData?: LearningDataSnapshot;
+  idempotentReplay?: boolean;
+  error?: string;
+}
+
 export interface DetectQuestionResult {
   ok: boolean;
   provider?: string;
@@ -191,6 +199,16 @@ export const saveNoteImage = async (payload: SaveNotePayload): Promise<SaveNoteR
   return result;
 };
 
+export const saveNoteImagesBatch = async (payloads: SaveNotePayload[]): Promise<SaveNoteBatchResult> => {
+  if (!Array.isArray(payloads) || payloads.length === 0) throw new Error('没有可保存的题目。');
+  const notes = payloads.map((payload) => ({ subject: '默认文件夹', remark: '', ...payload, noteUid: payload.noteUid || createNoteUid() }));
+  return fetchJsonWithTimeout<SaveNoteBatchResult>(`${NOTE_SERVER_URL}/save-note-batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes }),
+  }, 90_000);
+};
+
 export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promise<SaveMaterialResult> => {
   const noteUid = payload.noteUid || createNoteUid();
   const files: MaterialFilePayload[] = [];
@@ -204,13 +222,77 @@ export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promis
   }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
 };
 
-export const detectQuestionRegions = async (imageDataUrl: string): Promise<DetectQuestionResult> => {
+const detectQuestionRegionsOnce = async (
+  imageDataUrl: string,
+  onProgress?: (message: string) => void,
+): Promise<DetectQuestionResult> => {
   const size = await getImageDimensions(imageDataUrl);
-  return fetchJsonWithTimeout<DetectQuestionResult>(`${NOTE_SERVER_URL}/ai/detect-questions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
-  }, AI_REQUEST_TIMEOUT_MS);
+  if (!IS_CLOUD_RUNTIME) {
+    return fetchJsonWithTimeout<DetectQuestionResult>(`${NOTE_SERVER_URL}/ai/detect-questions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
+    }, AI_REQUEST_TIMEOUT_MS);
+  }
+
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(new DOMException('请求超时', 'TimeoutError')), AI_REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${NOTE_SERVER_URL}/ai/detect-questions/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      signal: controller.signal,
+      body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
+    });
+    if (!response.ok) {
+      const failed = await response.json().catch(() => null) as { error?: string } | null;
+      throw new Error(failed?.error || `服务返回 ${response.status}`);
+    }
+    if (!response.body) throw new Error('浏览器没有返回 AI 识别数据流。');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const message = JSON.parse(line) as {
+          type?: string;
+          message?: string;
+          error?: string;
+          result?: DetectQuestionResult;
+        };
+        if (message.type === 'progress' && message.message) onProgress?.(message.message);
+        if (message.type === 'error') throw new Error(message.error || 'AI 多题识别失败。');
+        if (message.type === 'result' && message.result) return message.result;
+      }
+      if (done) break;
+    }
+    throw new Error('AI 识别连接结束，但没有返回裁剪结果。');
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('AI 识别超时，请缩小预裁剪范围后重试。');
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
+export const detectQuestionRegions = async (
+  imageDataUrl: string,
+  onProgress?: (message: string) => void,
+): Promise<DetectQuestionResult> => {
+  try {
+    return await detectQuestionRegionsOnce(imageDataUrl, onProgress);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!IS_CLOUD_RUNTIME || !/load failed|failed to fetch|network/i.test(message)) throw error;
+    onProgress?.('2/4 连接短暂中断，正在自动重新建立 AI 识别连接…');
+    await new Promise((resolve) => window.setTimeout(resolve, 900));
+    return detectQuestionRegionsOnce(imageDataUrl, onProgress);
+  }
 };
 
 export const enqueueLearningNoteRename = async (noteUid: string): Promise<AiJobResponse> => (

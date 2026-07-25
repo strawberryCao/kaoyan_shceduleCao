@@ -1,12 +1,15 @@
 import { HttpError, sha256 } from './http.js';
-import { createNote, createSavedImageNote, getLearningSnapshot, insertSavedImageNote } from './learning.js';
+import { createNote, createSavedImageNote, findNote, getLearningSnapshot } from './learning.js';
 import {
   assertRepoPath,
+  commitFiles,
+  getBranchHead,
   publicFileResponse,
   readFile,
+  readJsonFile,
   writeBinaryFile,
 } from './github-store.js';
-import { readReceipt, writeReceipt } from './storage.js';
+import { readReceipt, STORAGE_PATHS, writeReceipt } from './storage.js';
 import { mirrorNewCloudImage, mirroredCloudImagePaths } from './source-mirror.js';
 import { enqueueRenameJob, processBackgroundJob } from './background-jobs.js';
 
@@ -15,6 +18,8 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_MATERIAL_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
 const MAX_MATERIAL_FILES = 8;
+const MAX_BATCH_IMAGES = 12;
+const MAX_BATCH_IMAGE_BYTES = 48 * 1024 * 1024;
 const ASSET_ROOT = 'data/assets/';
 const SOURCE_NOTES_ROOT = 'source-notes/';
 const MIME_EXTENSIONS = new Map([
@@ -134,7 +139,53 @@ function reportBackgroundFailure(event, noteUid, result) {
   }
 }
 
-export async function saveNote(env, payload, ctx) {
+function normalizeLearningSnapshot(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? structuredClone(value) : {};
+  return {
+    ...source,
+    version: Number.isFinite(Number(source.version)) ? Number(source.version) : 1,
+    revision: Number.isInteger(Number(source.revision)) ? Math.max(0, Number(source.revision)) : 0,
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : null,
+    days: source.days && typeof source.days === 'object' && !Array.isArray(source.days) ? source.days : {},
+    cards: Array.isArray(source.cards) ? source.cards : [],
+    deletedNotes: source.deletedNotes && typeof source.deletedNotes === 'object' && !Array.isArray(source.deletedNotes)
+      ? source.deletedNotes : {},
+  };
+}
+
+function appendSavedImageNote(snapshot, note) {
+  const rawDay = snapshot.days[note.capturedDate];
+  const day = rawDay && typeof rawDay === 'object' && !Array.isArray(rawDay) ? { ...rawDay } : {};
+  day.manual = day.manual && typeof day.manual === 'object' && !Array.isArray(day.manual)
+    ? day.manual : { completedTaskIds: [], note: '', debt: '', mistakes: '' };
+  day.autoNotes = Array.isArray(day.autoNotes) ? [...day.autoNotes, note] : [note];
+  snapshot.days[note.capturedDate] = day;
+}
+
+function buildSavedImageResponse(note, image, repoPath, replayed) {
+  const sourceMirror = mirroredCloudImagePaths(note.noteUid, image.extension);
+  return {
+    ok: true,
+    noteUid: note.noteUid,
+    filePath: `github://${repoPath}`,
+    fileName: `${note.noteUid}.${image.extension}`,
+    sourceMirrorPath: sourceMirror.imagePath,
+    metadata: {
+      noteUid: note.noteUid,
+      sourceType: note.sourceType,
+      sourceBatchId: note.sourceBatchId,
+      sourceSplitIndex: note.sourceSplitIndex,
+      learning: { tags: note.tags, noteType: note.noteType },
+    },
+    learningSyncError: null,
+    aiStatus: 'pending',
+    aiAvailable: true,
+    provisional: false,
+    idempotentReplay: replayed,
+  };
+}
+
+async function prepareSavedImage(payload) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const image = decodeImageDataUrl(payload.imageDataUrl);
   const imageHash = await sha256(image.bytes);
@@ -150,74 +201,128 @@ export async function saveNote(env, payload, ctx) {
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     imageHash,
   }));
-  const existingReceipt = await readReceipt(env, 'save-note', noteUid);
-  if (existingReceipt) {
-    if (existingReceipt.requestHash !== requestHash) {
-      throw new HttpError(409, 'noteUid was already used for another image.', 'SAVE_OPERATION_REUSED');
-    }
-    return {
-      ...existingReceipt.result,
-      learningData: await getLearningSnapshot(env),
-      idempotentReplay: true,
-    };
-  }
-
-  const repoPath = `${ASSET_ROOT}${noteUid}.${image.extension}`;
-  const existingFile = await readFile(env, repoPath, { allowMissing: true, maxBytes: MAX_IMAGE_BYTES });
-  if (existingFile) {
-    const existingHash = await sha256(existingFile.bytes);
-    if (existingHash !== imageHash) {
-      throw new HttpError(409, 'noteUid was already used for another image.', 'SAVE_OPERATION_REUSED');
-    }
-  } else {
-    await writeBinaryFile(env, repoPath, image.bytes, {
-      createOnly: true,
-      message: `data: save note image ${noteUid}`,
-    });
-  }
-
-  const timestamp = new Date().toISOString();
-  const fileName = `${noteUid}.${image.extension}`;
-  const note = createSavedImageNote({ ...payload, sourceType: payload.sourceType || 'single-capture', noteUid }, { repoPath }, timestamp);
-  const learningResult = await insertSavedImageNote(env, note);
-  const sourceMirror = mirroredCloudImagePaths(noteUid, image.extension);
-  const response = {
-    ok: true,
+  return {
+    payload: { ...payload, noteUid },
     noteUid,
-    filePath: `github://${repoPath}`,
-    fileName,
-    sourceMirrorPath: sourceMirror.imagePath,
-    metadata: {
-      noteUid,
-      sourceType: note.sourceType,
-      sourceBatchId: note.sourceBatchId,
-      sourceSplitIndex: note.sourceSplitIndex,
-      learning: { tags: note.tags, noteType: note.noteType },
-    },
-    learningData: learningResult.snapshot,
-    learningSyncError: null,
-    aiStatus: 'pending',
-    aiAvailable: true,
-    provisional: false,
-    idempotentReplay: learningResult.outcome.replayed === true,
+    image,
+    imageHash,
+    requestHash,
+    repoPath: `${ASSET_ROOT}${noteUid}.${image.extension}`,
   };
+}
 
-  const backgroundWork = Promise.allSettled([
-    mirrorNewCloudImage(env, image, note, payload, timestamp),
-    saveReceipt(env, 'save-note', noteUid, requestHash, { ...response, learningData: undefined }),
-  ]).then(async (result) => {
-    reportBackgroundFailure('cloud_note_post_save_failed', noteUid, result);
-    try {
-      const queued = await enqueueRenameJob(env, noteUid);
-      await processBackgroundJob(env, queued.job.id);
-    } catch (error) {
-      console.error(JSON.stringify({ level: 'error', event: 'cloud_note_naming_failed', noteUid, error: error instanceof Error ? error.message : String(error) }));
+async function finishSavedImagesInBackground(env, staged, responses, timestamp) {
+  const responseByUid = new Map(responses.map((response) => [response.noteUid, response]));
+  const postSave = await Promise.allSettled(staged.flatMap((item) => {
+    const response = responseByUid.get(item.noteUid);
+    return [
+      mirrorNewCloudImage(env, item.image, item.note, item.payload, timestamp),
+      saveReceipt(env, 'save-note', item.noteUid, item.requestHash, response),
+    ];
+  }));
+  reportBackgroundFailure('cloud_note_batch_post_save_failed', staged.map((item) => item.noteUid).join(','), postSave);
+
+  const naming = await Promise.allSettled(staged.map(async (item) => {
+    const queued = await enqueueRenameJob(env, item.noteUid);
+    await processBackgroundJob(env, queued.job.id);
+  }));
+  reportBackgroundFailure('cloud_note_batch_naming_failed', staged.map((item) => item.noteUid).join(','), naming);
+}
+
+export async function saveNoteBatch(env, payload, ctx) {
+  const inputs = Array.isArray(payload?.notes) ? payload.notes : [];
+  if (inputs.length < 1 || inputs.length > MAX_BATCH_IMAGES) {
+    throw new HttpError(400, `notes must contain between 1 and ${MAX_BATCH_IMAGES} images.`, 'INVALID_NOTE_BATCH');
+  }
+  const prepared = await Promise.all(inputs.map((item) => prepareSavedImage(item && typeof item === 'object' ? item : {})));
+  const noteUids = new Set();
+  let totalBytes = 0;
+  for (const item of prepared) {
+    if (noteUids.has(item.noteUid)) throw new HttpError(400, 'A noteUid may appear only once in a batch.', 'DUPLICATE_NOTE_UID');
+    noteUids.add(item.noteUid);
+    totalBytes += item.image.bytes.byteLength;
+  }
+  if (totalBytes > MAX_BATCH_IMAGE_BYTES) throw new HttpError(413, 'The image batch is too large.', 'PAYLOAD_TOO_LARGE');
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const head = await getBranchHead(env);
+    const learningFile = await readJsonFile(env, STORAGE_PATHS.learning, {
+      ref: head,
+      allowMissing: true,
+      maxBytes: 24 * 1024 * 1024,
+    });
+    const snapshot = normalizeLearningSnapshot(learningFile?.value);
+    const timestamp = new Date().toISOString();
+    const staged = [];
+    const responses = [];
+
+    for (const item of prepared) {
+      const existing = findNote(snapshot, item.noteUid)?.note;
+      if (existing) {
+        if (existing.sourceImageHash && existing.sourceImageHash !== item.imageHash) {
+          throw new HttpError(409, 'noteUid was already used for another image.', 'SAVE_OPERATION_REUSED');
+        }
+        const existingPath = typeof existing.filePath === 'string' && existing.filePath.startsWith('github://')
+          ? existing.filePath.slice('github://'.length) : item.repoPath;
+        responses.push(buildSavedImageResponse(existing, item.image, existingPath, true));
+        continue;
+      }
+      if (snapshot.deletedNotes[item.noteUid]) throw new HttpError(409, 'Learning note is deleted.', 'NOTE_DELETED');
+      const note = {
+        ...createSavedImageNote(
+          { ...item.payload, sourceType: item.payload.sourceType || 'single-capture' },
+          { repoPath: item.repoPath },
+          timestamp,
+        ),
+        sourceImageHash: item.imageHash,
+      };
+      appendSavedImageNote(snapshot, note);
+      staged.push({ ...item, note });
+      responses.push(buildSavedImageResponse(note, item.image, item.repoPath, false));
     }
-  });
-  if (ctx?.waitUntil) ctx.waitUntil(backgroundWork);
-  else await backgroundWork;
 
-  return response;
+    if (staged.length === 0) {
+      return { ok: true, notes: responses, learningData: snapshot, idempotentReplay: true };
+    }
+
+    const stored = {
+      ...snapshot,
+      revision: Number(snapshot.revision || 0) + 1,
+      updatedAt: timestamp,
+    };
+    const files = [
+      ...staged.map((item) => ({ path: item.repoPath, content: item.image.bytes })),
+      { path: STORAGE_PATHS.learning, content: `${JSON.stringify(stored, null, 2)}\n` },
+    ];
+
+    try {
+      await commitFiles(env, {
+        expectedHeadSha: head,
+        message: staged.length === 1
+          ? `cloud: save note ${staged[0].noteUid}`
+          : `cloud: save ${staged.length} captured questions`,
+        files,
+      });
+    } catch (error) {
+      if (error instanceof HttpError && error.code === 'GITHUB_REVISION_CONFLICT' && attempt < 3) continue;
+      throw error;
+    }
+
+    const backgroundWork = finishSavedImagesInBackground(env, staged, responses, timestamp);
+    if (ctx?.waitUntil) ctx.waitUntil(backgroundWork);
+    else await backgroundWork;
+    return { ok: true, notes: responses, learningData: stored, idempotentReplay: false };
+  }
+  throw new HttpError(409, 'GitHub repository changed while saving; retry.', 'GITHUB_REVISION_CONFLICT');
+}
+
+export async function saveNote(env, payload, ctx) {
+  const batch = await saveNoteBatch(env, { notes: [payload] }, ctx);
+  return {
+    ...batch.notes[0],
+    learningData: batch.learningData,
+    idempotentReplay: batch.idempotentReplay || batch.notes[0]?.idempotentReplay === true,
+  };
 }
 
 function snapshotNote(snapshot, noteUid) {

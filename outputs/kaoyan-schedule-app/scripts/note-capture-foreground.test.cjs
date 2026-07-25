@@ -12,8 +12,9 @@ test('mobile multi-question capture stays in the foreground', () => {
   const end = source.indexOf('const confirmBatchCrop', start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
-  assert.match(block, /detectQuestionRegions\(src\)/);
-  assert.match(block, /cropManyImages\(src, detection\.regions\)/);
+  assert.match(block, /detectQuestionRegions\(src(?:,|\))/);
+  assert.match(block, /setBatchProgress\(message\)/);
+  assert.match(block, /cropManyImages\(src, detection\.regions(?:,|\))/);
   assert.doesNotMatch(block, /enqueueMultiQuestionJob/);
   assert.match(block, /setMobileStep\('batch'\)/);
   assert.match(block, /detectionRunRef/);

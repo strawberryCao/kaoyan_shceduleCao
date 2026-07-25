@@ -51,5 +51,5 @@ test('single cloud captures and multi-question notes are both eligible for LAN-c
   assert.match(rename, /sourceType === 'single-capture'/);
   assert.match(rename, /updateMirroredCloudNote/);
   assert.match(media, /enqueueRenameJob/);
-  assert.match(media, /sourceType: payload\.sourceType \|\| 'single-capture'/);
+  assert.match(media, /sourceType: (?:payload|item\.payload)\.sourceType \|\| 'single-capture'/);
 });
