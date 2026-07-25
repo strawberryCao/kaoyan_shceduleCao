@@ -593,7 +593,7 @@ export async function applyAiNoteEnrichment(env, noteUid, input = {}) {
       : [subject, ...uniqueStrings(input.knowledgePath).filter((item) => item !== subject)].slice(0, 3);
     const titleCandidate = text(input.title, 240).trim();
     const title = input.preserveTitle === true || userFields.has('title') || !titleCandidate ? note.title : titleCandidate;
-    const tags = userFields.has('tags') ? uniqueStrings(note.tags) : uniqueStrings(input.tags);
+    const tags = userFields.has('tags') ? uniqueStrings(note.tags) : uniqueStrings([...(Array.isArray(note.tags) ? note.tags : []), ...(Array.isArray(input.tags) ? input.tags : [])]);
     const noteType = userFields.has('noteType') ? note.noteType : text(input.noteType, 40) || note.noteType || 'note';
     const wrongReason = humanDecision && note.wrongReasonSource === 'manual' ? note.wrongReason : text(input.wrongReason, 500);
     const reviewStatus = humanDecision ? aiReviewStatus(note) : subject === '默认文件夹' ? 'pending' : 'auto_applied';

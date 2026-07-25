@@ -67,3 +67,29 @@ test('AI enrichment protects human decisions and reconciles generated cards atom
   assert.match(learning, /pendingAiOrganization: false/);
   assert.match(learning, /updateMirroredCloudNote/);
 });
+
+
+test('local and cloud analysis render the same LAN-published prompt contract', () => {
+  const analyzer = text('scripts/note-ai-analyzer.cjs');
+  const contracts = text('scripts/agent-workflow-contracts.cjs');
+  assert.match(analyzer, /NOTE_ANALYSIS_INSTRUCTIONS/);
+  assert.match(analyzer, /NOTE_ANALYSIS_OUTPUT/);
+  assert.match(analyzer, /fillAnalysisTemplate/);
+  assert.match(contracts, /note-enrichment-v4/);
+});
+
+test('interrupted cloud AI processing jobs become recoverable after a bounded lease', () => {
+  const jobs = text('cloudflare/background-jobs.js');
+  assert.match(jobs, /PROCESSING_STALE_MS/);
+  assert.match(jobs, /isStaleProcessing/);
+  assert.match(jobs, /上次 AI 任务被中断/);
+  assert.match(jobs, /job\.status === 'queued' \|\| isStaleProcessing/);
+});
+
+test('full enrichment preserves the naming-agent title and capture source tags', () => {
+  const analysis = text('cloudflare/note-analysis-job.js');
+  const learning = text('cloudflare/learning.js');
+  assert.match(analysis, /preserveTitle: true/);
+  assert.match(learning, /Array\.isArray\(note\.tags\)/);
+  assert.match(learning, /Array\.isArray\(input\.tags\)/);
+});

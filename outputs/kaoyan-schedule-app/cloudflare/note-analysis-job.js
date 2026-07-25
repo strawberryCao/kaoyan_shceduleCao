@@ -259,7 +259,7 @@ export async function runConfiguredNoteAnalysis(env, noteUid) {
     taskId,
     configurationHash: response.configurationHash,
     workflowHash: response.workflowHash,
-    preserveTitle: Array.isArray(latest.userEditedFields) && latest.userEditedFields.includes('title'),
+    preserveTitle: true,
   });
   return { analysis, snapshot: stored, provider: response.provider, model: response.model, taskId };
 }
