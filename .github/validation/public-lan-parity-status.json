@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "status": "failure",
+  "applyOutcome": "success",
+  "runId": 30157675648,
+  "runAttempt": 1,
+  "sourceSha": "d0ad231bb40a2da66540b3dd16c03a883e572282",
+  "detail": "public LAN parity source patch applied",
+  "recordedAt": "2026-07-25T12:15:46.971391+00:00"
+}

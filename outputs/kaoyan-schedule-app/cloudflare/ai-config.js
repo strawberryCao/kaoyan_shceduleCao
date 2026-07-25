@@ -33,7 +33,7 @@ export async function getGlobalAiSettings(env) {
 }
 
 export async function getTaskSettings(env, taskId) {
-  const { runtime, task, settings } = await getAgentTask(env, taskId);
+  const { runtime, task, settings, workflow } = await getAgentTask(env, taskId);
   return {
     ...settings,
     options: settings.options || {},
@@ -45,5 +45,6 @@ export async function getTaskSettings(env, taskId) {
     failClosed: runtime.failClosed,
     configurationHash: runtime.source.configurationHash,
     workflowHash: runtime.source.workflowHash,
+    workflow,
   };
 }

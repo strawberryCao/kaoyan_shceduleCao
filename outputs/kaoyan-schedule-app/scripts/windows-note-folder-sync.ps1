@@ -358,10 +358,24 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
 }
 
 function Commit-Pending([string]$ClonePath, [string]$Message) {
-  $paths = @('source-notes', 'data/config', 'data/deletions', 'data/local-delete-recycle', 'data/quarantine')
+  $candidatePaths = @(
+    'source-notes',
+    'data/cloud/learning-data.json',
+    'data/config',
+    'data/deletions',
+    'data/local-delete-recycle',
+    'data/quarantine'
+  )
+  $paths = @()
+  foreach ($candidate in $candidatePaths) {
+    if (Test-Path -LiteralPath (Join-Path $ClonePath $candidate)) { $paths += $candidate; continue }
+    $tracked = Invoke-Git @('ls-files', '--', $candidate) $ClonePath
+    if (-not [string]::IsNullOrWhiteSpace($tracked.Output)) { $paths += $candidate }
+  }
+  if ($paths.Count -eq 0) { return $false }
   $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
   if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
-  Invoke-Git (@('add', '--') + $paths) $ClonePath | Out-Null
+  Invoke-Git (@('add', '-A', '--') + $paths) $ClonePath | Out-Null
   $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
   if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
@@ -475,7 +489,13 @@ try {
   }
 
   Materialize-CloudNotes $localPath $remotePath
-  Export-SafeAssistantConfiguration $clonePath $assistantRoot
+  $mergeScript = Join-Path $workRoot 'merge-learning-data.cjs'
+  if (-not (Test-Path -LiteralPath $mergeScript)) { throw 'Learning data merger was not found.' }
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
+  & $nodeCommand.Source $mergeScript --config $ConfigPath | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
+  # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
   Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null
 

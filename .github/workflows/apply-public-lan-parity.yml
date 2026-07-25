@@ -1,0 +1,162 @@
+name: Apply public LAN parity control plane
+
+on:
+  push:
+    branches: [fix/public-lan-parity-control-plane]
+    paths:
+      - '.github/scripts/apply-public-lan-parity.cjs'
+      - '.github/scripts/repair-public-lan-transformer.py'
+      - '.github/workflows/apply-public-lan-parity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-public-lan-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/public-lan-parity-control-plane
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply source changes
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/public-lan-parity-apply.log
+          python .github/scripts/repair-public-lan-transformer.py >> /tmp/public-lan-parity-apply.log 2>&1
+          code=$?
+          if [[ "$code" -eq 0 ]]; then
+            node .github/scripts/apply-public-lan-parity.cjs >> /tmp/public-lan-parity-apply.log 2>&1
+            code=$?
+          fi
+          if [[ "$code" -eq 0 ]]; then
+            for file in \
+              outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs \
+              outputs/kaoyan-schedule-app/scripts/export-agent-runtime.cjs \
+              outputs/kaoyan-schedule-app/scripts/note-file-access.cjs \
+              outputs/kaoyan-schedule-app/cloudflare/agent-runtime.js \
+              outputs/kaoyan-schedule-app/cloudflare/ai.js \
+              outputs/kaoyan-schedule-app/cloudflare/rename-job.js \
+              outputs/kaoyan-schedule-app/cloudflare/background-jobs.js \
+              outputs/kaoyan-schedule-app/cloudflare/media.js; do
+              node --check "$file" >> /tmp/public-lan-parity-apply.log 2>&1 || { code=$?; break; }
+            done
+          fi
+          cat /tmp/public-lan-parity-apply.log
+          exit "$code"
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs
+          node --check outputs/kaoyan-schedule-app/scripts/export-agent-runtime.cjs
+          node --check outputs/kaoyan-schedule-app/scripts/note-file-access.cjs
+          node --check outputs/kaoyan-schedule-app/cloudflare/agent-runtime.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/ai.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/rename-job.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/background-jobs.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/media.js
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @(
+            'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1',
+            'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1',
+            'outputs/kaoyan-schedule-app/scripts/start-local-services-hidden.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error ("{0}: {1}" -f $file, (($errors | ForEach-Object Message) -join '; '))
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run targeted parity tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/public-lan-parity.test.cjs cloudflare/agent-provider.test.mjs
+      - name: Run all automated tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit validated business files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Kaoyan Parity Validator'
+          git config user.email 'kaoyan-parity@local.invalid'
+          git add outputs/kaoyan-schedule-app
+          if git diff --cached --quiet; then
+            echo 'No generated business changes.'
+            exit 0
+          fi
+          git commit -m 'fix: align public capture with LAN control plane'
+          git push origin HEAD:fix/public-lan-parity-control-plane
+      - name: Persist validation receipt
+        if: always()
+        shell: bash
+        env:
+          VALIDATION_STATUS: ${{ job.status }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          detail=''
+          if [[ -f /tmp/public-lan-parity-apply.log ]]; then
+            detail="$(tail -n 40 /tmp/public-lan-parity-apply.log)"
+          fi
+          export VALIDATION_DETAIL="$detail"
+          git reset --hard HEAD
+          git config user.name 'Kaoyan Parity Validator'
+          git config user.email 'kaoyan-parity@local.invalid'
+          mkdir -p .github/validation
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          payload = {
+              'schemaVersion': 1,
+              'status': os.environ['VALIDATION_STATUS'],
+              'applyOutcome': os.environ.get('APPLY_OUTCOME', ''),
+              'runId': int(os.environ['RUN_ID']),
+              'runAttempt': int(os.environ['RUN_ATTEMPT']),
+              'sourceSha': os.environ['SOURCE_SHA'],
+              'detail': os.environ.get('VALIDATION_DETAIL', '')[-8000:],
+              'recordedAt': datetime.now(timezone.utc).isoformat(),
+          }
+          with open('.github/validation/public-lan-parity-status.json', 'w', encoding='utf-8') as f:
+              json.dump(payload, f, ensure_ascii=False, indent=2)
+              f.write('\n')
+          PY
+          git add .github/validation/public-lan-parity-status.json
+          git commit -m 'ci: record public LAN parity validation'
+          git push origin HEAD:fix/public-lan-parity-control-plane

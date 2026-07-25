@@ -11,11 +11,15 @@ function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function isAiMultiQuestionNote(note) {
+export function isRenameEligibleNote(note) {
+  const sourceType = String(note?.sourceType || '');
+  const filePath = String(note?.filePath || '').replaceAll('\\', '/');
   return Boolean(note) && (
-    note.sourceType === 'ai-multi-question'
+    sourceType === 'ai-multi-question'
+    || sourceType === 'single-capture'
     || /^multi_[A-Za-z0-9_-]+/i.test(String(note.noteUid || ''))
     || (Array.isArray(note.tags) && note.tags.includes('AI多题拆分'))
+    || /^github:\/\/data\/assets\/.+\.(?:jpe?g|png|webp|gif|avif)$/i.test(filePath)
   );
 }
 
@@ -79,8 +83,8 @@ export async function enqueueRenameJob(env, noteUid) {
   const snapshot = await getLearningSnapshot(env);
   const entry = findNote(snapshot, noteUid);
   if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
-  if (!isAiMultiQuestionNote(entry.note)) {
-    throw new HttpError(403, '只有 AI 多题拆分生成的笔记可以使用这个重新命名入口。', 'AI_RENAME_NOT_ALLOWED');
+  if (!isRenameEligibleNote(entry.note)) {
+    throw new HttpError(403, '这条记录没有可供局域网命名 Agent 处理的云端原图。', 'AI_RENAME_NOT_ALLOWED');
   }
 
   const existing = (await listBackgroundJobs(env, { noteUid, type: 'note-rename' }))
