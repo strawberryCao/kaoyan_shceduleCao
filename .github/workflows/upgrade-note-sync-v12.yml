@@ -48,9 +48,10 @@ jobs:
             "`$version = '20260726-mobile-local-first-v12'",
             'version = 12',
             '全局同步 v12 已启用。',
-            "Install-ScriptFile 'agent-workflow-contracts.cjs'",
-            "Install-ScriptFile 'note-ai-analyzer.cjs'",
-            "Install-ScriptFile 'export-agent-runtime.cjs'"
+            "'agent-workflow-contracts.cjs'",
+            "'note-ai-analyzer.cjs'",
+            "'export-agent-runtime.cjs'",
+            'Install-ScriptFile $dependency'
           )) {
             if (-not $text.Contains($required)) { throw "V12 installer contract is missing: $required" }
           }
