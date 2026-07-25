@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/patches/apply-mobile-capture-fast-pipeline.cjs'
       - '.github/patches/repair-mobile-capture-generator.py'
+      - '.github/patches/update-mobile-capture-fast-tests.cjs'
       - '.github/workflows/apply-mobile-capture-fast-pipeline.yml'
 
 permissions:
@@ -34,6 +35,7 @@ jobs:
             python3 .github/patches/repair-mobile-capture-generator.py
             node --check .github/patches/apply-mobile-capture-fast-pipeline.cjs
             node .github/patches/apply-mobile-capture-fast-pipeline.cjs
+            node .github/patches/update-mobile-capture-fast-tests.cjs
             node --check outputs/kaoyan-schedule-app/cloudflare/github-store.js
             node --check outputs/kaoyan-schedule-app/cloudflare/media.js
             node --check outputs/kaoyan-schedule-app/cloudflare/worker.js
@@ -51,12 +53,14 @@ jobs:
           set -euo pipefail
           rm -f .github/patches/apply-mobile-capture-fast-pipeline.cjs
           rm -f .github/patches/repair-mobile-capture-generator.py
+          rm -f .github/patches/update-mobile-capture-fast-tests.cjs
           rm -f .github/workflows/apply-mobile-capture-fast-pipeline.yml
           git config user.name 'Kaoyan Mobile Capture Fix'
           git config user.email 'mobile-capture-fix@local.invalid'
           git add -A -- \
             .github/patches/apply-mobile-capture-fast-pipeline.cjs \
             .github/patches/repair-mobile-capture-generator.py \
+            .github/patches/update-mobile-capture-fast-tests.cjs \
             .github/workflows/apply-mobile-capture-fast-pipeline.yml \
             outputs/kaoyan-schedule-app/cloudflare/github-store.js \
             outputs/kaoyan-schedule-app/cloudflare/media.js \
@@ -64,7 +68,9 @@ jobs:
             outputs/kaoyan-schedule-app/src/utils/notes.ts \
             outputs/kaoyan-schedule-app/src/utils/imageCrop.ts \
             outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
-            outputs/kaoyan-schedule-app/scripts/cloud-capture-fast-pipeline.test.cjs
+            outputs/kaoyan-schedule-app/scripts/cloud-capture-fast-pipeline.test.cjs \
+            outputs/kaoyan-schedule-app/scripts/note-capture-foreground.test.cjs \
+            outputs/kaoyan-schedule-app/scripts/public-lan-parity.test.cjs
           git commit -m 'fix: make mobile capture streaming and atomic'
       - name: Install dependencies
         working-directory: outputs/kaoyan-schedule-app
