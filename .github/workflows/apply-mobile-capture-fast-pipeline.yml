@@ -1,0 +1,66 @@
+name: Apply mobile capture fast pipeline
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/patches/apply-mobile-capture-fast-pipeline.cjs'
+      - '.github/workflows/apply-mobile-capture-fast-pipeline.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'fix/mobile-capture-fast-pipeline'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/mobile-capture-fast-pipeline
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply deterministic source transformation
+        run: node .github/patches/apply-mobile-capture-fast-pipeline.cjs
+      - name: Prepare clean business commit
+        run: |
+          set -euo pipefail
+          rm -f .github/patches/apply-mobile-capture-fast-pipeline.cjs
+          rm -f .github/workflows/apply-mobile-capture-fast-pipeline.yml
+          git config user.name 'Kaoyan Mobile Capture Fix'
+          git config user.email 'mobile-capture-fix@local.invalid'
+          git add -A -- \
+            .github/patches/apply-mobile-capture-fast-pipeline.cjs \
+            .github/workflows/apply-mobile-capture-fast-pipeline.yml \
+            outputs/kaoyan-schedule-app/cloudflare/github-store.js \
+            outputs/kaoyan-schedule-app/cloudflare/media.js \
+            outputs/kaoyan-schedule-app/cloudflare/worker.js \
+            outputs/kaoyan-schedule-app/src/utils/notes.ts \
+            outputs/kaoyan-schedule-app/src/utils/imageCrop.ts \
+            outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
+            outputs/kaoyan-schedule-app/scripts/cloud-capture-fast-pipeline.test.cjs
+          git commit -m 'fix: make mobile capture streaming and atomic'
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run all automated tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Push validated business commit
+        run: git push origin HEAD:fix/mobile-capture-fast-pipeline
