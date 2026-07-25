@@ -1,0 +1,64 @@
+name: Upgrade note synchronization V12
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/patches/upgrade-note-sync-v12.py'
+      - '.github/workflows/upgrade-note-sync-v12.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    if: github.head_ref == 'fix/mobile-local-first-analysis-parity'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/mobile-local-first-analysis-parity
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply V12 installer update
+        shell: pwsh
+        run: |
+          python .github/patches/upgrade-note-sync-v12.py
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if (@($errors).Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run all tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: pwsh
+        run: |
+          $tests = Get-ChildItem cloudflare,scripts -Recurse -File | Where-Object { $_.Name -match '\.test\.(cjs|mjs)$' } | Sort-Object FullName | ForEach-Object { $_.FullName }
+          node --test @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit validated V12 installer
+        shell: pwsh
+        run: |
+          Remove-Item '.github/patches/upgrade-note-sync-v12.py' -Force
+          Remove-Item '.github/workflows/upgrade-note-sync-v12.yml' -Force
+          git config user.name 'Kaoyan Sync V12'
+          git config user.email 'sync-v12@local.invalid'
+          git add -A -- .github/patches/upgrade-note-sync-v12.py .github/workflows/upgrade-note-sync-v12.yml outputs/kaoyan-schedule-app/scripts
+          git commit -m 'feat: upgrade Windows synchronization runtime to V12'
+          git push origin HEAD:fix/mobile-local-first-analysis-parity
