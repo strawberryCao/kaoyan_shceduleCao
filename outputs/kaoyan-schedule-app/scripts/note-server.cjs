@@ -1559,6 +1559,21 @@ async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
   throw lastError || Object.assign(new Error('Note organizer is still running'), { code: 'ORGANIZER_LOCKED' });
 }
 
+async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() <= deadline) {
+    try {
+      return acquireOrganizerLock(ORGANIZER_LOCK_PATH);
+    } catch (error) {
+      if (error?.code !== 'ORGANIZER_LOCKED') throw error;
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+  throw lastError || Object.assign(new Error('Note organizer is still running'), { code: 'ORGANIZER_LOCKED' });
+}
+
 function queueAiNamingJob(noteUid) {
   if (aiNamingJobs.has(noteUid)) return;
   const job = aiNamingQueue.then(async () => {
