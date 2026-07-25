@@ -11,6 +11,10 @@ on:
   pull_request:
     branches: [fix/learning-detail-title-latex]
     types: [opened, reopened, synchronize]
+    paths:
+      - 'scripts/apply-multimaterial-media-ui.cjs'
+      - 'scripts/repair-multimaterial-media-ui-transform.cjs'
+      - '.github/workflows/apply-multimaterial-media-ui.yml'
 
 permissions:
   contents: write
@@ -120,11 +124,14 @@ jobs:
         shell: bash
         run: |
           set +e
-          {
-            node --test cloudflare/media-material.test.mjs cloudflare/learning-multimaterial.test.mjs
-            node --test scripts/learning-multimaterial.test.cjs
-          } > "$RUNNER_TEMP/material-tests.log" 2>&1
-          status=$?
+          node --test cloudflare/media-material.test.mjs cloudflare/learning-multimaterial.test.mjs > "$RUNNER_TEMP/material-tests.log" 2>&1
+          first_status=$?
+          if (( first_status == 0 )); then
+            node --test scripts/learning-multimaterial.test.cjs >> "$RUNNER_TEMP/material-tests.log" 2>&1
+            status=$?
+          else
+            status=$first_status
+          fi
           cat "$RUNNER_TEMP/material-tests.log"
           if (( status != 0 )) && [[ -n "${PR_NUMBER:-}" ]]; then
             {
@@ -175,7 +182,7 @@ jobs:
         run: npm run build
 
       - name: Commit verified generated source
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
