@@ -6,11 +6,18 @@ import { readAppState, writeAppState } from './storage.js';
 
 const STATE_KEY = 'ai-background-jobs';
 const MAX_JOBS = 160;
+const PROCESSING_STALE_MS = 7 * 60 * 1000;
 const ACTIVE_STATUSES = new Set(['queued', 'processing']);
 const JOB_TYPES = new Set(['note-rename', 'note-pipeline']);
 
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStaleProcessing(job, now = Date.now()) {
+  if (job?.status !== 'processing') return false;
+  const updatedAt = new Date(job.updatedAt || job.createdAt || 0).getTime();
+  return !Number.isFinite(updatedAt) || now - updatedAt >= PROCESSING_STALE_MS;
 }
 
 export function isRenameEligibleNote(note) {
@@ -147,12 +154,14 @@ async function runRenameStage(env, job) {
 export async function processBackgroundJob(env, jobId) {
   const job = await getBackgroundJob(env, jobId);
   if (!job || !ACTIVE_STATUSES.has(job.status)) return job;
-  if (job.status === 'processing') return job;
+  if (job.status === 'processing' && !isStaleProcessing(job)) return job;
 
   await updateJob(env, jobId, {
     status: 'processing',
     progress: 15,
-    message: 'AI 正在按局域网命名规则处理原图',
+    message: job.status === 'processing'
+      ? '上次 AI 任务被中断，正在从安全检查点自动恢复'
+      : 'AI 正在按局域网命名规则处理原图',
     error: '',
   });
 
@@ -209,9 +218,15 @@ export async function processBackgroundJob(env, jobId) {
 }
 
 export async function kickPendingJobs(env, limit = 2) {
+  const now = Date.now();
   const jobs = (await listBackgroundJobs(env))
-    .filter((job) => job.status === 'queued')
+    .filter((job) => job.status === 'queued' || isStaleProcessing(job, now))
     .slice(0, Math.max(1, Math.min(5, limit)));
   for (const job of jobs) await processBackgroundJob(env, job.id);
   return jobs.length;
 }
+
+export const backgroundJobInternals = Object.freeze({
+  isStaleProcessing,
+  processingStaleMs: PROCESSING_STALE_MS,
+});
