@@ -1,5 +1,6 @@
 name: Validate Windows note sync
 
+# Temporary PRs may touch this file only to trigger the Windows validation job.
 on:
   push:
     branches: [fix/learning-detail-title-latex]
@@ -48,16 +49,28 @@ jobs:
       - name: Verify D drive and DPAPI configuration
         shell: powershell
         run: |
-          $installer = Get-Content outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1 -Raw
-          $runtime = Get-Content outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1 -Raw
-          if ($installer -notmatch [regex]::Escape("[string]$DataRoot = 'D:\kaoyandata'")) { throw 'D drive default is missing.' }
-          if ($installer -notmatch 'github-token\.dpapi') { throw 'DPAPI token path is missing.' }
-          if ($runtime -notmatch 'credential\.helper') { throw 'Credential Manager bypass is missing.' }
-          $tempToken = Join-Path $env:RUNNER_TEMP 'token.dpapi'
-          $secure = ConvertTo-SecureString 'test-token' -AsPlainText -Force
-          $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $tempToken -Encoding UTF8
-          $roundTrip = Get-Content -LiteralPath $tempToken -Raw | ConvertTo-SecureString
-          if ($roundTrip.Length -ne 10) { throw 'DPAPI token round-trip failed.' }
+          $installerPath = 'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1'
+          $runtimePath = 'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1'
+          if (-not (Select-String -LiteralPath $installerPath -SimpleMatch "[string]`$DataRoot = 'D:\kaoyandata'" -Quiet)) {
+            throw 'D drive default is missing.'
+          }
+          if (-not (Select-String -LiteralPath $installerPath -SimpleMatch 'github-token.dpapi' -Quiet)) {
+            throw 'DPAPI token path is missing.'
+          }
+          if (-not (Select-String -LiteralPath $runtimePath -SimpleMatch 'credential.helper' -Quiet)) {
+            throw 'Credential Manager bypass is missing.'
+          }
+          $plain = 'test-token'
+          $secure = ConvertTo-SecureString $plain -AsPlainText -Force
+          $encrypted = $secure | ConvertFrom-SecureString
+          $roundTrip = $encrypted | ConvertTo-SecureString
+          $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($roundTrip)
+          try {
+            $decoded = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+            if ($decoded -ne $plain) { throw 'DPAPI token round-trip failed.' }
+          } finally {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+          }
       - name: Reproduce successful native Git stderr and missing mirror path
         shell: powershell
         run: |
