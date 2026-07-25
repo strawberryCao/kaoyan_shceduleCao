@@ -1214,6 +1214,16 @@ export function LearningCenter({
         <header className="lc-detail-heading">
           <h2>{note.title || '未命名笔记'}</h2>
           <div className="lc-heading-actions">
+            {attachments.length > 0 && (
+              <button type="button" onClick={() => {
+                const url = new URL(window.location.href);
+                url.searchParams.set('workspaceNote', note.noteUid);
+                url.searchParams.delete('hub');
+                url.searchParams.delete('notes');
+                url.searchParams.delete('noteApp');
+                window.location.assign(url.toString());
+              }}><FolderOpen size={15} />资料工作区</button>
+            )}
             <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
             {context === 'good' && (
               <button type="button" disabled={pendingNoteUid === note.noteUid || editorSaving} onClick={() => void removeFromGoodQuestions(note)}><X size={15} />移出好题</button>

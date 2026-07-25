@@ -160,6 +160,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     });
   }, [note]);
   const activeAsset = assets.find((item) => item.id === activeId) || assets[0] || null;
+  const assetKey = assets.map((item) => item.id).join('\u001f');
 
   useEffect(() => {
     const abort = new AbortController();
@@ -177,9 +178,10 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
   }, []);
 
   useEffect(() => {
-    if (!assets.some((item) => item.id === activeId)) setActiveId(assets[0]?.id || '');
-    setFloating([]);
-  }, [assets, activeId]);
+    const validIds = new Set(assetKey ? assetKey.split('\u001f') : []);
+    setActiveId((current) => validIds.has(current) ? current : assets[0]?.id || '');
+    setFloating((current) => current.filter((item) => validIds.has(item.assetId)));
+  }, [assetKey, assets]);
 
   useEffect(() => {
     const resize = () => {
