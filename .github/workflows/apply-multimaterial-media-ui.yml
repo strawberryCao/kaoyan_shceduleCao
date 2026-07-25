@@ -7,6 +7,7 @@ on:
     paths:
       - 'scripts/apply-multimaterial-media-ui.cjs'
       - 'scripts/repair-multimaterial-media-ui-transform.cjs'
+      - 'scripts/apply-note-review-lock-wait.cjs'
       - '.github/workflows/apply-multimaterial-media-ui.yml'
   pull_request:
     branches: [fix/learning-detail-title-latex]
@@ -14,6 +15,7 @@ on:
     paths:
       - 'scripts/apply-multimaterial-media-ui.cjs'
       - 'scripts/repair-multimaterial-media-ui-transform.cjs'
+      - 'scripts/apply-note-review-lock-wait.cjs'
       - '.github/workflows/apply-multimaterial-media-ui.yml'
 
 permissions:
@@ -54,7 +56,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          node scripts/apply-multimaterial-media-ui.cjs > "$RUNNER_TEMP/transform.log" 2>&1
+          {
+            node scripts/apply-multimaterial-media-ui.cjs
+            node scripts/apply-note-review-lock-wait.cjs
+          } > "$RUNNER_TEMP/transform.log" 2>&1
           status=$?
           cat "$RUNNER_TEMP/transform.log"
           if (( status != 0 )) && [[ -n "${PR_NUMBER:-}" ]]; then
@@ -62,7 +67,7 @@ jobs:
               echo '## 多资料媒体 / UI 变换失败'
               echo
               echo '```text'
-              tail -n 120 "$RUNNER_TEMP/transform.log"
+              tail -n 140 "$RUNNER_TEMP/transform.log"
               echo '```'
             } > "$RUNNER_TEMP/transform-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/transform-comment.md"
@@ -78,6 +83,7 @@ jobs:
               Path('outputs/kaoyan-schedule-app/cloudflare/github-store.js'),
               Path('outputs/kaoyan-schedule-app/cloudflare/worker.js'),
               Path('outputs/kaoyan-schedule-app/cloudflare/media-material.test.mjs'),
+              Path('outputs/kaoyan-schedule-app/scripts/note-server.cjs'),
               Path('outputs/kaoyan-schedule-app/src/utils/notes.ts'),
               Path('outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx'),
               Path('outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx'),
@@ -100,6 +106,7 @@ jobs:
             node --check outputs/kaoyan-schedule-app/cloudflare/media.js
             node --check outputs/kaoyan-schedule-app/cloudflare/github-store.js
             node --check outputs/kaoyan-schedule-app/cloudflare/worker.js
+            node --check outputs/kaoyan-schedule-app/scripts/note-server.cjs
             git diff --check
           } > "$RUNNER_TEMP/validation.log" 2>&1
           status=$?
@@ -109,7 +116,7 @@ jobs:
               echo '## 多资料生成源码校验失败'
               echo
               echo '```text'
-              tail -n 160 "$RUNNER_TEMP/validation.log"
+              tail -n 180 "$RUNNER_TEMP/validation.log"
               echo '```'
             } > "$RUNNER_TEMP/validation-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/validation-comment.md"
@@ -138,7 +145,7 @@ jobs:
               echo '## 多资料定向测试失败'
               echo
               echo '```text'
-              tail -n 200 "$RUNNER_TEMP/material-tests.log"
+              tail -n 220 "$RUNNER_TEMP/material-tests.log"
               echo '```'
             } > "$RUNNER_TEMP/material-tests-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/material-tests-comment.md"
@@ -154,17 +161,12 @@ jobs:
         shell: bash
         run: |
           set +e
-          isolated_test='scripts/__tests__/note-save-flow.test.cjs'
-          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) ! -path "./$isolated_test" -print0 | sort -z)
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
           if (( ${#test_files[@]} == 0 )); then
             echo 'No automated tests found.' > "$RUNNER_TEMP/full-suite.log"
             status=2
           else
             node --test --test-concurrency=1 "${test_files[@]}" > "$RUNNER_TEMP/full-suite.log" 2>&1
-            status=$?
-          fi
-          if (( status == 0 )); then
-            node --test "$isolated_test" >> "$RUNNER_TEMP/full-suite.log" 2>&1
             status=$?
           fi
           cat "$RUNNER_TEMP/full-suite.log"
@@ -173,9 +175,9 @@ jobs:
               echo '## 多资料变更下的仓库全量测试失败'
               echo
               echo '```text'
-              grep -B 8 -A 24 '^not ok ' "$RUNNER_TEMP/full-suite.log" | tail -n 260
+              grep -B 8 -A 28 '^not ok ' "$RUNNER_TEMP/full-suite.log" | tail -n 280
               echo
-              tail -n 30 "$RUNNER_TEMP/full-suite.log"
+              tail -n 36 "$RUNNER_TEMP/full-suite.log"
               echo '```'
             } > "$RUNNER_TEMP/full-suite-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/full-suite-comment.md"
@@ -198,6 +200,7 @@ jobs:
             outputs/kaoyan-schedule-app/cloudflare/github-store.js \
             outputs/kaoyan-schedule-app/cloudflare/worker.js \
             outputs/kaoyan-schedule-app/cloudflare/media-material.test.mjs \
+            outputs/kaoyan-schedule-app/scripts/note-server.cjs \
             outputs/kaoyan-schedule-app/src/utils/notes.ts \
             outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx \
             outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
