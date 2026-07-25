@@ -1,8 +1,10 @@
 {
   "schemaVersion": 1,
   "status": "failure",
-  "runId": 30157542587,
+  "applyOutcome": "failure",
+  "runId": 30157618262,
   "runAttempt": 1,
-  "sourceSha": "d3d377f442dfb093b9d70293a43566bfd4a8332e",
-  "recordedAt": "2026-07-25T12:11:12.000679+00:00"
+  "sourceSha": "711305a6a9ad553c3260480eb1826639d3113e03",
+  "detail": "/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/.github/scripts/apply-public-lan-parity.cjs:22\n  if (count !== 1) throw new Error(`${label}: expected exactly one match, found ${count}`);\n                   ^\n\nError: mobile detection steps: expected exactly one match, found 0\n    at replaceOnce (/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/.github/scripts/apply-public-lan-parity.cjs:22:26)\n    at Object.<anonymous> (/home/runner/work/kaoyan_shceduleCao/kaoyan_shceduleCao/.github/scripts/apply-public-lan-parity.cjs:606:1)\n    at Module._compile (node:internal/modules/cjs/loader:1781:14)\n    at Object..js (node:internal/modules/cjs/loader:1913:10)\n    at Module.load (node:internal/modules/cjs/loader:1505:32)\n    at Function._load (node:internal/modules/cjs/loader:1309:12)\n    at wrapModuleLoad (node:internal/modules/cjs/loader:254:19)\n    at Function.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)\n    at node:internal/main/run_main_module:36:49\n\nNode.js v22.23.1",
+  "recordedAt": "2026-07-25T12:13:46.495270+00:00"
 }
