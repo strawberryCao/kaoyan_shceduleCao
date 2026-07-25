@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.base_ref == 'fix/public-lan-parity-control-plane' && 'fix/public-lan-parity-control-plane' || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
