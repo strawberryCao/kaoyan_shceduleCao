@@ -29,7 +29,7 @@ import {
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
-import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
+import { resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
 import { QuickMaterialComposer } from './QuickMaterialComposer';
@@ -259,6 +259,23 @@ export function NoteDropApp() {
     return () => window.removeEventListener('keydown', handleDialogKeys);
   }, [isMobileCapture, pendingImage, saving]);
 
+  const saveImageReliably = async (
+    payload: Parameters<typeof saveNoteImage>[0],
+    onRetry: (message: string) => void,
+  ) => {
+    try {
+      return await saveNoteImage(payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable = IS_CLOUD_RUNTIME
+        && /load failed|failed to fetch|network|暂未确认|请求超时/i.test(message);
+      if (!retryable) throw error;
+      onRetry('连接中断，正在自动确认保存结果…');
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      return saveNoteImage(payload);
+    }
+  };
+
   const saveSingle = async () => {
     if (!pendingImage || saving) return;
     try {
@@ -266,12 +283,12 @@ export function NoteDropApp() {
       setSaved(false);
       setDialogError('');
       setStatus('');
-      const result = await saveNoteImage({
+      const result = await saveImageReliably({
         imageDataUrl: pendingImage.src,
         kind: 'single',
         noteUid: pendingImage.noteUid,
         remark,
-      });
+      }, setStatus);
       if (result.learningData) saveLearningDataCache(result.learningData);
       setPendingImage(null);
       setRemark('');
@@ -316,15 +333,23 @@ export function NoteDropApp() {
     if (!sourceImage || saving) return;
     try {
       setSaving(true);
+      setSaved(false);
       setDialogError('');
+      setMobileStep('detecting');
+      setBatchProgress('正在预裁剪整页…');
       const src = await cropImageDataUrl(sourceImage.src, crop, 2200);
-      await enqueueMultiQuestionJob(src);
-      setSaved(true);
-      setStatus('已保存到后台队列，可以直接离开；系统会自动拆题、保存并命名');
-      setMobileStep('success');
-      setSourceImage(null);
+      setSourceImage({ src, noteUid: sourceImage.noteUid });
+      setBatchProgress('AI 正在识别题目边界…');
+      const detection = await detectQuestionRegions(src);
+      setBatchProgress(`已识别 ${detection.regions.length} 道题，正在裁剪…`);
+      const images = await cropManyImages(src, detection.regions);
+      setBatchImages(images.map((imageSrc) => ({ imageSrc, src: imageSrc, noteUid: createNoteUid(), enabled: true })).map(({ imageSrc: _imageSrc, ...item }) => item));
+      setBatchProgress('');
+      setMobileStep('batch');
     } catch (error) {
-      setDialogError(error instanceof Error ? error.message : '后台任务创建失败，请重试。');
+      setDialogError(error instanceof Error ? error.message : 'AI 多题识别失败，请调整范围后重试。');
+      setBatchProgress('');
+      setMobileStep('mode');
     } finally {
       setSaving(false);
     }
@@ -381,13 +406,13 @@ export function NoteDropApp() {
       for (let index = 0; index < selected.length; index += 1) {
         const item = selected[index];
         setBatchProgress(`正在保存 ${index + 1}/${selected.length}…`);
-        const result = await saveNoteImage({
+        const result = await saveImageReliably({
           imageDataUrl: item.src,
           kind: 'single',
           noteUid: item.noteUid,
           subject: '普通笔记',
           remark: '',
-        });
+        }, setBatchProgress);
         if (result.learningData) {
           latestSnapshot = result.learningData;
           saveLearningDataCache(result.learningData);
