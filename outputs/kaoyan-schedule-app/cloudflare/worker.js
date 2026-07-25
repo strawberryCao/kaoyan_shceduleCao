@@ -28,7 +28,7 @@ import {
   listBackgroundJobs,
   processBackgroundJob,
 } from './background-jobs.js';
-import { getNoteFile, saveMaterialNote, saveNote } from './media.js';
+import { getNoteFile, saveMaterialNote, saveNote, saveNoteBatch } from './media.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 
@@ -155,6 +155,55 @@ async function handleJobRoute(request, env, pathname, url, ctx) {
   return null;
 }
 
+function streamQuestionDetection(env, payload) {
+  const encoder = new TextEncoder();
+  let timer = null;
+  let closed = false;
+  const stream = new ReadableStream({
+    start(controller) {
+      const send = (value) => {
+        if (closed) return;
+        try { controller.enqueue(encoder.encode(`${JSON.stringify(value)}\n`)); }
+        catch { closed = true; }
+      };
+      send({ type: 'progress', message: '2/4 已连接 AI，正在读取局域网控制面…' });
+      timer = setInterval(() => {
+        send({ type: 'progress', message: '2/4 AI 仍在识别，连接正常，请保持当前页面…', at: new Date().toISOString() });
+      }, 4000);
+      Promise.resolve(detectQuestions(env, payload)).then((result) => {
+        send({ type: 'result', result });
+      }).catch((error) => {
+        send({
+          type: 'error',
+          code: error instanceof HttpError ? error.code : 'QUESTION_DETECTION_FAILED',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }).finally(() => {
+        if (timer !== null) clearInterval(timer);
+        timer = null;
+        if (!closed) {
+          closed = true;
+          try { controller.close(); } catch {}
+        }
+      });
+    },
+    cancel() {
+      closed = true;
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'private, no-store, no-transform',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+}
+
 async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { Allow: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' } });
   if (request.method === 'DELETE') cloudDeleteDisabled();
@@ -191,6 +240,9 @@ async function handleApi(request, env, pathname, url, ctx) {
     });
   }
   if (request.method === 'GET' && pathname === '/ai/config') return json({ ok: true, ...(await getGlobalAiSettings(env)) });
+  if (request.method === 'POST' && pathname === '/ai/detect-questions/stream') {
+    return streamQuestionDetection(env, await readJson(request, 28 * 1024 * 1024));
+  }
   if (request.method === 'POST' && pathname === '/ai/detect-questions') {
     return json(await detectQuestions(env, await readJson(request, 28 * 1024 * 1024)));
   }
@@ -200,6 +252,10 @@ async function handleApi(request, env, pathname, url, ctx) {
   if (learningResponse) return learningResponse;
   const canvasResponse = await handleCanvasRoute(request, env, pathname);
   if (canvasResponse) return canvasResponse;
+  if (request.method === 'POST' && pathname === '/save-note-batch') {
+    const result = await saveNoteBatch(env, await readJson(request, 64 * 1024 * 1024), ctx);
+    return json(result, result.idempotentReplay ? 200 : 202);
+  }
   if (request.method === 'POST' && pathname === '/save-note') {
     const result = await saveNote(env, await readJson(request, 28 * 1024 * 1024), ctx);
     return json(result, result.idempotentReplay ? 200 : 202);

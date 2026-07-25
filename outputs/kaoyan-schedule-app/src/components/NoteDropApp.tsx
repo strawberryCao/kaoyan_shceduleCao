@@ -25,6 +25,7 @@ import {
   IS_CLOUD_RUNTIME,
   NOTE_SERVER_URL,
   saveNoteImage,
+  saveNoteImagesBatch,
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
@@ -276,13 +277,30 @@ export function NoteDropApp() {
     }
   };
 
+
+  const saveBatchReliably = async (
+    payloads: Parameters<typeof saveNoteImagesBatch>[0],
+    onRetry: (message: string) => void,
+  ) => {
+    try {
+      return await saveNoteImagesBatch(payloads);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retryable = IS_CLOUD_RUNTIME && /load failed|failed to fetch|network|请求超时/i.test(message);
+      if (!retryable) throw error;
+      onRetry('批次连接中断，正在用同一批 noteUid 自动确认结果…');
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      return saveNoteImagesBatch(payloads);
+    }
+  };
+
   const saveSingle = async () => {
     if (!pendingImage || saving) return;
     try {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      setStatus('');
+      setStatus(IS_CLOUD_RUNTIME ? '正在一次性保存图片与学习记录…' : '');
       const result = await saveImageReliably({
         imageDataUrl: pendingImage.src,
         kind: 'single',
@@ -318,7 +336,7 @@ export function NoteDropApp() {
     if (!sourceImage) return;
     try {
       setSaving(true);
-      const src = await cropImageDataUrl(sourceImage.src, crop);
+      const src = await cropImageDataUrl(sourceImage.src, crop, 2000, 0.9);
       setPendingImage({ src, noteUid: sourceImage.noteUid });
       setMobileStep('remark');
       setDialogError('');
@@ -337,10 +355,12 @@ export function NoteDropApp() {
       if (detectionRunRef.current === runId) setBatchProgress('2/4 AI 仍在识别复杂页面，结果会在当前页返回…');
     }, 15_000);
     try {
-      const detection = await detectQuestionRegions(src);
+      const detection = await detectQuestionRegions(src, (message) => {
+        if (detectionRunRef.current === runId) setBatchProgress(message);
+      });
       if (detectionRunRef.current !== runId) return;
       setBatchProgress(('3/4 ' + (detection.provider || '') + ' ' + (detection.model || '') + ' 已识别 ' + detection.regions.length + ' 道题，正在生成裁剪结果…').replace(/\s+/g, ' ').trim());
-      const images = await cropManyImages(src, detection.regions);
+      const images = await cropManyImages(src, detection.regions, 1800, 0.9);
       if (detectionRunRef.current !== runId) return;
       setBatchImages(images.map((imageSrc) => ({ src: imageSrc, noteUid: createNoteUid(), enabled: true })));
       setBatchProgress('4/4 裁剪完成，请检查每一道题。');
@@ -358,7 +378,7 @@ export function NoteDropApp() {
       setDialogError('');
       setMobileStep('detecting');
       setBatchProgress('1/4 正在压缩并上传整页图片…');
-      const src = await cropImageDataUrl(sourceImage.src, crop, 2200);
+      const src = await cropImageDataUrl(sourceImage.src, crop, 2200, 0.88);
       setSourceImage({ src, noteUid: sourceImage.noteUid });
       await buildDetectedBatch(src, sourceImage.noteUid);
     } catch (error) {
@@ -392,7 +412,7 @@ export function NoteDropApp() {
     if (batchCropIndex === null || !batchImages[batchCropIndex]) return;
     try {
       setSaving(true);
-      const src = await cropImageDataUrl(batchImages[batchCropIndex].src, crop);
+      const src = await cropImageDataUrl(batchImages[batchCropIndex].src, crop, 1800, 0.9);
       setBatchImages((current) => current.map((item, index) => index === batchCropIndex ? { ...item, src } : item));
       setBatchCropIndex(null);
       setMobileStep('batch');
@@ -409,36 +429,42 @@ export function NoteDropApp() {
       setDialogError('请至少保留一道题。');
       return;
     }
+    const payloads = selected.map((item, index) => ({
+      imageDataUrl: item.src,
+      kind: 'single' as const,
+      noteUid: item.noteUid,
+      subject: '默认文件夹',
+      remark: '',
+      sourceType: 'ai-multi-question',
+      sourceBatchId: sourceImage?.noteUid || '',
+      sourceSplitIndex: index + 1,
+      tags: ['AI多题拆分'],
+    }));
     try {
       setSaving(true);
       setDialogError('');
-      let latestSnapshot = null;
-      for (let index = 0; index < selected.length; index += 1) {
-        const item = selected[index];
-        setBatchProgress('正在保存 ' + (index + 1) + '/' + selected.length + '；命名会在后台按局域网规则完成…');
-        const result = await saveImageReliably({
-          imageDataUrl: item.src,
-          kind: 'single',
-          noteUid: item.noteUid,
-          subject: '默认文件夹',
-          remark: '',
-          sourceType: 'ai-multi-question',
-          sourceBatchId: sourceImage?.noteUid || '',
-          sourceSplitIndex: index + 1,
-          tags: ['AI多题拆分'],
-        }, setBatchProgress);
-        if (result.learningData) {
-          latestSnapshot = result.learningData;
-          saveLearningDataCache(result.learningData);
+      if (IS_CLOUD_RUNTIME) {
+        setBatchProgress(`正在一次性上传并归档 ${selected.length} 道题…`);
+        const result = await saveBatchReliably(payloads, setBatchProgress);
+        if (result.learningData) saveLearningDataCache(result.learningData);
+      } else {
+        let latestSnapshot = null;
+        for (let index = 0; index < payloads.length; index += 1) {
+          setBatchProgress(`正在保存 ${index + 1}/${payloads.length}…`);
+          const result = await saveImageReliably(payloads[index], setBatchProgress);
+          if (result.learningData) {
+            latestSnapshot = result.learningData;
+            saveLearningDataCache(result.learningData);
+          }
         }
+        if (latestSnapshot) saveLearningDataCache(latestSnapshot);
       }
-      if (latestSnapshot) saveLearningDataCache(latestSnapshot);
       setSaved(true);
-      setStatus('已保存 ' + selected.length + ' 道题，AI 正在后台按局域网规则命名');
+      setStatus(`已保存 ${selected.length} 道题，AI 正在后台按局域网规则命名`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {
-      setDialogError(error instanceof Error ? '批量保存失败：' + error.message : '批量保存失败，请重试。');
+      setDialogError(error instanceof Error ? `批量保存失败：${error.message}` : '批量保存失败，请重试。');
       setBatchProgress('');
     } finally {
       setSaving(false);

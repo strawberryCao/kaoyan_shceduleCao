@@ -210,16 +210,12 @@ export async function commitFiles(env, options) {
   const baseCommit = await githubRequest(env, `/repos/${owner}/${repo}/git/commits/${currentHead}`);
   const baseTree = baseCommit?.tree?.sha;
   if (typeof baseTree !== 'string') throw new HttpError(502, 'GitHub base tree is unavailable.', 'GITHUB_BRANCH_UNAVAILABLE');
-  const tree = [];
-  for (const file of files) {
+  const tree = await Promise.all(files.map(async (file) => {
     const path = assertRepoPath(file.path);
-    if (file.delete === true) {
-      tree.push({ path, mode: '100644', type: 'blob', sha: null });
-      continue;
-    }
+    if (file.delete === true) return { path, mode: '100644', type: 'blob', sha: null };
     const sha = await createBlob(env, toBytes(file.content));
-    tree.push({ path, mode: '100644', type: 'blob', sha });
-  }
+    return { path, mode: '100644', type: 'blob', sha };
+  }));
   const treeResult = await githubRequest(env, `/repos/${owner}/${repo}/git/trees`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

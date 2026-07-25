@@ -34,6 +34,7 @@ export const cropImageDataUrl = async (
   src: string,
   rawCrop: NormalizedCrop,
   maxDimension = 2600,
+  quality = 0.94,
 ): Promise<string> => {
   const image = await loadImageElement(src);
   const crop = clampCrop(rawCrop, 0.015);
@@ -64,14 +65,16 @@ export const cropImageDataUrl = async (
     outputWidth,
     outputHeight,
   );
-  return canvas.toDataURL('image/jpeg', 0.94);
+  return canvas.toDataURL('image/jpeg', Math.min(0.96, Math.max(0.72, quality)));
 };
 
 export const cropManyImages = async (
   src: string,
   crops: NormalizedCrop[],
+  maxDimension = 2200,
+  quality = 0.9,
 ): Promise<string[]> => {
   const results: string[] = [];
-  for (const crop of crops) results.push(await cropImageDataUrl(src, crop));
+  for (const crop of crops) results.push(await cropImageDataUrl(src, crop, maxDimension, quality));
   return results;
 };
