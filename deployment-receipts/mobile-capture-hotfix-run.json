@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "runId": 30146890075,
-  "runNumber": 1,
-  "conclusion": "success",
-  "sourceCommit": "5bffe7f14c8770f0dd7cd80c47ecc890fc8111fe",
-  "runUrl": "https://github.com/strawberryCao/kaoyan_shceduleCao/actions/runs/30146890075",
-  "createdAt": "2026-07-25T06:05:05Z",
-  "updatedAt": "2026-07-25T06:06:01Z",
-  "recordedAt": "2026-07-25T06:06:07.598Z"
+  "runId": 30146928123,
+  "runNumber": 2,
+  "conclusion": "failure",
+  "sourceCommit": "021bd84ba5db27963ee26039082b893d66efaa80",
+  "runUrl": "https://github.com/strawberryCao/kaoyan_shceduleCao/actions/runs/30146928123",
+  "createdAt": "2026-07-25T06:06:20Z",
+  "updatedAt": "2026-07-25T06:07:04Z",
+  "recordedAt": "2026-07-25T06:07:10.450Z"
 }
