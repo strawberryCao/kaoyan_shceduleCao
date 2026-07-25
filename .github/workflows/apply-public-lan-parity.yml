@@ -1,0 +1,96 @@
+name: Apply public LAN parity control plane
+
+on:
+  push:
+    branches: [fix/public-lan-parity-control-plane]
+    paths:
+      - '.github/scripts/apply-public-lan-parity.cjs'
+      - '.github/workflows/apply-public-lan-parity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-public-lan-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/public-lan-parity-control-plane
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply source changes
+        run: node .github/scripts/apply-public-lan-parity.cjs
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check outputs/kaoyan-schedule-app/scripts/agent-workflow-contracts.cjs
+          node --check outputs/kaoyan-schedule-app/scripts/export-agent-runtime.cjs
+          node --check outputs/kaoyan-schedule-app/scripts/note-file-access.cjs
+          node --check outputs/kaoyan-schedule-app/cloudflare/agent-runtime.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/ai.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/rename-job.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/background-jobs.js
+          node --check outputs/kaoyan-schedule-app/cloudflare/media.js
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($file in @(
+            'outputs/kaoyan-schedule-app/scripts/windows-note-folder-sync.ps1',
+            'outputs/kaoyan-schedule-app/scripts/install-note-folder-sync.ps1',
+            'outputs/kaoyan-schedule-app/scripts/start-local-services-hidden.ps1'
+          )) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              Write-Error ("{0}: {1}" -f $file, (($errors | ForEach-Object Message) -join '; '))
+            }
+          }
+          if ($failed) { exit 1 }
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run targeted parity tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/public-lan-parity.test.cjs cloudflare/agent-provider.test.mjs
+      - name: Run all automated tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit validated business files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Kaoyan Parity Validator'
+          git config user.email 'kaoyan-parity@local.invalid'
+          git add outputs/kaoyan-schedule-app
+          if git diff --cached --quiet; then
+            echo 'No generated business changes.'
+            exit 0
+          fi
+          git commit -m 'fix: align public capture with LAN control plane'
+          git push origin HEAD:fix/public-lan-parity-control-plane
