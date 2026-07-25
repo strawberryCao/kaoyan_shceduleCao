@@ -107,7 +107,26 @@ jobs:
 
       - name: Build application
         working-directory: outputs/kaoyan-schedule-app
-        run: npm run build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set +e
+          npm run build > "$RUNNER_TEMP/build.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/build.log"
+          if (( status != 0 )) && [[ -n "${PR_NUMBER:-}" ]]; then
+            {
+              echo '## 多资料数据层构建失败'
+              echo
+              echo '```text'
+              tail -n 160 "$RUNNER_TEMP/build.log"
+              echo '```'
+            } > "$RUNNER_TEMP/build-comment.md"
+            gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/build-comment.md"
+          fi
+          exit "$status"
 
       - name: Commit verified generated source
         if: github.event_name != 'pull_request'
