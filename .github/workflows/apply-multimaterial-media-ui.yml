@@ -154,12 +154,17 @@ jobs:
         shell: bash
         run: |
           set +e
-          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          isolated_test='scripts/__tests__/note-save-flow.test.cjs'
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) ! -path "./$isolated_test" -print0 | sort -z)
           if (( ${#test_files[@]} == 0 )); then
             echo 'No automated tests found.' > "$RUNNER_TEMP/full-suite.log"
             status=2
           else
             node --test --test-concurrency=1 "${test_files[@]}" > "$RUNNER_TEMP/full-suite.log" 2>&1
+            status=$?
+          fi
+          if (( status == 0 )); then
+            node --test "$isolated_test" >> "$RUNNER_TEMP/full-suite.log" 2>&1
             status=$?
           fi
           cat "$RUNNER_TEMP/full-suite.log"
