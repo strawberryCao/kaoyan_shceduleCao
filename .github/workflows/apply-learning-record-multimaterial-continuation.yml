@@ -46,6 +46,23 @@ jobs:
           NODE_PATH: ${{ github.workspace }}/outputs/kaoyan-schedule-app/node_modules
         run: node scripts/apply-multimaterial-continuation.cjs
 
+      - name: Normalize generated whitespace
+        shell: python
+        run: |
+          from pathlib import Path
+
+          paths = [
+              Path('outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs'),
+              Path('outputs/kaoyan-schedule-app/src/utils/learningData.ts'),
+              Path('outputs/kaoyan-schedule-app/cloudflare/learning.js'),
+              Path('outputs/kaoyan-schedule-app/scripts/learning-multimaterial.test.cjs'),
+              Path('outputs/kaoyan-schedule-app/cloudflare/learning-multimaterial.test.mjs'),
+          ]
+          for path in paths:
+              text = path.read_text(encoding='utf-8')
+              normalized = '\n'.join(line.rstrip(' \t') for line in text.split('\n'))
+              path.write_text(normalized, encoding='utf-8')
+
       - name: Validate syntax and patch cleanliness
         env:
           GH_TOKEN: ${{ github.token }}
