@@ -1,3 +1,4 @@
+# rerun after installing the workflow-run receipt listener
 name: Apply mobile capture Load failed hotfix
 
 on:
