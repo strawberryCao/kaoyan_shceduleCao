@@ -152,7 +152,7 @@ jobs:
             echo 'No automated tests found.' > "$RUNNER_TEMP/full-suite.log"
             status=2
           else
-            node --test "${test_files[@]}" > "$RUNNER_TEMP/full-suite.log" 2>&1
+            node --test --test-concurrency=1 "${test_files[@]}" > "$RUNNER_TEMP/full-suite.log" 2>&1
             status=$?
           fi
           cat "$RUNNER_TEMP/full-suite.log"
@@ -161,7 +161,9 @@ jobs:
               echo '## 多资料变更下的仓库全量测试失败'
               echo
               echo '```text'
-              tail -n 240 "$RUNNER_TEMP/full-suite.log"
+              grep -B 8 -A 24 '^not ok ' "$RUNNER_TEMP/full-suite.log" | tail -n 260
+              echo
+              tail -n 30 "$RUNNER_TEMP/full-suite.log"
               echo '```'
             } > "$RUNNER_TEMP/full-suite-comment.md"
             gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/full-suite-comment.md"
