@@ -14,8 +14,8 @@ def replace_once(name: str, before: str, after: str) -> None:
 
 replace_once(
     'cloud-capture-fast-pipeline.test.cjs',
-    "assert.match(saveBatch, /saveNoteImagesBatch|saveBatchReliably/);",
-    "assert.match(saveBatch, /enqueueCaptureUpload\\(payloads\\)/);",
+    "  assert.match(block, /saveNoteImagesBatch|saveBatchReliably/);\n  assert.match(block, /正在一次性上传并归档/);",
+    "  assert.match(block, /enqueueCaptureUpload\\(payloads\\)/);\n  assert.match(block, /本机后台队列|可以立即退出/);",
 )
 replace_once(
     'public-lan-parity.test.cjs',
