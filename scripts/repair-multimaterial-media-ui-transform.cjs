@@ -28,6 +28,18 @@ const replacements = [
     "noteDrop = replaceOnce(noteDrop, \"  if (isMobileCapture) {\", \"  if (materialOpen) {\\n    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;\\n  }\\n\\n  if (isMobileCapture) {\", 'note drop composer branch');",
     "noteDrop = replaceOnce(noteDrop, \"  if (isMobileCapture) {\\n    if (mobileStep === 'multi-crop'\", \"  if (materialOpen) {\\n    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;\\n  }\\n\\n  if (isMobileCapture) {\\n    if (mobileStep === 'multi-crop'\", 'note drop composer branch');",
   ],
+  [
+    "write('outputs/kaoyan-schedule-app/quick-material-composer.css', composerCss);",
+    "write('outputs/kaoyan-schedule-app/src/quick-material-composer.css', composerCss);",
+  ],
+  [
+    "let learningCss = read('outputs/kaoyan-schedule-app/learning-center.css');",
+    "let learningCss = read('outputs/kaoyan-schedule-app/src/learning-center.css');",
+  ],
+  [
+    "write('outputs/kaoyan-schedule-app/learning-center.css', learningCss);",
+    "write('outputs/kaoyan-schedule-app/src/learning-center.css', learningCss);",
+  ],
 ];
 
 for (const [before, after] of replacements) {
