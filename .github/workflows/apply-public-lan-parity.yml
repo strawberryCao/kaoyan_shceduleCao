@@ -30,7 +30,14 @@ jobs:
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
       - name: Apply source changes
-        run: node .github/scripts/apply-public-lan-parity.cjs
+        id: apply
+        shell: bash
+        run: |
+          set +e
+          node .github/scripts/apply-public-lan-parity.cjs > /tmp/public-lan-parity-apply.log 2>&1
+          code=$?
+          cat /tmp/public-lan-parity-apply.log
+          exit "$code"
       - name: Validate JavaScript syntax
         shell: bash
         run: |
@@ -99,11 +106,17 @@ jobs:
         shell: bash
         env:
           VALIDATION_STATUS: ${{ job.status }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          detail=''
+          if [[ -f /tmp/public-lan-parity-apply.log ]]; then
+            detail="$(tail -n 30 /tmp/public-lan-parity-apply.log)"
+          fi
+          export VALIDATION_DETAIL="$detail"
           git reset --hard HEAD
           git config user.name 'Kaoyan Parity Validator'
           git config user.email 'kaoyan-parity@local.invalid'
@@ -114,9 +127,11 @@ jobs:
           payload = {
               'schemaVersion': 1,
               'status': os.environ['VALIDATION_STATUS'],
+              'applyOutcome': os.environ.get('APPLY_OUTCOME', ''),
               'runId': int(os.environ['RUN_ID']),
               'runAttempt': int(os.environ['RUN_ATTEMPT']),
               'sourceSha': os.environ['SOURCE_SHA'],
+              'detail': os.environ.get('VALIDATION_DETAIL', '')[-6000:],
               'recordedAt': datetime.now(timezone.utc).isoformat(),
           }
           with open('.github/validation/public-lan-parity-status.json', 'w', encoding='utf-8') as f:
