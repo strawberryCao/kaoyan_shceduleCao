@@ -1,7 +1,11 @@
-import { HttpError } from './http.js';
+import { HttpError, sha256 } from './http.js';
 import { readJsonFile } from './github-store.js';
 
 export const LOCAL_AGENT_RUNTIME_PATH = 'data/config/local-assistant/agent-runtime.json';
+export const LEGACY_V11_WORKFLOW_COMPAT_PATH = 'data/config/local-assistant/legacy-v11-analysis-workflows.json';
+
+const LEGACY_V11_WORKFLOW_SOURCE_HASH = '511f580d975f781567f37c5bf7ad9410b50c420c6622340b821e8191c40c1c22';
+const REQUIRED_COMPLETE_WORKFLOWS = Object.freeze(['note_enrichment', 'note_image_understanding']);
 
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -9,6 +13,22 @@ function isObject(value) {
 
 function text(value, maxLength = 400) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!isObject(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableValue(value[key])]));
+}
+
+function stableJson(value) {
+  return JSON.stringify(stableValue(value));
+}
+
+function runtimeWorkflowSourceHash(value) {
+  const sources = Array.isArray(value?.source?.workflowSources) ? value.source.workflowSources : [];
+  const source = sources.find((item) => item?.path === 'agent-workflow-contracts.cjs');
+  return text(source?.sha256, 128);
 }
 
 function inferCapabilities(providerId, modelId) {
@@ -106,6 +126,56 @@ function normalizeWorkflow(taskId, value) {
   return { id: taskId, version: text(value.version, 120), steps, prompt: { instructions, outputFormat } };
 }
 
+function missingCompleteWorkflows(workflows) {
+  return REQUIRED_COMPLETE_WORKFLOWS.filter((taskId) => !workflows[taskId]);
+}
+
+async function loadLegacyV11Compatibility(env, runtimeValue, workflows) {
+  const missing = missingCompleteWorkflows(workflows);
+  if (missing.length === 0) return { workflows, compatibility: null };
+  const sourceHash = runtimeWorkflowSourceHash(runtimeValue);
+  if (sourceHash !== LEGACY_V11_WORKFLOW_SOURCE_HASH) return { workflows, compatibility: null };
+
+  const file = await readJsonFile(env, LEGACY_V11_WORKFLOW_COMPAT_PATH, {
+    allowMissing: true,
+    maxBytes: 256 * 1024,
+  });
+  const value = file?.value;
+  if (!isObject(value)) {
+    throw new HttpError(503, '旧 V11 缺少完整分析工作流，且数据控制面兼容合同不存在。', 'LOCAL_AGENT_COMPATIBILITY_MISSING');
+  }
+  if (
+    Number(value.schemaVersion) !== 1
+    || value.expiresWhenWorkflowSourceChanges !== true
+    || text(value.legacyWorkflowSourceHash, 128) !== sourceHash
+  ) {
+    throw new HttpError(503, '数据控制面兼容合同与当前局域网 V11 源码哈希不匹配。', 'LOCAL_AGENT_COMPATIBILITY_INVALID');
+  }
+  const declaredHash = text(value.workflowContentHash, 128);
+  const actualHash = await sha256(stableJson(value.workflows || {}));
+  if (!declaredHash || declaredHash !== actualHash) {
+    throw new HttpError(503, '数据控制面兼容合同内容哈希校验失败。', 'LOCAL_AGENT_COMPATIBILITY_INVALID');
+  }
+
+  const compatible = Object.fromEntries(Object.entries(value.workflows || {})
+    .map(([taskId, workflow]) => [taskId, normalizeWorkflow(taskId, workflow)])
+    .filter(([, workflow]) => Boolean(workflow)));
+  const invalid = missing.filter((taskId) => !compatible[taskId]);
+  if (invalid.length > 0) {
+    throw new HttpError(503, `数据控制面兼容合同缺少完整工作流：${invalid.join('、')}`, 'LOCAL_AGENT_COMPATIBILITY_INVALID');
+  }
+  return {
+    workflows: { ...workflows, ...compatible },
+    compatibility: {
+      id: text(value.compatibilityId, 120) || 'legacy-v11-full-note-analysis',
+      workflowSourceHash: sourceHash,
+      workflowContentHash: actualHash,
+      path: LEGACY_V11_WORKFLOW_COMPAT_PATH,
+      tasks: missing,
+    },
+  };
+}
+
 export async function getAgentRuntime(env) {
   const file = await readJsonFile(env, LOCAL_AGENT_RUNTIME_PATH, {
     allowMissing: true,
@@ -125,9 +195,14 @@ export async function getAgentRuntime(env) {
   const providers = Object.fromEntries(Object.entries(file.value.providers)
     .map(([providerId, value]) => [providerId, normalizeProvider(providerId, value, preferredModelIds)])
     .filter(([, value]) => Boolean(value)));
-  const workflows = Object.fromEntries(Object.entries(file.value.workflows || {})
+  const publishedWorkflows = Object.fromEntries(Object.entries(file.value.workflows || {})
     .map(([taskId, value]) => [taskId, normalizeWorkflow(taskId, value)])
     .filter(([, value]) => Boolean(value)));
+  const resolved = await loadLegacyV11Compatibility(env, file.value, publishedWorkflows);
+  const publishedWorkflowHash = text(file.value.source.workflowHash, 128);
+  const effectiveWorkflowHash = resolved.compatibility
+    ? await sha256(stableJson({ publishedWorkflowHash, compatibilityWorkflowHash: resolved.compatibility.workflowContentHash }))
+    : publishedWorkflowHash;
   return {
     schemaVersion: Number(file.value.schemaVersion),
     strictMode: true,
@@ -137,13 +212,15 @@ export async function getAgentRuntime(env) {
     source: {
       updatedAt: text(file.value.source.updatedAt, 100) || null,
       configurationHash: text(file.value.source.configurationHash, 128),
-      workflowHash: text(file.value.source.workflowHash, 128),
+      workflowHash: effectiveWorkflowHash,
+      publishedWorkflowHash,
       workflowSources: Array.isArray(file.value.source.workflowSources) ? file.value.source.workflowSources : [],
+      compatibility: resolved.compatibility,
     },
     providers,
     routing: isObject(file.value.routing) ? file.value.routing : {},
     tasks,
-    workflows,
+    workflows: resolved.workflows,
   };
 }
 
@@ -181,6 +258,8 @@ export async function getAgentRuntimeStatus(env) {
     configurationUpdatedAt: runtime.source.updatedAt,
     configurationHash: runtime.source.configurationHash,
     workflowHash: runtime.source.workflowHash,
+    publishedWorkflowHash: runtime.source.publishedWorkflowHash,
+    compatibility: runtime.source.compatibility,
     configuredTasks: Object.keys(runtime.tasks),
     activeTasks: Object.values(runtime.tasks).filter((task) => task.active).map((task) => task.id),
     workflowVersions: Object.fromEntries(Object.entries(runtime.workflows || {}).map(([taskId, workflow]) => [taskId, workflow.version])),
@@ -190,6 +269,9 @@ export async function getAgentRuntimeStatus(env) {
 
 export const agentRuntimeInternals = Object.freeze({
   inferCapabilities,
+  missingCompleteWorkflows,
   normalizeProvider,
   normalizeWorkflow,
+  runtimeWorkflowSourceHash,
+  stableJson,
 });
