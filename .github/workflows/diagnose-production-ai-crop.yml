@@ -1,0 +1,106 @@
+name: Diagnose production AI crop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/learning-detail-title-latex]
+    paths:
+      - '.github/workflows/diagnose-production-ai-crop.yml'
+
+permissions:
+  contents: write
+
+env:
+  WORKER_URL: https://kaoyan-study-center.caoheming139.workers.dev
+  APP_USERNAME: caobiji
+  DATA_REPOSITORY: strawberryCao/Caobijidata
+  DATA_BRANCH: main
+  IMAGE_PATH: data/assets/multi_failure_batch_dbcfd2b2-2b80-4d66-a114-b724c750dc69.jpg
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      CAOBIJI_GITHUB_TOKEN: ${{ secrets.CAOBIJI_GITHUB_TOKEN }}
+    steps:
+      - name: Probe production question detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$KAOYAN_APP_PASSWORD" ]]
+          [[ -n "$CAOBIJI_GITHUB_TOKEN" ]]
+          auth_header="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
+          encoded_path="$(node -p "encodeURIComponent(process.env.IMAGE_PATH)")"
+          curl --fail --silent --show-error \
+            -H 'Accept: application/vnd.github.raw' \
+            -H "Authorization: Bearer $CAOBIJI_GITHUB_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "https://api.github.com/repos/$DATA_REPOSITORY/contents/$encoded_path?ref=$DATA_BRANCH" \
+            -o "$RUNNER_TEMP/probe.jpg"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const image = fs.readFileSync(process.env.RUNNER_TEMP + '/probe.jpg');
+          const payload = {
+            imageDataUrl: `data:image/jpeg;base64,${image.toString('base64')}`,
+            imageWidth: 2200,
+            imageHeight: 3000,
+          };
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/payload.json', JSON.stringify(payload));
+          NODE
+          status="$(curl --silent --show-error \
+            --max-time 310 \
+            -o "$RUNNER_TEMP/response.json" \
+            -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: $auth_header" \
+            -H 'Content-Type: application/json' \
+            --data-binary "@$RUNNER_TEMP/payload.json" \
+            "$WORKER_URL/api/ai/detect-questions" || true)"
+          node <<'NODE'
+          const fs = require('node:fs');
+          const responsePath = process.env.RUNNER_TEMP + '/response.json';
+          let response = null;
+          try { response = JSON.parse(fs.readFileSync(responsePath, 'utf8')); }
+          catch { response = { raw: fs.existsSync(responsePath) ? fs.readFileSync(responsePath, 'utf8').slice(0, 12000) : '' }; }
+          const receipt = {
+            schemaVersion: 1,
+            status: Number(process.env.PROBE_STATUS),
+            response,
+            recordedAt: new Date().toISOString(),
+          };
+          fs.writeFileSync('ai-crop-probe-result.json', JSON.stringify(receipt, null, 2) + '\n');
+          console.log(JSON.stringify(receipt, null, 2));
+          NODE
+        env:
+          PROBE_STATUS: ${{ env.PROBE_STATUS }}
+      - name: Persist probe result
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = 'diagnostics/production-ai-crop-latest.json';
+            let receipt;
+            try {
+              receipt = JSON.parse(fs.readFileSync('ai-crop-probe-result.json', 'utf8'));
+            } catch (error) {
+              receipt = { schemaVersion: 1, status: 0, response: { error: String(error) }, recordedAt: new Date().toISOString() };
+            }
+            let sha;
+            try {
+              const current = await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path, ref: 'fix/learning-detail-title-latex' });
+              if (!Array.isArray(current.data)) sha = current.data.sha;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path,
+              branch: 'fix/learning-detail-title-latex',
+              message: 'diagnostic: record production AI crop result',
+              content: Buffer.from(JSON.stringify(receipt, null, 2) + '\n').toString('base64'),
+              ...(sha ? { sha } : {}),
+            });
