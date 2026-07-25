@@ -78,8 +78,8 @@ jobs:
               Path('outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx'),
               Path('outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx'),
               Path('outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx'),
-              Path('outputs/kaoyan-schedule-app/quick-material-composer.css'),
-              Path('outputs/kaoyan-schedule-app/learning-center.css'),
+              Path('outputs/kaoyan-schedule-app/src/quick-material-composer.css'),
+              Path('outputs/kaoyan-schedule-app/src/learning-center.css'),
           ]
           for path in paths:
               text = path.read_text(encoding='utf-8')
@@ -128,8 +128,8 @@ jobs:
             outputs/kaoyan-schedule-app/src/components/QuickMaterialComposer.tsx \
             outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
             outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx \
-            outputs/kaoyan-schedule-app/quick-material-composer.css \
-            outputs/kaoyan-schedule-app/learning-center.css
+            outputs/kaoyan-schedule-app/src/quick-material-composer.css \
+            outputs/kaoyan-schedule-app/src/learning-center.css
           if git diff --cached --quiet; then
             echo 'No generated source changes remain.'
             exit 0
