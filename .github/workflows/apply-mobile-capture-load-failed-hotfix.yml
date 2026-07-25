@@ -1,0 +1,64 @@
+name: Apply mobile capture Load failed hotfix
+
+on:
+  push:
+    branches: [fix/mobile-capture-load-failed]
+    paths:
+      - 'scripts/apply-mobile-capture-load-failed-hotfix.cjs'
+      - '.github/workflows/apply-mobile-capture-load-failed-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/mobile-capture-load-failed
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply hotfix
+        run: node scripts/apply-mobile-capture-load-failed-hotfix.cjs
+      - name: Validate generated source
+        run: |
+          node --check scripts/apply-mobile-capture-load-failed-hotfix.cjs
+          node --check outputs/kaoyan-schedule-app/scripts/note-capture-foreground.test.cjs
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci
+      - name: Run targeted capture test
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/note-capture-foreground.test.cjs
+      - name: Run full automated suite
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+      - name: Build application
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Validate Worker bundle
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx outputs/kaoyan-schedule-app/scripts/note-capture-foreground.test.cjs
+          if git diff --cached --quiet; then
+            echo 'Verified source already present.'
+            exit 0
+          fi
+          git commit -m 'fix: keep mobile capture foreground and recover interrupted saves'
+          git push origin HEAD:fix/mobile-capture-load-failed
