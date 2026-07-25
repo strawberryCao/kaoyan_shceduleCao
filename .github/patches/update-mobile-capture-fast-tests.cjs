@@ -15,15 +15,22 @@ function update(fileName, before, after, label) {
 
 update(
   'note-capture-foreground.test.cjs',
-  "assert.match(flow, /detectQuestionRegions\\(src\\)/);",
-  "assert.match(flow, /detectQuestionRegions\\(src(?:,|\\))/);\n  assert.match(flow, /setBatchProgress\\(message\\)/);",
+  "  assert.match(block, /detectQuestionRegions\\(src\\)/);",
+  "  assert.match(block, /detectQuestionRegions\\(src(?:,|\\))/);\n  assert.match(block, /setBatchProgress\\(message\\)/);",
   'foreground streaming detection assertion',
 );
 
 update(
+  'note-capture-foreground.test.cjs',
+  "  assert.match(block, /cropManyImages\\(src, detection\\.regions\\)/);",
+  "  assert.match(block, /cropManyImages\\(src, detection\\.regions(?:,|\\))/);",
+  'foreground compressed crop assertion',
+);
+
+update(
   'public-lan-parity.test.cjs',
-  "assert.match(media, /sourceType: payload\\.sourceType \\|\\| 'single-capture'/);",
-  "assert.match(media, /sourceType: (?:payload|item\\.payload)\\.sourceType \\|\\| 'single-capture'/);",
+  "  assert.match(media, /sourceType: payload\\.sourceType \\|\\| 'single-capture'/);",
+  "  assert.match(media, /sourceType: (?:payload|item\\.payload)\\.sourceType \\|\\| 'single-capture'/);",
   'LAN naming source assertion',
 );
 
