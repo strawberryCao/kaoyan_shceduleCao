@@ -1,0 +1,88 @@
+name: Apply learning-record multimaterial continuation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/learning-record-multimaterial-continuation]
+    paths:
+      - 'scripts/apply-multimaterial-continuation.cjs'
+      - '.github/workflows/apply-learning-record-multimaterial-continuation.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: learning-record-multimaterial-continuation
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out continuation branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-record-multimaterial-continuation
+          fetch-depth: 1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Install dependencies without legacy postinstall transforms
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+
+      - name: Apply semantic source transform
+        env:
+          NODE_PATH: ${{ github.workspace }}/outputs/kaoyan-schedule-app/node_modules
+        run: node scripts/apply-multimaterial-continuation.cjs
+
+      - name: Validate syntax and patch cleanliness
+        run: |
+          node --check outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs
+          node --check outputs/kaoyan-schedule-app/cloudflare/learning.js
+          git diff --check
+
+      - name: Run learning-data compatibility tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: |
+          node --test scripts/learning-data-store.test.cjs scripts/learning-multimaterial.test.cjs
+          node --test cloudflare/learning-multimaterial.test.mjs
+
+      - name: Run full automated suite
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          CAOBIJI_GITHUB_TOKEN: ''
+        run: |
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          (( ${#test_files[@]} > 0 ))
+          node --test "${test_files[@]}"
+
+      - name: Build application
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Commit verified generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            outputs/kaoyan-schedule-app/scripts/learning-data-store.cjs \
+            outputs/kaoyan-schedule-app/scripts/learning-multimaterial.test.cjs \
+            outputs/kaoyan-schedule-app/src/utils/learningData.ts \
+            outputs/kaoyan-schedule-app/cloudflare/learning.js \
+            outputs/kaoyan-schedule-app/cloudflare/learning-multimaterial.test.mjs
+          if git diff --cached --quiet; then
+            echo 'No generated source changes remain.'
+            exit 0
+          fi
+          git commit -m 'feat: preserve learning record fields and add multimaterial schema'
+          git push origin HEAD:fix/learning-record-multimaterial-continuation
