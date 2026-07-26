@@ -40,18 +40,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin fix/learning-detail-title-latex agent/instant-capture-background-split
 
-          # Historical merges changed only line endings in unrelated launch scripts.
-          git checkout origin/fix/learning-detail-title-latex -- \
-            outputs/kaoyan-schedule-app/取消开机自启.cmd \
-            outputs/kaoyan-schedule-app/安装依赖.cmd \
-            outputs/kaoyan-schedule-app/导入敦煌壁纸图片.cmd \
-            outputs/kaoyan-schedule-app/收集环境信息.cmd \
-            outputs/kaoyan-schedule-app/整理笔记元数据.cmd \
-            outputs/kaoyan-schedule-app/测试千问连接.cmd \
-            outputs/kaoyan-schedule-app/生成敦煌动态壁纸视频.cmd \
-            outputs/kaoyan-schedule-app/设置开机自启.cmd \
-            outputs/kaoyan-schedule-app/配置千问命名.cmd
-
           app=outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx
           if ! grep -q "enqueueMultiQuestionJob" "$app"; then
             mkdir -p outputs/kaoyan-schedule-app/scripts
@@ -63,6 +51,26 @@ jobs:
           fi
 
           git add -A
+
+          # Restore exact baseline blobs in the index. This bypasses Linux line-ending
+          # conversion and prevents unrelated Windows launch scripts entering the PR.
+          command_files=(
+            outputs/kaoyan-schedule-app/取消开机自启.cmd
+            outputs/kaoyan-schedule-app/安装依赖.cmd
+            outputs/kaoyan-schedule-app/导入敦煌壁纸图片.cmd
+            outputs/kaoyan-schedule-app/收集环境信息.cmd
+            outputs/kaoyan-schedule-app/整理笔记元数据.cmd
+            outputs/kaoyan-schedule-app/测试千问连接.cmd
+            outputs/kaoyan-schedule-app/生成敦煌动态壁纸视频.cmd
+            outputs/kaoyan-schedule-app/设置开机自启.cmd
+            outputs/kaoyan-schedule-app/配置千问命名.cmd
+          )
+          for file in "${command_files[@]}"; do
+            blob=$(git rev-parse "origin/fix/learning-detail-title-latex:$file")
+            mode=$(git ls-tree origin/fix/learning-detail-title-latex -- "$file" | awk '{print $1}')
+            git update-index --cacheinfo "$mode,$blob,$file"
+          done
+
           if git diff --cached --quiet; then
             echo "changed=0" >> "$GITHUB_OUTPUT"
           else
