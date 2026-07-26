@@ -29,7 +29,7 @@ jobs:
 
       - name: Apply instant capture patch
         working-directory: outputs/kaoyan-schedule-app
-        run: node scripts/apply-instant-capture-background-split.cjs
+        run: node scripts/run-instant-capture-background-patch.cjs
 
       - name: Install dependencies without mutation hooks
         working-directory: outputs/kaoyan-schedule-app
@@ -58,6 +58,7 @@ jobs:
       - name: Remove temporary executor and workflow
         run: |
           rm -f outputs/kaoyan-schedule-app/scripts/apply-instant-capture-background-split.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/run-instant-capture-background-patch.cjs
           rm -f .github/workflows/apply-instant-capture-background-split.yml
 
       - name: Commit verified source only
