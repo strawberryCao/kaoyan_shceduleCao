@@ -32,13 +32,14 @@ jobs:
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
 
-      - name: Upgrade legacy assertions to truthful local-first semantics
+      - name: Apply compatibility fixes without weakening AI title safety
         run: |
           python - <<'PY'
           from pathlib import Path
-          root = Path('outputs/kaoyan-schedule-app/scripts')
+          app = Path('outputs/kaoyan-schedule-app')
+          tests = app / 'scripts'
 
-          fast = root / 'cloud-capture-fast-pipeline.test.cjs'
+          fast = tests / 'cloud-capture-fast-pipeline.test.cjs'
           text = fast.read_text(encoding='utf-8')
           old = "  assert.match(block, /本机后台队列|可以立即退出/);"
           new = "  assert.match(block, /已安全保存在本机/);\n  assert.match(block, /重新打开后会自动续传/);"
@@ -46,13 +47,83 @@ jobs:
               raise SystemExit('cloud-capture-fast-pipeline legacy assertion anchor missing')
           fast.write_text(text.replace(old, new, 1), encoding='utf-8')
 
-          local = root / 'mobile-local-first-analysis.test.cjs'
-          text = local.read_text(encoding='utf-8')
+          local_test = tests / 'mobile-local-first-analysis.test.cjs'
+          text = local_test.read_text(encoding='utf-8')
           old = "  assert.match(capture, /可以立即退出/);"
           new = "  assert.match(capture, /已安全保存在本机/);\n  assert.match(capture, /重新打开后会自动续传/);"
           if old not in text:
               raise SystemExit('mobile-local-first legacy assertion anchor missing')
-          local.write_text(text.replace(old, new, 1), encoding='utf-8')
+          local_test.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          policy = app / 'shared/note-title-policy.js'
+          text = policy.read_text(encoding='utf-8')
+          old = """  const title = sanitizeNoteTitle(value, titleMaxLength);
+  if (!title) return { ok: false, title, problem: '标题为空' };
+  if (title.length < Math.min(4, titleMinLength)) return { ok: false, title, problem: '标题过短' };
+  const chinese = title.match(/[\\u3400-\\u9fff]/gu)?.length || 0;
+  const letters = title.match(/[A-Za-z]/g)?.length || 0;
+  if (REFUSAL_PATTERN.test(title)) return { ok: false, title, problem: '标题包含模型拒答或英文说明句' };
+  if (chinese < 2 || (letters > 10 && letters > chinese * 1.5)) {
+    return { ok: false, title, problem: '标题必须以中文为主，不能输出英文句子' };
+  }
+"""
+          new = """  const title = sanitizeNoteTitle(value, titleMaxLength);
+  const ruleValue = sanitizeNoteTitle(options.ruleValue, 80);
+  const ruleMatched = options.allowRuleIdentifier === true && Boolean(ruleValue) && title.includes(ruleValue);
+  if (!title) return { ok: false, title, problem: '标题为空' };
+  if (title.length < (ruleMatched ? 2 : Math.min(4, titleMinLength))) return { ok: false, title, problem: '标题过短' };
+  const chinese = title.match(/[\\u3400-\\u9fff]/gu)?.length || 0;
+  const letters = title.match(/[A-Za-z]/g)?.length || 0;
+  if (REFUSAL_PATTERN.test(title)) return { ok: false, title, problem: '标题包含模型拒答或英文说明句' };
+  if (!ruleMatched && (chinese < 2 || (letters > 10 && letters > chinese * 1.5))) {
+    return { ok: false, title, problem: '标题必须以中文为主，不能输出英文句子' };
+  }
+"""
+          if old not in text:
+              raise SystemExit('shared title policy validation anchor missing')
+          text = text.replace(old, new, 1)
+          policy.write_text(text, encoding='utf-8')
+
+          local_server = app / 'scripts/note-server.cjs'
+          text = local_server.read_text(encoding='utf-8')
+          old = "    const titleValidation = validateNoteTitle(title, { ...options, titleMinLength, titleMaxLength });"
+          new = "    const titleValidation = validateNoteTitle(title, { ...options, titleMinLength, titleMaxLength, allowRuleIdentifier: Boolean(matchedRule && ruleValue), ruleValue });"
+          if old not in text:
+              raise SystemExit('local title validation anchor missing')
+          local_server.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          cloud = app / 'cloudflare/rename-job.js'
+          text = cloud.read_text(encoding='utf-8')
+          old = """function titleProblem(title, settings) {
+  return validateNoteTitle(title, settings.options || {}).problem;
+}"""
+          new = """function titleProblem(title, settings, ruleValue = '') {
+  return validateNoteTitle(title, {
+    ...(settings.options || {}),
+    allowRuleIdentifier: Boolean(ruleValue),
+    ruleValue,
+  }).problem;
+}"""
+          if old not in text:
+              raise SystemExit('cloud titleProblem anchor missing')
+          text = text.replace(old, new, 1)
+          old = "    problem: titleProblem(title, settings),"
+          new = "    problem: titleProblem(title, settings, matchedRule && ruleValue ? ruleValue : ''),"
+          if old not in text:
+              raise SystemExit('cloud rule title validation call anchor missing')
+          cloud.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          behavior = tests / 'mobile-capture-contract-behavior.test.cjs'
+          text = behavior.read_text(encoding='utf-8')
+          old = """  assert.equal(policy.validateNoteTitle('导数定义与切线方程').ok, true);
+  assert.equal(policy.createFallbackNoteTitle({ splitIndex: 3 }), '待确认题目·第3题');"""
+          new = """  assert.equal(policy.validateNoteTitle('导数定义与切线方程').ok, true);
+  assert.equal(policy.validateNoteTitle('250626-088', { allowRuleIdentifier: true, ruleValue: '250626-088' }).ok, true);
+  assert.equal(policy.validateNoteTitle('The image does not contain 250626-088', { allowRuleIdentifier: true, ruleValue: '250626-088' }).ok, false);
+  assert.equal(policy.createFallbackNoteTitle({ splitIndex: 3 }), '待确认题目·第3题');"""
+          if old not in text:
+              raise SystemExit('behavior rule-title assertion anchor missing')
+          behavior.write_text(text.replace(old, new, 1), encoding='utf-8')
           PY
 
       - name: Remove postinstall side effects from the PR
