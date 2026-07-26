@@ -3,13 +3,14 @@ import { getTaskSettings } from './ai-config.js';
 import { HttpError } from './http.js';
 import { assertRepoPath, readFile } from './github-store.js';
 import { applyAiNoteNaming, findNote, getLearningSnapshot } from './learning.js';
+import { ALLOWED_NOTE_SUBJECTS, applySharedNamingRuleTemplate, createFallbackNoteTitle, normalizeNoteSubject, sanitizeNoteTitle, validateNoteTitle } from '../shared/note-title-policy.js';
 
 const ASSET_ROOT = 'data/assets/';
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MIME_BY_EXTENSION = {
   jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', avif: 'image/avif',
 };
-const ALLOWED_SUBJECTS = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治', '默认文件夹'];
+const ALLOWED_SUBJECTS = [...ALLOWED_NOTE_SUBJECTS];
 
 function isRenameEligibleNote(note) {
   const sourceType = String(note?.sourceType || '');
@@ -100,20 +101,11 @@ function namingPrompt(settings, remark, repairReason = '', captureType = '手机
 }
 
 function applyNamingRuleTemplate(rule, value, subject, aiTitle) {
-  const template = String(rule?.titleTemplate || '{value}').slice(0, 240);
-  return sanitizeSegment(template
-    .replace(/\{value\}/g, value)
-    .replace(/\{subject\}/g, subject)
-    .replace(/\{aiTitle\}/g, aiTitle), value || aiTitle, 80);
+  return applySharedNamingRuleTemplate(rule, value, subject, aiTitle);
 }
 
 function titleProblem(title, settings) {
-  if (!title) return '标题为空';
-  const chinese = title.match(/[\u3400-\u9fff]/gu)?.length || 0;
-  const letters = title.match(/[A-Za-z]/g)?.length || 0;
-  if (chinese < 2 || (letters > 10 && letters > chinese * 1.5)) return '标题必须以中文为主，不能输出英文句子';
-  if (settings.options?.rejectGenericTitle !== false && /^(?:待识别|无法识别|未知(?:内容)?|未命名(?:内容)?|图片笔记|截图|题目|练习|exercise|question|image)(?:笔记)?$/iu.test(title)) return '标题过于空泛';
-  return '';
+  return validateNoteTitle(title, settings.options || {}).problem;
 }
 
 async function generateTitle(env, image, settings, remark, repairReason = '', captureType = '手机单题拍照') {
@@ -134,8 +126,8 @@ async function generateTitle(env, image, settings, remark, repairReason = '', ca
   const parsed = response.json && typeof response.json === 'object' ? response.json : {};
   const options = settings.options || {};
   const titleMaxLength = Math.max(6, Math.min(80, Number(options.titleMaxLength) || 22));
-  const subject = ALLOWED_SUBJECTS.includes(String(parsed.subject || '').trim()) ? String(parsed.subject).trim() : '默认文件夹';
-  const aiTitle = sanitizeSegment(parsed.title, '', titleMaxLength);
+  const subject = normalizeNoteSubject(parsed.subject);
+  const aiTitle = sanitizeNoteTitle(parsed.title, titleMaxLength);
   const rules = namingRules(settings);
   const matchedRule = rules.find((rule) => rule.id === String(parsed.ruleId || '').trim()) || null;
   const ruleValue = matchedRule ? sanitizeSegment(parsed.ruleValue, '', 100) : '';
@@ -174,7 +166,15 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
     : '手机单题拍照';
   let generated = await generateTitle(env, image, settings, remark, '', captureType);
   if (generated.problem) generated = await generateTitle(env, image, settings, remark, generated.problem, captureType);
-  if (generated.problem) throw new HttpError(502, `AI 标题未通过校验：${generated.problem}`, 'AI_RENAME_INVALID');
+  if (generated.problem) {
+    generated = {
+      ...generated,
+      title: createFallbackNoteTitle({ splitIndex: initialEntry.note.sourceSplitIndex, captureType }),
+      subject: '默认文件夹',
+      problem: '',
+      fallbackReason: generated.problem,
+    };
+  }
 
   const latestSnapshot = await getLearningSnapshot(env);
   const latestEntry = findNote(latestSnapshot, noteUid);

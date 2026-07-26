@@ -199,7 +199,7 @@ const processOutbox = async (): Promise<void> => {
       await patchJob(uploading, {
         status: 'failed',
         nextAttemptAt: canRetry ? Date.now() + retryDelay(uploading.attempts) : Number.MAX_SAFE_INTEGER,
-        message: canRetry ? '网络中断，已保留在本机，稍后自动续传' : '后台保存失败，已保留在本机，可手动重试',
+        message: canRetry ? '网络中断，已保留在本机；保持页面打开或稍后重新打开即可自动续传' : '后台保存失败，原图仍保留在本机，可手动重试',
         error: message,
       });
       if (!canRetry) break;
@@ -226,7 +226,7 @@ export const enqueueCaptureUpload = async (payloads: SaveNotePayload[]): Promise
     noteUids,
     attempts: 0,
     nextAttemptAt: Date.now(),
-    message: payloads.length > 1 ? `${payloads.length} 道题已存入本机后台队列` : '图片已存入本机后台队列',
+    message: payloads.length > 1 ? `${payloads.length} 道题已安全保存在本机，重新打开页面会自动续传` : '图片已安全保存在本机，重新打开页面会自动续传',
     error: '',
     createdAt,
     updatedAt: createdAt,

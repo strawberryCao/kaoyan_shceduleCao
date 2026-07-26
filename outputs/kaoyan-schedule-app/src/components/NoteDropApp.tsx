@@ -91,6 +91,8 @@ export function NoteDropApp() {
   const [status, setStatus] = useState('');
   const [dialogError, setDialogError] = useState('');
   const [batchProgress, setBatchProgress] = useState('');
+  const [batchSubject, setBatchSubject] = useState('默认文件夹');
+  const [batchRemark, setBatchRemark] = useState('');
   const [materialOpen, setMaterialOpen] = useState(false);
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
@@ -137,6 +139,8 @@ export function NoteDropApp() {
     setStatus('');
     setDialogError('');
     setBatchProgress('');
+    setBatchSubject('默认文件夹');
+    setBatchRemark('');
     setMobileStep('capture');
   }, []);
 
@@ -324,7 +328,7 @@ export function NoteDropApp() {
         setPendingImage(null);
         setRemark('');
         setSaved(true);
-        setStatus('已存入本机后台队列，可以立即退出；命名和完整分类会自动完成');
+        setStatus('已安全保存在本机；可以关闭页面，重新打开后会自动续传，上传后再完成命名和分类');
         if (isMobileCapture) setMobileStep('success');
         return;
       }
@@ -376,11 +380,12 @@ export function NoteDropApp() {
         if (detectionRunRef.current === runId) setBatchProgress(message);
       });
       if (detectionRunRef.current !== runId) return;
-      setBatchProgress(('3/4 ' + (detection.provider || '') + ' ' + (detection.model || '') + ' 已识别 ' + detection.regions.length + ' 道题，正在生成裁剪结果…').replace(/\s+/g, ' ').trim());
+      const rejectedCount = detection.quality?.rejectedCount ?? detection.rejectedRegions?.length ?? 0;
+      setBatchProgress(('3/4 ' + (detection.provider || '') + ' ' + (detection.model || '') + ' 已保留 ' + detection.regions.length + ' 道完整题目' + (rejectedCount ? '，过滤 ' + rejectedCount + ' 个可疑区域' : '') + '，正在生成裁剪结果…').replace(/\s+/g, ' ').trim());
       const images = await cropManyImages(src, detection.regions, 1800, 0.9);
       if (detectionRunRef.current !== runId) return;
       setBatchImages(images.map((imageSrc) => ({ src: imageSrc, noteUid: createNoteUid(), enabled: true })));
-      setBatchProgress('4/4 裁剪完成，请检查每一道题。');
+      setBatchProgress('4/4 裁剪完成，请检查每一道题和批次信息。');
       setMobileStep('batch');
     } finally {
       window.clearTimeout(slowTimer);
@@ -450,8 +455,8 @@ export function NoteDropApp() {
       imageDataUrl: item.src,
       kind: 'single' as const,
       noteUid: item.noteUid,
-      subject: '默认文件夹',
-      remark: '',
+      subject: batchSubject,
+      remark: batchRemark,
       sourceType: 'ai-multi-question',
       sourceBatchId: sourceImage?.noteUid || '',
       sourceSplitIndex: index + 1,
@@ -463,7 +468,7 @@ export function NoteDropApp() {
       if (IS_CLOUD_RUNTIME) {
         await enqueueCaptureUpload(payloads);
         setSaved(true);
-        setStatus(`${selected.length} 道题已存入本机后台队列，可以立即退出`);
+        setStatus(`${selected.length} 道题已安全保存在本机；可以关闭页面，重新打开后会自动续传`);
         setBatchProgress('');
         setMobileStep('success');
         return;
@@ -679,6 +684,12 @@ export function NoteDropApp() {
               <div><h1>识别到 {batchImages.length} 道题</h1><p>点图片可再裁剪；关闭不需要的题目后批量保存。</p></div>
               <span>{batchImages.filter((item) => item.enabled).length} 道待保存</span>
             </header>
+            <div className="mobile-batch-context">
+              <label><span>整批科目</span><select value={batchSubject} onChange={(event) => setBatchSubject(event.target.value)} disabled={saving}>
+                {['默认文件夹', '高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治'].map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+              </select></label>
+              <label><span>整批备注 <small>将参与每道题的中文命名与分类</small></span><textarea value={batchRemark} onChange={(event) => setBatchRemark(event.target.value)} placeholder="例如：张宇高数18讲 p128，例4.2，多题错题" disabled={saving} /></label>
+            </div>
             <div className="mobile-batch-list">
               {batchImages.map((item, index) => (
                 <article className={item.enabled ? '' : 'is-disabled'} key={item.noteUid}>

@@ -81,6 +81,8 @@ export interface DetectQuestionResult {
   configurationHash?: string;
   workflowHash?: string;
   regions: NormalizedCrop[];
+  rejectedRegions?: Array<NormalizedCrop & { reason?: string; confidence?: number }>;
+  quality?: { candidateCount: number; acceptedCount: number; rejectedCount: number };
   error?: string;
 }
 

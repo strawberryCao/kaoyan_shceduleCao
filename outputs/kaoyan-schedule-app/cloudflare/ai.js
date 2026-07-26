@@ -59,11 +59,17 @@ function normalizeBox(object, imageWidth, imageHeight, settings) {
   const padY = Math.min(configuredPadding, (y2 - y1) * 0.08);
   const paddedX1 = Math.max(0, x1 - padX);
   const paddedY1 = Math.max(0, y1 - padY);
+  const confidenceValue = finite(object?.confidence ?? object?.score ?? object?.probability);
   return {
     x: paddedX1,
     y: paddedY1,
     width: Math.min(1, x2 + padX) - paddedX1,
     height: Math.min(1, y2 + padY) - paddedY1,
+    confidence: confidenceValue === null ? 0.68 : Math.max(0, Math.min(1, confidenceValue)),
+    completeQuestion: object?.completeQuestion !== false && object?.complete_question !== false,
+    containsStem: object?.containsStem !== false && object?.contains_stem !== false,
+    containsOptions: object?.containsOptions !== false && object?.contains_options !== false,
+    containsRequiredDiagram: object?.containsRequiredDiagram !== false && object?.contains_required_diagram !== false,
   };
 }
 
@@ -83,16 +89,47 @@ function regionCandidates(result) {
   return [];
 }
 
+function evaluateRegion(region, settings) {
+  const options = settings.options || {};
+  const area = region.width * region.height;
+  const aspectRatio = region.width / Math.max(region.height, 0.0001);
+  const minConfidence = Math.max(0.35, Math.min(0.9, Number(options.minimumConfidence) || 0.56));
+  const reasons = [];
+  if (region.completeQuestion === false) reasons.push('模型判断不是完整独立题目');
+  if (region.containsStem === false) reasons.push('缺少完整题干');
+  if (region.confidence < minConfidence) reasons.push('置信度低于 ' + minConfidence.toFixed(2));
+  if (area < 0.018) reasons.push('区域面积过小');
+  if (aspectRatio > 9.5 || aspectRatio < 0.12) reasons.push('区域宽高比异常');
+  if (region.y > 0.9 && region.height < 0.1) reasons.push('疑似页脚或页面底部残片');
+  if (region.y < 0.015 && region.height < 0.07) reasons.push('疑似页眉残片');
+  return { accepted: reasons.length === 0, reason: reasons.join('；'), area, aspectRatio };
+}
+
 function normalizeRegions(result, width, height, settings) {
-  const regions = regionCandidates(result)
+  const candidates = regionCandidates(result)
     .map((object) => normalizeBox(object, width, height, settings))
     .filter(Boolean)
     .sort((left, right) => left.y - right.y || left.x - right.x);
   const unique = [];
-  for (const region of regions) {
-    if (!unique.some((existing) => overlap(existing, region) > 0.82)) unique.push(region);
+  const rejected = [];
+  for (const region of candidates) {
+    const quality = evaluateRegion(region, settings);
+    if (!quality.accepted) {
+      rejected.push({ ...region, reason: quality.reason });
+      continue;
+    }
+    if (unique.some((existing) => overlap(existing, region) > 0.82)) {
+      rejected.push({ ...region, reason: '与已保留题目区域高度重叠' });
+      continue;
+    }
+    unique.push(region);
   }
-  return unique.slice(0, Number(settings.options.maxQuestions) || 24);
+  const maxQuestions = Number(settings.options.maxQuestions) || 24;
+  return {
+    accepted: unique.slice(0, maxQuestions),
+    rejected,
+    candidateCount: candidates.length,
+  };
 }
 
 function fillTemplate(value, variables) {
@@ -139,9 +176,10 @@ export async function detectQuestions(env, payload) {
     maxTokens: Number(settings.options.maxTokens) || 1600,
     requiredCapabilities: ['vision', 'json'],
   });
-  const regions = normalizeRegions(response.json, width, height, settings);
-  if (regions.length === 0) {
-    throw new HttpError(422, '没有识别到完整题目，请调整预裁剪范围或改用单题模式。', 'NO_QUESTIONS_DETECTED');
+  const normalized = normalizeRegions(response.json, width, height, settings);
+  if (normalized.accepted.length === 0) {
+    const detail = normalized.rejected[0]?.reason ? '：' + normalized.rejected[0].reason : '';
+    throw new HttpError(422, '没有识别到完整题目' + detail + '，请调整预裁剪范围或改用单题模式。', 'NO_QUESTIONS_DETECTED');
   }
   return {
     ok: true,
@@ -149,8 +187,14 @@ export async function detectQuestions(env, payload) {
     model: response.model,
     configurationHash: response.configurationHash,
     workflowHash: response.workflowHash,
-    regions,
+    regions: normalized.accepted,
+    rejectedRegions: normalized.rejected,
+    quality: {
+      candidateCount: normalized.candidateCount,
+      acceptedCount: normalized.accepted.length,
+      rejectedCount: normalized.rejected.length,
+    },
   };
 }
 
-export const questionDetectionInternals = Object.freeze({ normalizeRegions, splittingPrompt });
+export const questionDetectionInternals = Object.freeze({ evaluateRegion, normalizeRegions, splittingPrompt });
