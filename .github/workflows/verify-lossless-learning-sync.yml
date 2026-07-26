@@ -1,0 +1,71 @@
+name: Verify lossless learning sync
+
+on:
+  pull_request:
+    branches: [agent/mobile-capture-stability-parity]
+    types: [reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/lossless-learning-sync-quick-ui
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply lossless sync patch
+        run: node outputs/kaoyan-schedule-app/scripts/apply-lossless-sync-quick-ui.cjs
+      - name: Install without mutation hooks
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+      - name: Run focused lossless sync tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/__tests__/merge-learning-data.test.cjs scripts/__tests__/learning-data-lossless-normalization.test.cjs
+      - name: Run complete Node regression suite
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' tests < <(find scripts cloudflare -type f \( -name '*.test.cjs' -o -name '*.test.mjs' -o -name '*.test.js' \) -print0 | sort -z)
+          set +e
+          node --test "${tests[@]}" 2>&1 | tee /tmp/lossless-full.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### 无损同步全量回归失败（精简定位）'
+              echo
+              echo '```text'
+              grep -nE '^not ok|AssertionError|TestContext\.<anonymous>|operator:|ERR_|^[[:space:]]*error:' /tmp/lossless-full.log | tail -n 180
+              echo '```'
+            } > /tmp/lossless-comment.md
+            gh pr comment 44 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/lossless-comment.md
+            exit "$status"
+          fi
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified clean source
+        run: |
+          rm -f .github/workflows/verify-lossless-learning-sync.yml
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-lossless-sync-quick-ui.cjs
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "add quick-note view and lossless field-level sync"
+          git push origin HEAD:agent/lossless-learning-sync-quick-ui
