@@ -67,9 +67,25 @@ jobs:
       - name: Run complete Node regression suite
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -d '' tests < <(find scripts cloudflare -type f \( -name '*.test.cjs' -o -name '*.test.mjs' -o -name '*.test.js' \) -print0 | sort -z)
-          node --test "${tests[@]}"
+          set +e
+          node --test "${tests[@]}" 2>&1 | tee /tmp/full-mobile.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### 最终全量回归失败（精简定位）'
+              echo
+              echo '```text'
+              grep -nE '^(not ok|# Subtest:)|AssertionError|TestContext\.<anonymous>|operator:|ERR_|error:' /tmp/full-mobile.log | tail -n 180
+              echo '```'
+            } > /tmp/full-mobile-comment.md
+            gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/full-mobile-comment.md
+            exit "$status"
+          fi
       - name: Build production app
         working-directory: outputs/kaoyan-schedule-app
         run: npm run build
