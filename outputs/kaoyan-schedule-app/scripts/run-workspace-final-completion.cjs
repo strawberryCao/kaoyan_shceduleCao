@@ -13,10 +13,12 @@ const replacements = [
   ["return replacement ? `url(\"${replacement}\")` : whole;", "return replacement ? 'url(\\\"' + replacement + '\\\")' : whole;"],
   ["return { html: `<!doctype html>${document.documentElement.outerHTML}`, urls };", "return { html: '<!doctype html>' + document.documentElement.outerHTML, urls };"],
   ["<article className={`lrp-file-preview is-${item.kind}`}>", "<article className={'lrp-file-preview is-' + item.kind}>"],
+  ["\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"", "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\""],
+  ["\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n    ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"", "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n  ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\""],
 ];
 
 for (const [before, after] of replacements) {
-  if (!source.includes(before)) throw new Error('Nested template target not found: ' + before.slice(0, 80));
+  if (!source.includes(before)) throw new Error('Preprocess target not found: ' + before.slice(0, 90));
   source = source.replace(before, after);
 }
 
