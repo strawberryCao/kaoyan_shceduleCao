@@ -38,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          node scripts/apply-workspace-final-completion.cjs > "$RUNNER_TEMP/workspace-patch.log" 2>&1
+          node scripts/run-workspace-final-completion.cjs > "$RUNNER_TEMP/workspace-patch.log" 2>&1
           code=$?
           cat "$RUNNER_TEMP/workspace-patch.log"
           exit $code
@@ -85,6 +85,7 @@ jobs:
       - name: Remove temporary construction files
         run: |
           rm -f outputs/kaoyan-schedule-app/scripts/apply-workspace-final-completion.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/run-workspace-final-completion.cjs
           rm -f .github/workflows/apply-workspace-final-completion.yml
           rm -f .github/workflows/integrate-complete-learning-workspace.yml
 
