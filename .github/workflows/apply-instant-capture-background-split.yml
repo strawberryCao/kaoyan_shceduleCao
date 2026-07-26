@@ -63,12 +63,38 @@ jobs:
             core.setFailed('Focused instant capture behavior test failed');
 
       - name: Run complete Node regression suite
+        id: regression
+        continue-on-error: true
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
         run: |
-          set -euo pipefail
-          for file in scripts/*.test.cjs; do node "$file"; done
-          for file in cloudflare/*.test.mjs; do node "$file"; done
+          set +e
+          : > "$RUNNER_TEMP/regression.log"
+          code=0
+          for file in scripts/*.test.cjs cloudflare/*.test.mjs; do
+            echo "===== $file =====" >> "$RUNNER_TEMP/regression.log"
+            node "$file" >> "$RUNNER_TEMP/regression.log" 2>&1
+            current=$?
+            if [ $current -ne 0 ]; then code=$current; fi
+          done
+          tail -n 240 "$RUNNER_TEMP/regression.log"
+          exit $code
+
+      - name: Report complete regression failure
+        if: steps.regression.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync(process.env.RUNNER_TEMP + '/regression.log', 'utf8');
+            const relevant = log.split('\n').filter((line) => /^(=====|not ok|AssertionError|Error:|\s+at |\s+actual:|\s+expected:|\s+code:|\s+operator:|\s+diff:)/.test(line)).join('\n').slice(-14000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### 全量回归失败\n\n```text\n' + relevant.replace(/```/g, '`` `') + '\n```',
+            });
+            core.setFailed('Complete Node regression suite failed');
 
       - name: Build production app
         working-directory: outputs/kaoyan-schedule-app
