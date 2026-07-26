@@ -58,7 +58,7 @@ jobs:
               echo '### 最终定向套件失败（精简定位）'
               echo
               echo '```text'
-              grep -nE '^(not ok|# Subtest:)|AssertionError|TestContext\.<anonymous>|operator:|ERR_|error:' /tmp/focused-mobile.log | tail -n 120
+              grep -nE '^not ok|AssertionError|TestContext\.<anonymous>|operator:|ERR_|^[[:space:]]*error:' /tmp/focused-mobile.log | tail -n 120
               echo '```'
             } > /tmp/focused-mobile-comment.md
             gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/focused-mobile-comment.md
@@ -80,7 +80,7 @@ jobs:
               echo '### 最终全量回归失败（精简定位）'
               echo
               echo '```text'
-              grep -nE '^(not ok|# Subtest:)|AssertionError|TestContext\.<anonymous>|operator:|ERR_|error:' /tmp/full-mobile.log | tail -n 180
+              grep -nE '^not ok|AssertionError|TestContext\.<anonymous>|operator:|ERR_|^[[:space:]]*error:' /tmp/full-mobile.log | tail -n 180
               echo '```'
             } > /tmp/full-mobile-comment.md
             gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/full-mobile-comment.md
