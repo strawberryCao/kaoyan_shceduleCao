@@ -1,0 +1,131 @@
+name: Integrate complete learning workspace
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: complete-learning-workspace-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-verify:
+    if: github.head_ref == 'integration/complete-learning-capture-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/complete-learning-capture-workspace
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Merge all approved construction branches
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin \
+            agent/lossless-learning-sync-quick-ui \
+            agent/material-workspace-export \
+            agent/mobile-capture-stability-parity \
+            agent/instant-capture-background-split
+
+          branches=(
+            agent/lossless-learning-sync-quick-ui
+            agent/material-workspace-export
+            agent/mobile-capture-stability-parity
+            agent/instant-capture-background-split
+          )
+
+          : > "$RUNNER_TEMP/integration-report.txt"
+          changed=0
+          for branch in "${branches[@]}"; do
+            echo "## $branch" >> "$RUNNER_TEMP/integration-report.txt"
+            if git merge-base --is-ancestor "origin/$branch" HEAD; then
+              echo "already integrated" >> "$RUNNER_TEMP/integration-report.txt"
+              continue
+            fi
+            set +e
+            git merge --no-ff --no-edit "origin/$branch" > "$RUNNER_TEMP/merge.log" 2>&1
+            code=$?
+            set -e
+            cat "$RUNNER_TEMP/merge.log" >> "$RUNNER_TEMP/integration-report.txt"
+            if [ $code -ne 0 ]; then
+              echo "CONFLICT FILES:" >> "$RUNNER_TEMP/integration-report.txt"
+              git diff --name-only --diff-filter=U >> "$RUNNER_TEMP/integration-report.txt"
+              git merge --abort || true
+              exit 2
+            fi
+            changed=1
+          done
+
+          # Remove one-shot patch carriers and branch-specific apply workflows.
+          rm -f .github/workflows/apply-instant-capture-background-split.yml
+          rm -f .github/workflows/apply-lossless-learning-sync-quick-ui.yml
+          rm -f .github/workflows/apply-material-workspace-export.yml
+          rm -f .github/workflows/apply-mobile-capture-stability-parity.yml
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-instant-capture-background-split.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/run-instant-capture-background-patch.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-lossless-learning-sync-quick-ui.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-material-workspace-export.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-mobile-capture-stability-parity.cjs
+
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: consolidate complete learning workspace changes"
+            changed=1
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Report merge conflicts
+        if: failure() && steps.merge.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = process.env.RUNNER_TEMP + '/integration-report.txt';
+            const report = fs.existsSync(reportPath) ? fs.readFileSync(reportPath, 'utf8').slice(-14000) : 'No merge report was produced.';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### 综合分支合并冲突\n\n```text\n' + report.replace(/```/g, '`` `') + '\n```',
+            });
+
+      - name: Push consolidated branch
+        if: steps.merge.outputs.changed == '1'
+        run: git push origin HEAD:integration/complete-learning-capture-workspace
+
+      - name: Install dependencies without mutation hooks
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+
+      - name: Run all Node tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/*.test.cjs; do node "$file"; done
+          for file in cloudflare/*.test.mjs; do node "$file"; done
+
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
