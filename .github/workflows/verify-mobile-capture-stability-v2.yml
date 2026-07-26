@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
 
 jobs:
   verify:
@@ -38,7 +40,30 @@ jobs:
         run: npm ci --ignore-scripts
       - name: Run focused behavior suite
         working-directory: outputs/kaoyan-schedule-app
-        run: node --test scripts/mobile-capture-contract-behavior.test.cjs scripts/mobile-local-first-analysis.test.cjs scripts/cloud-capture-fast-pipeline.test.cjs scripts/public-lan-parity.test.cjs scripts/__tests__/note-save-flow.test.cjs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          node --test \
+            scripts/mobile-capture-contract-behavior.test.cjs \
+            scripts/mobile-local-first-analysis.test.cjs \
+            scripts/cloud-capture-fast-pipeline.test.cjs \
+            scripts/public-lan-parity.test.cjs \
+            scripts/__tests__/note-save-flow.test.cjs 2>&1 | tee /tmp/focused-mobile.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### 最终定向套件失败（精简定位）'
+              echo
+              echo '```text'
+              grep -nE '^(not ok|# Subtest:)|AssertionError|TestContext\.<anonymous>|operator:|ERR_|error:' /tmp/focused-mobile.log | tail -n 120
+              echo '```'
+            } > /tmp/focused-mobile-comment.md
+            gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/focused-mobile-comment.md
+            exit "$status"
+          fi
       - name: Run complete Node regression suite
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
