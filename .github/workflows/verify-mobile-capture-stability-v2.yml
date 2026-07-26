@@ -1,0 +1,70 @@
+name: Verify mobile capture stability v2
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/mobile-capture-stability-parity
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+      - name: Apply final compatibility fix
+        run: node outputs/kaoyan-schedule-app/scripts/fix-mobile-title-rule-compat.cjs
+      - name: Restore unrelated install side effects
+        run: |
+          git fetch origin fix/learning-detail-title-latex
+          git checkout origin/fix/learning-detail-title-latex -- outputs/kaoyan-schedule-app/*.cmd
+          if git cat-file -e origin/fix/learning-detail-title-latex:outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1 2>/dev/null; then
+            git checkout origin/fix/learning-detail-title-latex -- outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1
+          else
+            rm -f outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1
+          fi
+      - name: Install without mutation hooks
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+      - name: Run focused behavior suite
+        working-directory: outputs/kaoyan-schedule-app
+        run: node --test scripts/mobile-capture-contract-behavior.test.cjs scripts/mobile-local-first-analysis.test.cjs scripts/cloud-capture-fast-pipeline.test.cjs scripts/public-lan-parity.test.cjs scripts/__tests__/note-save-flow.test.cjs
+      - name: Run complete Node regression suite
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          mapfile -d '' tests < <(find scripts cloudflare -type f \( -name '*.test.cjs' -o -name '*.test.mjs' -o -name '*.test.js' \) -print0 | sort -z)
+          node --test "${tests[@]}"
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+      - name: Commit verified clean source
+        run: |
+          rm -f .github/workflows/verify-mobile-capture-stability.yml
+          rm -f .github/workflows/verify-mobile-capture-stability-v2.yml
+          rm -f outputs/kaoyan-schedule-app/scripts/fix-mobile-title-rule-compat.cjs
+          rm -f .ci/trigger-mobile-capture-verify
+          git checkout origin/fix/learning-detail-title-latex -- outputs/kaoyan-schedule-app/*.cmd
+          if git cat-file -e origin/fix/learning-detail-title-latex:outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1 2>/dev/null; then
+            git checkout origin/fix/learning-detail-title-latex -- outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1
+          else
+            rm -f outputs/kaoyan-schedule-app/scripts/.apply-real-learning-records-v1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "stabilize mobile multi-question capture and naming"
+          git push origin HEAD:agent/mobile-capture-stability-parity
