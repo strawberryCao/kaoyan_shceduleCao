@@ -19,7 +19,7 @@ test('cloud capture uses one atomic batch commit', () => {
   assert.match(store, /const tree = await Promise\.all\(files\.map/);
 });
 
-test('mobile multi-question detection keeps Safari connection alive', () => {
+test('mobile multi-question detection keeps Safari connection alive while the background job is running', () => {
   const worker = read('cloudflare/worker.js');
   const notes = read('src/utils/notes.ts');
   assert.match(worker, /application\/x-ndjson/);
@@ -28,13 +28,18 @@ test('mobile multi-question detection keeps Safari connection alive', () => {
   assert.match(notes, /response\.body\.getReader\(\)/);
 });
 
-test('mobile batch save no longer performs cloud saves one by one', () => {
+test('mobile capture exits immediately and the background worker performs one queued batch save', () => {
   const app = read('src/components/NoteDropApp.tsx');
-  const start = app.indexOf('const saveBatch = async () =>');
-  const end = app.indexOf('const cancelPending', start);
+  const jobs = read('src/utils/noteBackgroundJobs.ts');
+  const start = app.indexOf('const startMultiQuestion = async () =>');
+  const end = app.indexOf('const confirmBatchCrop', start);
   const block = app.slice(start, end);
-  assert.match(block, /enqueueCaptureUpload\(payloads\)/);
-  assert.match(block, /已安全保存在本机/);
-  assert.match(block, /重新打开后会自动续传/);
-  assert.match(app, /cropManyImages\(src, detection\.regions, 1800, 0\.9\)/);
+  assert.match(block, /await enqueueMultiQuestionJob\(sourceImage\.src/);
+  assert.doesNotMatch(block, /detectQuestionRegions/);
+  assert.doesNotMatch(block, /cropManyImages/);
+  assert.match(block, /无需停留或逐题确认/);
+  assert.match(jobs, /cropImageDataUrl\(initial\.imageDataUrl, FULL_PAGE, 1500, 0\.72\)/);
+  assert.match(jobs, /cropManyImages\(initial\.imageDataUrl, detection\.regions, 1800, 0\.86\)/);
+  assert.match(jobs, /await enqueueCaptureUpload\(payloads\)/);
+  assert.doesNotMatch(jobs, /await saveNoteImage\(/);
 });
