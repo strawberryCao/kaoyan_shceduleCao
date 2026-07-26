@@ -211,6 +211,7 @@ function normalizeAttachments(value, legacy = {}) {
     const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind) ? item.kind : inferred;
     const size = Number(item.size);
     return {
+      ...clone(item),
       id: (asOptionalString(item.id) || `attachment-${index + 1}`).slice(0, 160),
       kind,
       name,
@@ -302,6 +303,7 @@ function normalizeAutoNote(value) {
     ? rawDecisionRevision
     : HUMAN_NOTE_REVIEW_STATUSES.has(reviewStatus) ? 1 : 0;
   return {
+    ...clone(value),
     noteUid,
     capturedDate: DATE_PATTERN.test(asString(value.capturedDate)) ? value.capturedDate : '',
     title: asString(value.title),
@@ -372,6 +374,7 @@ function normalizeCard(value) {
     ? 'active'
     : storedStatus;
   return {
+    ...clone(value),
     id,
     noteUid,
     sourceKey: asString(value.sourceKey),
@@ -412,6 +415,7 @@ function normalizeDay(value) {
     : [];
   const dedupedNotes = [...new Map(autoNotes.map((note) => [note.noteUid, note])).values()];
   return {
+    ...clone(source),
     manual: normalizeManualRecord(source.manual),
     autoNotes: dedupedNotes,
   };
@@ -427,6 +431,7 @@ function normalizeDeletedNote(value, noteUid) {
       .filter(Boolean)
     : [];
   return {
+    ...clone(value),
     deletedAt: asOptionalString(value.deletedAt) || note.updatedAt || note.createdAt,
     note,
     cards: [...new Map(cards.map((card) => [card.id, card])).values()],
@@ -461,6 +466,7 @@ function normalizeSnapshot(value) {
 
   const revision = Number(value.revision);
   return {
+    ...clone(value),
     version: LEARNING_DATA_VERSION,
     revision: Number.isInteger(revision) && revision >= 0 ? revision : 0,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,

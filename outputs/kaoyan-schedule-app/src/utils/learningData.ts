@@ -448,6 +448,7 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     ? storedDecisionRevision
     : ['accepted', 'corrected', 'ignored'].includes(reviewStatus) ? 1 : 0;
   return {
+    ...value,
     noteUid: value.noteUid,
     capturedDate: typeof value.capturedDate === 'string' ? value.capturedDate : '',
     title: typeof value.title === 'string' ? value.title : '',
