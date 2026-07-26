@@ -7,20 +7,54 @@ const sourcePath = path.join(__dirname, 'apply-workspace-final-completion.cjs');
 const runtimePath = path.join(__dirname, '.runtime-workspace-final-completion.cjs');
 let source = fs.readFileSync(sourcePath, 'utf8');
 
-const replacements = [
-  ["({ src: `data:${image.contentType};base64,${value}` }))", "({ src: 'data:' + image.contentType + ';base64,' + value }))"],
-  ["const document = `<!doctype html><html><head><meta charset=\"utf-8\"><style>body{font:16px/1.75 system-ui,sans-serif;padding:24px;max-width:900px;margin:auto;color:#202124}img{max-width:100%;height:auto}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #bbb;padding:6px}p{white-space:normal}</style></head><body>${html}${messages.length ? `<hr><small>${messages.join('；')}</small>` : ''}</body></html>`;", "const document = '<!doctype html><html><head><meta charset=\"utf-8\"><style>body{font:16px/1.75 system-ui,sans-serif;padding:24px;max-width:900px;margin:auto;color:#202124}img{max-width:100%;height:auto}table{border-collapse:collapse;max-width:100%}td,th{border:1px solid #bbb;padding:6px}p{white-space:normal}</style></head><body>' + html + (messages.length ? '<hr><small>' + messages.join('；') + '</small>' : '') + '</body></html>';"],
-  ["return replacement ? `url(\"${replacement}\")` : whole;", "return replacement ? 'url(\\\"' + replacement + '\\\")' : whole;"],
-  ["return { html: `<!doctype html>${document.documentElement.outerHTML}`, urls };", "return { html: '<!doctype html>' + document.documentElement.outerHTML, urls };"],
-  ["<article className={`lrp-file-preview is-${item.kind}`}>", "<article className={'lrp-file-preview is-' + item.kind}>"],
-  ["\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"", "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\""],
-  ["\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n    ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"", "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n  ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\""],
-];
-
-for (const [before, after] of replacements) {
-  if (!source.includes(before)) throw new Error('Preprocess target not found: ' + before.slice(0, 90));
-  source = source.replace(before, after);
+function serializeTemplateArgument(startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) throw new Error('Template argument start not found: ' + startMarker);
+  const bodyStart = start + startMarker.length;
+  const end = source.indexOf(endMarker, bodyStart);
+  if (end < 0) throw new Error('Template argument end not found: ' + endMarker);
+  const body = source.slice(bodyStart, end)
+    .replace(/\\`/g, '`')
+    .replace(/\\\$\{/g, '${');
+  source = source.slice(0, start)
+    + startMarker.slice(0, -1)
+    + JSON.stringify(body)
+    + source.slice(end + 1);
 }
+
+// The helper replacement contains TypeScript template strings. Store the whole
+// replacement as JSON text so the construction script never evaluates them.
+serializeTemplateArgument("    `", "`,\n    'asset fallback helpers');");
+
+// The large preview implementation is also embedded source code. Convert the
+// String.raw template assignment to one ordinary serialized string.
+{
+  const marker = 'const previewBlock = String.raw`';
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error('Preview block start not found');
+  const bodyStart = start + marker.length;
+  const tailMarker = '\n`;\n  source = `${source.slice';
+  const end = source.indexOf(tailMarker, bodyStart);
+  if (end < 0) throw new Error('Preview block end not found');
+  const body = source.slice(bodyStart, end);
+  source = source.slice(0, start)
+    + 'const previewBlock = '
+    + JSON.stringify(body)
+    + ';'
+    + source.slice(end + 3);
+}
+
+// Normalize the one local MIME-map target whose source uses two-space
+// indentation while the original executor was authored with four spaces.
+source = source
+  .replace(
+    "\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"",
+    "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\"",
+  )
+  .replace(
+    "\"    ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n    ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n  ]);\"",
+    "\"  ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],\\n  ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],\\n]);\"",
+  );
 
 fs.writeFileSync(runtimePath, source, 'utf8');
 try {
