@@ -117,4 +117,19 @@ function replaceOnce(source, oldValue, newValue, label) {
   write('scripts/mobile-capture-contract-behavior.test.cjs', source);
 }
 
+{
+  let source = read('cloudflare/agent-provider.test.mjs');
+  source = replaceOnce(
+    source,
+`  assert.equal(regions.length, 1);
+  assert.equal(regions[0].x, 0.1);`,
+`  assert.equal(regions.accepted.length, 1);
+  assert.equal(regions.accepted[0].x, 0.1);
+  assert.equal(regions.rejected.length, 0);
+  assert.equal(regions.candidateCount, 1);`,
+    'structured question-region quality result assertions',
+  );
+  write('cloudflare/agent-provider.test.mjs', source);
+}
+
 console.log('Applied mobile title rule compatibility fixes.');
