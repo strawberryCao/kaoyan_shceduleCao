@@ -21,6 +21,11 @@ const NOTE_MIME_BY_EXT = new Map([
   ['.htm', 'text/html; charset=utf-8'],
   ['.txt', 'text/plain; charset=utf-8'],
   ['.md', 'text/markdown; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.mjs', 'text/javascript; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'],
 ]);
 const IMAGE_MIME_BY_EXT = new Map([...NOTE_MIME_BY_EXT].filter(([, mime]) => mime.startsWith('image/')));
 

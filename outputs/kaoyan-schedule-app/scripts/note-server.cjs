@@ -67,7 +67,8 @@ const MATERIAL_MIME_BY_EXT = new Map([
   ['.gif', 'image/gif'], ['.bmp', 'image/bmp'], ['.avif', 'image/avif'], ['.heic', 'image/heic'], ['.heif', 'image/heif'],
   ['.pdf', 'application/pdf'], ['.doc', 'application/msword'],
   ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  ['.html', 'text/html'], ['.htm', 'text/html'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],
+  ['.html', 'text/html'], ['.htm', 'text/html'], ['.css', 'text/css'], ['.js', 'text/javascript'], ['.mjs', 'text/javascript'],
+  ['.json', 'application/json'], ['.svg', 'image/svg+xml'], ['.txt', 'text/plain'], ['.md', 'text/markdown'],
 ]);
 const MATERIAL_EXT_BY_MIME = new Map([...MATERIAL_MIME_BY_EXT].map(([extension, mime]) => [mime, extension]));
 const DEFAULT_SUBJECT = '默认文件夹';

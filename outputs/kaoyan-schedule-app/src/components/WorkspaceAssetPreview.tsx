@@ -26,7 +26,7 @@ interface WorkspaceAssetPreviewProps {
 
 const extensionOf = (name: string): string => name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
 const resourceKey = (value: string): string => value
-  .replaceAll('\\', '/')
+  .split('\\').join('/')
   .replace(/^\.\//, '')
   .split('/')
   .filter(Boolean)

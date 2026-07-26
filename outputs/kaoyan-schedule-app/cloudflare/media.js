@@ -36,6 +36,11 @@ const MIME_EXTENSIONS = new Map([
   ['text/html', 'html'],
   ['text/plain', 'txt'],
   ['text/markdown', 'md'],
+  ['text/css', 'css'],
+  ['text/javascript', 'js'],
+  ['application/javascript', 'js'],
+  ['application/json', 'json'],
+  ['image/svg+xml', 'svg'],
 ]);
 const EXTENSION_MIME = new Map([...MIME_EXTENSIONS].map(([mime, extension]) => [extension, mime]));
 EXTENSION_MIME.set('jpeg', 'image/jpeg');

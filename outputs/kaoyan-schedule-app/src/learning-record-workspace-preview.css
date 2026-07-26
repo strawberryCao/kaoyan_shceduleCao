@@ -10,3 +10,11 @@
 @media(max-width:980px){.lrp-topbar-actions>button:first-child{display:none}.lrp-topbar-actions>button,.lrp-topbar-actions>a{padding:0 8px;font-size:0}.lrp-topbar-actions svg{width:16px}}
 @media(max-width:819px){.lrp-root{height:auto;min-height:100vh;overflow:auto}.lrp-topbar{position:sticky;top:8px;margin:8px;inset:auto;grid-template-columns:auto minmax(0,1fr) auto}.lrp-topbar>button{width:36px;padding:0;font-size:0}.lrp-action-error{position:sticky;top:66px;margin:0 10px}.lrp-workspace{position:relative;inset:auto;min-height:calc(100vh - 78px);display:block;margin:0 8px 8px;border-radius:14px}.lrp-record-panel{display:block;border:0;border-bottom:1px solid var(--lrp-line)}.lrp-record-copy{padding:16px 14px 13px}.lrp-record-copy p{max-height:none}.lrp-asset-list{display:flex;gap:6px;overflow-x:auto;padding:8px 10px 11px}.lrp-asset-list>header{display:none}.lrp-asset-list>p{padding:4px}.lrp-asset-list>button{flex:0 0 170px;min-height:50px}.lrp-reading-panel{height:600px;padding:11px}.lrp-reading-panel>section{min-height:460px}.lrp-hint{display:none}.lrp-file-preview{width:90%;padding:24px 20px}}
 @media(max-width:520px){.lrp-topbar{grid-template-columns:auto minmax(0,1fr) auto;gap:7px}.lrp-topbar-actions>button:nth-child(2){display:none}.lrp-reading-panel{height:540px}.lrp-reading-panel>header>a{font-size:0;padding:8px}.lrp-file-preview h2{font-size:16px}}
+
+.lrp-html-preview { width: 100%; height: 100%; min-height: 260px; display: flex; flex-direction: column; }
+.lrp-html-mode { display: flex; gap: 6px; align-items: center; padding: 7px 10px; border-bottom: 1px solid rgba(99, 86, 69, .16); background: rgba(248, 245, 240, .94); }
+.lrp-html-mode button { border: 1px solid rgba(99, 86, 69, .2); border-radius: 8px; padding: 5px 9px; background: #fff; color: #51483e; font: inherit; cursor: pointer; }
+.lrp-html-mode button.active { background: #2f3742; color: #fff; border-color: #2f3742; }
+.lrp-html-mode span { margin-left: auto; color: #746a5e; font-size: 12px; }
+.lrp-html-preview .lrp-document-frame { flex: 1; min-height: 240px; }
+.lrp-text-preview { box-sizing: border-box; width: 100%; height: 100%; min-height: 260px; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fbfaf7; color: #25282d; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
