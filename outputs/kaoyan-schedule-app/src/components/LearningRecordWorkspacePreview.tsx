@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   ArrowLeft,
   Download,
@@ -15,9 +15,12 @@ import {
   X,
 } from 'lucide-react';
 import type { LearningAttachment, LearningAutoNote, LearningDataSnapshot } from '../utils/learningData';
+import { WorkspaceAssetPreview, type WorkspaceAssetPreviewItem } from './WorkspaceAssetPreview';
 import {
   fetchLearningData,
+  patchLearningNote,
   readLearningDataCache,
+  saveLearningDataCache,
   subscribeLearningDataCache,
   subscribeLearningDataFromServer,
   subscribeLearningDataPolling,
@@ -38,6 +41,8 @@ type Asset = LearningAttachment & {
   previewUrl: string;
   posterUrl: string;
   sizeLabel: string;
+  fallbackPath: string;
+  fallbackUrl: string;
 };
 type FloatingAsset = {
   id: string;
@@ -65,6 +70,31 @@ const clamp = (value: number, min: number, max: number) => Math.min(Math.max(val
 const noteFileUrl = (filePath: string, preview = false) => (
   `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}${preview ? '&preview=1' : ''}`
 );
+const extensionForAttachment = (attachment: LearningAttachment): string => {
+  const named = attachment.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const pathed = attachment.filePath.split('\\').join('/').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (named || pathed) return named || pathed || 'jpg';
+  if (attachment.mimeType === 'image/png') return 'png';
+  if (attachment.mimeType === 'image/webp') return 'webp';
+  if (attachment.mimeType === 'application/pdf') return 'pdf';
+  if (attachment.mimeType.includes('wordprocessingml')) return 'docx';
+  return attachment.kind === 'image' ? 'jpg' : 'bin';
+};
+
+const stableFallbackPath = (note: LearningAutoNote, attachment: LearningAttachment): string => {
+  const normalized = attachment.filePath.trim().split('\\').join('/');
+  if (/^(?:github:\/\/data\/assets\/|data\/assets\/|r2:\/\/note-assets\/)/i.test(normalized)) return '';
+  const materialIndex = /^material-(\d+)$/.exec(attachment.id)?.[1];
+  if (materialIndex) {
+    return 'github://data/assets/' + note.noteUid + '/' + materialIndex.padStart(2, '0') + '-' + attachment.name;
+  }
+  if (attachment.kind === 'image') {
+    return 'github://data/assets/' + note.noteUid + '.' + extensionForAttachment(attachment);
+  }
+  const baseName = normalized.split('/').filter(Boolean).at(-1) || attachment.name;
+  return baseName ? 'github://data/assets/' + baseName : '';
+};
+
 const overlap = (a: FloatingAsset, b: FloatingAsset) => !(
   a.x + a.width + GAP <= b.x || b.x + b.width + GAP <= a.x
   || a.y + a.height + GAP <= b.y || b.y + b.height + GAP <= a.y
@@ -197,6 +227,7 @@ function AssetPreview({ item }: { item: Asset }) {
 
 export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const repairingPathsRef = useRef(new Set<string>());
   const [snapshot, setSnapshot] = useState<LearningDataSnapshot>(() => readLearningDataCache());
   const [loadError, setLoadError] = useState('');
   const [activeId, setActiveId] = useState('');
@@ -234,6 +265,8 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
           ? noteFileUrl(attachment.posterPath)
           : attachment.previewPath ? noteFileUrl(attachment.previewPath) : '',
         sizeLabel: formatBytes(attachment.size),
+        fallbackPath: stableFallbackPath(note, attachment),
+        fallbackUrl: stableFallbackPath(note, attachment) ? noteFileUrl(stableFallbackPath(note, attachment)) : '',
       };
     });
   }, [note]);
@@ -277,6 +310,32 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
   }, []);
+
+  const repairAttachmentPath = useCallback(async (item: WorkspaceAssetPreviewItem) => {
+    if (!note || !item.fallbackPath || repairingPathsRef.current.has(item.id)) return;
+    repairingPathsRef.current.add(item.id);
+    try {
+      const sourceAttachments: LearningAttachment[] = note.attachments.length > 0
+        ? note.attachments
+        : [{
+            id: item.id, kind: item.kind, name: item.name, mimeType: item.mimeType, size: null,
+            filePath: item.filePath, previewPath: '', posterPath: '', createdAt: note.createdAt,
+          }];
+      const attachments = sourceAttachments.map((attachment) => attachment.id === item.id
+        ? { ...attachment, filePath: item.fallbackPath }
+        : attachment);
+      const next = await patchLearningNote(note.noteUid, { attachments });
+      saveLearningDataCache(next);
+      setSnapshot(next);
+      setActionError('历史附件路径已自动修复');
+    } catch (error) {
+      setActionError(error instanceof Error
+        ? '附件已显示，但路径写回失败：' + error.message
+        : '附件路径写回失败');
+    } finally {
+      repairingPathsRef.current.delete(item.id);
+    }
+  }, [note]);
 
   const returnToLearningCenter = () => {
     const url = new URL(window.location.href);
@@ -444,7 +503,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
           <button type="button" disabled={Boolean(exporting)} onClick={() => void exportDocx()}>
             <FileDown size={15} />{exporting === 'docx' ? '生成中' : 'DOCX'}
           </button>
-          {activeAsset && <a href={activeAsset.url} download={activeAsset.name}><Download size={15} />下载当前</a>}
+          {activeAsset && <a href={activeAsset.fallbackUrl || activeAsset.url} download={activeAsset.name}><Download size={15} />下载当前</a>}
         </div>
       </header>
 
@@ -479,9 +538,9 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
             <>
               <header>
                 <div><strong>{activeAsset.name}</strong><small>{activeAsset.label} · {activeAsset.sizeLabel}</small></div>
-                <a href={activeAsset.url} download={activeAsset.name}><Download size={15} />下载</a>
+                <a href={activeAsset.fallbackUrl || activeAsset.url} download={activeAsset.name}><Download size={15} />下载</a>
               </header>
-              <section><AssetPreview item={activeAsset} /></section>
+              <section><WorkspaceAssetPreview item={activeAsset} assets={assets} onRecovered={(item) => void repairAttachmentPath(item)} /></section>
               <p className="lrp-hint">电脑端按住左侧资料拖到空白处，可并排阅读；浮窗支持锁定、移动、缩放和自动避让。移动端保持单资料阅读。</p>
             </>
           ) : (
@@ -528,7 +587,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
                     onClick={() => setFloating((values) => values.filter((value) => value.id !== item.id))}
                   ><X size={13} /></button>
                 </header>
-                <div><AssetPreview item={current} /></div>
+                <div><WorkspaceAssetPreview item={current} assets={assets} onRecovered={(item) => void repairAttachmentPath(item)} /></div>
                 {!item.locked && <button type="button" aria-label="调整大小" onPointerDown={(event) => startMove(event, item, true)} />}
               </section>
             );

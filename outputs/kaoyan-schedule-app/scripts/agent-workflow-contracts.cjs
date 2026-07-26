@@ -86,7 +86,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
     }),
   }),
   question_splitting: Object.freeze({
-    version: 'question-splitting-v4',
+    version: 'question-splitting-v5',
     steps: Object.freeze([
       '客户端预裁剪并压缩整页图片',
       '读取局域网 question_splitting 任务设置',
@@ -99,6 +99,8 @@ const DEFAULT_WORKFLOWS = Object.freeze({
       instructions: Object.freeze([
         '你是考研题目区域识别器。请在用户已经预裁剪的整页图片中找出每一道完整且相互独立的题目。',
         '不要把同一道题拆成多个区域，也不要把相邻的不同题目合并。',
+        '同一题号或例号的题干、分析、解答、答案和续接公式属于一个题目单元；必须从题号开始框到下一题号开始之前。',
+        '禁止把“分析”“解”“答案”或同一例题的下半部分单独输出成另一道题。',
         '{questionNumberRule}',
         '{optionsRule}',
         '{diagramRule}',
@@ -107,7 +109,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
         '最多返回 {maxQuestions} 个区域。没有可靠区域时返回空 regions。',
         '每个区域必须同时判断是否为完整独立题目、是否含完整题干，并给出 0 到 1 的 confidence。不要把页眉、页脚、页码、孤立公式或残缺选项当作题目。',
       ]),
-      outputFormat: '只返回 JSON 对象：{"regions":[{"x":0.0,"y":0.0,"width":0.5,"height":0.3,"confidence":0.95,"completeQuestion":true,"containsStem":true,"containsOptions":true,"containsRequiredDiagram":true}]}',
+      outputFormat: '只返回 JSON 对象：{"regions":[{"x":0.0,"y":0.0,"width":0.5,"height":0.3,"confidence":0.95,"questionKey":"例4.9","completeQuestion":true,"containsStem":true,"containsOptions":true,"containsRequiredDiagram":true,"containsSolution":true,"continuationOfPrevious":false}]}',
     }),
   }),
 });

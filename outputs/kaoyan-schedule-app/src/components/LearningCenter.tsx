@@ -37,7 +37,7 @@ import type {
   LearningNoteReviewAction,
 } from '../utils/learningData';
 import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
-import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
+import { enqueueLearningNoteRename, IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import {
@@ -363,6 +363,7 @@ export function LearningCenter({
   const [thoughtSaving, setThoughtSaving] = useState(false);
   const [wrongReasonEditor, setWrongReasonEditor] = useState<{ noteUid: string; text: string } | null>(null);
   const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
+  const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -630,6 +631,20 @@ export function LearningCenter({
       } catch {
         setSourceFeedback('定位失败；可复制路径后重试');
       }
+    }
+  };
+
+  const renameNoteWithAi = async (note: LearningAutoNote) => {
+    if (aiRenameNoteUid) return;
+    try {
+      setAiRenameNoteUid(note.noteUid);
+      setFeedback('');
+      await enqueueLearningNoteRename(note.noteUid);
+      setFeedback('AI 重命名已加入后台队列；可以继续浏览，完成后标题会自动刷新。');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : 'AI 重命名任务提交失败，请重试。');
+    } finally {
+      setAiRenameNoteUid(null);
     }
   };
 
@@ -1237,6 +1252,7 @@ export function LearningCenter({
                 window.location.assign(url.toString());
               }}><FolderOpen size={15} />资料工作区</button>
             )}
+            {imagePath && <button type="button" disabled={Boolean(aiRenameNoteUid)} onClick={() => void renameNoteWithAi(note)}><Zap size={15} />{aiRenameNoteUid === note.noteUid ? 'AI处理中…' : 'AI重命名'}</button>}
             <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
             {context === 'good' && (
               <button type="button" disabled={pendingNoteUid === note.noteUid || editorSaving} onClick={() => void removeFromGoodQuestions(note)}><X size={15} />移出好题</button>

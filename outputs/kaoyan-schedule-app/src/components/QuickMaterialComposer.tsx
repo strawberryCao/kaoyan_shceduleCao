@@ -98,7 +98,7 @@ export function QuickMaterialComposer({ onClose, onSaved }: QuickMaterialCompose
     <main className="quick-material-composer">
       <header>
         <button type="button" onClick={onClose} aria-label="返回"><ArrowLeft size={20} /></button>
-        <strong>文字 / 多资料速记</strong>
+        <strong>速记</strong>
         <button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
       </header>
       <section className="quick-material-form">
@@ -108,8 +108,8 @@ export function QuickMaterialComposer({ onClose, onSaved }: QuickMaterialCompose
         <fieldset><legend>记录身份 <small>可多选</small></legend><div className="quick-material-facets">{FACETS.map((facet) => <button className={facets.includes(facet.id) ? 'active' : ''} key={facet.id} type="button" onClick={() => toggleFacet(facet.id)}>{facet.label}</button>)}</div></fieldset>
         <div className="quick-material-files">
           <div><span>资料附件</span><small>{files.length}/{MAX_FILES} · {formatBytes(totalBytes)}/16 MB</small></div>
-          <button type="button" onClick={() => inputRef.current?.click()}><FilePlus2 size={17} />加入图片、PDF、Word、HTML 或文本</button>
-          <input ref={inputRef} type="file" multiple hidden accept="image/*,.pdf,.doc,.docx,.html,.htm,.txt,.md" onChange={(event) => { addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />
+          <button type="button" onClick={() => inputRef.current?.click()}><FilePlus2 size={17} />加入图片、PDF、Word、HTML、网页资源或文本</button>
+          <input ref={inputRef} type="file" multiple hidden accept="image/*,.pdf,.doc,.docx,.html,.htm,.css,.js,.mjs,.json,.svg,.txt,.md" onChange={(event) => { addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />
           {files.length > 0 && <ul>{files.map((file, index) => <li key={[file.name, file.size, file.lastModified].join(':')}><Paperclip size={15} /><span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span><button type="button" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={'移除 ' + file.name}><Trash2 size={15} /></button></li>)}</ul>}
         </div>
         {error && <p className="quick-material-error" role="alert">{error}</p>}

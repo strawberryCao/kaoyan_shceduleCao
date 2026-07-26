@@ -29,7 +29,7 @@ import {
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
-import { resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
+import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
 import { enqueueCaptureUpload, installCaptureUploadResumer, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
@@ -110,7 +110,6 @@ export function NoteDropApp() {
   }, [isMobileCapture]);
 
   useEffect(() => {
-    if (!IS_CLOUD_RUNTIME) return undefined;
     const disposeResumer = installCaptureUploadResumer();
     const disposeSubscription = subscribeCaptureUploads(setUploadSummary);
     return () => {
@@ -323,29 +322,16 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      if (IS_CLOUD_RUNTIME) {
-        await enqueueCaptureUpload([payload]);
-        setPendingImage(null);
-        setRemark('');
-        setSaved(true);
-        setStatus('已安全保存在本机；可以关闭页面，重新打开后会自动续传，上传后再完成命名和分类');
-        if (isMobileCapture) setMobileStep('success');
-        return;
-      }
-      const result = await saveImageReliably(payload, setStatus);
-      if (result.learningData) saveLearningDataCache(result.learningData);
+      await enqueueCaptureUpload([payload]);
       setPendingImage(null);
       setRemark('');
-      setDialogError('');
       setSaved(true);
-      const aiMessage = result.aiStatus === 'complete'
-        ? 'AI 整理完成'
-        : result.aiStatus === 'failed' ? 'AI 将在稍后整理' : 'AI 正在后台整理';
-      setStatus(`已保存 · ${aiMessage}`);
+      setStatus('图片已安全保存在本机，后台自动上传和整理；现在可以立即关闭或继续拍题');
+      if (isMobileCapture) setMobileStep('success');
     } catch (error) {
       const message = error instanceof Error
         ? `保存失败：${error.message}`
-        : IS_CLOUD_RUNTIME ? '无法写入本机后台队列，请释放浏览器存储后重试。' : '保存失败，请确认笔记服务已启动。';
+        : '无法写入本机后台队列，请释放存储空间后重试。';
       setDialogError(message);
       setStatus(message);
     } finally {
@@ -417,14 +403,21 @@ export function NoteDropApp() {
     if (!sourceImage || saving) return;
     try {
       setSaving(true);
+      setSaved(false);
       setDialogError('');
-      setBatchProgress('1/4 正在压缩并上传整页图片…');
-      await buildDetectedBatch(sourceImage.src, sourceImage.noteUid);
-    } catch (error) {
-      if (detectionRunRef.current === 0) return;
-      setDialogError(error instanceof Error ? error.message : 'AI 多题识别失败，请改用单题模式。');
-      setMobileStep('mode');
+      await enqueueMultiQuestionJob(sourceImage.src, {
+        subject: batchSubject,
+        remark: batchRemark,
+      });
+      setSourceImage(null);
+      setBatchImages([]);
       setBatchProgress('');
+      setSaved(true);
+      setStatus('整页原图已安全保存在本机；AI 会在后台自动拆分并保存，无需停留或逐题确认');
+      setMobileStep('success');
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : '无法加入后台多题队列，请重试。');
+      setMobileStep('mode');
     } finally {
       setSaving(false);
     }
@@ -465,26 +458,9 @@ export function NoteDropApp() {
     try {
       setSaving(true);
       setDialogError('');
-      if (IS_CLOUD_RUNTIME) {
-        await enqueueCaptureUpload(payloads);
-        setSaved(true);
-        setStatus(`${selected.length} 道题已安全保存在本机；可以关闭页面，重新打开后会自动续传`);
-        setBatchProgress('');
-        setMobileStep('success');
-        return;
-      }
-      let latestSnapshot = null;
-      for (let index = 0; index < payloads.length; index += 1) {
-        setBatchProgress(`正在保存 ${index + 1}/${payloads.length}…`);
-        const result = await saveImageReliably(payloads[index], setBatchProgress);
-        if (result.learningData) {
-          latestSnapshot = result.learningData;
-          saveLearningDataCache(result.learningData);
-        }
-      }
-      if (latestSnapshot) saveLearningDataCache(latestSnapshot);
+      await enqueueCaptureUpload(payloads);
       setSaved(true);
-      setStatus(`已保存 ${selected.length} 道题，AI 正在后台按局域网规则整理`);
+      setStatus(`${selected.length} 道题已安全保存在本机，后台自动上传；现在可以立即关闭`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {
@@ -617,7 +593,7 @@ export function NoteDropApp() {
                 <ClipboardPaste size={21} /><span><strong>粘贴图片</strong><small>使用刚复制的截图</small></span>
               </button>
               <button type="button" onClick={() => setMaterialOpen(true)}>
-                <FilePlus2 size={21} /><span><strong>文字 / 多资料速记</strong><small>可附 PDF、Word、HTML 或多张图片</small></span>
+                <FilePlus2 size={21} /><span><strong>速记</strong><small>文字、图片、PDF、Word、HTML 和多资料组合</small></span>
               </button>
             </div>
             <button className="mobile-canvas-link" type="button" onClick={openCanvas}><ExternalLink size={17} />打开笔记大画布</button>
@@ -636,10 +612,10 @@ export function NoteDropApp() {
               <strong>单题模式</strong>
               <small>手动裁剪出一道完整题目</small>
             </button>
-            <button className="ai" type="button" onClick={() => setMobileStep('multi-crop')}>
+            <button className="ai" type="button" onClick={() => void startMultiQuestion()} disabled={saving}>
               <span><Layers3 size={22} /></span>
-              <strong>多题模式</strong>
-              <small>先预裁剪整页；AI 在当前页识别，保存后后台命名</small>
+              <strong>{saving ? '正在加入后台…' : '多题自动拆分'}</strong>
+              <small>原图先秒存；AI 后台拆分并自动保存，不再逐题确认</small>
               <em><Sparkles size={13} />AI</em>
             </button>
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
@@ -789,7 +765,7 @@ export function NoteDropApp() {
             <button type="button" onClick={() => cameraInputRef.current?.click()}><Camera size={15} /><span>拍照</span></button>
             <button type="button" onClick={() => galleryInputRef.current?.click()}><Images size={15} /><span>相册</span></button>
             <button type="button" onClick={() => void pasteFromClipboard()}><ClipboardPaste size={15} /><span>粘贴</span></button>
-            <button type="button" onClick={() => setMaterialOpen(true)}><FilePlus2 size={15} /><span>资料</span></button>
+            <button type="button" onClick={() => setMaterialOpen(true)}><FilePlus2 size={15} /><span>速记</span></button>
           </div>
         </div>
         <button className="note-canvas-launch" type="button" onClick={openCanvas} title="在浏览器打开笔记大画布" aria-label="在浏览器打开笔记大画布">

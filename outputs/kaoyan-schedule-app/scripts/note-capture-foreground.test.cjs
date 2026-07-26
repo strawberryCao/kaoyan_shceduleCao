@@ -5,24 +5,31 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'NoteDropApp.tsx'), 'utf8');
+const root = path.join(__dirname, '..');
+const source = fs.readFileSync(path.join(root, 'src', 'components', 'NoteDropApp.tsx'), 'utf8');
+const jobs = fs.readFileSync(path.join(root, 'src', 'utils', 'noteBackgroundJobs.ts'), 'utf8');
+const queue = fs.readFileSync(path.join(root, 'src', 'utils', 'captureUploadQueue.ts'), 'utf8');
 
-test('mobile multi-question capture stays in the foreground', () => {
-  const start = source.indexOf('const buildDetectedBatch');
+test('mobile multi-question capture leaves the foreground after durable local enqueue', () => {
+  const start = source.indexOf('const startMultiQuestion');
   const end = source.indexOf('const confirmBatchCrop', start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end);
-  assert.match(block, /detectQuestionRegions\(src(?:,|\))/);
-  assert.match(block, /setBatchProgress\(message\)/);
-  assert.match(block, /cropManyImages\(src, detection\.regions(?:,|\))/);
-  assert.doesNotMatch(block, /enqueueMultiQuestionJob/);
-  assert.match(block, /setMobileStep\('batch'\)/);
-  assert.match(block, /detectionRunRef/);
+  assert.match(block, /await enqueueMultiQuestionJob\(sourceImage\.src/);
+  assert.match(block, /setMobileStep\('success'\)/);
+  assert.match(block, /无需停留或逐题确认/);
+  assert.doesNotMatch(block, /detectQuestionRegions/);
+  assert.doesNotMatch(block, /cropManyImages/);
+  assert.doesNotMatch(block, /setMobileStep\('batch'\)/);
 });
 
-test('single and batch image saves retry idempotently after mobile network loss', () => {
-  assert.match(source, /const saveImageReliably/);
-  assert.match(source, /load failed\|failed to fetch\|network/);
-  assert.equal((source.match(/await saveImageReliably\(/g) || []).length, 2);
-  assert.match(source, /连接中断，正在自动确认保存结果/);
+test('single, multi-question and resulting image batches all use durable idempotent queues', () => {
+  assert.match(source, /await enqueueCaptureUpload\(\[payload\]\)/);
+  assert.match(source, /await enqueueMultiQuestionJob\(sourceImage\.src/);
+  assert.match(jobs, /await putJob\(job\)/);
+  assert.match(jobs, /await enqueueCaptureUpload\(payloads\)/);
+  assert.match(jobs, /multi_\$\{batchToken\}_\$\{index \+ 1\}/);
+  assert.match(queue, /noteUids/);
+  assert.match(queue, /UPLOAD_LEASE_MS/);
+  assert.match(queue, /上次上传被系统中断/);
 });

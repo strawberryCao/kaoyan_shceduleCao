@@ -70,6 +70,9 @@ function normalizeBox(object, imageWidth, imageHeight, settings) {
     containsStem: object?.containsStem !== false && object?.contains_stem !== false,
     containsOptions: object?.containsOptions !== false && object?.contains_options !== false,
     containsRequiredDiagram: object?.containsRequiredDiagram !== false && object?.contains_required_diagram !== false,
+    containsSolution: object?.containsSolution === true || object?.contains_solution === true,
+    continuationOfPrevious: object?.continuationOfPrevious === true || object?.continuation_of_previous === true,
+    questionKey: String(object?.questionKey ?? object?.question_key ?? object?.questionNumber ?? object?.question_number ?? object?.label ?? '').trim().slice(0, 80),
   };
 }
 
@@ -89,6 +92,53 @@ function regionCandidates(result) {
   return [];
 }
 
+function horizontalCoverage(left, right) {
+  const width = Math.max(0, Math.min(left.x + left.width, right.x + right.width) - Math.max(left.x, right.x));
+  return width / Math.max(0.0001, Math.min(left.width, right.width));
+}
+
+function unionRegion(left, right) {
+  const x1 = Math.min(left.x, right.x);
+  const y1 = Math.min(left.y, right.y);
+  const x2 = Math.max(left.x + left.width, right.x + right.width);
+  const y2 = Math.max(left.y + left.height, right.y + right.height);
+  return {
+    ...left,
+    x: x1, y: y1, width: x2 - x1, height: y2 - y1,
+    confidence: Math.min(left.confidence, right.confidence),
+    completeQuestion: left.completeQuestion !== false || right.completeQuestion !== false,
+    containsStem: left.containsStem !== false || right.containsStem !== false,
+    containsOptions: left.containsOptions !== false || right.containsOptions !== false,
+    containsRequiredDiagram: left.containsRequiredDiagram !== false || right.containsRequiredDiagram !== false,
+    containsSolution: left.containsSolution === true || right.containsSolution === true,
+    continuationOfPrevious: false,
+    questionKey: left.questionKey || right.questionKey || '',
+  };
+}
+
+function shouldMergeQuestionFragments(previous, current) {
+  const sameKey = Boolean(previous.questionKey && current.questionKey && previous.questionKey === current.questionKey);
+  if (sameKey) return true;
+  if (previous.questionKey && current.questionKey && previous.questionKey !== current.questionKey) return false;
+  const gap = current.y - (previous.y + previous.height);
+  const aligned = horizontalCoverage(previous, current) >= 0.58;
+  const continuation = current.continuationOfPrevious === true
+    || current.containsSolution === true
+    || current.containsStem === false
+    || current.completeQuestion === false;
+  return continuation && aligned && gap >= -0.025 && gap <= 0.055;
+}
+
+function mergeQuestionFragments(candidates) {
+  const merged = [];
+  for (const candidate of candidates) {
+    const previous = merged.at(-1);
+    if (previous && shouldMergeQuestionFragments(previous, candidate)) merged[merged.length - 1] = unionRegion(previous, candidate);
+    else merged.push(candidate);
+  }
+  return merged;
+}
+
 function evaluateRegion(region, settings) {
   const options = settings.options || {};
   const area = region.width * region.height;
@@ -106,10 +156,11 @@ function evaluateRegion(region, settings) {
 }
 
 function normalizeRegions(result, width, height, settings) {
-  const candidates = regionCandidates(result)
+  const rawCandidates = regionCandidates(result)
     .map((object) => normalizeBox(object, width, height, settings))
     .filter(Boolean)
     .sort((left, right) => left.y - right.y || left.x - right.x);
+  const candidates = mergeQuestionFragments(rawCandidates);
   const unique = [];
   const rejected = [];
   for (const region of candidates) {
@@ -128,7 +179,7 @@ function normalizeRegions(result, width, height, settings) {
   return {
     accepted: unique.slice(0, maxQuestions),
     rejected,
-    candidateCount: candidates.length,
+    candidateCount: rawCandidates.length,
   };
 }
 
@@ -152,6 +203,8 @@ function splittingPrompt(settings, width, height) {
   };
   return [
     ...workflow.prompt.instructions.map((line) => fillTemplate(line, variables)).filter(Boolean),
+    '最高优先级分组规则：同一题号或例号的题干、分析、解答、答案、公式和续接内容必须合成一个区域；从题号开始，到下一题号开始之前结束。',
+    '禁止把“分析”“解”“答案”或同一例题的下半部分单独输出成另一道题。每个区域返回稳定 questionKey；续接片段设置 continuationOfPrevious=true，解答区域设置 containsSolution=true。',
     fillTemplate(workflow.prompt.outputFormat, variables),
     settings.customInstructions ? '局域网配置中心附加规则：' + settings.customInstructions : '',
   ].filter(Boolean).join('\n');
@@ -173,7 +226,7 @@ export async function detectQuestions(env, payload) {
     imageDataUrl: image,
     json: true,
     temperature: Number(settings.temperature) || 0.1,
-    maxTokens: Number(settings.options.maxTokens) || 1600,
+    maxTokens: Math.min(1200, Math.max(500, Number(settings.options.maxTokens) || 900)),
     requiredCapabilities: ['vision', 'json'],
   });
   const normalized = normalizeRegions(response.json, width, height, settings);
@@ -197,4 +250,4 @@ export async function detectQuestions(env, payload) {
   };
 }
 
-export const questionDetectionInternals = Object.freeze({ evaluateRegion, normalizeRegions, splittingPrompt });
+export const questionDetectionInternals = Object.freeze({ evaluateRegion, normalizeRegions, splittingPrompt, mergeQuestionFragments });

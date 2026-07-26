@@ -8,9 +8,10 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '..');
 const text = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 
-test('mobile capture persists a stable outbox job before starting remote upload', () => {
+test('mobile capture persists stable single and multi-question jobs before remote work', () => {
   const queue = text('src/utils/captureUploadQueue.ts');
   const capture = text('src/components/NoteDropApp.tsx');
+  const background = text('src/utils/noteBackgroundJobs.ts');
   assert.match(queue, /indexedDB\.open\(DB_NAME, DB_VERSION\)/);
   assert.match(queue, /await putJob\(job\)/);
   assert.match(queue, /void resumeCaptureUploads\(\)/);
@@ -18,10 +19,13 @@ test('mobile capture persists a stable outbox job before starting remote upload'
   assert.match(queue, /nextAttemptAt/);
   assert.match(queue, /noteUids/);
   assert.match(capture, /await enqueueCaptureUpload\(\[payload\]\)/);
-  assert.match(capture, /await enqueueCaptureUpload\(payloads\)/);
-  assert.match(capture, /已安全保存在本机/);
-  assert.match(capture, /重新打开后会自动续传/);
-  assert.doesNotMatch(capture, /正在一次性上传并归档/);
+  assert.match(capture, /await enqueueMultiQuestionJob\(sourceImage\.src/);
+  assert.match(capture, /图片已安全保存在本机/);
+  assert.match(capture, /整页原图已安全保存在本机/);
+  assert.match(background, /await putJob\(job\)/);
+  assert.match(background, /resumeMultiQuestionJobs/);
+  assert.match(background, /await enqueueCaptureUpload\(payloads\)/);
+  assert.doesNotMatch(capture.slice(capture.indexOf('const startMultiQuestion'), capture.indexOf('const confirmBatchCrop')), /detectQuestionRegions/);
 });
 
 test('cloud naming uses an AI merge path instead of pretending to be a manual edit', () => {
@@ -69,7 +73,6 @@ test('AI enrichment protects human decisions and reconciles generated cards atom
   assert.match(learning, /updateMirroredCloudNote/);
 });
 
-
 test('local and cloud analysis render the same LAN-published prompt contract', () => {
   const analyzer = text('scripts/note-ai-analyzer.cjs');
   const contracts = text('scripts/agent-workflow-contracts.cjs');
@@ -95,7 +98,6 @@ test('full enrichment preserves the naming-agent title and capture source tags',
   assert.match(learning, /Array\.isArray\(input\.tags\)/);
 });
 
-
 test('mobile outbox commits IndexedDB transactions and recovers expired upload leases', () => {
   const queue = text('src/utils/captureUploadQueue.ts');
   const app = text('src/App.tsx');
@@ -106,7 +108,6 @@ test('mobile outbox commits IndexedDB transactions and recovers expired upload l
   assert.match(queue, /上次上传被系统中断/);
   assert.match(app, /installCaptureUploadResumer/);
 });
-
 
 test('V11 config synchronization cannot delete the compatibility control-plane file', () => {
   const sync = text('scripts/windows-assistant-config-sync.ps1');
