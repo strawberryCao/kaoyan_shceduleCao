@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
 
 concurrency:
   group: mobile-capture-stability-${{ github.ref }}
@@ -43,6 +45,8 @@ jobs:
       - name: Run mobile capture behavior tests
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           node --test \
@@ -53,13 +57,17 @@ jobs:
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
-            mkdir -p ../../.ci
-            cp /tmp/mobile-capture-tests.log ../../.ci/mobile-capture-test-failure.log
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add ../../.ci/mobile-capture-test-failure.log
-            git commit -m "ci: record mobile capture test failure" || true
-            git push origin HEAD:agent/mobile-capture-stability-parity
+            {
+              echo '### 移动端稳定性测试失败'
+              echo
+              echo '<details><summary>失败日志末尾</summary>'
+              echo
+              echo '```text'
+              tail -n 180 /tmp/mobile-capture-tests.log
+              echo '```'
+              echo '</details>'
+            } > /tmp/mobile-capture-comment.md
+            gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/mobile-capture-comment.md
             exit "$status"
           fi
 
