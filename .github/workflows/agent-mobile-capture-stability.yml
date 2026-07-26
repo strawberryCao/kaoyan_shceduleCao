@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - agent/mobile-capture-stability-parity
+  pull_request:
+    branches:
+      - fix/learning-detail-title-latex
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
@@ -20,6 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/mobile-capture-stability-parity
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
