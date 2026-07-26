@@ -18,7 +18,6 @@ function appendOnce(source, marker, value) {
   return source.includes(marker) ? source : `${source.trimEnd()}\n\n${value.trim()}\n`;
 }
 
-// The速记 entry is one mixed-content entry, including complete web packages.
 {
   const file = 'src/components/QuickMaterialComposer.tsx';
   let source = read(file);
@@ -31,7 +30,14 @@ function appendOnce(source, marker, value) {
   write(file, source);
 }
 
-// Local file service supports resources used by an HTML project package.
+// Keep browser source compatible with the repository ES2020 target.
+{
+  const file = 'src/components/WorkspaceAssetPreview.tsx';
+  let source = read(file);
+  source = source.split(".replaceAll('\\\\', '/')").join(".split('\\\\').join('/')");
+  write(file, source);
+}
+
 {
   const file = 'scripts/note-file-access.cjs';
   let source = read(file);
@@ -68,7 +74,6 @@ function appendOnce(source, marker, value) {
   write(file, source);
 }
 
-// Connect the independent renderer and persist recovered paths.
 {
   const file = 'src/components/LearningRecordWorkspacePreview.tsx';
   let source = read(file);
@@ -99,7 +104,7 @@ function appendOnce(source, marker, value) {
   source = replaceOnce(
     source,
     "const overlap = (a: FloatingAsset, b: FloatingAsset) => !(",
-    `const extensionForAttachment = (attachment: LearningAttachment): string => {\n  const named = attachment.name.toLowerCase().match(/\\.([a-z0-9]+)$/)?.[1];\n  const pathed = attachment.filePath.replaceAll('\\\\', '/').toLowerCase().match(/\\.([a-z0-9]+)$/)?.[1];\n  if (named || pathed) return named || pathed || 'jpg';\n  if (attachment.mimeType === 'image/png') return 'png';\n  if (attachment.mimeType === 'image/webp') return 'webp';\n  if (attachment.mimeType === 'application/pdf') return 'pdf';\n  if (attachment.mimeType.includes('wordprocessingml')) return 'docx';\n  return attachment.kind === 'image' ? 'jpg' : 'bin';\n};\n\nconst stableFallbackPath = (note: LearningAutoNote, attachment: LearningAttachment): string => {\n  const normalized = attachment.filePath.trim().replaceAll('\\\\', '/');\n  if (/^(?:github:\\/\\/data\\/assets\\/|data\\/assets\\/|r2:\\/\\/note-assets\\/)/i.test(normalized)) return '';\n  const materialIndex = /^material-(\\d+)$/.exec(attachment.id)?.[1];\n  if (materialIndex) {\n    return 'github://data/assets/' + note.noteUid + '/' + materialIndex.padStart(2, '0') + '-' + attachment.name;\n  }\n  if (attachment.kind === 'image') {\n    return 'github://data/assets/' + note.noteUid + '.' + extensionForAttachment(attachment);\n  }\n  const baseName = normalized.split('/').filter(Boolean).at(-1) || attachment.name;\n  return baseName ? 'github://data/assets/' + baseName : '';\n};\n\nconst overlap = (a: FloatingAsset, b: FloatingAsset) => !(`,
+    `const extensionForAttachment = (attachment: LearningAttachment): string => {\n  const named = attachment.name.toLowerCase().match(/\\.([a-z0-9]+)$/)?.[1];\n  const pathed = attachment.filePath.split('\\\\').join('/').toLowerCase().match(/\\.([a-z0-9]+)$/)?.[1];\n  if (named || pathed) return named || pathed || 'jpg';\n  if (attachment.mimeType === 'image/png') return 'png';\n  if (attachment.mimeType === 'image/webp') return 'webp';\n  if (attachment.mimeType === 'application/pdf') return 'pdf';\n  if (attachment.mimeType.includes('wordprocessingml')) return 'docx';\n  return attachment.kind === 'image' ? 'jpg' : 'bin';\n};\n\nconst stableFallbackPath = (note: LearningAutoNote, attachment: LearningAttachment): string => {\n  const normalized = attachment.filePath.trim().split('\\\\').join('/');\n  if (/^(?:github:\\/\\/data\\/assets\\/|data\\/assets\\/|r2:\\/\\/note-assets\\/)/i.test(normalized)) return '';\n  const materialIndex = /^material-(\\d+)$/.exec(attachment.id)?.[1];\n  if (materialIndex) {\n    return 'github://data/assets/' + note.noteUid + '/' + materialIndex.padStart(2, '0') + '-' + attachment.name;\n  }\n  if (attachment.kind === 'image') {\n    return 'github://data/assets/' + note.noteUid + '.' + extensionForAttachment(attachment);\n  }\n  const baseName = normalized.split('/').filter(Boolean).at(-1) || attachment.name;\n  return baseName ? 'github://data/assets/' + baseName : '';\n};\n\nconst overlap = (a: FloatingAsset, b: FloatingAsset) => !(`,
     'stable attachment fallback helper',
   );
   source = replaceOnce(
