@@ -1,0 +1,76 @@
+name: Apply learning center image display fix
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: learning-center-image-display-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply-test-and-commit:
+    if: github.head_ref == 'fix/learning-center-image-display'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out hotfix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/learning-center-image-display
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Apply image path repair
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/run-learning-center-image-display-fix.cjs
+
+      - name: Install dependencies
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+
+      - name: Run focused image display test
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/learning-center-image-display.test.cjs
+
+      - name: Run all Node tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/*.test.cjs; do node "$file"; done
+          for file in cloudflare/*.test.mjs; do node "$file"; done
+
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+
+      - name: Remove construction files
+        run: |
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-learning-center-image-display-fix.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/run-learning-center-image-display-fix.cjs
+          rm -f .github/workflows/apply-learning-center-image-display-fix.yml
+
+      - name: Commit verified hotfix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: restore learning center image display"
+          git push origin HEAD:fix/learning-center-image-display
