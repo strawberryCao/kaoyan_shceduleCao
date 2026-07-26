@@ -7,24 +7,25 @@ const sourcePath = path.join(__dirname, 'apply-workspace-final-completion.cjs');
 const runtimePath = path.join(__dirname, '.runtime-workspace-final-completion.cjs');
 let source = fs.readFileSync(sourcePath, 'utf8');
 
-function serializeTemplateArgument(startMarker, endMarker) {
-  const start = source.indexOf(startMarker);
-  if (start < 0) throw new Error('Template argument start not found: ' + startMarker);
-  const bodyStart = start + startMarker.length;
+function serializeTemplateArgument(bodyPrefix, endMarker) {
+  const opener = "    `" + bodyPrefix;
+  const start = source.indexOf(opener);
+  if (start < 0) throw new Error('Template argument start not found: ' + bodyPrefix);
+  const bodyStart = start + "    `".length;
   const end = source.indexOf(endMarker, bodyStart);
   if (end < 0) throw new Error('Template argument end not found: ' + endMarker);
   const body = source.slice(bodyStart, end)
     .replace(/\\`/g, '`')
     .replace(/\\\$\{/g, '${');
   source = source.slice(0, start)
-    + startMarker.slice(0, -1)
+    + '    '
     + JSON.stringify(body)
     + source.slice(end + 1);
 }
 
 // The helper replacement contains TypeScript template strings. Store the whole
 // replacement as JSON text so the construction script never evaluates them.
-serializeTemplateArgument("    `", "`,\n    'asset fallback helpers');");
+serializeTemplateArgument('const noteFileUrl =', "`,\n    'asset fallback helpers');");
 
 // The large preview implementation is also embedded source code. Convert the
 // String.raw template assignment to one ordinary serialized string.
