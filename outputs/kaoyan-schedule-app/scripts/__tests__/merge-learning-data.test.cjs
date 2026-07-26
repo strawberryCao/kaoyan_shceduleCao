@@ -73,3 +73,90 @@ test('repairs historical assets subject to default folder', () => {
   assert.deepEqual(note.knowledgePath, ['默认文件夹']);
   assert.equal(note.reviewStatus, 'pending');
 });
+
+
+test('field-level merge preserves independent note changes and future fields', () => {
+  const previous = base();
+  const local = structuredClone(previous);
+  const remote = structuredClone(previous);
+  const localNote = local.days['2026-07-24'].autoNotes[0];
+  const remoteNote = remote.days['2026-07-24'].autoNotes[0];
+  local.updatedAt = '2026-07-24T01:00:00.000Z';
+  localNote.updatedAt = local.updatedAt;
+  localNote.title = '本地修改后的标题';
+  localNote.localFuture = { retained: true };
+
+  remote.updatedAt = '2026-07-24T02:00:00.000Z';
+  remoteNote.updatedAt = remote.updatedAt;
+  remoteNote.attachments = [{
+    id: 'asset-1',
+    kind: 'pdf',
+    name: '讲义.pdf',
+    filePath: 'github://data/assets/n1/讲义.pdf',
+    checksum: 'sha256:future',
+  }];
+  remoteNote.facets = ['quick', 'knowledge'];
+  remoteNote.sourceType = 'material-note';
+  remoteNote.sourceBatchId = 'batch-remote';
+  remoteNote.remoteFuture = { retained: true };
+
+  const merged = mergeSnapshots(local, remote, previous);
+  const note = merged.days['2026-07-24'].autoNotes[0];
+  assert.equal(note.title, '本地修改后的标题');
+  assert.deepEqual(note.facets, ['quick', 'knowledge']);
+  assert.equal(note.attachments[0].checksum, 'sha256:future');
+  assert.equal(note.sourceBatchId, 'batch-remote');
+  assert.deepEqual(note.localFuture, { retained: true });
+  assert.deepEqual(note.remoteFuture, { retained: true });
+});
+
+test('three-way set and attachment merge respects explicit local removals', () => {
+  const previous = base();
+  const previousNote = previous.days['2026-07-24'].autoNotes[0];
+  previousNote.facets = ['quick', 'knowledge'];
+  previousNote.tags = ['速记', '知识'];
+  previousNote.attachments = [
+    { id: 'a', name: '保留.pdf', filePath: 'github://data/assets/n1/a.pdf', createdAt: '2026-07-24T00:00:00.000Z' },
+    { id: 'b', name: '删除.pdf', filePath: 'github://data/assets/n1/b.pdf', createdAt: '2026-07-24T00:00:00.000Z' },
+  ];
+
+  const local = structuredClone(previous);
+  local.updatedAt = '2026-07-24T02:00:00.000Z';
+  const localNote = local.days['2026-07-24'].autoNotes[0];
+  localNote.updatedAt = local.updatedAt;
+  localNote.facets = ['quick'];
+  localNote.tags = ['速记'];
+  localNote.attachments = [localNote.attachments[0]];
+
+  const remote = structuredClone(previous);
+  remote.updatedAt = '2026-07-24T03:00:00.000Z';
+
+  const note = mergeSnapshots(local, remote, previous).days['2026-07-24'].autoNotes[0];
+  assert.deepEqual(note.facets, ['quick']);
+  assert.deepEqual(note.tags, ['速记']);
+  assert.deepEqual(note.attachments.map((item) => item.id), ['a']);
+});
+
+test('card text edits and remote review progress merge independently', () => {
+  const previous = base();
+  const local = structuredClone(previous);
+  const remote = structuredClone(previous);
+  local.updatedAt = '2026-07-24T01:00:00.000Z';
+  local.cards[0].updatedAt = local.updatedAt;
+  local.cards[0].front = '本地改过的问题';
+
+  remote.updatedAt = '2026-07-24T02:00:00.000Z';
+  remote.cards[0].updatedAt = remote.updatedAt;
+  remote.cards[0].reviewHistory = [{
+    id: 'review-remote',
+    reviewedAt: remote.updatedAt,
+    result: 'remembered',
+    thought: '远端完成复习',
+  }];
+  remote.cards[0].reviewCount = 1;
+
+  const card = mergeSnapshots(local, remote, previous).cards[0];
+  assert.equal(card.front, '本地改过的问题');
+  assert.equal(card.reviewHistory[0].thought, '远端完成复习');
+  assert.equal(card.reviewCount, 1);
+});

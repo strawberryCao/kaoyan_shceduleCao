@@ -24,6 +24,7 @@ import {
   Trash2,
   TriangleAlert,
   X,
+  Zap,
   ZoomIn,
 } from 'lucide-react';
 import type { ScheduleDay } from '../types';
@@ -70,7 +71,7 @@ export interface LearningCenterProps {
   onOpenDate: (date: string) => void;
 }
 
-type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'library' | 'uncategorized' | 'inbox' | 'weekly';
+type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'quick' | 'library' | 'uncategorized' | 'inbox' | 'weekly';
 type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'untracked';
 
 interface IndexedNote {
@@ -272,6 +273,14 @@ const isGoodNote = (note: LearningAutoNote): boolean => {
   return note.noteType === 'good' || hasUserOwnedGoodTag || remarkSignalsGood(note.remark);
 };
 
+const isQuickNote = (note: LearningAutoNote): boolean => (
+  note.noteType === 'quick'
+  || note.facets.includes('quick')
+  || note.tags.some((tag) => tag.includes('速记'))
+  || note.sourceType === 'material-note'
+  || note.sourceType === 'quick-material'
+);
+
 const rankNotesForQuery = (entries: IndexedNote[], query: string): IndexedNote[] => {
   if (!query.trim()) return entries;
   return entries.map((entry, index) => ({
@@ -304,7 +313,7 @@ const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
 const initialView = (): CenterView => {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get('view');
-  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'uncategorized' || requested === 'inbox' || requested === 'weekly') return requested;
+  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'quick' || requested === 'uncategorized' || requested === 'inbox' || requested === 'weekly') return requested;
   if (requested === 'knowledge' || params.has('q')) return 'library';
   if (params.get('filter') === 'draft') return 'inbox';
   return 'review';
@@ -418,8 +427,9 @@ export function LearningCenter({
   const allVisibleGoodImportSelected = visibleGoodImportIds.length > 0
     && visibleGoodImportIds.every((noteUid) => goodImportSelection.includes(noteUid));
   const memoryNotes = useMemo(() => indexedNotes.filter(({ note }) => isMemoryNote(note)), [indexedNotes]);
+  const quickNotes = useMemo(() => allNotes.filter(({ note }) => isQuickNote(note)), [allNotes]);
   const uncategorizedNotes = useMemo(() => indexedNotes.filter(({ note }) => (
-    !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
+    !isQuickNote(note) && !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
   )), [indexedNotes]);
   const pendingNotes = useMemo(() => allNotes.filter(({ note }) => isPendingNoteReview(note)), [allNotes]);
   const weeklyPackage = useMemo(
@@ -445,6 +455,7 @@ export function LearningCenter({
 
   const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes, query), [memoryNotes, query]);
   const visibleGood = useMemo(() => rankNotesForQuery(goodNotes, query), [goodNotes, query]);
+  const visibleQuick = useMemo(() => rankNotesForQuery(quickNotes, query), [query, quickNotes]);
   const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes, query), [indexedNotes, query]);
   const visibleUncategorized = useMemo(() => rankNotesForQuery(uncategorizedNotes, query), [query, uncategorizedNotes]);
 
@@ -473,9 +484,11 @@ export function LearningCenter({
       ? visibleGood
     : view === 'memory'
       ? visibleMemory
-      : view === 'uncategorized'
-        ? visibleUncategorized
-      : visibleLibrary;
+      : view === 'quick'
+        ? visibleQuick
+        : view === 'uncategorized'
+          ? visibleUncategorized
+        : visibleLibrary;
   const selectedNote = noteListForView.find(({ note }) => note.noteUid === selectedNoteUid) ?? noteListForView[0] ?? null;
   const selectedInbox = inboxEntries.find((entry) => entry.key === selectedInboxKey) ?? inboxEntries[0] ?? null;
 
@@ -1614,6 +1627,19 @@ export function LearningCenter({
     </div>
   );
 
+  const renderQuick = () => (
+    <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
+      <aside className="lc-master-pane">
+        {renderSearch(visibleQuick.length, '搜索速记内容、附件名或备注')}
+        <div className="lc-master-list">
+          {visibleQuick.map((entry) => renderNoteButton(entry, 'library'))}
+          {visibleQuick.length === 0 && <div className="lc-list-empty"><Zap size={23} /><strong>还没有速记</strong></div>}
+        </div>
+      </aside>
+      <section className="lc-detail-pane">{renderNoteDetail(selectedNote, 'library')}</section>
+    </div>
+  );
+
   const renderUncategorized = () => (
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
@@ -1684,6 +1710,7 @@ export function LearningCenter({
     { id: 'mistakes', label: '错题', icon: TriangleAlert, count: mistakeNotes.length },
     { id: 'good', label: '好题', icon: Star, count: goodNotes.length },
     { id: 'memory', label: '背诵', icon: Brain, count: memoryNotes.length },
+    { id: 'quick', label: '速记', icon: Zap, count: quickNotes.length },
     { id: 'uncategorized', label: '普通笔记', icon: ClipboardCheck, count: uncategorizedNotes.length },
     { id: 'library', label: '知识库', icon: BookOpenText, count: indexedNotes.length },
     { id: 'weekly', label: '周复盘', icon: FileText, count: weeklyPackage.stats.noteCount },
@@ -1719,6 +1746,7 @@ export function LearningCenter({
         {view === 'mistakes' && renderMistakes()}
         {view === 'good' && renderGoodQuestions()}
         {view === 'memory' && renderMemory()}
+        {view === 'quick' && renderQuick()}
         {view === 'uncategorized' && renderUncategorized()}
         {view === 'library' && renderLibrary()}
         {view === 'weekly' && renderWeeklyReview()}

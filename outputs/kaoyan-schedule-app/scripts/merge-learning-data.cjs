@@ -89,6 +89,7 @@ function emptySnapshot() {
 function normalizeSnapshot(value) {
   const source = isObject(value) ? value : {};
   return {
+    ...clone(source),
     version: Number.isFinite(Number(source.version)) ? Number(source.version) : 1,
     revision: Number.isInteger(Number(source.revision)) ? Math.max(0, Number(source.revision)) : 0,
     updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : null,
@@ -111,6 +112,111 @@ function chooseSide(localValue, remoteValue, previousValue, localUpdatedAt, remo
   return time(remoteUpdatedAt) > time(localUpdatedAt)
     ? { side: 'remote', value: clone(remoteValue) }
     : { side: 'local', value: clone(localValue) };
+}
+
+function mergeStringSet(localValue, remoteValue, previousValue, localUpdatedAt, remoteUpdatedAt) {
+  if (!Array.isArray(localValue)) return uniqueStrings(remoteValue);
+  if (!Array.isArray(remoteValue)) return uniqueStrings(localValue);
+  const local = new Set(uniqueStrings(localValue));
+  const remote = new Set(uniqueStrings(remoteValue));
+  const previous = new Set(uniqueStrings(previousValue));
+  const values = new Set([...local, ...remote, ...previous]);
+  const merged = [];
+  for (const value of values) {
+    const localHas = local.has(value);
+    const remoteHas = remote.has(value);
+    const previousHas = previous.has(value);
+    let keep;
+    if (localHas === remoteHas) keep = localHas;
+    else if (localHas === previousHas) keep = remoteHas;
+    else if (remoteHas === previousHas) keep = localHas;
+    else keep = time(remoteUpdatedAt) > time(localUpdatedAt) ? remoteHas : localHas;
+    if (keep) merged.push(value);
+  }
+  return merged;
+}
+
+function recordTimestamp(value, fallback) {
+  return value?.updatedAt || value?.reviewedAt || value?.createdAt || fallback;
+}
+
+function mergeObjectFields(localValue, remoteValue, previousValue, localUpdatedAt, remoteUpdatedAt, strategies = {}) {
+  const local = isObject(localValue) ? localValue : {};
+  const remote = isObject(remoteValue) ? remoteValue : {};
+  const previous = isObject(previousValue) ? previousValue : {};
+  const result = {};
+  const keys = new Set([...Object.keys(local), ...Object.keys(remote), ...Object.keys(previous)]);
+  for (const key of keys) {
+    const strategy = strategies[key];
+    let value;
+    if (strategy?.type === 'set') {
+      value = mergeStringSet(local[key], remote[key], previous[key], localUpdatedAt, remoteUpdatedAt);
+    } else if (strategy?.type === 'records') {
+      value = mergeKeyedRecords(
+        local[key],
+        remote[key],
+        previous[key],
+        strategy.key || 'id',
+        localUpdatedAt,
+        remoteUpdatedAt,
+        strategy.strategies || {},
+      );
+    } else {
+      value = chooseSide(local[key], remote[key], previous[key], localUpdatedAt, remoteUpdatedAt).value;
+    }
+    if (value !== undefined) result[key] = value;
+  }
+  return result;
+}
+
+function mergeKeyedRecords(localItems, remoteItems, previousItems, key, localUpdatedAt, remoteUpdatedAt, strategies = {}) {
+  if (!Array.isArray(localItems)) return clone(Array.isArray(remoteItems) ? remoteItems : []);
+  if (!Array.isArray(remoteItems)) return clone(localItems);
+  const local = indexBy(localItems, key);
+  const remote = indexBy(remoteItems, key);
+  const previous = indexBy(previousItems, key);
+  const ids = new Set([...local.keys(), ...remote.keys(), ...previous.keys()]);
+  const result = [];
+  for (const id of ids) {
+    const localValue = local.get(id);
+    const remoteValue = remote.get(id);
+    const previousValue = previous.get(id);
+    if (localValue && remoteValue) {
+      result.push(mergeObjectFields(
+        localValue,
+        remoteValue,
+        previousValue,
+        recordTimestamp(localValue, localUpdatedAt),
+        recordTimestamp(remoteValue, remoteUpdatedAt),
+        strategies,
+      ));
+      continue;
+    }
+    if (localValue && !remoteValue) {
+      if (!previousValue) {
+        result.push(clone(localValue));
+      } else if (!equal(localValue, previousValue) && time(recordTimestamp(localValue, localUpdatedAt)) >= time(remoteUpdatedAt)) {
+        result.push(clone(localValue));
+      }
+      continue;
+    }
+    if (remoteValue && !localValue) {
+      if (!previousValue) {
+        result.push(clone(remoteValue));
+      } else if (!equal(remoteValue, previousValue) && time(recordTimestamp(remoteValue, remoteUpdatedAt)) > time(localUpdatedAt)) {
+        result.push(clone(remoteValue));
+      }
+    }
+  }
+  return result.sort((left, right) => {
+    const leftTime = time(left.createdAt || left.reviewedAt || left.updatedAt);
+    const rightTime = time(right.createdAt || right.reviewedAt || right.updatedAt);
+    return leftTime - rightTime || String(left[key]).localeCompare(String(right[key]));
+  });
+}
+
+function latestTimestamp(left, right, fallback = '') {
+  return time(right) > time(left) ? right || fallback : left || fallback;
 }
 
 function indexBy(items, key) {
@@ -158,48 +264,39 @@ function mergeChildRecords(localItems, remoteItems, previousItems, baseSide, opt
 }
 
 function mergeNote(localNote, remoteNote, previousNote, localSnapshotUpdatedAt, remoteSnapshotUpdatedAt) {
-  const sanitizedLocal = sanitizeNote(localNote);
-  const sanitizedRemote = sanitizeNote(remoteNote);
-  const sanitizedPrevious = sanitizeNote(previousNote);
-  const chosen = chooseSide(
-    sanitizedLocal,
-    sanitizedRemote,
-    sanitizedPrevious,
-    sanitizedLocal?.updatedAt || localSnapshotUpdatedAt,
-    sanitizedRemote?.updatedAt || remoteSnapshotUpdatedAt,
-  );
-  const merged = sanitizeNote(chosen.value) || {};
-  merged.studyNotes = mergeChildRecords(
-    sanitizedLocal?.studyNotes,
-    sanitizedRemote?.studyNotes,
-    sanitizedPrevious?.studyNotes,
-    chosen.side,
-  );
-  return merged;
+  const local = sanitizeNote(localNote);
+  const remote = sanitizeNote(remoteNote);
+  const previous = sanitizeNote(previousNote);
+  const localUpdatedAt = local?.updatedAt || localSnapshotUpdatedAt;
+  const remoteUpdatedAt = remote?.updatedAt || remoteSnapshotUpdatedAt;
+  const merged = mergeObjectFields(local, remote, previous, localUpdatedAt, remoteUpdatedAt, {
+    tags: { type: 'set' },
+    facets: { type: 'set' },
+    cardIds: { type: 'set' },
+    userEditedFields: { type: 'set' },
+    attachments: { type: 'records', key: 'id' },
+    studyNotes: { type: 'records', key: 'id' },
+  });
+  merged.updatedAt = latestTimestamp(localUpdatedAt, remoteUpdatedAt, merged.updatedAt);
+  return sanitizeNote(merged) || {};
 }
 
 function mergeCard(localCard, remoteCard, previousCard, localSnapshotUpdatedAt, remoteSnapshotUpdatedAt) {
-  const chosen = chooseSide(
-    localCard,
-    remoteCard,
-    previousCard,
-    localCard?.updatedAt || localSnapshotUpdatedAt,
-    remoteCard?.updatedAt || remoteSnapshotUpdatedAt,
-  );
-  const merged = clone(chosen.value) || {};
-  merged.reviewHistory = mergeChildRecords(
-    localCard?.reviewHistory,
-    remoteCard?.reviewHistory,
-    previousCard?.reviewHistory,
-    chosen.side,
-  );
-  merged.reviewCount = Math.max(Number(merged.reviewCount) || 0, merged.reviewHistory.length);
+  const localUpdatedAt = localCard?.updatedAt || localSnapshotUpdatedAt;
+  const remoteUpdatedAt = remoteCard?.updatedAt || remoteSnapshotUpdatedAt;
+  const merged = mergeObjectFields(localCard, remoteCard, previousCard, localUpdatedAt, remoteUpdatedAt, {
+    tags: { type: 'set' },
+    reviewHistory: { type: 'records', key: 'id' },
+  });
+  merged.updatedAt = latestTimestamp(localUpdatedAt, remoteUpdatedAt, merged.updatedAt);
+  merged.reviewCount = Math.max(Number(merged.reviewCount) || 0, Array.isArray(merged.reviewHistory) ? merged.reviewHistory.length : 0);
   return merged;
 }
 
 function manualRecord(value) {
   const source = isObject(value) ? value : {};
   return {
+    ...clone(source),
     completedTaskIds: uniqueStrings(source.completedTaskIds),
     note: typeof source.note === 'string' ? source.note : '',
     debt: typeof source.debt === 'string' ? source.debt : '',
@@ -213,7 +310,9 @@ function mergeManual(localManual, remoteManual, previousManual, localUpdatedAt, 
   const previous = manualRecord(previousManual);
   const result = {};
   for (const key of ['completedTaskIds', 'note', 'debt', 'mistakes']) {
-    result[key] = chooseSide(local[key], remote[key], previous[key], localUpdatedAt, remoteUpdatedAt).value;
+    result[key] = key === 'completedTaskIds'
+      ? mergeStringSet(local[key], remote[key], previous[key], localUpdatedAt, remoteUpdatedAt)
+      : chooseSide(local[key], remote[key], previous[key], localUpdatedAt, remoteUpdatedAt).value;
   }
   return result;
 }
@@ -240,8 +339,10 @@ function mergeSnapshots(localInput, remoteInput, previousInput) {
   const localCards = indexBy(local.cards, 'id');
   const remoteCards = indexBy(remote.cards, 'id');
   const previousCards = indexBy(previous.cards, 'id');
-  const merged = emptySnapshot();
+  const topLevel = mergeObjectFields(local, remote, previous, local.updatedAt, remote.updatedAt);
+  const merged = { ...topLevel, ...emptySnapshot() };
   merged.version = Math.max(local.version, remote.version, previous.version, 1);
+  merged.updatedAt = latestTimestamp(local.updatedAt, remote.updatedAt, topLevel.updatedAt);
 
   const dates = new Set([...Object.keys(local.days), ...Object.keys(remote.days), ...Object.keys(previous.days)]);
   for (const date of dates) {
