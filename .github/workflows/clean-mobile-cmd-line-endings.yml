@@ -1,0 +1,42 @@
+name: Clean mobile PR line endings
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/mobile-capture-stability-parity
+          fetch-depth: 0
+      - name: Restore exact base blobs
+        shell: bash
+        run: |
+          git fetch origin fix/learning-detail-title-latex
+          files=(
+            'outputs/kaoyan-schedule-app/取消开机自启.cmd'
+            'outputs/kaoyan-schedule-app/安装依赖.cmd'
+            'outputs/kaoyan-schedule-app/导入敦煌壁纸图片.cmd'
+            'outputs/kaoyan-schedule-app/收集环境信息.cmd'
+            'outputs/kaoyan-schedule-app/整理笔记元数据.cmd'
+            'outputs/kaoyan-schedule-app/测试千问连接.cmd'
+            'outputs/kaoyan-schedule-app/生成敦煌动态壁纸视频.cmd'
+            'outputs/kaoyan-schedule-app/设置开机自启.cmd'
+            'outputs/kaoyan-schedule-app/配置千问命名.cmd'
+          )
+          for file in "${files[@]}"; do
+            git show "origin/fix/learning-detail-title-latex:${file}" > "${file}"
+          done
+          rm -f .github/workflows/clean-mobile-cmd-line-endings.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "clean unrelated Windows launcher line endings"
+          git push origin HEAD:agent/mobile-capture-stability-parity
