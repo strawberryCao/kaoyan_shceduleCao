@@ -57,7 +57,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
     }),
   }),
   note_naming: Object.freeze({
-    version: 'note-naming-v3',
+    version: 'note-naming-v4',
     steps: Object.freeze([
       '读取局域网 note_naming 任务设置',
       '读取原图与最新用户备注',
@@ -74,6 +74,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
         'title 目标长度为 {titleMinLength} 到 {titleMaxLength} 个字符，{titleStyleText}。',
         '不要输出随机数、日期或文件后缀。',
         '不要使用 Windows 非法字符：<>:"/\\|?*。',
+        '标题必须以简洁中文为主；禁止输出英文解释、模型拒答、无法识别说明或整句英文。',
         '逐条检查字段命名规则。只有图片中能直接看到规则要求的标签及对应值时才算匹配，严禁用相似编号、日期或其他字段猜测。',
         '匹配规则时，ruleId 填规则 id，ruleValue 填原图提取值，ruleEvidence 简述证据；title 仍给出普通内容标题，程序会套用模板。',
         '{genericTitleRule}',
@@ -85,7 +86,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
     }),
   }),
   question_splitting: Object.freeze({
-    version: 'question-splitting-v3',
+    version: 'question-splitting-v4',
     steps: Object.freeze([
       '客户端预裁剪并压缩整页图片',
       '读取局域网 question_splitting 任务设置',
@@ -104,8 +105,9 @@ const DEFAULT_WORKFLOWS = Object.freeze({
         '原图尺寸：{width}×{height}。',
         'x、y、width、height 使用 0 到 1 的归一化坐标；x、y 是左上角。按从上到下、同一行从左到右排序。',
         '最多返回 {maxQuestions} 个区域。没有可靠区域时返回空 regions。',
+        '每个区域必须同时判断是否为完整独立题目、是否含完整题干，并给出 0 到 1 的 confidence。不要把页眉、页脚、页码、孤立公式或残缺选项当作题目。',
       ]),
-      outputFormat: '只返回 JSON 对象：{"regions":[{"x":0.0,"y":0.0,"width":0.5,"height":0.3}]}',
+      outputFormat: '只返回 JSON 对象：{"regions":[{"x":0.0,"y":0.0,"width":0.5,"height":0.3,"confidence":0.95,"completeQuestion":true,"containsStem":true,"containsOptions":true,"containsRequiredDiagram":true}]}',
     }),
   }),
 });

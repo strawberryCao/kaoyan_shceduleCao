@@ -95,6 +95,11 @@ let aiNamingQueue = Promise.resolve();
 const aiNamingJobs = new Map();
 let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
+let noteTitlePolicyPromise = null;
+function getNoteTitlePolicy() {
+  if (!noteTitlePolicyPromise) noteTitlePolicyPromise = import('../shared/note-title-policy.js');
+  return noteTitlePolicyPromise;
+}
 let canvasOrganizationQueue = Promise.resolve();
 const canvasOrganizationJobs = new Map();
 
@@ -834,7 +839,7 @@ function guessSubjectFromText(text) {
 }
 
 function makeFallbackName({ kind, remark, subject }) {
-  const text = remark && remark.trim() ? remark : kind === 'canvas' ? '画布拼接笔记' : '图片笔记';
+  const text = remark && remark.trim() ? remark : kind === 'canvas' ? '待确认画布笔记' : '待确认题目';
   const safeSubject = sanitizeSegment(subject || guessSubjectFromText(text), DEFAULT_SUBJECT, 24);
   const safeTitle = sanitizeSegment(text, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
   return {
@@ -865,6 +870,7 @@ function namingRulesForPrompt(rules) {
 }
 
 async function generateNameWithAi({ imageDataUrl, kind, remark }) {
+  const { ALLOWED_NOTE_SUBJECTS, normalizeNoteSubject, sanitizeNoteTitle, validateNoteTitle } = await getNoteTitlePolicy();
   const router = getAiRouter();
   const options = router?.getTaskOptions('note_naming') || {};
   const titleMinLength = Math.max(4, Math.min(40, Number(options.titleMinLength) || 8));
@@ -879,7 +885,7 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
   const prompt = [
     '你是考研学习笔记整理助手。请结合图片内容和用户备注，为这张学习截图生成适合 Windows 文件名的中文标题。',
     '要求：',
-    '1. 识别所属科目，只能从：高等数学、线性代数、概率论、数据结构、计算机组成、操作系统、计算机网络、英语、政治、默认文件夹 中选择。',
+    `1. 识别所属科目，只能从：${ALLOWED_NOTE_SUBJECTS.join('、')} 中选择。`,
     options.preferSpecificSubject === false
       ? '1.1 按图片内容选择科目；确实不清晰或跨科时可选择“默认文件夹”。'
       : '1.1 只要图片或备注能看出学科，就必须选择最合理的具体科目；只有图片不可读、没有学习内容或确实无法判断时才选“默认文件夹”。不要因为不完全确定就退回默认。',
@@ -928,22 +934,22 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
 
     const parsed = response.json;
 
-    const subject = sanitizeSegment(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${effectiveRemark || ''}`), DEFAULT_SUBJECT, 24);
-    const allowedSubjects = ['高等数学', '线性代数', '概率论', '数据结构', '计算机组成', '操作系统', '计算机网络', '英语', '政治', DEFAULT_SUBJECT];
-    const aiTitle = sanitizeSegment(parsed.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', titleMaxLength);
+    const subject = normalizeNoteSubject(parsed.subject || guessSubjectFromText(`${parsed.title || ''} ${effectiveRemark || ''}`));
+    const aiTitle = sanitizeNoteTitle(parsed.title, titleMaxLength);
     const matchedRule = namingRules.find((rule) => rule.id === String(parsed.ruleId || '').trim()) || null;
     const ruleValue = matchedRule ? sanitizeSegment(parsed.ruleValue, '', 100) : '';
     const title = matchedRule && ruleValue
       ? applyNamingRuleTemplate(matchedRule, ruleValue, subject, aiTitle)
       : aiTitle;
-    if (options.rejectGenericTitle !== false && /^(?:待识别|无法识别|未知(?:内容)?|未命名(?:内容)?|图片笔记|截图)$/u.test(title)) {
-      const error = new Error('AI 没有返回可用标题或规则字段值');
-      error.code = 'AI_NAMING_EMPTY';
+    const titleValidation = validateNoteTitle(title, { ...options, titleMinLength, titleMaxLength, allowRuleIdentifier: Boolean(matchedRule && ruleValue), ruleValue });
+    if (!titleValidation.ok) {
+      const error = new Error('AI 标题未通过统一校验：' + titleValidation.problem);
+      error.code = 'AI_NAMING_INVALID';
       throw error;
     }
 
     return {
-      subject: allowedSubjects.includes(subject) ? subject : guessSubjectFromText(`${subject} ${title} ${effectiveRemark || ''}`),
+      subject: normalizeNoteSubject(subject, guessSubjectFromText(`${subject} ${title} ${effectiveRemark || ''}`)),
       title,
       reason: String(parsed.reason || '').slice(0, 120),
       providerUsed: response.provider,
