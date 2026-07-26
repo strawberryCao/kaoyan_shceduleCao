@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  issues: write
 
 concurrency:
   group: verify-mobile-capture-${{ github.event.pull_request.number }}
@@ -88,10 +90,26 @@ jobs:
       - name: Run complete Node regression suite
         working-directory: outputs/kaoyan-schedule-app
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           mapfile -d '' tests < <(find scripts cloudflare -type f \( -name '*.test.cjs' -o -name '*.test.mjs' -o -name '*.test.js' \) -print0 | sort -z)
           printf 'Running %s test files\n' "${#tests[@]}"
-          node --test "${tests[@]}"
+          set +e
+          node --test "${tests[@]}" 2>&1 | tee /tmp/full-regression.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            {
+              echo '### 全量 Node 回归失败（精简定位）'
+              echo
+              echo '```text'
+              grep -nE '^(not ok|# Subtest:)|AssertionError|TestContext\.<anonymous>|operator:|ERR_' /tmp/full-regression.log | tail -n 160
+              echo '```'
+            } > /tmp/full-regression-comment.md
+            gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/full-regression-comment.md
+            exit "$status"
+          fi
 
       - name: Run production build
         working-directory: outputs/kaoyan-schedule-app
