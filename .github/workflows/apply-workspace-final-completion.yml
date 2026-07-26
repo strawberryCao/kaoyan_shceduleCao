@@ -63,8 +63,31 @@ jobs:
         run: npm install mammoth --save --ignore-scripts
 
       - name: Run focused completion tests
+        id: focused
+        continue-on-error: true
         working-directory: outputs/kaoyan-schedule-app
-        run: node scripts/workspace-final-completion.test.cjs
+        shell: bash
+        run: |
+          set +e
+          node scripts/workspace-final-completion.test.cjs > "$RUNNER_TEMP/workspace-focused.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/workspace-focused.log"
+          exit $code
+
+      - name: Report focused completion failure
+        if: steps.focused.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync(process.env.RUNNER_TEMP + '/workspace-focused.log', 'utf8').slice(-12000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### 最终资料工作区专项测试失败\n\n```text\n' + log.replace(/```/g, '`` `') + '\n```',
+            });
+            core.setFailed('Focused workspace completion test failed');
 
       - name: Run all Node tests
         working-directory: outputs/kaoyan-schedule-app
