@@ -65,6 +65,14 @@ jobs:
               echo '```'
             } > /tmp/mobile-capture-comment.md
             gh pr comment 43 --repo strawberryCao/kaoyan_shceduleCao --body-file /tmp/mobile-capture-comment.md
+            cd ../..
+            rm -f outputs/kaoyan-schedule-app/scripts/apply-mobile-capture-stability.cjs
+            rm -f .github/workflows/agent-mobile-capture-stability.yml
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A
+            git commit -m "wip: preserve mobile capture patch for diagnosis"
+            git push origin HEAD:agent/mobile-capture-stability-parity
             exit "$status"
           fi
 
@@ -80,7 +88,6 @@ jobs:
         run: |
           rm -f outputs/kaoyan-schedule-app/scripts/apply-mobile-capture-stability.cjs
           rm -f .github/workflows/agent-mobile-capture-stability.yml
-          rm -f .ci/mobile-capture-test-failure.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
