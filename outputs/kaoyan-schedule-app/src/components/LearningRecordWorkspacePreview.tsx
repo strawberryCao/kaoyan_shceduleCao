@@ -1,5 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowLeft, Download, File, FileCode2, FileImage, FileText, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  Download,
+  File,
+  FileCode2,
+  FileDown,
+  FileImage,
+  FileText,
+  LayoutGrid,
+  Lock,
+  Printer,
+  RotateCcw,
+  Unlock,
+  X,
+} from 'lucide-react';
 import type { LearningAttachment, LearningAutoNote, LearningDataSnapshot } from '../utils/learningData';
 import {
   fetchLearningData,
@@ -8,25 +22,49 @@ import {
   subscribeLearningDataFromServer,
   subscribeLearningDataPolling,
 } from '../utils/learningData';
+import {
+  exportWorkspaceDocx,
+  exportWorkspacePdf,
+  type WorkspaceExportAsset,
+} from '../utils/workspaceExport';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
 import '../learning-record-workspace-preview.css';
 
 type AssetKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
-type Asset = LearningAttachment & { kind: AssetKind; label: string; url: string; sizeLabel: string };
-type FloatingAsset = { id: string; assetId: string; x: number; y: number; width: number; height: number; z: number };
+type Asset = LearningAttachment & {
+  kind: AssetKind;
+  label: string;
+  url: string;
+  previewUrl: string;
+  posterUrl: string;
+  sizeLabel: string;
+};
+type FloatingAsset = {
+  id: string;
+  assetId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  z: number;
+  locked: boolean;
+};
 type Bounds = { width: number; height: number; left: number; top: number; bottom: number };
 
 const KIND_SIZE: Record<AssetKind, [number, number]> = {
   image: [430, 300],
-  pdf: [360, 430],
-  word: [360, 390],
-  html: [390, 300],
+  pdf: [390, 440],
+  word: [380, 400],
+  html: [420, 320],
   file: [340, 260],
 };
 const GAP = 12;
 const MIN_W = 220;
 const MIN_H = 160;
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const noteFileUrl = (filePath: string, preview = false) => (
+  `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}${preview ? '&preview=1' : ''}`
+);
 const overlap = (a: FloatingAsset, b: FloatingAsset) => !(
   a.x + a.width + GAP <= b.x || b.x + b.width + GAP <= a.x
   || a.y + a.height + GAP <= b.y || b.y + b.height + GAP <= a.y
@@ -102,22 +140,56 @@ function AssetGlyph({ kind }: { kind: AssetKind }) {
   return <FileText size={22} />;
 }
 
+function SafeHtmlPreview({ item }: { item: Asset }) {
+  const [html, setHtml] = useState('');
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const abort = new AbortController();
+    setHtml('');
+    setError('');
+    void fetch(item.url, { signal: abort.signal, credentials: 'same-origin' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTML 读取失败（${response.status}）`);
+        const value = await response.text();
+        setHtml(value.slice(0, 4 * 1024 * 1024));
+      })
+      .catch((reason) => {
+        if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'HTML 读取失败');
+      });
+    return () => abort.abort();
+  }, [item.url]);
+  if (error) {
+    return (
+      <div className="lrp-preview-error">
+        <FileCode2 size={28} />
+        <strong>{error}</strong>
+        <a href={item.url} download={item.name}>下载原文件</a>
+      </div>
+    );
+  }
+  if (!html) return <div className="lrp-preview-loading">正在安全读取 HTML…</div>;
+  return <iframe className="lrp-document-frame" sandbox="" srcDoc={html} title={item.name} />;
+}
+
 function AssetPreview({ item }: { item: Asset }) {
   if (item.kind === 'image') {
     return <img className="lrp-real-image" src={item.url} alt={item.name} draggable={false} />;
+  }
+  if (item.kind === 'pdf') {
+    return <iframe className="lrp-document-frame" src={item.previewUrl} title={item.name} />;
+  }
+  if (item.kind === 'html') return <SafeHtmlPreview item={item} />;
+  if (item.posterUrl) {
+    return <img className="lrp-real-image lrp-preview-poster" src={item.posterUrl} alt={`${item.name}预览`} draggable={false} />;
   }
   return (
     <article className={`lrp-file-preview is-${item.kind}`}>
       <span><AssetGlyph kind={item.kind} /></span>
       <small>{item.label} · {item.sizeLabel}</small>
       <h2>{item.name}</h2>
-      <p>{item.kind === 'html'
-        ? '为避免资料中的脚本直接执行，HTML 文件只提供安全下载。'
-        : item.kind === 'pdf'
-          ? 'PDF 保留原始分页和排版，可下载后使用系统阅读器查看。'
-          : item.kind === 'word'
-            ? 'Word 文档保留讲义结构、公式和批注，可下载后继续编辑。'
-            : '该资料不支持内嵌预览，可下载到本机打开。'}</p>
+      <p>{item.kind === 'word'
+        ? '当前资料没有生成预览图，可下载后使用 Word 继续阅读和编辑。'
+        : '该资料不支持内嵌预览，可下载到本机打开。'}</p>
       <a href={item.url} download={item.name}><Download size={16} />打开 / 下载</a>
     </article>
   );
@@ -130,22 +202,24 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
   const [activeId, setActiveId] = useState('');
   const [floating, setFloating] = useState<FloatingAsset[]>([]);
   const [compact, setCompact] = useState(() => window.innerWidth < 820);
+  const [exporting, setExporting] = useState<'docx' | 'pdf' | ''>('');
+  const [actionError, setActionError] = useState('');
   const note = useMemo(() => locateNote(snapshot, noteUid), [noteUid, snapshot]);
   const assets = useMemo<Asset[]>(() => {
     if (!note) return [];
     const source = note.attachments.length > 0
       ? note.attachments
       : note.filePath ? [{
-        id: 'legacy-primary',
-        kind: 'image' as const,
-        name: note.title || '原图',
-        mimeType: 'image/jpeg',
-        size: null,
-        filePath: note.filePath,
-        previewPath: '',
-        posterPath: '',
-        createdAt: note.createdAt,
-      }] : [];
+          id: 'legacy-primary',
+          kind: 'image' as const,
+          name: note.title || '原图',
+          mimeType: 'image/jpeg',
+          size: null,
+          filePath: note.filePath,
+          previewPath: '',
+          posterPath: '',
+          createdAt: note.createdAt,
+        }] : [];
     return source.map((attachment) => {
       const kind: AssetKind = ['image', 'pdf', 'word', 'html'].includes(attachment.kind)
         ? attachment.kind as AssetKind
@@ -154,22 +228,32 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         ...attachment,
         kind,
         label: attachmentLabel(kind),
-        url: `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(attachment.filePath)}`,
+        url: noteFileUrl(attachment.filePath),
+        previewUrl: noteFileUrl(attachment.filePath, kind === 'pdf'),
+        posterUrl: attachment.posterPath
+          ? noteFileUrl(attachment.posterPath)
+          : attachment.previewPath ? noteFileUrl(attachment.previewPath) : '',
         sizeLabel: formatBytes(attachment.size),
       };
     });
   }, [note]);
   const activeAsset = assets.find((item) => item.id === activeId) || assets[0] || null;
   const assetKey = assets.map((item) => item.id).join('\u001f');
+  const exportAssets = useMemo<WorkspaceExportAsset[]>(() => assets.map((item) => ({
+    id: item.id,
+    name: item.name,
+    kind: item.kind,
+    url: item.url,
+    sizeLabel: item.sizeLabel,
+  })), [assets]);
 
   useEffect(() => {
     const abort = new AbortController();
     const releaseCache = subscribeLearningDataCache(setSnapshot);
     const releaseServer = IS_CLOUD_RUNTIME ? subscribeLearningDataPolling() : subscribeLearningDataFromServer();
-    void fetchLearningData(abort.signal).then((next) => {
-      setSnapshot(next);
-      setLoadError('');
-    }).catch((error) => setLoadError(error instanceof Error ? error.message : '学习数据加载失败'));
+    void fetchLearningData(abort.signal)
+      .then((next) => { setSnapshot(next); setLoadError(''); })
+      .catch((error) => setLoadError(error instanceof Error ? error.message : '学习数据加载失败'));
     return () => {
       abort.abort();
       releaseCache();
@@ -220,9 +304,35 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         width: Math.round(baseW * scale),
         height: Math.round(baseH * scale),
         z: current.reduce((max, value) => Math.max(max, value.z), 20) + 1,
+        locked: false,
       };
       return pack([...current, next], bounds);
     });
+  };
+
+  const spawnAll = () => {
+    const root = rootRef.current;
+    if (!root || compact) return;
+    const bounds = boundsOf(root);
+    const items = assets.map((asset, index) => {
+      const [width, height] = KIND_SIZE[asset.kind];
+      return {
+        id: `all-${asset.id}`,
+        assetId: asset.id,
+        x: bounds.left,
+        y: bounds.top,
+        width,
+        height,
+        z: 30 + index,
+        locked: false,
+      };
+    });
+    setFloating(pack(items, bounds));
+  };
+
+  const arrangeFloating = () => {
+    const root = rootRef.current;
+    if (root) setFloating((current) => pack(current, boundsOf(root)));
   };
 
   const beginDetach = (event: ReactPointerEvent<HTMLButtonElement>, item: Asset) => {
@@ -246,6 +356,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
   const startMove = (event: ReactPointerEvent<HTMLElement>, item: FloatingAsset, resize = false) => {
     event.preventDefault();
     event.stopPropagation();
+    if (item.locked) return;
     const root = rootRef.current;
     if (!root) return;
     const startX = event.clientX;
@@ -256,11 +367,13 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         if (value.id !== item.id) return value;
         const dx = next.clientX - startX;
         const dy = next.clientY - startY;
-        if (resize) return {
-          ...value,
-          width: clamp(item.width + dx, MIN_W, Math.max(MIN_W, bounds.width - value.x - GAP)),
-          height: clamp(item.height + dy, MIN_H, Math.max(MIN_H, bounds.height - value.y - bounds.bottom)),
-        };
+        if (resize) {
+          return {
+            ...value,
+            width: clamp(item.width + dx, MIN_W, Math.max(MIN_W, bounds.width - value.x - GAP)),
+            height: clamp(item.height + dy, MIN_H, Math.max(MIN_H, bounds.height - value.y - bounds.bottom)),
+          };
+        }
         return {
           ...value,
           x: clamp(item.x + dx, bounds.left, Math.max(bounds.left, bounds.width - value.width - GAP)),
@@ -274,6 +387,32 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up, { once: true });
+  };
+
+  const exportDocx = async () => {
+    if (!note || exporting) return;
+    setExporting('docx');
+    setActionError('');
+    try {
+      await exportWorkspaceDocx(note, exportAssets);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'DOCX 导出失败');
+    } finally {
+      setExporting('');
+    }
+  };
+
+  const exportPdf = () => {
+    if (!note || exporting) return;
+    setExporting('pdf');
+    setActionError('');
+    try {
+      exportWorkspacePdf(note, exportAssets);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'PDF 导出失败');
+    } finally {
+      setExporting('');
+    }
   };
 
   if (!note) {
@@ -291,9 +430,25 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     <main className="lrp-root" ref={rootRef}>
       <header className="lrp-topbar">
         <button type="button" onClick={returnToLearningCenter}><ArrowLeft size={18} />返回</button>
-        <div><strong>{note.title || '未命名学习记录'}</strong><small>{note.subject} · {assets.length} 个资料</small></div>
-        {activeAsset ? <a href={activeAsset.url} download={activeAsset.name}><Download size={16} />下载当前资料</a> : <span />}
+        <div className="lrp-topbar-title">
+          <strong>{note.title || '未命名学习记录'}</strong>
+          <small>{note.subject} · {assets.length} 个资料</small>
+        </div>
+        <div className="lrp-topbar-actions">
+          {!compact && assets.length > 0 && (
+            <button type="button" onClick={spawnAll}><LayoutGrid size={15} />全部展开</button>
+          )}
+          <button type="button" disabled={Boolean(exporting)} onClick={exportPdf}>
+            <Printer size={15} />{exporting === 'pdf' ? '生成中' : 'PDF'}
+          </button>
+          <button type="button" disabled={Boolean(exporting)} onClick={() => void exportDocx()}>
+            <FileDown size={15} />{exporting === 'docx' ? '生成中' : 'DOCX'}
+          </button>
+          {activeAsset && <a href={activeAsset.url} download={activeAsset.name}><Download size={15} />下载当前</a>}
+        </div>
       </header>
+
+      {actionError && <div className="lrp-action-error" role="alert">{actionError}</div>}
 
       <section className="lrp-workspace">
         <aside className="lrp-record-panel">
@@ -322,9 +477,12 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         <article className="lrp-reading-panel">
           {activeAsset ? (
             <>
-              <header><div><strong>{activeAsset.name}</strong><small>{activeAsset.label} · {activeAsset.sizeLabel}</small></div><a href={activeAsset.url} download={activeAsset.name}><Download size={15} />下载</a></header>
+              <header>
+                <div><strong>{activeAsset.name}</strong><small>{activeAsset.label} · {activeAsset.sizeLabel}</small></div>
+                <a href={activeAsset.url} download={activeAsset.name}><Download size={15} />下载</a>
+              </header>
               <section><AssetPreview item={activeAsset} /></section>
-              <p className="lrp-hint">电脑端按住左侧资料拖到空白处，可将多个资料并排查看；系统会自动缩放并避让。移动端点击切换阅读。</p>
+              <p className="lrp-hint">电脑端按住左侧资料拖到空白处，可并排阅读；浮窗支持锁定、移动、缩放和自动避让。移动端保持单资料阅读。</p>
             </>
           ) : (
             <div className="lrp-empty"><File size={32} /><strong>暂无可阅读资料</strong><p>纯文字速记仍保留在左侧记录说明中。</p></div>
@@ -332,16 +490,46 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         </article>
       </section>
 
+      {!compact && floating.length > 0 && (
+        <div className="lrp-floating-toolbar">
+          <button type="button" onClick={arrangeFloating}><LayoutGrid size={14} />自动排列</button>
+          <button type="button" onClick={() => setFloating([])}><RotateCcw size={14} />全部收回</button>
+        </div>
+      )}
+
       {!compact && (
         <div className="lrp-floating">
           {floating.map((item) => {
             const current = assets.find((asset) => asset.id === item.assetId);
             if (!current) return null;
             return (
-              <section className={`lrp-float ${current.kind}`} key={item.id} style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.z }}>
-                <header onPointerDown={(event) => startMove(event, item)}><strong>{current.name}</strong><button type="button" onClick={() => setFloating((values) => values.filter((value) => value.id !== item.id))}><X size={13} /></button></header>
+              <section
+                className={`lrp-float ${current.kind} ${item.locked ? 'is-locked' : ''}`}
+                key={item.id}
+                style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.z }}
+                onPointerDown={() => setFloating((values) => values.map((value) => value.id === item.id
+                  ? { ...value, z: Math.max(...values.map((entry) => entry.z), 20) + 1 }
+                  : value))}
+              >
+                <header onPointerDown={(event) => startMove(event, item)}>
+                  <strong>{current.name}</strong>
+                  <button
+                    type="button"
+                    aria-label={item.locked ? '解除锁定' : '锁定资料窗'}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => setFloating((values) => values.map((value) => value.id === item.id
+                      ? { ...value, locked: !value.locked }
+                      : value))}
+                  >{item.locked ? <Lock size={12} /> : <Unlock size={12} />}</button>
+                  <button
+                    type="button"
+                    aria-label="收回资料窗"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => setFloating((values) => values.filter((value) => value.id !== item.id))}
+                  ><X size={13} /></button>
+                </header>
                 <div><AssetPreview item={current} /></div>
-                <button type="button" aria-label="调整大小" onPointerDown={(event) => startMove(event, item, true)} />
+                {!item.locked && <button type="button" aria-label="调整大小" onPointerDown={(event) => startMove(event, item, true)} />}
               </section>
             );
           })}

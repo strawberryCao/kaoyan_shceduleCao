@@ -462,13 +462,15 @@ function noteAssetPath(value) {
   return { repoPath, prefix, extension };
 }
 
-export async function getNoteFile(env, path) {
+export async function getNoteFile(env, path, options = {}) {
   const asset = noteAssetPath(path);
-  const image = (EXTENSION_MIME.get(asset.extension) || '').startsWith('image/');
+  const mime = EXTENSION_MIME.get(asset.extension) || 'application/octet-stream';
+  const image = mime.startsWith('image/');
+  const inline = image || (options.preview === true && asset.extension === 'pdf');
   return publicFileResponse(env, asset.repoPath, {
     prefix: asset.prefix,
-    contentType: EXTENSION_MIME.get(asset.extension) || 'application/octet-stream',
-    contentDisposition: image ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(asset.repoPath.split('/').at(-1) || 'material')}`,
+    contentType: mime,
+    contentDisposition: inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(asset.repoPath.split('/').at(-1) || 'material')}`,
     cacheControl: 'private, max-age=31536000, immutable',
   });
 }

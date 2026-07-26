@@ -264,7 +264,9 @@ async function handleApi(request, env, pathname, url, ctx) {
     const result = await saveMaterialNote(env, await readJson(request, 24 * 1024 * 1024));
     return json(result, result.idempotentReplay ? 200 : 201);
   }
-  if (request.method === 'GET' && pathname === '/note-file') return getNoteFile(env, url.searchParams.get('path'));
+  if (request.method === 'GET' && pathname === '/note-file') {
+    return getNoteFile(env, url.searchParams.get('path'), { preview: url.searchParams.get('preview') === '1' });
+  }
   if (pathname === '/notes/reveal') unavailable('Windows file reveal');
   if (pathname === '/organizer/run') unavailable('AI note organization');
   if (request.method === 'GET' && pathname === '/organizer/status') {
@@ -347,10 +349,11 @@ export async function handleRequest(request, env, ctx) {
   if (pathname !== null) {
     // Static application files stay loadable, but all data/configuration APIs
     // require the device-persisted password. The image endpoint remains a
-    // narrow exception because ordinary <img> requests cannot attach the
-    // authorization header stored by the application fetch wrapper.
-    const publicImageRead = request.method === 'GET' && pathname === '/note-file';
-    if (!publicImageRead) {
+    // narrow exception because ordinary image/PDF frames cannot attach the
+    // authorization header stored by the application fetch wrapper. The path
+    // remains restricted to stored note assets by getNoteFile().
+    const publicStoredAssetRead = request.method === 'GET' && pathname === '/note-file';
+    if (!publicStoredAssetRead) {
       const authResponse = await requireBasicAuth(request, env);
       if (authResponse) return authResponse;
     }
