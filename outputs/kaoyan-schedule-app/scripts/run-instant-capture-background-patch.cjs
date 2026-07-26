@@ -8,6 +8,13 @@ source = source.replace(/replaceOnce\(\n  aiFile,\n  `    diagramRule:[\s\S]*?  
 if (source.includes("'keep splitting variables stable'")) {
   throw new Error('failed to remove no-op patch block');
 }
+source = source.replace(
+  "  if (sameKey) return true;\\n  const gap = current.y - (previous.y + previous.height);",
+  "  if (sameKey) return true;\\n  if (previous.questionKey && current.questionKey && previous.questionKey !== current.questionKey) return false;\\n  const gap = current.y - (previous.y + previous.height);",
+);
+if (!source.includes('previous.questionKey !== current.questionKey')) {
+  throw new Error('failed to add different-question merge guard');
+}
 fs.writeFileSync(runtimePath, source, 'utf8');
 try {
   require(runtimePath);
