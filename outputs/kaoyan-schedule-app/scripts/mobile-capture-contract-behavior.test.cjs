@@ -13,6 +13,8 @@ test('shared title policy rejects English refusals and produces deterministic Ch
   const policy = await import(pathToFileURL(path.join(root, 'shared/note-title-policy.js')).href);
   assert.equal(policy.validateNoteTitle('The image does not contain any question or problem statement').ok, false);
   assert.equal(policy.validateNoteTitle('导数定义与切线方程').ok, true);
+  assert.equal(policy.validateNoteTitle('250626-088', { allowRuleIdentifier: true, ruleValue: '250626-088' }).ok, true);
+  assert.equal(policy.validateNoteTitle('The image does not contain 250626-088', { allowRuleIdentifier: true, ruleValue: '250626-088' }).ok, false);
   assert.equal(policy.createFallbackNoteTitle({ splitIndex: 3 }), '待确认题目·第3题');
   assert.equal(policy.normalizeNoteSubject('普通笔记'), '默认文件夹');
 });

@@ -19,7 +19,8 @@ test('mobile capture persists a stable outbox job before starting remote upload'
   assert.match(queue, /noteUids/);
   assert.match(capture, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(capture, /await enqueueCaptureUpload\(payloads\)/);
-  assert.match(capture, /可以立即退出/);
+  assert.match(capture, /已安全保存在本机/);
+  assert.match(capture, /重新打开后会自动续传/);
   assert.doesNotMatch(capture, /正在一次性上传并归档/);
 });
 

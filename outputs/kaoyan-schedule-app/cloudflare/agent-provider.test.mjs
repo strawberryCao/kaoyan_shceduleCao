@@ -127,8 +127,10 @@ test('multi-question prompt is constrained by local task options and emits norma
   const regions = questionDetectionInternals.normalizeRegions({
     regions: [{ x: 0.1, y: 0.2, width: 0.6, height: 0.3 }],
   }, 1200, 1600, { options: { maxQuestions: 12, minimumRegionPercent: 3.5, edgePaddingPercent: 0 } });
-  assert.equal(regions.length, 1);
-  assert.equal(regions[0].x, 0.1);
+  assert.equal(regions.accepted.length, 1);
+  assert.equal(regions.accepted[0].x, 0.1);
+  assert.equal(regions.rejected.length, 0);
+  assert.equal(regions.candidateCount, 1);
 });
 
 test('workflow contract is required for public naming and splitting tasks', () => {

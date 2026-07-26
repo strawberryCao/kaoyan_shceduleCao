@@ -26,12 +26,14 @@ export function validateNoteTitle(value, options = {}) {
   const titleMinLength = Math.max(4, Math.min(40, Number(options.titleMinLength) || 8));
   const titleMaxLength = Math.max(titleMinLength, Math.min(80, Number(options.titleMaxLength) || 22));
   const title = sanitizeNoteTitle(value, titleMaxLength);
+  const ruleValue = sanitizeNoteTitle(options.ruleValue, 80);
+  const ruleMatched = options.allowRuleIdentifier === true && Boolean(ruleValue) && title.includes(ruleValue);
   if (!title) return { ok: false, title, problem: '标题为空' };
-  if (title.length < Math.min(4, titleMinLength)) return { ok: false, title, problem: '标题过短' };
+  if (title.length < (ruleMatched ? 2 : Math.min(4, titleMinLength))) return { ok: false, title, problem: '标题过短' };
   const chinese = title.match(/[\u3400-\u9fff]/gu)?.length || 0;
   const letters = title.match(/[A-Za-z]/g)?.length || 0;
   if (REFUSAL_PATTERN.test(title)) return { ok: false, title, problem: '标题包含模型拒答或英文说明句' };
-  if (chinese < 2 || (letters > 10 && letters > chinese * 1.5)) {
+  if (!ruleMatched && (chinese < 2 || (letters > 10 && letters > chinese * 1.5))) {
     return { ok: false, title, problem: '标题必须以中文为主，不能输出英文句子' };
   }
   if (options.rejectGenericTitle !== false && GENERIC_TITLE_PATTERN.test(title)) {

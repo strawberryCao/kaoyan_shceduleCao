@@ -104,8 +104,12 @@ function applyNamingRuleTemplate(rule, value, subject, aiTitle) {
   return applySharedNamingRuleTemplate(rule, value, subject, aiTitle);
 }
 
-function titleProblem(title, settings) {
-  return validateNoteTitle(title, settings.options || {}).problem;
+function titleProblem(title, settings, ruleValue = '') {
+  return validateNoteTitle(title, {
+    ...(settings.options || {}),
+    allowRuleIdentifier: Boolean(ruleValue),
+    ruleValue,
+  }).problem;
 }
 
 async function generateTitle(env, image, settings, remark, repairReason = '', captureType = '手机单题拍照') {
@@ -137,7 +141,7 @@ async function generateTitle(env, image, settings, remark, repairReason = '', ca
   return {
     title,
     subject,
-    problem: titleProblem(title, settings),
+    problem: titleProblem(title, settings, matchedRule && ruleValue ? ruleValue : ''),
     provider: response.provider,
     model: response.model,
     configurationHash: response.configurationHash,

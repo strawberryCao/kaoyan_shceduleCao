@@ -941,7 +941,7 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
     const title = matchedRule && ruleValue
       ? applyNamingRuleTemplate(matchedRule, ruleValue, subject, aiTitle)
       : aiTitle;
-    const titleValidation = validateNoteTitle(title, { ...options, titleMinLength, titleMaxLength });
+    const titleValidation = validateNoteTitle(title, { ...options, titleMinLength, titleMaxLength, allowRuleIdentifier: Boolean(matchedRule && ruleValue), ruleValue });
     if (!titleValidation.ok) {
       const error = new Error('AI 标题未通过统一校验：' + titleValidation.problem);
       error.code = 'AI_NAMING_INVALID';
