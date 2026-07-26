@@ -1,0 +1,125 @@
+name: Apply instant capture background flow
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply-and-verify:
+    if: github.head_ref == 'agent/instant-capture-background-split'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out patch branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/instant-capture-background-split
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Apply instant capture patch
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/run-instant-capture-background-patch.cjs
+
+      - name: Install dependencies without mutation hooks
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm ci --ignore-scripts
+
+      - name: Run focused instant capture behavior test
+        id: focused
+        continue-on-error: true
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set +e
+          node scripts/instant-capture-background-flow.test.cjs > "$RUNNER_TEMP/focused.log" 2>&1
+          code=$?
+          cat "$RUNNER_TEMP/focused.log"
+          exit $code
+
+      - name: Report focused test failure
+        if: steps.focused.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync(process.env.RUNNER_TEMP + '/focused.log', 'utf8').slice(-12000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### 专项测试失败\n\n```text\n' + log.replace(/```/g, '`` `') + '\n```',
+            });
+            core.setFailed('Focused instant capture behavior test failed');
+
+      - name: Run complete Node regression suite
+        id: regression
+        continue-on-error: true
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set +e
+          : > "$RUNNER_TEMP/regression.log"
+          code=0
+          for file in scripts/*.test.cjs cloudflare/*.test.mjs; do
+            echo "===== $file =====" >> "$RUNNER_TEMP/regression.log"
+            node "$file" >> "$RUNNER_TEMP/regression.log" 2>&1
+            current=$?
+            if [ $current -ne 0 ]; then code=$current; fi
+          done
+          tail -n 240 "$RUNNER_TEMP/regression.log"
+          exit $code
+
+      - name: Report complete regression failure
+        if: steps.regression.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = fs.readFileSync(process.env.RUNNER_TEMP + '/regression.log', 'utf8');
+            const relevant = log.split('\n').filter((line) => /^(=====|not ok|AssertionError|Error:|\s+at |\s+actual:|\s+expected:|\s+code:|\s+operator:|\s+diff:)/.test(line)).join('\n').slice(-14000);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '### 全量回归失败\n\n```text\n' + relevant.replace(/```/g, '`` `') + '\n```',
+            });
+            core.setFailed('Complete Node regression suite failed');
+
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+
+      - name: Remove temporary executor and workflow
+        run: |
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-instant-capture-background-split.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/run-instant-capture-background-patch.cjs
+          rm -f .github/workflows/apply-instant-capture-background-split.yml
+
+      - name: Commit verified source only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "feat: make capture instant and split multiple questions in background"
+          git push origin HEAD:agent/instant-capture-background-split
