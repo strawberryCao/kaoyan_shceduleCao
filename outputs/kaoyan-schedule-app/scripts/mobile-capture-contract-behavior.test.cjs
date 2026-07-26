@@ -21,7 +21,7 @@ test('shared title policy rejects English refusals and produces deterministic Ch
 
 test('cloud and LAN naming both consume the same title-policy implementation', () => {
   assert.match(read('cloudflare/rename-job.js'), /shared\/note-title-policy\.js/);
-  assert.match(read('scripts/note-server.cjs'), /import\('..\/shared\/note-title-policy\.js'\)/);
+  assert.match(read('scripts/note-server.cjs'), /import\('\.\.\/shared\/note-title-policy\.js'\)/);
   assert.match(read('cloudflare/rename-job.js'), /createFallbackNoteTitle/);
   assert.match(read('scripts/note-server.cjs'), /validateNoteTitle/);
 });
@@ -38,12 +38,18 @@ test('question region quality gate removes page-footer fragments but keeps norma
   assert.match(result.rejected[0].reason, /页脚|宽高比/);
 });
 
-test('mobile multi-question save carries batch subject and remark and reports local-only persistence truthfully', () => {
+test('mobile multi-question capture persists batch context before any AI or network work', () => {
   const app = read('src/components/NoteDropApp.tsx');
+  const jobs = read('src/utils/noteBackgroundJobs.ts');
   const queue = read('src/utils/captureUploadQueue.ts');
-  assert.match(app, /subject: batchSubject/);
-  assert.match(app, /remark: batchRemark/);
-  assert.match(app, /过滤.*可疑区域/);
-  assert.match(app, /重新打开后会自动续传/);
+  const start = app.indexOf('const startMultiQuestion = async () =>');
+  const end = app.indexOf('const confirmBatchCrop', start);
+  const block = app.slice(start, end);
+  assert.match(block, /subject: batchSubject/);
+  assert.match(block, /remark: batchRemark/);
+  assert.match(block, /await enqueueMultiQuestionJob/);
+  assert.match(block, /整页原图已安全保存在本机/);
+  assert.match(jobs, /await putJob\(job\)/);
+  assert.match(jobs, /window\.setTimeout\(\(\) => \{ void processJob\(id\); \}, 0\)/);
   assert.match(queue, /重新打开页面会自动续传/);
 });
