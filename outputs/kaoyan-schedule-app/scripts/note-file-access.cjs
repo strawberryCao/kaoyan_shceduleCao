@@ -77,6 +77,11 @@ function resolveNoteFile(notesRoot, requestedPath, options = {}) {
   return { filePath, mime, extension, inline: mime.startsWith('image/') };
 }
 
+function noteFileContentDisposition(resolved, fileName, preview = false) {
+  const inline = resolved.inline || (preview === true && resolved.extension === '.pdf');
+  return inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+}
+
 function resolveNoteImage(notesRoot, requestedPath) {
   const resolved = resolveNoteFile(notesRoot, requestedPath);
   if (!resolved.inline) {
@@ -144,6 +149,7 @@ module.exports = {
   IMAGE_MIME_BY_EXT,
   NOTE_MIME_BY_EXT,
   isInside,
+  noteFileContentDisposition,
   resolveNoteFile,
   resolveNoteImage,
   revealNoteFile,

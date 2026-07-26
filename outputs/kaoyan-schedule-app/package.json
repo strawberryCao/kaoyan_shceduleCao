@@ -38,6 +38,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.0",
+    "docx": "^9.7.1",
     "heic-to": "^1.5.2",
     "lucide-react": "^0.468.0",
     "react": "^18.3.1",

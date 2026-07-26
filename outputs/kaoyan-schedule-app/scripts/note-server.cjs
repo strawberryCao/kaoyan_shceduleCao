@@ -29,7 +29,7 @@ const {
   rebuildMetadataIndex,
   recoverMoves,
 } = require('./organize-notes.cjs');
-const { resolveNoteFile, revealNoteImage } = require('./note-file-access.cjs');
+const { noteFileContentDisposition, resolveNoteFile, revealNoteImage } = require('./note-file-access.cjs');
 const {
   atomicWriteJson,
   ensureKnowledgePoint,
@@ -246,7 +246,10 @@ function isLanProxyRequest(req) {
 function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchParams()) {
   const queryKeys = [...searchParams.keys()];
   if (method === 'GET' && pathname === '/note-file') {
-    return queryKeys.length === 1 && queryKeys[0] === 'path' && Boolean(searchParams.get('path'));
+    const allowedKeys = new Set(['path', 'preview']);
+    return queryKeys.every((key) => allowedKeys.has(key))
+      && Boolean(searchParams.get('path'))
+      && (searchParams.get('preview') === null || searchParams.get('preview') === '1');
   }
   if (queryKeys.length > 0) return false;
   if (method === 'GET' && pathname === '/canvas-projects') return true;
@@ -3100,12 +3103,14 @@ const server = http.createServer(async (req, res) => {
       const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));
       const stat = fs.statSync(file.filePath);
       const fileName = path.basename(file.filePath);
+      const preview = requestUrl.searchParams.get('preview') === '1';
       res.writeHead(200, {
         'Content-Type': file.mime,
         'Content-Length': stat.size,
-        'Content-Disposition': file.inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'Content-Disposition': noteFileContentDisposition(file, fileName, preview),
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
+        'Cross-Origin-Resource-Policy': 'same-origin',
       });
       fs.createReadStream(file.filePath).pipe(res);
       return;
