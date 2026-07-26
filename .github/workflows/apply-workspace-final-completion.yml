@@ -1,0 +1,76 @@
+name: Apply workspace final completion
+
+on:
+  pull_request:
+    branches: [fix/learning-detail-title-latex]
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: workspace-final-completion-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.head_ref == 'integration/complete-learning-capture-workspace'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integration/complete-learning-capture-workspace
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Apply final workspace patch
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/apply-workspace-final-completion.cjs
+
+      - name: Install DOCX browser renderer
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm install mammoth --save --ignore-scripts
+
+      - name: Run focused completion tests
+        working-directory: outputs/kaoyan-schedule-app
+        run: node scripts/workspace-final-completion.test.cjs
+
+      - name: Run all Node tests
+        working-directory: outputs/kaoyan-schedule-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/*.test.cjs; do node "$file"; done
+          for file in cloudflare/*.test.mjs; do node "$file"; done
+
+      - name: Build production app
+        working-directory: outputs/kaoyan-schedule-app
+        run: npm run build
+
+      - name: Dry-run Cloudflare Worker
+        working-directory: outputs/kaoyan-schedule-app
+        run: npx wrangler deploy --dry-run
+
+      - name: Remove temporary construction files
+        run: |
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-workspace-final-completion.cjs
+          rm -f .github/workflows/apply-workspace-final-completion.yml
+          rm -f .github/workflows/integrate-complete-learning-workspace.yml
+
+      - name: Commit verified final source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: complete attachment recovery and document workspace" || exit 0
+          git push origin HEAD:integration/complete-learning-capture-workspace
