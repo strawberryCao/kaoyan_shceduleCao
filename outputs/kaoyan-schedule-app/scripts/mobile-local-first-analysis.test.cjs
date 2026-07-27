@@ -20,11 +20,13 @@ test('mobile capture persists stable single and multi-question jobs before remot
   assert.match(queue, /noteUids/);
   assert.match(capture, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(capture, /await enqueueMultiQuestionJob\(sourceImage\.src/);
-  assert.match(capture, /图片已安全保存在本机/);
-  assert.match(capture, /整页原图已安全保存在本机/);
+  assert.match(capture, /图片已加入可靠上传队列/);
+  assert.match(capture, /setStatus\(job\.message/);
   assert.match(background, /await putJob\(job\)/);
+  assert.match(background, /await resumeOne\(job\.id\)/);
   assert.match(background, /resumeMultiQuestionJobs/);
-  assert.match(background, /await enqueueCaptureUpload\(payloads\)/);
+  assert.match(background, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.doesNotMatch(background, /detectQuestionRegions|cropManyImages|enqueueCaptureUpload/);
   assert.doesNotMatch(capture.slice(capture.indexOf('const startMultiQuestion'), capture.indexOf('const confirmBatchCrop')), /detectQuestionRegions/);
 });
 

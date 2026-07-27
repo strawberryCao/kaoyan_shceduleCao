@@ -58,6 +58,7 @@ const LIVE_STROKE_MAX_POINTS = 4096;
 const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
+const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -72,6 +73,22 @@ const MATERIAL_MIME_BY_EXT = new Map([
 ]);
 const MATERIAL_EXT_BY_MIME = new Map([...MATERIAL_MIME_BY_EXT].map(([extension, mime]) => [mime, extension]));
 const DEFAULT_SUBJECT = '默认文件夹';
+const ALLOWED_STORED_SUBJECTS = new Set([
+  DEFAULT_SUBJECT,
+  '高等数学',
+  '线性代数',
+  '概率论',
+  '数据结构',
+  '计算机组成',
+  '操作系统',
+  '计算机网络',
+  '英语',
+  '政治',
+]);
+const normalizeStoredSubject = (value) => {
+  const candidate = String(value || '').normalize('NFKC').trim();
+  return ALLOWED_STORED_SUBJECTS.has(candidate) ? candidate : DEFAULT_SUBJECT;
+};
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const qwen = loadQwenConfig();
 const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
@@ -259,7 +276,9 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
-  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-material-note')) return true;
+  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/capture-batches')) return true;
+  if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
+  if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
   if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
   if (method === 'POST' && pathname === '/learning-data/note-review-actions') return true;
@@ -674,10 +693,8 @@ function persistNoteReviewAction(action, snapshot) {
   const proposed = actionType === 'accept' && saved.metadata.organizer?.proposed
     ? saved.metadata.organizer.proposed
     : {};
-  const subject = sanitizeSegment(
+  const subject = normalizeStoredSubject(
     patch.subject || proposed.subject || currentLearning.subject || saved.metadata.subject,
-    DEFAULT_SUBJECT,
-    60,
   );
   const incomingPath = Array.isArray(patch.knowledgePath)
     ? patch.knowledgePath
@@ -1407,7 +1424,7 @@ async function runAiNamingJob(noteUid) {
   try {
   const latest = readSaveReceipt(noteUid);
   if (!latest) return;
-  const requestedSubject = sanitizeSegment(latest.metadata.requestedSubject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
+  const requestedSubject = normalizeStoredSubject(latest.metadata.requestedSubject);
   const currentReviewStatus = normalizedReviewStatus(latest.metadata.learning || {});
   const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
   const storedDecisionRevision = Number(latest.metadata.learning?.decisionRevision);
@@ -1415,10 +1432,10 @@ async function runAiNamingJob(noteUid) {
     ? storedDecisionRevision
     : keepsHumanDecision ? 1 : 0;
   const subject = keepsHumanDecision
-    ? sanitizeSegment(latest.metadata.subject, DEFAULT_SUBJECT, 60)
+    ? normalizeStoredSubject(latest.metadata.subject)
     : naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
       ? requestedSubject
-      : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
+      : normalizeStoredSubject(naming.subject);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -1630,9 +1647,7 @@ function resumePendingAiNamingJobs() {
   return resumed;
 }
 
-async function handleSave(req, res) {
-  const raw = await readBody(req);
-  const payload = JSON.parse(raw || '{}');
+function saveNotePayload(payload) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const existing = readSaveReceipt(noteUid);
   if (existing) {
@@ -1640,14 +1655,14 @@ async function handleSave(req, res) {
     if (response.aiStatus === 'complete' && aiNamingJobs.has(noteUid)) {
       response.aiStatus = 'pending';
     }
-    sendJson(res, 200, response);
     if (existing.metadata.naming?.status === 'pending') queueAiNamingJob(noteUid);
-    return;
+    return { status: 200, body: response };
   }
 
-  const requestedSubject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
+  const requestedSubject = normalizeStoredSubject(payload.subject);
   const kind = payload.kind === 'canvas' ? 'canvas' : 'single';
   const remark = typeof payload.remark === 'string' ? payload.remark : '';
+  const isCaptureOriginal = payload.sourceType === 'multi-capture-original';
   const canvasProjectId = kind === 'canvas' && typeof payload.canvasProjectId === 'string'
     ? assertCanvasId(payload.canvasProjectId)
     : null;
@@ -1655,9 +1670,9 @@ async function handleSave(req, res) {
   const fallback = makeFallbackName({
     kind,
     remark,
-    subject: requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : guessSubjectFromText(remark),
+    subject: isCaptureOriginal || requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : guessSubjectFromText(remark),
   });
-  const subject = sanitizeSegment(fallback.subject, DEFAULT_SUBJECT, 24);
+  const subject = normalizeStoredSubject(fallback.subject);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -1684,6 +1699,12 @@ async function handleSave(req, res) {
     fileName: filename,
     filePath,
     mime: image.mime,
+    sourceType: typeof payload.sourceType === 'string' ? payload.sourceType.slice(0, 80) : '',
+    sourceBatchId: typeof payload.sourceBatchId === 'string' ? payload.sourceBatchId.slice(0, 128) : '',
+    sourceSplitIndex: Number.isInteger(payload.sourceSplitIndex) ? payload.sourceSplitIndex : null,
+    tags: Array.isArray(payload.tags)
+      ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))].slice(0, 24)
+      : [],
     extracted,
     learning: {
       noteUid,
@@ -1695,15 +1716,15 @@ async function handleSave(req, res) {
       }),
     },
     naming: {
-      status: 'pending',
+      status: isCaptureOriginal ? 'complete' : 'pending',
       provider: null,
       model: null,
-      reason: 'local_first',
+      reason: isCaptureOriginal ? 'capture_batch_original' : 'local_first',
       error: null,
       requestedAt: createdAt,
     },
     classifier: {
-      status: 'saved_pending_ai',
+      status: isCaptureOriginal ? 'pending_capture_processing' : 'saved_pending_ai',
       provider: null,
       scheduledAt: 'every_72_hours',
     },
@@ -1731,8 +1752,142 @@ async function handleSave(req, res) {
     filePath,
     fileName: filename,
   };
-  sendJson(res, 202, makeSaveResponse(saved, { learningSyncError }));
-  queueAiNamingJob(noteUid);
+  if (!isCaptureOriginal) queueAiNamingJob(noteUid);
+  return { status: 202, body: makeSaveResponse(saved, { learningSyncError }) };
+}
+
+async function handleSave(req, res) {
+  const raw = await readBody(req);
+  const payload = JSON.parse(raw || '{}');
+  const result = saveNotePayload(payload);
+  sendJson(res, result.status, result.body);
+}
+
+async function handleSaveBatch(req, res) {
+  const raw = await readBody(req, 32 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  if (!Array.isArray(payload.notes) || payload.notes.length < 1 || payload.notes.length > 40) {
+    throw new SyntaxError('notes 必须包含 1 到 40 条图片记录');
+  }
+  const results = payload.notes.map((note) => saveNotePayload(note));
+  sendJson(res, 202, {
+    ok: true,
+    notes: results.map((result) => result.body),
+    learningData: learningData.getSnapshot(),
+    idempotentReplay: results.every((result) => result.body.idempotentReplay === true),
+  });
+}
+
+function captureJobPath(jobId) {
+  return path.join(CAPTURE_JOBS_ROOT, `${jobId}.json`);
+}
+
+function readCaptureJob(jobId) {
+  const job = readJson(captureJobPath(jobId), null);
+  return job?.jobId === jobId ? job : null;
+}
+
+function writeCaptureJob(job) {
+  fs.mkdirSync(CAPTURE_JOBS_ROOT, { recursive: true });
+  atomicWriteJson(captureJobPath(job.jobId), job);
+  return job;
+}
+
+function captureRuntimeHashes() {
+  const configuration = fs.existsSync(AI_PROVIDER_CONFIG_PATH)
+    ? fs.readFileSync(AI_PROVIDER_CONFIG_PATH)
+    : Buffer.from('{}');
+  const workflowPath = path.join(__dirname, 'agent-workflow-contracts.cjs');
+  const workflow = fs.existsSync(workflowPath) ? fs.readFileSync(workflowPath) : Buffer.from('');
+  return {
+    configurationHash: crypto.createHash('sha256').update(configuration).digest('hex'),
+    workflowHash: crypto.createHash('sha256').update(workflow).digest('hex'),
+  };
+}
+
+async function handleLocalCaptureBatch(req, res) {
+  const raw = await readBody(req, 16 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  const batchId = String(payload.batchId || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/.test(batchId)) {
+    throw new SyntaxError('batchId 格式无效');
+  }
+  const image = decodeDataUrl(payload.imageDataUrl);
+  const imageHash = crypto.createHash('sha256').update(image.buffer).digest('hex');
+  const jobId = `local-${crypto.createHash('sha256').update(`${batchId}\0${imageHash}`).digest('hex').slice(0, 40)}`;
+  const existing = readCaptureJob(jobId);
+  if (existing) {
+    sendJson(res, 200, {
+      ok: true,
+      accepted: false,
+      jobId,
+      entryId: existing.entryId,
+      job: existing,
+    });
+    return;
+  }
+
+  const entryId = `capture-${imageHash.slice(0, 32)}`;
+  const saved = saveNotePayload({
+    imageDataUrl: payload.imageDataUrl,
+    noteUid: entryId,
+    kind: 'single',
+    subject: normalizeStoredSubject(payload.subject),
+    remark: typeof payload.remark === 'string' ? payload.remark : '',
+    sourceType: 'multi-capture-original',
+    sourceBatchId: batchId,
+    tags: ['AI多题原图', '待处理'],
+  });
+  const now = new Date().toISOString();
+  const hashes = captureRuntimeHashes();
+  const job = writeCaptureJob({
+    jobId,
+    batchId,
+    entryId,
+    assetHash: imageHash,
+    status: 'needs_review',
+    progress: 10,
+    message: '整页原图已可靠写入本地；局域网模式保留为待处理，可在桌面端手工框选或同步后由公网后台处理',
+    error: '',
+    resultEntryIds: [],
+    configurationHash: hashes.configurationHash,
+    workflowHash: hashes.workflowHash,
+    createdAt: now,
+    updatedAt: now,
+    saveStatus: saved.status,
+  });
+  sendJson(res, 202, { ok: true, accepted: true, jobId, entryId, job });
+}
+
+function handleLocalCaptureJob(req, res, pathname) {
+  const retryMatch = /^\/jobs\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/retry$/.exec(pathname);
+  const readMatch = /^\/jobs\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(pathname);
+  const match = retryMatch || readMatch;
+  if (!match) return false;
+  const job = readCaptureJob(match[1]);
+  if (!job) {
+    sendJson(res, 404, { ok: false, error: '多题任务不存在' });
+    return true;
+  }
+  if (retryMatch && req.method === 'POST') {
+    const hashes = captureRuntimeHashes();
+    const next = writeCaptureJob({
+      ...job,
+      status: 'needs_review',
+      message: '原图仍安全保留；局域网自动裁剪不可用，请手工框选或等待同步到公网后台',
+      error: '',
+      configurationHash: hashes.configurationHash,
+      workflowHash: hashes.workflowHash,
+      updatedAt: new Date().toISOString(),
+    });
+    sendJson(res, 202, { ok: true, accepted: true, job: next });
+    return true;
+  }
+  if (readMatch && req.method === 'GET') {
+    sendJson(res, 200, { ok: true, job });
+    return true;
+  }
+  return false;
 }
 
 function materialReceiptPath(noteUid) {
@@ -1834,9 +1989,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -2040,9 +2195,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -2246,9 +2401,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -3099,6 +3254,7 @@ const server = http.createServer(async (req, res) => {
     if (await handleCanvasProjectRoute(req, res, pathname)) return;
     if (await handleLearningDataRoute(req, res, pathname)) return;
     if (await handleOrganizerRoute(req, res, pathname)) return;
+    if (handleLocalCaptureJob(req, res, pathname)) return;
 
     if (req.method === 'GET' && pathname === '/note-file') {
       const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));
@@ -3238,6 +3394,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'POST' && pathname === '/capture-batches') {
+      await handleLocalCaptureBatch(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/save-note-batch') {
+      await handleSaveBatch(req, res);
+      return;
+    }
+
     if (req.method === 'POST' && pathname === '/save-note') {
       await handleSave(req, res);
       return;
@@ -3310,3 +3476,15 @@ server.listen(PORT, '127.0.0.1', () => {
   const resumedJobs = resumePendingAiNamingJobs();
   if (resumedJobs > 0) console.log(`Resumed ${resumedJobs} pending AI naming job(s).`);
 });
+
+module.exports = {
+  server,
+  async close() {
+    reviewSync.stop();
+    server.closeAllConnections?.();
+    if (!server.listening) return;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  },
+};

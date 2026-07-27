@@ -27,8 +27,9 @@ test('single, multi-question and resulting image batches all use durable idempot
   assert.match(source, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(source, /await enqueueMultiQuestionJob\(sourceImage\.src/);
   assert.match(jobs, /await putJob\(job\)/);
-  assert.match(jobs, /await enqueueCaptureUpload\(payloads\)/);
-  assert.match(jobs, /multi_\$\{batchToken\}_\$\{index \+ 1\}/);
+  assert.match(jobs, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(jobs, /serverJobId/);
+  assert.doesNotMatch(jobs, /cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
   assert.match(queue, /noteUids/);
   assert.match(queue, /UPLOAD_LEASE_MS/);
   assert.match(queue, /上次上传被系统中断/);

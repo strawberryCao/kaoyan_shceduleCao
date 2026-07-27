@@ -179,7 +179,7 @@ function normalizeLearningItems(value) {
   }));
 }
 const LEARNING_ATTACHMENT_KINDS = new Set(['image', 'pdf', 'word', 'html', 'file']);
-const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge', 'method']);
 
 function attachmentKind(name, mimeType) {
   const mime = asString(mimeType).toLowerCase();

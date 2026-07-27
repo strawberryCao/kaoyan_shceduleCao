@@ -39,7 +39,6 @@ export default function App() {
   const isConsoleMode = params.get('console') === '1';
   const isNotesMode = params.get('notes') === '1';
   const isNoteAppMode = params.get('noteApp') === '1';
-  const isElectronNoteAppMode = isNoteAppMode && window.kaoyanDesktop?.isElectron === true;
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
   const workspaceNoteUid = params.get('workspaceNote')?.trim() || '';
@@ -60,9 +59,9 @@ export default function App() {
     return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
   }
 
-  // The compact capture view is available in Electron and in the authenticated
-  // Cloudflare app. Ordinary local browser routes keep the established fallback.
-  if (isElectronNoteAppMode || (isNoteAppMode && IS_CLOUD_RUNTIME)) {
+  // The same capture route serves Electron, LAN browsers and Cloudflare.
+  // The component chooses the compact mobile flow from the actual viewport.
+  if (isNoteAppMode) {
     return deferred(<NoteDropApp />);
   }
 

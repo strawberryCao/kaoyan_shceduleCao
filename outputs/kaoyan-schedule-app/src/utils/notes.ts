@@ -23,7 +23,7 @@ export interface MaterialFilePayload {
   dataUrl: string;
 }
 
-export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge' | 'method';
 
 export interface SaveMaterialPayload {
   noteUid?: string;
@@ -111,6 +111,25 @@ export interface AiJobResponse {
   accepted?: boolean;
   replayed?: boolean;
   job: AiBackgroundJob;
+}
+
+export interface CaptureBatchJob {
+  jobId: string;
+  status: 'queued' | 'waiting_configuration' | 'processing' | 'completed' | 'configuration_mismatch' | 'needs_review' | 'waiting_quota' | 'failed_retryable';
+  progress: number;
+  message: string;
+  error: string;
+  resultEntryIds: string[];
+  configurationHash: string;
+  workflowHash: string;
+}
+
+export interface CaptureBatchResponse {
+  ok: boolean;
+  accepted: boolean;
+  jobId: string;
+  entryId: string;
+  job: CaptureBatchJob;
 }
 
 const isLoopbackHostname = (hostname: string): boolean => (
@@ -223,6 +242,36 @@ export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promis
     body: JSON.stringify({ ...payload, files, noteUid }),
   }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
 };
+
+export const createCaptureBatch = async (
+  imageDataUrl: string,
+  options: { batchId: string; subject?: string; remark?: string },
+): Promise<CaptureBatchResponse> => fetchJsonWithTimeout<CaptureBatchResponse>(`${NOTE_SERVER_URL}/capture-batches`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    imageDataUrl,
+    batchId: options.batchId,
+    subject: options.subject || '默认文件夹',
+    remark: options.remark || '',
+  }),
+}, 90_000);
+
+export const getCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; job: CaptureBatchJob }> => (
+  fetchJsonWithTimeout<{ ok: boolean; job: CaptureBatchJob }>(
+    `${NOTE_SERVER_URL}/jobs/${encodeURIComponent(jobId)}`,
+    { method: 'GET' },
+    15_000,
+  )
+);
+
+export const retryCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }> => (
+  fetchJsonWithTimeout<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }>(
+    `${NOTE_SERVER_URL}/jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    20_000,
+  )
+);
 
 const detectQuestionRegionsOnce = async (
   imageDataUrl: string,

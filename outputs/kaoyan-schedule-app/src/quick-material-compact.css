@@ -1,0 +1,40 @@
+.quick-material-composer.is-compact {
+  background: #f0ece3;
+}
+
+.quick-material-composer.is-compact .quick-material-form {
+  max-width: 620px;
+}
+
+.quick-material-composer.is-compact .quick-material-page {
+  padding: 24px 22px 28px;
+  border: 1px solid #ded6c7;
+  border-radius: 4px;
+  background: #fffdf7;
+  box-shadow: 0 8px 22px rgba(75, 61, 39, 0.08);
+}
+
+.quick-material-composer.is-compact .quick-material-page textarea {
+  min-height: 46vh;
+  padding: 16px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 31px, #eee8dc 32px);
+  box-shadow: none;
+  line-height: 32px;
+  white-space: pre-wrap;
+}
+
+.quick-material-composer.is-compact .quick-material-files.is-secondary {
+  border-style: dashed;
+  background: rgba(255, 253, 247, 0.7);
+}
+
+.quick-material-composer.is-compact .quick-material-files.is-secondary > div {
+  display: none;
+}
+
+.quick-material-composer.is-compact .quick-material-form > footer .primary {
+  width: 100%;
+  min-height: 48px;
+}

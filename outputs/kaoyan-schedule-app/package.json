@@ -24,6 +24,7 @@
     "review:status": "node scripts/review-github-sync.cjs status",
     "test:gemini": "node scripts/test-gemini.cjs",
     "test:kimi": "node scripts/test-kimi.cjs",
+    "test:e2e": "npm run build && playwright test",
     "build": "node scripts/build-with-diagnostic.cjs",
     "cloudflare:types": "wrangler types",
     "cloudflare:dev": "npm run build && wrangler dev",
@@ -47,6 +48,7 @@
     "vite": "^5.4.11"
   },
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "concurrently": "^9.1.0",

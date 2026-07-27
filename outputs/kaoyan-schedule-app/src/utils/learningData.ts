@@ -3,7 +3,7 @@ import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 import { fetchWithTimeout } from './localService';
 
 export type LearningAttachmentKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
-export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge' | 'method';
 
 export interface LearningAttachment {
   id: string;
@@ -306,7 +306,7 @@ const normalizeReviewHistory = (value: unknown): LearningReviewEntry[] => Array.
     }))
   : [];
 const LEARNING_ATTACHMENT_KINDS = new Set<LearningAttachmentKind>(['image', 'pdf', 'word', 'html', 'file']);
-const LEARNING_RECORD_FACETS = new Set<LearningRecordFacet>(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+const LEARNING_RECORD_FACETS = new Set<LearningRecordFacet>(['quick', 'mistake', 'good', 'memory', 'knowledge', 'method']);
 
 const attachmentKind = (name: string, mimeType: string): LearningAttachmentKind => {
   const mime = mimeType.toLowerCase();

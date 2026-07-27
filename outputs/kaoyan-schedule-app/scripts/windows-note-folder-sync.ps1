@@ -12,6 +12,16 @@ $script:BlockedExtensions = @(
   '.exe', '.dll', '.msi', '.msp', '.ps1', '.psm1', '.bat', '.cmd', '.vbs', '.vbe',
   '.js', '.jse', '.wsf', '.wsh', '.scr', '.com', '.lnk', '.hta', '.cpl', '.reg'
 )
+$script:AllowedSubjects = @(
+  '默认文件夹', '高等数学', '线性代数', '概率论', '数据结构',
+  '计算机组成', '操作系统', '计算机网络', '英语', '政治'
+)
+
+function Get-CanonicalSubject([string]$Value) {
+  $candidate = if ($null -eq $Value) { '' } else { $Value.Normalize([Text.NormalizationForm]::FormKC).Trim() }
+  if ($script:AllowedSubjects -contains $candidate) { return $candidate }
+  return '默认文件夹'
+}
 
 function Ensure-Directory([string]$Path) {
   if ($Path -and -not (Test-Path -LiteralPath $Path)) {
@@ -261,7 +271,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $metaDir = $_.DirectoryName
       if ([System.IO.Path]::GetFileName($metaDir) -ne '.metadata') { return }
       $subjectDir = [System.IO.Path]::GetDirectoryName($metaDir)
-      $subjectName = [System.IO.Path]::GetFileName($subjectDir)
+      $subjectName = Get-CanonicalSubject ([System.IO.Path]::GetFileName($subjectDir))
       $meta = Get-Content -LiteralPath $cloudMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
       if (-not $meta.noteUid -or -not $meta.fileName) { return }
       $imagePath = Join-Path $subjectDir ([string]$meta.fileName)
@@ -293,6 +303,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $relativeCloudMeta = Get-RelativeFilePath $LocalPath $cloudMetaPath
       Write-JsonAtomic (Join-Path $RemotePath $relativeCloudMeta) $meta
       $created = try { [DateTime]::Parse([string]$meta.createdAt) } catch { Get-Date }
+      $canonicalAssetPath = 'github://source-notes/' + (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
       $sidecar = [ordered]@{
         schemaVersion = 2
         id = [string]$meta.noteUid
@@ -303,7 +314,8 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
         title = [string]$meta.title
         remark = [string]$meta.remark
         fileName = [System.IO.Path]::GetFileName($imagePath)
-        filePath = $imagePath
+        filePath = $canonicalAssetPath
+        localPathKey = (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
         createdAt = $created.ToUniversalTime().ToString('o')
         updatedAt = [string]$meta.updatedAt
         source = [ordered]@{
@@ -332,9 +344,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $localSidecar = Join-Path $metaDir $sidecarName
       Write-JsonAtomic $localSidecar $sidecar
       $remoteSidecar = Join-Path $RemotePath (Get-RelativeFilePath $LocalPath $localSidecar)
-      $remoteSidecarValue = [ordered]@{} + $sidecar
-      $remoteSidecarValue.filePath = (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
-      Write-JsonAtomic $remoteSidecar $remoteSidecarValue
+      Write-JsonAtomic $remoteSidecar $sidecar
       [void]$touchedSubjects.Add($subjectDir)
     } catch {}
   }
@@ -347,13 +357,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
     $indexPath = Join-Path $metaDir 'metadata.json'
     Write-JsonAtomic $indexPath $items
     $remoteIndex = Join-Path $RemotePath (Get-RelativeFilePath $LocalPath $indexPath)
-    $remoteItems = @()
-    foreach ($item in $items) {
-      $copy = $item | ConvertTo-Json -Depth 30 | ConvertFrom-Json
-      if ($copy.fileName) { $copy.filePath = (Join-Path ([System.IO.Path]::GetFileName($subjectDir)) ([string]$copy.fileName)).Replace('\', '/') }
-      $remoteItems += ,$copy
-    }
-    Write-JsonAtomic $remoteIndex $remoteItems
+    Write-JsonAtomic $remoteIndex $items
   }
 }
 
@@ -361,6 +365,8 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
   $candidatePaths = @(
     'source-notes',
     'data/cloud/learning-data.json',
+    'data/v2',
+    'data/assets',
     'data/config',
     'data/deletions',
     'data/local-delete-recycle',
@@ -496,6 +502,10 @@ try {
   $nodeExecutable = [string]$nodeCommand.Source
   & $nodeExecutable $mergeScript --config $ConfigPath | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
+  $v2Adapter = Join-Path $workRoot 'v2-local-adapter.cjs'
+  if (-not (Test-Path -LiteralPath $v2Adapter)) { throw 'V2 local data adapter was not found.' }
+  & $nodeExecutable $v2Adapter --config $ConfigPath --apply | Out-Null
+  if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 entry synchronization failed.' }
   # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
   Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null

@@ -1,4 +1,5 @@
 import { getAgentRuntimeStatus } from './agent-runtime.js';
+import { handleAuthRoute, requireSession } from './auth.js';
 import { bootstrapFromR2 } from './bootstrap.js';
 import {
   listCanvasProjects,
@@ -6,7 +7,7 @@ import {
   saveCanvasProject,
   setActiveCanvas,
 } from './canvas.js';
-import { handleError, HttpError, json, readJson, requireBasicAuth } from './http.js';
+import { handleError, HttpError, json, readJson } from './http.js';
 import {
   applyReviewActions,
   createCard,
@@ -28,7 +29,9 @@ import {
   listBackgroundJobs,
   processBackgroundJob,
 } from './background-jobs.js';
-import { getNoteFile, saveMaterialNote, saveNote, saveNoteBatch } from './media.js';
+import { getNoteFile, saveNote, saveNoteBatch } from './media.js';
+import { createEntry, getAssetRecord, getEntry, listEntries, patchEntry } from './entries.js';
+import { createCaptureBatch, getCaptureJob, retryCaptureJob } from './capture-batches.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 
@@ -48,7 +51,7 @@ function unavailable(feature) {
 }
 
 function cloudDeleteDisabled() {
-  throw new HttpError(403, '云端不允许永久删除。请在 Windows 本地笔记目录执行删除。', 'CLOUD_DELETE_DISABLED');
+  throw new HttpError(405, '云端不允许发起删除。请在 Windows 本地笔记目录归档或删除。', 'CLOUD_DELETE_DISABLED');
 }
 
 function enforceWriteRequest(request, url, pathname) {
@@ -207,6 +210,32 @@ function streamQuestionDetection(env, payload) {
 async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { Allow: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' } });
   if (request.method === 'DELETE') cloudDeleteDisabled();
+  if (request.method === 'POST' && pathname === '/capture-batches') {
+    return json(await createCaptureBatch(env, await readJson(request, 28 * 1024 * 1024), ctx), 202);
+  }
+  const captureJobMatch = /^\/jobs\/([^/]+)$/.exec(pathname);
+  if (captureJobMatch && request.method === 'GET') {
+    return json(await getCaptureJob(env, decodeURIComponent(captureJobMatch[1])));
+  }
+  const captureRetryMatch = /^\/jobs\/([^/]+)\/retry$/.exec(pathname);
+  if (captureRetryMatch && request.method === 'POST') {
+    return json(await retryCaptureJob(env, decodeURIComponent(captureRetryMatch[1]), ctx), 202);
+  }
+  if (request.method === 'GET' && pathname === '/entries') return json(await listEntries(env));
+  if (request.method === 'POST' && pathname === '/entries') {
+    const result = await createEntry(env, await readJson(request, 24 * 1024 * 1024));
+    return json(result, result.idempotentReplay ? 200 : 201);
+  }
+  const entryMatch = /^\/entries\/([^/]+)$/.exec(pathname);
+  if (entryMatch && request.method === 'GET') return json(await getEntry(env, decodeURIComponent(entryMatch[1])));
+  if (entryMatch && request.method === 'PATCH') {
+    return json(await patchEntry(env, decodeURIComponent(entryMatch[1]), await readJson(request, 2 * 1024 * 1024)));
+  }
+  const assetMatch = /^\/assets\/([a-fA-F0-9]{64})$/.exec(pathname);
+  if (assetMatch && request.method === 'GET') {
+    const asset = await getAssetRecord(env, assetMatch[1]);
+    return getNoteFile(env, `github://${asset.path}`, { preview: url.searchParams.get('preview') === '1' });
+  }
   if (request.method === 'POST' && pathname === '/admin/bootstrap') {
     const force = url.searchParams.get('force') === '1';
     const rawExpected = url.searchParams.get('expectedRevision');
@@ -261,8 +290,25 @@ async function handleApi(request, env, pathname, url, ctx) {
     return json(result, result.idempotentReplay ? 200 : 202);
   }
   if (request.method === 'POST' && pathname === '/save-material-note') {
-    const result = await saveMaterialNote(env, await readJson(request, 24 * 1024 * 1024));
-    return json(result, result.idempotentReplay ? 200 : 201);
+    const payload = await readJson(request, 24 * 1024 * 1024);
+    const result = await createEntry(env, {
+      ...payload,
+      entryId: payload.noteUid,
+      body: payload.remark,
+      kind: 'quick',
+    });
+    return json({
+      ...result,
+      noteUid: result.entry.entryId,
+      attachments: result.entry.assets.map((asset) => ({
+        id: asset.assetId,
+        kind: asset.kind,
+        name: asset.originalFileName,
+        mimeType: asset.mime,
+        size: asset.size,
+        filePath: `github://${asset.path}`,
+      })),
+    }, result.idempotentReplay ? 200 : 201);
   }
   if (request.method === 'GET' && pathname === '/note-file') {
     return getNoteFile(env, url.searchParams.get('path'), { preview: url.searchParams.get('preview') === '1' });
@@ -347,25 +393,17 @@ export async function handleRequest(request, env, ctx) {
   if (pathname === '/health' && request.method === 'GET') return json(await healthPayload(env, isPublic));
 
   if (pathname !== null) {
-    // Static application files stay loadable, but all data/configuration APIs
-    // require the device-persisted password. The image endpoint remains a
-    // narrow exception because ordinary image/PDF frames cannot attach the
-    // authorization header stored by the application fetch wrapper. The path
-    // remains restricted to stored note assets by getNoteFile().
-    const publicStoredAssetRead = request.method === 'GET' && pathname === '/note-file';
-    if (!publicStoredAssetRead) {
-      const authResponse = await requireBasicAuth(request, env);
-      if (authResponse) return authResponse;
-    }
+    const authRoute = await handleAuthRoute(request, env, pathname, readJson);
+    if (authRoute) return authRoute;
+    const authResponse = await requireSession(request, env);
+    if (authResponse) return authResponse;
     enforceWriteRequest(request, url, pathname);
     if (ctx?.waitUntil) ctx.waitUntil(kickPendingJobs(env, 1));
     return handleApi(request, env, pathname, url, ctx);
   }
 
-  if (!isPublic) {
-    const authResponse = await requireBasicAuth(request, env);
-    if (authResponse) return authResponse;
-  }
+  // The application shell is public so it can render the login screen. All
+  // study data and stored files remain protected by the API session.
   return serveAsset(request, env, isPublic);
 }
 

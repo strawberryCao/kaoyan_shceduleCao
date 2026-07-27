@@ -27,7 +27,7 @@ function uniqueStrings(value) {
     : [];
 }
 const LEARNING_ATTACHMENT_KINDS = new Set(['image', 'pdf', 'word', 'html', 'file']);
-const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge', 'method']);
 
 function attachmentKind(name, mimeType) {
   const mime = text(mimeType).toLowerCase();
@@ -95,6 +95,7 @@ function normalizeFacets(value, note = {}) {
     if (tag.includes('背诵') || tag.includes('记忆')) facets.add('memory');
     if (tag.includes('速记')) facets.add('quick');
     if (tag.includes('知识')) facets.add('knowledge');
+    if (tag.includes('方法')) facets.add('method');
   }
   return [...facets];
 }
@@ -287,6 +288,10 @@ function noteDefaults(input, noteUid, timestamp) {
     attachments: normalizeAttachments(input.attachments, { filePath: primaryAttachmentPath(input.attachments), createdAt: timestamp, firstSyncedAt: timestamp }),
     facets: normalizeFacets(input.facets, input),
   };
+}
+
+export function createLegacyNoteProjection(input, noteUid, timestamp = new Date().toISOString()) {
+  return noteDefaults(input, noteUid, timestamp);
 }
 
 function cardDefaults(input, cardId, timestamp) {

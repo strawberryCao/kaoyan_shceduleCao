@@ -372,8 +372,8 @@ test('review API is durable, idempotent, conflict guarded, and never reports fil
     operationId: 'review-correct-operation-1',
     expectedDecisionRevision: 0,
     patch: {
-      subject: 'TargetSubject',
-      knowledgePath: ['TargetSubject', 'TargetPoint'],
+      subject: '高等数学',
+      knowledgePath: ['高等数学', 'TargetPoint'],
       questionType: 'Calculation',
       wrongReason: 'Manual correction',
     },
@@ -389,7 +389,7 @@ test('review API is durable, idempotent, conflict guarded, and never reports fil
     const saved = await savedResponse.json();
     assert.equal(savedResponse.status, 202);
 
-    const targetDir = path.join(notesRoot, 'TargetSubject');
+    const targetDir = path.join(notesRoot, '高等数学');
     fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(path.join(targetDir, '.metadata'), 'blocks-sidecar-directory', 'utf8');
     const failedResponse = await fetch(`${baseUrl}/learning-data/note-review-actions`, {

@@ -77,7 +77,7 @@ export function NoteDropApp() {
   const dragDepthRef = useRef(0);
   const detectionRunRef = useRef(0);
   const [isMobileCapture, setIsMobileCapture] = useState(() => (
-    IS_CLOUD_RUNTIME && typeof window.matchMedia === 'function' && window.matchMedia(mobileMediaQuery).matches
+    typeof window.matchMedia === 'function' && window.matchMedia(mobileMediaQuery).matches
   ));
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [sourceImage, setSourceImage] = useState<PendingImage | null>(null);
@@ -97,7 +97,7 @@ export function NoteDropApp() {
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
   useEffect(() => {
-    if (!IS_CLOUD_RUNTIME || typeof window.matchMedia !== 'function') return undefined;
+    if (typeof window.matchMedia !== 'function') return undefined;
     const media = window.matchMedia(mobileMediaQuery);
     const update = () => setIsMobileCapture(media.matches);
     update();
@@ -110,6 +110,7 @@ export function NoteDropApp() {
   }, [isMobileCapture]);
 
   useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
     const disposeResumer = installCaptureUploadResumer();
     const disposeSubscription = subscribeCaptureUploads(setUploadSummary);
     return () => {
@@ -322,11 +323,17 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      await enqueueCaptureUpload([payload]);
+      if (IS_CLOUD_RUNTIME) {
+        await enqueueCaptureUpload([payload]);
+      } else {
+        await saveImageReliably(payload, setStatus);
+      }
       setPendingImage(null);
       setRemark('');
       setSaved(true);
-      setStatus('图片已安全保存在本机，后台自动上传和整理；现在可以立即关闭或继续拍题');
+      setStatus(IS_CLOUD_RUNTIME
+        ? '图片已加入可靠上传队列；现在可以立即关闭或继续拍题'
+        : '图片和学习中心条目已写入本地磁盘');
       if (isMobileCapture) setMobileStep('success');
     } catch (error) {
       const message = error instanceof Error
@@ -405,7 +412,7 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      await enqueueMultiQuestionJob(sourceImage.src, {
+      const job = await enqueueMultiQuestionJob(sourceImage.src, {
         subject: batchSubject,
         remark: batchRemark,
       });
@@ -413,7 +420,7 @@ export function NoteDropApp() {
       setBatchImages([]);
       setBatchProgress('');
       setSaved(true);
-      setStatus('整页原图已安全保存在本机；AI 会在后台自动拆分并保存，无需停留或逐题确认');
+      setStatus(job.message || '整页原图已安全保存，可以离开当前页面，无需停留或逐题确认');
       setMobileStep('success');
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : '无法加入后台多题队列，请重试。');
@@ -458,9 +465,15 @@ export function NoteDropApp() {
     try {
       setSaving(true);
       setDialogError('');
-      await enqueueCaptureUpload(payloads);
+      if (IS_CLOUD_RUNTIME) {
+        await enqueueCaptureUpload(payloads);
+      } else {
+        await saveBatchReliably(payloads, setBatchProgress);
+      }
       setSaved(true);
-      setStatus(`${selected.length} 道题已安全保存在本机，后台自动上传；现在可以立即关闭`);
+      setStatus(IS_CLOUD_RUNTIME
+        ? `${selected.length} 道题已加入可靠上传队列；现在可以立即关闭`
+        : `${selected.length} 道题及学习中心条目已写入本地磁盘`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {
@@ -523,7 +536,7 @@ export function NoteDropApp() {
   );
 
   if (materialOpen) {
-    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;
+    return <QuickMaterialComposer compact={isMobileCapture} onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;
   }
 
   if (isMobileCapture) {

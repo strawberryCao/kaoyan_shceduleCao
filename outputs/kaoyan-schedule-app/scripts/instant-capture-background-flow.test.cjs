@@ -13,9 +13,15 @@ const source = (file) => fs.readFileSync(path.join(root, file), 'utf8');
   assert.match(noteDrop, /<span>速记<\/span>/);
 
   const jobs = source('src/utils/noteBackgroundJobs.ts');
-  assert.match(jobs, /cropImageDataUrl\(initial\.imageDataUrl, FULL_PAGE, 1500, 0\.72\)/);
-  assert.match(jobs, /await enqueueCaptureUpload\(payloads\)/);
-  assert.doesNotMatch(jobs, /for \(let index = 0; index < images\.length/);
+  assert.match(jobs, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(jobs, /await putJob\(job\)/);
+  assert.doesNotMatch(jobs, /cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
+
+  const capture = source('cloudflare/capture-batches.js');
+  assert.match(capture, /processCaptureBatch/);
+  assert.match(capture, /configurationHash/);
+  assert.match(capture, /workflowHash/);
+  assert.match(capture, /env\.IMAGES\.input/);
 
   const ai = await import('../cloudflare/ai.js');
   const settings = { options: { minimumRegionPercent: 3.5, minimumConfidence: 0.5, maxQuestions: 12, edgePaddingPercent: 0 } };

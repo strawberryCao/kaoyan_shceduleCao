@@ -7,9 +7,11 @@ const scriptsRoot = path.resolve(__dirname, '..');
 const installer = fs.readFileSync(path.join(scriptsRoot, 'install-note-folder-sync.ps1'), 'utf8');
 const runtime = fs.readFileSync(path.join(scriptsRoot, 'windows-note-folder-sync.ps1'), 'utf8');
 
-test('v12 installer deploys the source-complete synchronization runtime', () => {
-  assert.match(installer, /20260726-mobile-local-first-v12/);
-  assert.match(installer, /version = 12/);
+test('v13 installer deploys the source-complete V2 synchronization runtime', () => {
+  assert.match(installer, /20260727-entry-v2-v13/);
+  assert.match(installer, /version = 13/);
+  assert.match(installer, /v2-local-adapter\.cjs/);
+  assert.match(runtime, /V2 local data adapter/);
   assert.match(installer, /optionalGitPathsAreFiltered = \$true/);
   assert.match(installer, /learningDataDirection = 'bidirectional-structured-merge'/);
   assert.match(installer, /agent-workflow-contracts\.cjs/);
@@ -25,4 +27,7 @@ test('source runtime filters absent optional Git paths and merges cloud learning
   assert.match(runtime, /'data\/cloud\/learning-data\.json'/);
   assert.match(runtime, /merge-learning-data\.cjs/);
   assert.match(runtime, /Learning data merge failed/);
+  assert.match(runtime, /github:\/\/source-notes\//);
+  assert.match(runtime, /Write-JsonAtomic \$remoteSidecar \$sidecar/);
+  assert.doesNotMatch(runtime, /remoteSidecarValue|remoteItems/);
 });

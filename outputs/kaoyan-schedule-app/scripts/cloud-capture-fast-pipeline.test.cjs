@@ -19,13 +19,16 @@ test('cloud capture uses one atomic batch commit', () => {
   assert.match(store, /const tree = await Promise\.all\(files\.map/);
 });
 
-test('mobile multi-question detection keeps Safari connection alive while the background job is running', () => {
+test('legacy foreground detection remains compatible while new capture uses Workflows', () => {
   const worker = read('cloudflare/worker.js');
   const notes = read('src/utils/notes.ts');
+  const workflow = read('cloudflare/capture-workflow.js');
   assert.match(worker, /application\/x-ndjson/);
   assert.match(worker, /AI 仍在识别，连接正常/);
   assert.match(notes, /ai\/detect-questions\/stream/);
   assert.match(notes, /response\.body\.getReader\(\)/);
+  assert.match(workflow, /WorkflowEntrypoint/);
+  assert.match(workflow, /processCaptureBatch/);
 });
 
 test('mobile capture exits immediately and the background worker performs one queued batch save', () => {
@@ -38,8 +41,7 @@ test('mobile capture exits immediately and the background worker performs one qu
   assert.doesNotMatch(block, /detectQuestionRegions/);
   assert.doesNotMatch(block, /cropManyImages/);
   assert.match(block, /无需停留或逐题确认/);
-  assert.match(jobs, /cropImageDataUrl\(initial\.imageDataUrl, FULL_PAGE, 1500, 0\.72\)/);
-  assert.match(jobs, /cropManyImages\(initial\.imageDataUrl, detection\.regions, 1800, 0\.86\)/);
-  assert.match(jobs, /await enqueueCaptureUpload\(payloads\)/);
-  assert.doesNotMatch(jobs, /await saveNoteImage\(/);
+  assert.match(jobs, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(jobs, /await putJob\(job\)/);
+  assert.doesNotMatch(jobs, /cropImageDataUrl|cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
 });
