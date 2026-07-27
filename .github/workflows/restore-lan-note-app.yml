@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   restore-and-validate:
@@ -27,13 +28,32 @@ jobs:
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
 
       - name: Apply integrated hotfix
-        run: node scripts/apply-restore-lan-note-app.cjs
+        run: |
+          node scripts/apply-restore-lan-note-app.cjs
+          node scripts/rewrite-lan-test-diagnostic.cjs
 
       - name: Install dependencies without postinstall side effects
         run: npm ci --ignore-scripts
 
       - name: Run focused regression
-        run: node scripts/lan-note-app-quick-entry.test.cjs
+        shell: bash
+        run: |
+          set -o pipefail
+          node scripts/lan-note-app-quick-entry.test.cjs 2>&1 | tee /tmp/lan-focused.log
+
+      - name: Report focused failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '### 局域网小 App 专项测试失败'
+            echo '```text'
+            tail -n 80 /tmp/lan-focused.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md
 
       - name: Run full Node regression suite
         shell: bash
@@ -55,6 +75,7 @@ jobs:
           set -euo pipefail
           cd ../..
           rm -f outputs/kaoyan-schedule-app/scripts/apply-restore-lan-note-app.cjs
+          rm -f outputs/kaoyan-schedule-app/scripts/rewrite-lan-test-diagnostic.cjs
           rm -f .github/workflows/restore-lan-note-app.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -64,6 +85,7 @@ jobs:
                   outputs/kaoyan-schedule-app/src/quick-material-composer.css \
                   outputs/kaoyan-schedule-app/scripts/lan-note-app-quick-entry.test.cjs \
                   outputs/kaoyan-schedule-app/scripts/apply-restore-lan-note-app.cjs \
+                  outputs/kaoyan-schedule-app/scripts/rewrite-lan-test-diagnostic.cjs \
                   .github/workflows/restore-lan-note-app.yml
           git commit -m "fix: restore LAN saves and integrated quick-note UI"
           git push origin HEAD:${{ github.head_ref }}
