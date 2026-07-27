@@ -1,0 +1,69 @@
+name: Restore LAN note app and quick entry
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  restore-and-validate:
+    if: github.head_ref == 'fix/restore-lan-note-app-and-quick-style'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: outputs/kaoyan-schedule-app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Apply integrated hotfix
+        run: node scripts/apply-restore-lan-note-app.cjs
+
+      - name: Install dependencies without postinstall side effects
+        run: npm ci --ignore-scripts
+
+      - name: Run focused regression
+        run: node scripts/lan-note-app-quick-entry.test.cjs
+
+      - name: Run full Node regression suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in scripts/*.test.cjs; do
+            node "$file"
+          done
+
+      - name: Build production frontend
+        run: npm run build
+
+      - name: Cloudflare Worker dry run
+        run: npx wrangler deploy --dry-run
+
+      - name: Commit validated business changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd ../..
+          rm -f outputs/kaoyan-schedule-app/scripts/apply-restore-lan-note-app.cjs
+          rm -f .github/workflows/restore-lan-note-app.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add outputs/kaoyan-schedule-app/src/components/NoteDropApp.tsx \
+                  outputs/kaoyan-schedule-app/src/components/LearningCenter.tsx \
+                  outputs/kaoyan-schedule-app/src/note-drop-mobile.css \
+                  outputs/kaoyan-schedule-app/src/quick-material-composer.css \
+                  outputs/kaoyan-schedule-app/scripts/lan-note-app-quick-entry.test.cjs \
+                  outputs/kaoyan-schedule-app/scripts/apply-restore-lan-note-app.cjs \
+                  .github/workflows/restore-lan-note-app.yml
+          git commit -m "fix: restore LAN saves and integrated quick-note UI"
+          git push origin HEAD:${{ github.head_ref }}
