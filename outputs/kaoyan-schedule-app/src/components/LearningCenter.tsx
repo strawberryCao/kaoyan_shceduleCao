@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import type { ScheduleDay } from '../types';
 import type {
+  LearningAttachment,
   LearningAutoNote,
   LearningCard,
   LearningDataSnapshot,
@@ -190,6 +191,89 @@ const noteAttachments = (note: LearningAutoNote) => note.attachments.length > 0
   : note.filePath ? [{ id: 'legacy-primary', kind: 'image' as const, name: '原图', mimeType: 'image/jpeg', size: null, filePath: note.filePath, previewPath: '', posterPath: '', createdAt: note.createdAt }] : [];
 const noteImageAttachment = (note: LearningAutoNote) => noteAttachments(note).find((attachment) => attachment.kind === 'image');
 const noteFileUrl = (filePath: string): string => `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}`;
+
+const normalizeLearningAssetPath = (value: string): string => value.trim().split('\\').join('/');
+const isStableLearningAssetPath = (value: string): boolean => {
+  const normalized = normalizeLearningAssetPath(value).toLowerCase();
+  return normalized.startsWith('github://data/assets/')
+    || normalized.startsWith('data/assets/')
+    || normalized.startsWith('r2://note-assets/');
+};
+
+const learningAttachmentExtension = (attachment: LearningAttachment): string => {
+  const nameExtension = attachment.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  const pathExtension = normalizeLearningAssetPath(attachment.filePath).toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (nameExtension || pathExtension) return nameExtension || pathExtension || 'jpg';
+  if (attachment.mimeType === 'image/png') return 'png';
+  if (attachment.mimeType === 'image/webp') return 'webp';
+  if (attachment.mimeType === 'image/gif') return 'gif';
+  if (attachment.mimeType === 'image/avif') return 'avif';
+  if (attachment.mimeType === 'image/heic') return 'heic';
+  if (attachment.mimeType === 'image/heif') return 'heif';
+  return 'jpg';
+};
+
+const stableLearningAttachmentPath = (note: LearningAutoNote, attachment: LearningAttachment): string => {
+  const current = normalizeLearningAssetPath(attachment.filePath);
+  if (isStableLearningAssetPath(current)) return current;
+  const materialIndex = /^material-(\d+)$/.exec(attachment.id)?.[1];
+  if (materialIndex) {
+    return `github://data/assets/${note.noteUid}/${materialIndex.padStart(2, '0')}-${attachment.name}`;
+  }
+  if (attachment.kind === 'image') {
+    return `github://data/assets/${note.noteUid}.${learningAttachmentExtension(attachment)}`;
+  }
+  const baseName = current.split('/').filter(Boolean).at(-1) || attachment.name;
+  return baseName ? `github://data/assets/${baseName}` : '';
+};
+
+const noteAttachmentPaths = (note: LearningAutoNote, attachment: LearningAttachment): string[] => {
+  const current = attachment.filePath.trim();
+  const stable = stableLearningAttachmentPath(note, attachment);
+  return uniqueText(IS_CLOUD_RUNTIME ? [stable, current] : [current, stable]);
+};
+
+const noteAttachmentPrimaryPath = (note: LearningAutoNote, attachment: LearningAttachment): string => (
+  noteAttachmentPaths(note, attachment)[0] || attachment.filePath
+);
+
+interface ResilientNoteImageProps {
+  paths: string[];
+  alt: string;
+  loading?: 'eager' | 'lazy';
+  onUnavailable?: () => void;
+}
+
+function ResilientNoteImage({ paths, alt, loading = 'lazy', onUnavailable }: ResilientNoteImageProps) {
+  const usablePaths = uniqueText(paths);
+  const pathKey = usablePaths.join('\n');
+  const [pathIndex, setPathIndex] = useState(0);
+  const [exhausted, setExhausted] = useState(false);
+
+  useEffect(() => {
+    setPathIndex(0);
+    setExhausted(false);
+  }, [pathKey]);
+
+  const filePath = usablePaths[pathIndex] || '';
+  if (!filePath || exhausted) return null;
+  return (
+    <img
+      src={noteFileUrl(filePath)}
+      alt={alt}
+      loading={loading}
+      decoding="async"
+      onError={() => {
+        if (pathIndex + 1 < usablePaths.length) {
+          setPathIndex((current) => current + 1);
+          return;
+        }
+        setExhausted(true);
+        onUnavailable?.();
+      }}
+    />
+  );
+}
 
 const noteSearchFields = (date: string, note: LearningAutoNote): WeightedSearchField[] => [
   { text: note.title, weight: 10 },
@@ -397,6 +481,14 @@ export function LearningCenter({
       };
     }))
     .sort((left, right) => right.date.localeCompare(left.date) || right.note.updatedAt.localeCompare(left.note.updatedAt)), [snapshot.days]);
+  const notesByUid = useMemo(() => new Map(allNotes.map(({ note }) => [note.noteUid, note])), [allNotes]);
+  const resolveCardImagePath = (card: LearningCard): string => {
+    const note = notesByUid.get(card.noteUid);
+    const attachment = note ? noteImageAttachment(note) : null;
+    if (note && attachment) return noteAttachmentPrimaryPath(note, attachment);
+    return card.sourceFilePath || '';
+  };
+  const currentCardResolvedPath = currentCard ? resolveCardImagePath(currentCard) : '';
   const indexedNotes = useMemo(() => allNotes.filter(({ note }) => isKnowledgeEligibleNote(note)), [allNotes]);
 
   const subjectOptions = useMemo(() => {
@@ -1077,7 +1169,7 @@ export function LearningCenter({
     .filter((attachment) => attachment.kind === 'image' && attachment.filePath)
     .map((attachment) => ({
       id: `note:${note.noteUid}:${attachment.id}`,
-      src: noteFileUrl(attachment.filePath),
+      src: noteFileUrl(noteAttachmentPrimaryPath(note, attachment)),
       alt: `${note.title || '笔记'} · ${attachment.name}`,
     })));
 
@@ -1092,11 +1184,16 @@ export function LearningCenter({
 
   const openCardViewer = (card: LearningCard) => {
     if (!card.sourceFilePath) return;
-    const items = reviewCards.filter((item) => Boolean(item.sourceFilePath)).map((item) => ({
-      id: `card:${item.id}`,
-      src: `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(item.sourceFilePath)}`,
-      alt: `${item.sourceTitle || item.front || '复习卡'}原图`,
-    }));
+    const items: ImageViewerItem[] = [];
+    reviewCards.forEach((item) => {
+      const filePath = resolveCardImagePath(item);
+      if (!filePath) return;
+      items.push({
+        id: `card:${item.id}`,
+        src: noteFileUrl(filePath),
+        alt: `${item.sourceTitle || item.front || '复习卡'}原图`,
+      });
+    });
     const index = items.findIndex((item) => item.id === `card:${card.id}`);
     if (index >= 0) setImageViewer({ items, index });
   };
@@ -1124,7 +1221,7 @@ export function LearningCenter({
       ? selectedInboxKey === `note:${note.noteUid}`
       : selectedNoteUid === note.noteUid;
     const thumbnailAttachment = noteImageAttachment(note);
-    const thumbnailUrl = thumbnailAttachment?.filePath ? noteFileUrl(thumbnailAttachment.filePath) : '';
+    const thumbnailPaths = thumbnailAttachment ? noteAttachmentPaths(note, thumbnailAttachment) : [];
     return (
       <button
         className={`lc-note-button ${active ? 'active' : ''}`}
@@ -1138,15 +1235,7 @@ export function LearningCenter({
       >
         <span className="lc-note-button-thumb" aria-hidden="true">
           <FileImage size={18} />
-          {thumbnailUrl && (
-            <img
-              src={thumbnailUrl}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              onError={(event) => { event.currentTarget.hidden = true; }}
-            />
-          )}
+          {thumbnailPaths.length > 0 && <ResilientNoteImage paths={thumbnailPaths} alt="" />}
         </span>
         <span className="lc-note-button-copy">
           <span className="lc-note-button-title">{note.title || note.remark || '未命名笔记'}</span>
@@ -1184,8 +1273,8 @@ export function LearningCenter({
     const isEditingClassification = editingClassificationUid === note.noteUid && classificationDraft;
     const attachments = noteAttachments(note);
     const imageAttachment = noteImageAttachment(note);
-    const imagePath = imageAttachment?.filePath || '';
-    const imageUrl = imagePath ? noteFileUrl(imagePath) : '';
+    const imagePaths = imageAttachment ? noteAttachmentPaths(note, imageAttachment) : [];
+    const imagePath = imagePaths[0] || '';
     const detailFacts = [
       !isDefaultNoteBucket(note.subject) ? { label: '科目', value: displaySubject(note.subject) } : null,
       pages ? { label: '页码 / 题号', value: pages } : null,
@@ -1197,25 +1286,26 @@ export function LearningCenter({
     ].filter((fact): fact is { label: string; value: string; wide?: boolean } => fact !== null);
     const sourcePreview = imagePath ? (
       <figure className="lc-source-preview is-question-first">
-        {imageUrl && failedImagePath !== imagePath ? (
+        {failedImagePath !== imagePath ? (
           <button
             className="lc-source-preview-open"
             type="button"
             onClick={() => openNoteViewer(note, context)}
             aria-label="打开原图"
           >
-            <img src={imageUrl} alt={`${note.title || '笔记'}原图`} loading="eager" decoding="async" onError={() => setFailedImagePath(imagePath)} />
+            <ResilientNoteImage
+              paths={imagePaths}
+              alt={`${note.title || '笔记'}原图`}
+              loading="eager"
+              onUnavailable={() => setFailedImagePath(imagePath)}
+            />
             <span aria-hidden="true"><ZoomIn size={16} /></span>
           </button>
         ) : (
           <div>
             <FileImage size={28} />
             <strong>原图加载失败</strong>
-            {failedImagePath === imagePath && (
-              <button type="button" onClick={() => {
-                setFailedImagePath('');
-              }}>重试</button>
-            )}
+            <button type="button" onClick={() => setFailedImagePath('')}>重试</button>
           </div>
         )}
       </figure>
@@ -1233,7 +1323,7 @@ export function LearningCenter({
               <li key={attachment.id}>
                 <FileText size={17} aria-hidden="true" />
                 <span><strong>{attachment.name}</strong><small>{attachment.kind === 'image' ? '图片' : attachment.kind === 'pdf' ? 'PDF' : attachment.kind === 'word' ? 'Word' : attachment.kind === 'html' ? 'HTML' : '文件'}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
-                <a href={noteFileUrl(attachment.filePath)} download={attachment.name}><FileDown size={15} />打开 / 下载</a>
+                <a href={noteFileUrl(noteAttachmentPrimaryPath(note, attachment))} download={attachment.name}><FileDown size={15} />打开 / 下载</a>
               </li>
             ))}</ul>
           </section>
@@ -1464,9 +1554,9 @@ export function LearningCenter({
       <section className="lc-card-stage" aria-live="polite">
         {currentCard ? (
           <>
-            {currentCard.sourceFilePath && (
+            {currentCardResolvedPath && (
               <figure className="lc-source-preview lc-review-source-preview">
-                {failedImagePath !== currentCard.sourceFilePath ? (
+                {failedImagePath !== currentCardResolvedPath ? (
                   <button
                     className="lc-source-preview-open"
                     type="button"
@@ -1474,10 +1564,10 @@ export function LearningCenter({
                     aria-label="打开原图"
                   >
                     <img
-                      src={`${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(currentCard.sourceFilePath)}`}
+                      src={noteFileUrl(currentCardResolvedPath)}
                       alt={`${currentCard.sourceTitle || currentCard.front || '复习卡'}原图`}
                       decoding="async"
-                      onError={() => setFailedImagePath(currentCard.sourceFilePath)}
+                      onError={() => setFailedImagePath(currentCardResolvedPath)}
                     />
                     <span aria-hidden="true"><ZoomIn size={16} /></span>
                   </button>
@@ -1524,7 +1614,7 @@ export function LearningCenter({
                   <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'remembered' }, '复习间隔已延长。')}><Check size={16} />记住 <kbd>2</kbd></button>
                 </>
               ) : <span className="lc-card-count">计划 {currentCard.dueDate} 复习</span>}
-              {currentCard.sourceFilePath && <button type="button" onClick={() => void handleSourcePath(currentCard.sourceFilePath)}><FolderOpen size={16} />定位</button>}
+              {currentCardResolvedPath && <button type="button" onClick={() => void handleSourcePath(currentCardResolvedPath)}><FolderOpen size={16} />定位</button>}
               <button className="danger" type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => void deleteCard(currentCard)}><Trash2 size={16} />删除</button>
               <button type="button" onClick={() => stepCard(1)} disabled={reviewCards.length < 2} aria-label="下一张"><ChevronRight size={18} /></button>
             </div>
