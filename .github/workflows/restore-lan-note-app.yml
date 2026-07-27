@@ -58,10 +58,26 @@ jobs:
       - name: Run full Node regression suite
         shell: bash
         run: |
-          set -euo pipefail
+          set -o pipefail
+          : > /tmp/lan-full.log
           for file in scripts/*.test.cjs; do
-            node "$file"
+            echo "===== $file =====" | tee -a /tmp/lan-full.log
+            node "$file" 2>&1 | tee -a /tmp/lan-full.log || exit $?
           done
+
+      - name: Report full regression failure
+        if: failure() && hashFiles('/tmp/lan-full.log') != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo '### 全量回归失败'
+            echo '```text'
+            tail -n 120 /tmp/lan-full.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/comment.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file /tmp/comment.md
 
       - name: Build production frontend
         run: npm run build
