@@ -15,6 +15,7 @@ function Refresh-SyncRuntime {
   $syncRoot = if ($env:KAOYAN_SYNC_ROOT) { $env:KAOYAN_SYNC_ROOT } else { 'D:\kaoyandata\NoteFolderSync' }
   $configPath = Join-Path $syncRoot 'config.json'
   if (-not (Test-Path -LiteralPath $configPath)) { return }
+  $syncConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
   foreach ($name in @(
     'windows-note-folder-sync.ps1',
     'windows-assistant-config-sync.ps1',
@@ -32,6 +33,9 @@ function Refresh-SyncRuntime {
     $source = Join-Path $projectRoot (Join-Path 'scripts' $name)
     if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $syncRoot $name) -Force }
   }
+  $autoSyncEnabled = $syncConfig.autoSyncEnabled -eq $true
+  $syncIsPaused = [string]$syncConfig.persistenceMode -eq 'installed-paused'
+  if (-not $autoSyncEnabled -or $syncIsPaused) { return }
   $runner = Join-Path $syncRoot 'run-global-sync.ps1'
   if (Test-Path -LiteralPath $runner) {
     Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $runner, '-ConfigPath', $configPath) -WindowStyle Hidden

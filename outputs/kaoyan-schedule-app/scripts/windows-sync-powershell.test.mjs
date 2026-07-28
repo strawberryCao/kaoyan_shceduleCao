@@ -27,6 +27,7 @@ test('Windows note and assistant synchronization scripts parse without PowerShel
     'windows-note-folder-sync.ps1',
     'windows-assistant-config-sync.ps1',
     'install-note-folder-sync.ps1',
+    'start-local-services-hidden.ps1',
   ].map((file) => path.resolve(import.meta.dirname, file));
   const command = `
 $failed = $false
