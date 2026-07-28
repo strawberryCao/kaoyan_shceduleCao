@@ -103,6 +103,17 @@ interface ClassificationDraft {
 
 type LearningItemKind = 'knowledge' | 'mistake' | 'memory';
 
+const QUICK_FACET_OPTIONS: Array<{
+  facet: Exclude<LearningRecordFacet, 'quick'>;
+  label: string;
+}> = [
+  { facet: 'mistake', label: '错题' },
+  { facet: 'good', label: '好题' },
+  { facet: 'memory', label: '背诵' },
+  { facet: 'knowledge', label: '知识库' },
+  { facet: 'method', label: '方法' },
+];
+
 interface NoteEditorState {
   mode: 'create' | 'edit';
   noteUid: string | null;
@@ -491,6 +502,7 @@ export function LearningCenter({
   const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
   const [activeQuickAssets, setActiveQuickAssets] = useState<Record<string, string>>({});
   const [quickExporting, setQuickExporting] = useState(false);
+  const [quickFacetMenuNoteUid, setQuickFacetMenuNoteUid] = useState<string | null>(null);
   const detachLayerRef = useRef<LearningInlineDetachLayerHandle | null>(null);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
@@ -1183,21 +1195,17 @@ export function LearningCenter({
     }
   };
 
-  const addQuickFacet = async (note: LearningAutoNote, facet: Exclude<LearningRecordFacet, 'quick' | 'method'>) => {
+  const addQuickFacet = async (note: LearningAutoNote, facet: Exclude<LearningRecordFacet, 'quick'>) => {
     if (pendingNoteUid || note.facets.includes(facet)) return;
-    const labels: Record<Exclude<LearningRecordFacet, 'quick' | 'method'>, string> = {
-      mistake: '错题',
-      good: '好题',
-      memory: '背诵',
-      knowledge: '知识库',
-    };
+    const label = QUICK_FACET_OPTIONS.find((item) => item.facet === facet)?.label || '分栏';
     try {
       setPendingNoteUid(note.noteUid);
       setFeedback('');
       await onPatchNote(note.noteUid, { facets: uniqueText([...note.facets, 'quick', facet]) as LearningRecordFacet[] });
-      setFeedback(`已加入${labels[facet]}，仍保留在速记中`);
+      setQuickFacetMenuNoteUid(null);
+      setFeedback(`已加入${label}，仍保留在速记中`);
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : `加入${labels[facet]}失败，请稍后重试。`);
+      setFeedback(error instanceof Error ? error.message : `加入${label}失败，请稍后重试。`);
     } finally {
       setPendingNoteUid(null);
     }
@@ -1842,11 +1850,55 @@ export function LearningCenter({
     return (
       <article className="lc-quick-record" key={note.noteUid}>
         <header className="lc-quick-record-heading">
-          <div>
+          <div className="lc-quick-record-meta">
             <time>{formatRecordDate(date)}</time>
             {!isDefaultNoteBucket(note.subject) && <span>{displaySubject(note.subject)}</span>}
           </div>
-          <h1>{note.title || '未命名速记'}</h1>
+          <div className="lc-quick-record-title-row">
+            <h1>{note.title || '未命名速记'}</h1>
+            <div className="lc-quick-record-actions">
+              <div className={`lc-quick-facet-picker${quickFacetMenuNoteUid === note.noteUid ? ' is-open' : ''}`}>
+                <button
+                  className="lc-quick-facet-trigger"
+                  type="button"
+                  aria-expanded={quickFacetMenuNoteUid === note.noteUid}
+                  onClick={() => setQuickFacetMenuNoteUid((current) => current === note.noteUid ? null : note.noteUid)}
+                >
+                  <Plus size={14} />加入分栏
+                </button>
+                {quickFacetMenuNoteUid === note.noteUid && (
+                  <div className="lc-quick-facet-menu" role="menu" aria-label="选择要加入的分栏">
+                    {QUICK_FACET_OPTIONS.map((option) => {
+                      const included = note.facets.includes(option.facet);
+                      return (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          key={option.facet}
+                          disabled={included || pendingNoteUid === note.noteUid}
+                          onClick={() => void addQuickFacet(note, option.facet)}
+                        >
+                          {included ? <Check size={13} /> : <Plus size={13} />}
+                          <span>{option.label}</span>
+                          {included && <small>已加入</small>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              {!IS_CLOUD_RUNTIME && (
+                <button
+                  className="lc-quick-delete"
+                  type="button"
+                  disabled={editorSaving}
+                  onClick={() => void deleteNote(note)}
+                >
+                  <Trash2 size={14} />删除
+                </button>
+              )}
+            </div>
+          </div>
         </header>
 
         {paragraphs.length > 0 && (
@@ -1931,7 +1983,7 @@ export function LearningCenter({
         <div className="lc-quick-list-tools">
           {feedback && <span role="status">{feedback}</span>}
           <button type="button" disabled={quickExporting || visibleQuick.length === 0} onClick={() => void exportQuickJournal()}>
-            <FileDown size={14} />{quickExporting ? '正在打包…' : '导出分页日记'}
+            <FileDown size={14} />{quickExporting ? '正在打包…' : '导出日记'}
           </button>
         </div>
         <div className="lc-master-list">

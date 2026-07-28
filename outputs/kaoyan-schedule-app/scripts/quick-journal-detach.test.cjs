@@ -14,6 +14,9 @@ test('quick notes render one selected record with adaptive attachment previews',
   assert.match(center, /showAllAssets = assets\.length <= 3/);
   assert.match(center, /lc-quick-all-assets has-\$\{assets\.length\}/);
   assert.match(center, /lc-quick-active-preview/);
+  assert.match(center, /加入分栏/);
+  assert.match(center, /void deleteNote\(note\)/);
+  assert.match(center, /facet: 'method', label: '方法'/);
   assert.doesNotMatch(center, /Windows 桌面|openDetachedLearning|beginDesktopDetach/);
 });
 
@@ -42,13 +45,15 @@ test('mini app keeps quick-note history but does not launch desktop windows', ()
   assert.doesNotMatch(composer, /Windows 桌面|openDetachedLearning|MonitorUp/);
 });
 
-test('journal export is one global paginated package with inline material renditions', () => {
+test('journal export continuously packs records and only starts a new page when needed', () => {
   const center = read('src/components/LearningCenter.tsx');
   const exporter = read('src/utils/quickJournalExport.ts');
-  assert.match(center, /导出分页日记/);
+  assert.match(center, /导出日记/);
   assert.match(center, /exportQuickJournalPackage/);
   assert.match(exporter, /\.kaoyan-journal\.zip/);
-  assert.match(exporter, /break-before:page/);
+  assert.doesNotMatch(exporter, /\.record\{break-before:page\}/);
+  assert.match(exporter, /body\.scrollHeight>body\.clientHeight/);
+  assert.match(exporter, /一页可以连续容纳多条速记/);
   assert.match(exporter, /mammoth\.convertToHtml/);
   assert.match(exporter, /<object data=/);
   assert.match(exporter, /<iframe src=/);
