@@ -106,6 +106,17 @@ class FakeGitHub {
       const ref = url.searchParams.get('ref') || 'main';
       const bytes = this.file(path, ref);
       if (!bytes) return this.response({ message: 'Not Found' }, 404);
+      const headers = new Headers(options.headers);
+      if (headers.get('Accept') === 'application/vnd.github.raw+json') {
+        assert.equal(headers.get('Authorization'), 'Bearer test-token');
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': path.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+            'Content-Length': String(bytes.byteLength),
+          },
+        });
+      }
       return this.response({
         type: 'file',
         sha: this.contentSha(bytes),

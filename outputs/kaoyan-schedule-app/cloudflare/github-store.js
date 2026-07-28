@@ -279,10 +279,19 @@ export async function writeBinaryFile(env, path, bytes, options = {}) {
 
 export async function publicFileResponse(env, path, options = {}) {
   path = assertRepoPath(path, options.prefix || '');
-  const response = await fetch(rawFileUrl(env, path), {
-    headers: { 'User-Agent': 'kaoyan-study-center-worker' },
-    redirect: 'follow',
-  });
+  const { owner, repo, branch, token } = repositoryConfig(env);
+  const response = await fetch(
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(branch)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github.raw+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': GITHUB_API_VERSION,
+        'User-Agent': 'kaoyan-study-center-worker',
+      },
+      redirect: 'follow',
+    },
+  );
   if (!response.ok || !response.body) {
     if (response.status === 404) throw new HttpError(404, 'Repository file was not found.', 'GITHUB_OBJECT_NOT_FOUND');
     throw new HttpError(502, 'Repository file could not be loaded.', 'GITHUB_RAW_READ_FAILED');
