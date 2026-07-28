@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
 import { ArrowLeft, CheckCircle2, FilePlus2, LoaderCircle, Paperclip, Save, Trash2, X } from 'lucide-react';
 import { saveLearningMaterial, type LearningRecordFacet } from '../utils/notes';
 import { saveLearningDataCache } from '../utils/learningData';
@@ -42,7 +42,7 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
   const [dragging, setDragging] = useState(false);
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
 
-  const addFiles = (incoming: FileList | null) => {
+  const addFiles = (incoming: FileList | File[] | null) => {
     if (!incoming) return;
     const next = [...files];
     for (const file of Array.from(incoming)) {
@@ -73,6 +73,17 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
     event.preventDefault();
     setDragging(false);
     addFiles(event.dataTransfer.files);
+  };
+
+  const receivePaste = (event: ClipboardEvent<HTMLElement>) => {
+    if (!desktop) return;
+    const pastedFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (pastedFiles.length === 0) return;
+    event.preventDefault();
+    addFiles(pastedFiles);
   };
 
   const submit = async () => {
@@ -115,6 +126,7 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
       } : undefined}
       onDrop={receiveDrop}
+      onPaste={desktop ? receivePaste : undefined}
     >
       {desktop ? (
         <header className="note-drop-titlebar">
@@ -141,11 +153,16 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
         <div className={`quick-material-files${compact ? ' is-secondary' : ''}`}>
           <div><span>资料附件</span><small>{files.length}/{MAX_FILES} · {formatBytes(totalBytes)}/16 MB</small></div>
           {desktop ? (
-            <button className="quick-material-drop-target" type="button" onClick={() => inputRef.current?.click()}>
+            <div
+              className="quick-material-drop-target"
+              role="note"
+              tabIndex={0}
+              onClick={(event) => event.currentTarget.focus()}
+            >
               <Paperclip size={17} />
-              <span>{dragging ? '松手加入资料' : '把 PDF、Word、HTML、图片直接拖到这里'}</span>
-              <small>文件名和类型自动识别</small>
-            </button>
+              <span>{dragging ? '松手加入资料' : '点击窗口后，按 Ctrl+V 直接粘贴截图'}</span>
+              <small>也可拖入 PDF、Word、HTML、图片 · 自动识别类型</small>
+            </div>
           ) : (
             <button type="button" onClick={() => inputRef.current?.click()}><FilePlus2 size={17} />{compact ? '拍照或选择附件（可选）' : '加入图片、PDF、Word、HTML、网页资源或文本'}</button>
           )}
