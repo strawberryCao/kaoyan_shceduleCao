@@ -205,9 +205,26 @@ const pageRefText = (note: LearningAutoNote): string => note.pageRefs
 
 const noteAttachments = (note: LearningAutoNote) => note.attachments.length > 0
   ? note.attachments
-  : note.filePath ? [{ id: 'legacy-primary', kind: 'image' as const, name: '原图', mimeType: 'image/jpeg', size: null, filePath: note.filePath, previewPath: '', posterPath: '', createdAt: note.createdAt }] : [];
+  : note.filePath ? [{
+    id: 'legacy-primary',
+    assetId: '',
+    kind: 'image' as const,
+    name: '原图',
+    mimeType: 'image/jpeg',
+    size: null,
+    filePath: note.filePath,
+    cloudPath: '',
+    localPathKey: '',
+    previewPath: '',
+    posterPath: '',
+    createdAt: note.createdAt,
+  }] : [];
 const noteImageAttachment = (note: LearningAutoNote) => noteAttachments(note).find((attachment) => attachment.kind === 'image');
-const noteFileUrl = (filePath: string): string => `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}`;
+const noteFileUrl = (filePath: string): string => {
+  const assetId = /^asset:\/\/([a-f0-9]{64})$/i.exec(filePath.trim())?.[1]?.toLowerCase();
+  if (assetId && IS_CLOUD_RUNTIME) return `${NOTE_SERVER_URL}/assets/${assetId}`;
+  return `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}`;
+};
 
 const normalizeLearningAssetPath = (value: string): string => value.trim().split('\\').join('/');
 const isStableLearningAssetPath = (value: string): boolean => {
@@ -231,6 +248,9 @@ const learningAttachmentExtension = (attachment: LearningAttachment): string => 
 };
 
 const stableLearningAttachmentPath = (note: LearningAutoNote, attachment: LearningAttachment): string => {
+  if (attachment.assetId) return `asset://${attachment.assetId}`;
+  const declaredCloudPath = normalizeLearningAssetPath(attachment.cloudPath || '');
+  if (isStableLearningAssetPath(declaredCloudPath)) return declaredCloudPath;
   const current = normalizeLearningAssetPath(attachment.filePath);
   if (isStableLearningAssetPath(current)) return current;
   const materialIndex = /^material-(\d+)$/.exec(attachment.id)?.[1];
@@ -245,12 +265,14 @@ const stableLearningAttachmentPath = (note: LearningAutoNote, attachment: Learni
 };
 
 const noteAttachmentPaths = (note: LearningAutoNote, attachment: LearningAttachment): string[] => {
+  const assetPath = attachment.assetId ? `asset://${attachment.assetId}` : '';
+  const cloudPath = attachment.cloudPath?.trim() || '';
   const current = attachment.filePath.trim();
   const stable = stableLearningAttachmentPath(note, attachment);
   const currentPrimary = attachment.kind === 'image' ? note.filePath.trim() : '';
   return uniqueText(IS_CLOUD_RUNTIME
-    ? [stable, current, currentPrimary]
-    : [current, currentPrimary, stable]);
+    ? [assetPath, cloudPath, stable, current, currentPrimary]
+    : [current, assetPath, cloudPath, currentPrimary, stable]);
 };
 
 const noteAttachmentPrimaryPath = (note: LearningAutoNote, attachment: LearningAttachment): string => (

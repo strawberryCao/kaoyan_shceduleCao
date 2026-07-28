@@ -68,11 +68,17 @@ async function triggerWorkflow(env, ctx, job) {
     }
     return { mode: 'workflow', instanceId };
   }
-  if (ctx?.waitUntil) {
-    ctx.waitUntil(processCaptureBatch(env, job.jobId));
-    return { mode: 'waitUntil-fallback', instanceId: '' };
-  }
-  return { mode: 'queued', instanceId: '' };
+  return { mode: 'workflow-unavailable', instanceId: '' };
+}
+
+async function reflectUnavailableWorkflow(env, job, trigger) {
+  if (trigger.mode === 'workflow') return job;
+  return updateJob(env, job.jobId, {
+    status: 'failed_retryable',
+    progress: Number(job.progress) || 5,
+    message: '原图已安全保存，但后台裁剪服务尚未就绪；请稍后点“重试”',
+    error: 'CAPTURE_WORKFLOW binding is unavailable',
+  });
 }
 
 export async function createCaptureBatch(env, payload, ctx) {
@@ -133,6 +139,7 @@ export async function createCaptureBatch(env, payload, ctx) {
   let trigger = { mode: 'not-ready', instanceId: '' };
   if (job.status === 'queued' || job.status === 'failed_retryable') {
     trigger = await triggerWorkflow(env, ctx, job);
+    job = await reflectUnavailableWorkflow(env, job, trigger);
   }
   return {
     ok: true,
@@ -149,14 +156,46 @@ export async function getCaptureJob(env, jobId) {
   const file = await readJsonFile(env, jobPath(jobId), { allowMissing: true, maxBytes: 512 * 1024 });
   if (!file) throw new HttpError(404, 'Capture job not found.', 'JOB_NOT_FOUND');
   let workflow = null;
+  let workflowError = '';
   const instanceId = `${jobId}-r${Number(file.value.attempts) || 0}`;
   if (env.CAPTURE_WORKFLOW && typeof env.CAPTURE_WORKFLOW.get === 'function') {
     try {
       const instance = await env.CAPTURE_WORKFLOW.get(instanceId);
       workflow = await instance.status();
-    } catch {}
+    } catch (error) {
+      workflowError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    workflowError = 'CAPTURE_WORKFLOW binding is unavailable';
   }
-  return { ok: true, job: file.value, workflow };
+  const job = file.value;
+  const updatedAt = Date.parse(String(job.updatedAt || job.createdAt || ''));
+  const stalledMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : 0;
+  if (
+    ['queued', 'processing'].includes(job.status)
+    && stalledMs >= 90_000
+    && (!workflow || workflowError)
+  ) {
+    const recovered = await updateJob(env, jobId, {
+      status: 'failed_retryable',
+      progress: Number(job.progress) || 5,
+      message: '后台任务超过 90 秒没有继续更新；原图已保留，可以安全重试',
+      error: workflowError || 'Capture workflow stopped reporting progress',
+    });
+    return { ok: true, job: recovered, workflow, stalled: true };
+  }
+  if (['queued', 'processing'].includes(job.status) && stalledMs >= 30_000) {
+    return {
+      ok: true,
+      job: {
+        ...job,
+        message: `${job.message || 'AI 后台处理中'}（已等待 ${Math.max(1, Math.round(stalledMs / 1000))} 秒）`,
+      },
+      workflow,
+      stalled: false,
+    };
+  }
+  return { ok: true, job, workflow, stalled: false };
 }
 
 export async function retryCaptureJob(env, jobId, ctx) {
@@ -181,7 +220,8 @@ export async function retryCaptureJob(env, jobId, ctx) {
     workflowHash: hashes.workflowHash,
   });
   const trigger = await triggerWorkflow(env, ctx, job);
-  return { ok: true, accepted: true, job, trigger };
+  const reflected = await reflectUnavailableWorkflow(env, job, trigger);
+  return { ok: true, accepted: trigger.mode === 'workflow', job: reflected, trigger };
 }
 
 function quotaError(message) {

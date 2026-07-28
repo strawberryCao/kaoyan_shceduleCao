@@ -104,12 +104,24 @@ function Test-SafeFile([System.IO.FileInfo]$File) {
   return $script:BlockedExtensions -notcontains $File.Extension.ToLowerInvariant()
 }
 
+function Test-LegacyMirrorPath([string]$RelativePath) {
+  $segments = @($RelativePath.Replace('/', '\').Split('\', [System.StringSplitOptions]::RemoveEmptyEntries))
+  if ($segments -contains '.metadata' -or $segments -contains '.assets') { return $false }
+  if ([System.IO.Path]::GetFileName($RelativePath) -like '*sync-conflict-*') { return $false }
+  # V2 sidecars and hash assets are synchronized by v2-local-adapter.cjs.
+  # Mirroring them here would compare machine-local paths with cloud paths and
+  # recreate the conflict-copy loop that this adapter is designed to avoid.
+  if ($RelativePath -match '\.(?:cloud-)?note\.json$') { return $false }
+  return $true
+}
+
 function Get-FileMap([string]$Root) {
   $map = @{}
   if (-not (Test-Path -LiteralPath $Root)) { return $map }
   Get-ChildItem -LiteralPath $Root -File -Recurse -Force | ForEach-Object {
     if (-not (Test-SafeFile $_)) { return }
     $relative = Get-RelativeFilePath $Root $_.FullName
+    if (-not (Test-LegacyMirrorPath $relative)) { return }
     $map[$relative] = [pscustomobject]@{
       FullName = $_.FullName
       Hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -59,11 +59,16 @@ function normalizeAttachments(value, legacy = {}) {
     const inferred = attachmentKind(name, item.mimeType);
     const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind) ? item.kind : inferred;
     const size = Number(item.size);
+    const assetId = /^[a-f0-9]{64}$/i.test(text(item.assetId, 64).trim())
+      ? text(item.assetId, 64).trim().toLowerCase()
+      : '';
     return {
-      id: (text(item.id, 160).trim() || `attachment-${index + 1}`), kind, name,
+      id: (text(item.id, 160).trim() || `attachment-${index + 1}`), assetId, kind, name,
       mimeType: attachmentMime(kind, name, item.mimeType),
       size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
       filePath,
+      cloudPath: text(item.cloudPath, 2000),
+      localPathKey: text(item.localPathKey, 2000),
       previewPath: text(item.previewPath, 2000),
       posterPath: text(item.posterPath, 2000),
       createdAt: text(item.createdAt || legacy.createdAt || legacy.firstSyncedAt, 80),
@@ -74,8 +79,9 @@ function normalizeAttachments(value, legacy = {}) {
     const name = legacyPath.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
     const kind = attachmentKind(name, '');
     normalized.unshift({
-      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
-      filePath: legacyPath, previewPath: '', posterPath: '', createdAt: text(legacy.firstSyncedAt || legacy.createdAt, 80),
+      id: 'legacy-primary', assetId: '', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, cloudPath: '', localPathKey: '', previewPath: '', posterPath: '',
+      createdAt: text(legacy.firstSyncedAt || legacy.createdAt, 80),
     });
   }
   return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);

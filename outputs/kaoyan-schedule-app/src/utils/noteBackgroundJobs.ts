@@ -1,4 +1,9 @@
-import { createCaptureBatch, getCaptureBatchJob, IS_CLOUD_RUNTIME } from './notes';
+import {
+  createCaptureBatch,
+  getCaptureBatchJob,
+  IS_CLOUD_RUNTIME,
+  retryCaptureBatchJob,
+} from './notes';
 
 export type MultiQuestionJobStatus =
   | 'queued'
@@ -237,6 +242,22 @@ export const resumeMultiQuestionJobs = async (): Promise<void> => {
       window.setTimeout(() => { void resumeOne(job.id); }, 0);
     }
   }
+};
+
+export const retryMultiQuestionJob = async (id: string): Promise<MultiQuestionJob> => {
+  const current = await readJob(id);
+  if (!current?.serverJobId) throw new Error('这条任务还没有取得服务器任务编号。');
+  const retry = await retryCaptureBatchJob(current.serverJobId);
+  const next = await patchJob(id, {
+    status: localStatus(retry.job.status),
+    progress: Number(retry.job.progress) || 5,
+    message: retry.job.message || (retry.accepted ? '已重新加入后台处理' : '暂时无法重试'),
+    error: retry.job.error || '',
+    attempts: Number(current.attempts || 0) + 1,
+    completedAt: '',
+  });
+  if (retry.accepted) window.setTimeout(() => { void resumeOne(id); }, 1_000);
+  return next;
 };
 
 export const subscribeMultiQuestionJobs = (listener: (job: MultiQuestionJob) => void): (() => void) => {

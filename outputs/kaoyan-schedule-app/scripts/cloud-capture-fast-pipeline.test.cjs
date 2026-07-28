@@ -23,12 +23,16 @@ test('legacy foreground detection remains compatible while new capture uses Work
   const worker = read('cloudflare/worker.js');
   const notes = read('src/utils/notes.ts');
   const workflow = read('cloudflare/capture-workflow.js');
+  const batches = read('cloudflare/capture-batches.js');
   assert.match(worker, /application\/x-ndjson/);
   assert.match(worker, /AI 仍在识别，连接正常/);
   assert.match(notes, /ai\/detect-questions\/stream/);
   assert.match(notes, /response\.body\.getReader\(\)/);
   assert.match(workflow, /WorkflowEntrypoint/);
   assert.match(workflow, /processCaptureBatch/);
+  assert.match(batches, /workflow-unavailable/);
+  assert.match(batches, /超过 90 秒没有继续更新/);
+  assert.doesNotMatch(batches, /waitUntil-fallback/);
 });
 
 test('mobile capture exits immediately and the background worker performs one queued batch save', () => {

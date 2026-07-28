@@ -23,6 +23,28 @@ test('only resolves supported images inside the notes root', (t) => {
   assert.throws(() => resolveNoteImage(root, path.join(root, '..', 'outside.png')), { code: 'NOTE_PATH_FORBIDDEN' });
 });
 
+test('resolves a hash-addressed V2 asset without exposing its repository path', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-file-asset-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const cloneRoot = path.join(root, 'clone');
+  const assetId = 'a'.repeat(64);
+  const assetPath = path.join(cloneRoot, 'data', 'assets', `${assetId}.png`);
+  const recordPath = path.join(cloneRoot, 'data', 'v2', 'assets', `${assetId}.json`);
+  fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+  fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+  fs.writeFileSync(assetPath, Buffer.from('image'));
+  fs.writeFileSync(recordPath, JSON.stringify({
+    schemaVersion: 2,
+    assetId,
+    path: `data/assets/${assetId}.png`,
+  }));
+
+  const resolved = resolveNoteImage(notesRoot, `asset://${assetId}`, { cloneRoot });
+  assert.equal(resolved.filePath, assetPath);
+  assert.equal(resolved.mime, 'image/png');
+});
+
 test('reveals the selected image without invoking a shell', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-file-reveal-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

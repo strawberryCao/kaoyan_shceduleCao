@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -47,4 +48,14 @@ if ($failed) { exit 1 }
     maxBuffer: 4 * 1024 * 1024,
   });
   assert.equal(result.status, 0, `${result.stdout || ''}\n${result.stderr || ''}`.trim());
+});
+
+test('legacy mirror excludes V2 metadata, hash assets, and old conflict copies', () => {
+  const source = path.resolve(import.meta.dirname, 'windows-note-folder-sync.ps1');
+  const script = fs.readFileSync(source, 'utf8');
+  assert.match(script, /function Test-LegacyMirrorPath/);
+  assert.match(script, /\$segments -contains '\.metadata'/);
+  assert.match(script, /\$segments -contains '\.assets'/);
+  assert.match(script, /\*sync-conflict-\*/);
+  assert.match(script, /Test-LegacyMirrorPath \$relative/);
 });

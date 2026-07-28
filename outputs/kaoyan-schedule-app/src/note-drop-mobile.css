@@ -174,6 +174,42 @@ body:has(.mobile-crop-editor),
   padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
 }
 
+.mobile-background-job {
+  display: grid;
+  width: min(100%, 340px);
+  gap: 7px;
+  margin: 4px auto 8px;
+  color: #6d6257;
+  text-align: left;
+}
+
+.mobile-background-job::before {
+  content: "";
+  grid-area: 1 / 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(121, 104, 84, 0.14);
+}
+
+.mobile-background-job > span {
+  z-index: 1;
+  grid-area: 1 / 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #a76b2b;
+  transition: width 240ms ease;
+}
+
+.mobile-background-job > small {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.mobile-background-job.is-failed > span,
+.mobile-background-job.is-needs_review > span {
+  background: #b34b3f;
+}
+
 .mobile-capture-home {
   display: grid;
   align-content: center;

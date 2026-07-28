@@ -122,6 +122,8 @@ export interface CaptureBatchJob {
   resultEntryIds: string[];
   configurationHash: string;
   workflowHash: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface CaptureBatchResponse {

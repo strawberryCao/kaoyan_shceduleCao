@@ -163,8 +163,14 @@ function noteToEntry(note, seed, context) {
   const timestamp = date(note?.updatedAt || note?.createdAt);
   const entryId = safeId(note?.entryId || note?.noteUid || note?.id, seed);
   const migratedAssets = assetCandidates(note).map((item) => migrateAsset(item, context, timestamp));
-  const assets = migratedAssets.filter((item) => item && !item.unresolved);
-  const unresolvedAssets = migratedAssets.filter((item) => item?.unresolved).map((item) => item.originalPath);
+  const assets = [...new Map(
+    migratedAssets
+      .filter((item) => item && !item.unresolved)
+      .map((item) => [item.assetId, item]),
+  ).values()];
+  const unresolvedAssets = [...new Set(
+    migratedAssets.filter((item) => item?.unresolved).map((item) => item.originalPath),
+  )];
   const body = String(note?.body ?? note?.remark ?? '').trim().slice(0, 8000);
   const title = String(note?.title || '').trim().slice(0, 240)
     || body.split(/\r?\n/).map((line) => line.trim()).find(Boolean)?.slice(0, 120)

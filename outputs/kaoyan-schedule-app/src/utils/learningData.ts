@@ -7,11 +7,14 @@ export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'kno
 
 export interface LearningAttachment {
   id: string;
+  assetId?: string;
   kind: LearningAttachmentKind;
   name: string;
   mimeType: string;
   size: number | null;
   filePath: string;
+  cloudPath?: string;
+  localPathKey?: string;
   previewPath: string;
   posterPath: string;
   createdAt: string;
@@ -337,13 +340,19 @@ const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = 
     const inferred = attachmentKind(name, typeof item.mimeType === 'string' ? item.mimeType : '');
     const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind as LearningAttachmentKind) ? item.kind as LearningAttachmentKind : inferred;
     const size = Number(item.size);
+    const assetId = typeof item.assetId === 'string' && /^[a-f0-9]{64}$/i.test(item.assetId.trim())
+      ? item.assetId.trim().toLowerCase()
+      : '';
     return {
       id: (typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `attachment-${index + 1}`).slice(0, 160),
+      assetId,
       kind,
       name,
       mimeType: attachmentMime(kind, name, item.mimeType),
       size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
       filePath,
+      cloudPath: typeof item.cloudPath === 'string' ? item.cloudPath.slice(0, 2000) : '',
+      localPathKey: typeof item.localPathKey === 'string' ? item.localPathKey.slice(0, 2000) : '',
       previewPath: typeof item.previewPath === 'string' ? item.previewPath.slice(0, 2000) : '',
       posterPath: typeof item.posterPath === 'string' ? item.posterPath.slice(0, 2000) : '',
       createdAt: typeof item.createdAt === 'string' ? item.createdAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
@@ -354,8 +363,8 @@ const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = 
     const name = legacyPath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
     const kind = attachmentKind(name, '');
     normalized.unshift({
-      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
-      filePath: legacyPath, previewPath: '', posterPath: '',
+      id: 'legacy-primary', assetId: '', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, cloudPath: '', localPathKey: '', previewPath: '', posterPath: '',
       createdAt: typeof legacy.firstSyncedAt === 'string' ? legacy.firstSyncedAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
     });
   }

@@ -29,7 +29,13 @@ import {
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
-import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
+import {
+  enqueueMultiQuestionJob,
+  retryMultiQuestionJob,
+  resumeMultiQuestionJobs,
+  subscribeMultiQuestionJobs,
+  type MultiQuestionJob,
+} from '../utils/noteBackgroundJobs';
 import { enqueueCaptureUpload, installCaptureUploadResumer, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
@@ -96,6 +102,7 @@ export function NoteDropApp() {
   const [batchSubject, setBatchSubject] = useState('默认文件夹');
   const [batchRemark, setBatchRemark] = useState('');
   const [materialOpen, setMaterialOpen] = useState(false);
+  const [backgroundJob, setBackgroundJob] = useState<MultiQuestionJob | null>(null);
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
   useEffect(() => {
@@ -112,7 +119,17 @@ export function NoteDropApp() {
   }, []);
 
   useEffect(() => {
-    if (isMobileCapture) void resumeMultiQuestionJobs();
+    if (!isMobileCapture) return undefined;
+    const dispose = subscribeMultiQuestionJobs((job) => {
+      setBackgroundJob(job);
+      const progress = job.progress > 0 && !['completed', 'failed', 'needs_review'].includes(job.status)
+        ? ` ${job.progress}%`
+        : '';
+      setStatus(`${job.message || '后台任务状态已更新'}${progress}`);
+      if (['failed', 'needs_review'].includes(job.status) && job.error) setDialogError(job.error);
+    });
+    void resumeMultiQuestionJobs();
+    return dispose;
   }, [isMobileCapture]);
 
   useEffect(() => {
@@ -722,8 +739,31 @@ export function NoteDropApp() {
         {mobileStep === 'success' && (
           <section className="mobile-capture-success">
             <span><CheckCircle2 size={38} /></span>
-            <h1>记录完成</h1>
+            <h1>{backgroundJob && !['completed', 'failed', 'needs_review'].includes(backgroundJob.status) ? '原图已保存' : '记录完成'}</h1>
             <p>{status || '笔记已保存并同步到学习中心。'}</p>
+            {backgroundJob && (
+              <div className={`mobile-background-job is-${backgroundJob.status}`} role="status" aria-live="polite">
+                <span style={{ width: `${Math.max(4, Math.min(100, backgroundJob.progress || 4))}%` }} />
+                <small>
+                  {backgroundJob.status === 'completed'
+                    ? `AI 已完成，生成 ${backgroundJob.detectedCount} 道题`
+                    : ['failed', 'needs_review'].includes(backgroundJob.status)
+                      ? 'AI 未完成，原图仍然安全保留'
+                      : `AI 后台处理中 ${backgroundJob.progress || 5}%`}
+                </small>
+              </div>
+            )}
+            {backgroundJob && ['failed', 'needs_review'].includes(backgroundJob.status) && (
+              <button type="button" onClick={() => {
+                setDialogError('');
+                void retryMultiQuestionJob(backgroundJob.id).catch((error) => {
+                  setDialogError(error instanceof Error ? error.message : '重试失败，请稍后再试。');
+                });
+              }}>
+                <Sparkles size={18} />重试 AI 裁剪
+              </button>
+            )}
+            {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
             <button className="primary" type="button" onClick={resetMobileCapture}><Camera size={19} />继续拍题</button>
             <button type="button" onClick={() => window.location.assign(`${window.location.origin}/?panel=learning&view=uncategorized`)}>查看普通笔记</button>
           </section>
