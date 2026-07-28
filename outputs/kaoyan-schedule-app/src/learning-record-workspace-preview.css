@@ -18,3 +18,68 @@
 .lrp-html-mode span { margin-left: auto; color: #746a5e; font-size: 12px; }
 .lrp-html-preview .lrp-document-frame { flex: 1; min-height: 240px; }
 .lrp-text-preview { box-sizing: border-box; width: 100%; height: 100%; min-height: 260px; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fbfaf7; color: #25282d; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.lrp-drag-ghost {
+  position: fixed;
+  z-index: 900;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 8px 11px;
+  overflow: hidden;
+  border: 1px solid rgba(143, 96, 54, .2);
+  border-radius: 10px;
+  color: #5d5145;
+  background: rgba(255, 253, 249, .96);
+  box-shadow: 0 14px 36px rgba(31, 27, 23, .18);
+  font-size: 10px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  animation: lrp-ghost-in .12s ease-out both;
+}
+.lrp-snap-guide {
+  position: absolute;
+  z-index: 179;
+  display: block;
+  pointer-events: none;
+  background: rgba(143, 96, 54, .46);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .52);
+}
+.lrp-snap-guide.is-vertical {
+  top: 72px;
+  bottom: 14px;
+  width: 1px;
+}
+.lrp-snap-guide.is-horizontal {
+  left: 14px;
+  right: 14px;
+  height: 1px;
+}
+.lrp-float.is-interacting {
+  transition: none;
+  will-change: left, top, width, height;
+}
+.lrp-float.is-snapping {
+  filter: drop-shadow(0 19px 36px rgba(143, 96, 54, .3));
+}
+.lrp-float.is-snapping > div {
+  outline: 2px solid rgba(143, 96, 54, .28);
+}
+.lrp-float.is-spawning {
+  animation: lrp-float-spawn .24s cubic-bezier(.2, .82, .2, 1) both;
+}
+@keyframes lrp-ghost-in {
+  from { opacity: 0; transform: translate(-50%, -43%) scale(.94); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes lrp-float-spawn {
+  from { opacity: .18; transform: scale(.72); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lrp-drag-ghost,
+  .lrp-float.is-spawning {
+    animation: none;
+  }
+}

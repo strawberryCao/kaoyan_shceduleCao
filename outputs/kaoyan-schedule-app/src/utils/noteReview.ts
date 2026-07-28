@@ -11,10 +11,19 @@ export type NoteReviewState = 'pending' | 'auto_applied' | 'accepted' | 'correct
 
 export interface NoteReviewFields {
   subject?: string | null;
+  remark?: string | null;
+  noteType?: string | null;
   reviewStatus?: string | null;
   reviewState?: string | null;
   organizationStatus?: string | null;
 }
+
+const hasExplicitUserCategory = (note: NoteReviewFields): boolean => {
+  const remark = typeof note.remark === 'string' ? note.remark.normalize('NFKC') : '';
+  const noteType = typeof note.noteType === 'string' ? note.noteType.trim().toLowerCase() : '';
+  if (!['mistake', 'memory', 'good'].includes(noteType)) return false;
+  return /(?:^|[\s#【\[，,。；;：:])(?:错题|好题|背|背诵|记|记住)(?=$|[\s#】\]，,。；;：:])/u.test(remark);
+};
 
 const DEFAULT_NOTE_BUCKET_NAMES = new Set<string>(DEFAULT_NOTE_BUCKET_ALIASES);
 const REVIEW_STATES = new Set<NoteReviewState>([
@@ -55,7 +64,7 @@ export const resolveNoteReviewState = (note: NoteReviewFields): NoteReviewState 
 };
 
 export const isPendingNoteReview = (note: NoteReviewFields): boolean => (
-  resolveNoteReviewState(note) === 'pending'
+  resolveNoteReviewState(note) === 'pending' && !hasExplicitUserCategory(note)
 );
 
 export const isIgnoredNote = (note: NoteReviewFields): boolean => (

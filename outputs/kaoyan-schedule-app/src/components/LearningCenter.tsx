@@ -36,6 +36,7 @@ import type {
   LearningNoteCreateInput,
   LearningNotePatch,
   LearningNoteReviewAction,
+  LearningRecordFacet,
 } from '../utils/learningData';
 import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
 import { enqueueLearningNoteRename, IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
@@ -53,6 +54,11 @@ import {
   shiftWeek,
   weeklyReviewFilename,
 } from '../utils/weeklyReview';
+import {
+  exportWorkspaceDocx,
+  exportWorkspacePdf,
+  type WorkspaceExportAsset,
+} from '../utils/workspaceExport';
 import '../learning-center.css';
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -230,7 +236,10 @@ const stableLearningAttachmentPath = (note: LearningAutoNote, attachment: Learni
 const noteAttachmentPaths = (note: LearningAutoNote, attachment: LearningAttachment): string[] => {
   const current = attachment.filePath.trim();
   const stable = stableLearningAttachmentPath(note, attachment);
-  return uniqueText(IS_CLOUD_RUNTIME ? [stable, current] : [current, stable]);
+  const currentPrimary = attachment.kind === 'image' ? note.filePath.trim() : '';
+  return uniqueText(IS_CLOUD_RUNTIME
+    ? [stable, current, currentPrimary]
+    : [current, currentPrimary, stable]);
 };
 
 const noteAttachmentPrimaryPath = (note: LearningAutoNote, attachment: LearningAttachment): string => (
@@ -337,6 +346,7 @@ const remarkSignalsGood = (remark: string): boolean => /(?:^|[\s#【\[，,。；
 
 const isMistakeNote = (note: LearningAutoNote): boolean => (
   note.noteType === 'mistake'
+  || note.facets.includes('mistake')
   || noteHasTag(note, MISTAKE_WORDS)
   || remarkSignalsMistake(note.remark)
   || noteWrongReasons(note).length > 0
@@ -345,12 +355,14 @@ const isMistakeNote = (note: LearningAutoNote): boolean => (
 
 const isMemoryNote = (note: LearningAutoNote): boolean => (
   note.noteType === 'memory'
+  || note.facets.includes('memory')
   || noteHasTag(note, MEMORY_WORDS)
   || remarkSignalsMemory(note.remark)
   || note.items.some((item) => item.intent.shouldMemorize)
 );
 
 const isGoodNote = (note: LearningAutoNote): boolean => {
+  if (note.facets.includes('good')) return true;
   if (note.goodQuestion !== null) return note.goodQuestion;
   const hasUserOwnedGoodTag = (note.manualCreated || note.userEditedFields.includes('tags'))
     && noteHasTag(note, GOOD_QUESTION_WORDS);
@@ -448,6 +460,7 @@ export function LearningCenter({
   const [wrongReasonEditor, setWrongReasonEditor] = useState<{ noteUid: string; text: string } | null>(null);
   const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
   const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
+  const [quickExporting, setQuickExporting] = useState<'docx' | 'pdf' | ''>('');
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -506,8 +519,8 @@ export function LearningCenter({
     indexedNotes.flatMap(({ note }) => noteKnowledgePoints(note)),
   ).sort((left, right) => left.localeCompare(right, 'zh-CN')), [indexedNotes]);
 
-  const mistakeNotes = useMemo(() => indexedNotes.filter(({ note }) => isMistakeNote(note)), [indexedNotes]);
-  const goodNotes = useMemo(() => indexedNotes.filter(({ note }) => isGoodNote(note)), [indexedNotes]);
+  const mistakeNotes = useMemo(() => allNotes.filter(({ note }) => isMistakeNote(note)), [allNotes]);
+  const goodNotes = useMemo(() => allNotes.filter(({ note }) => isGoodNote(note)), [allNotes]);
   const importableMistakes = useMemo(() => mistakeNotes.filter(({ note }) => !isGoodNote(note)), [mistakeNotes]);
   const visibleGoodImport = useMemo(
     () => rankNotesForQuery(importableMistakes, goodImportQuery),
@@ -519,7 +532,7 @@ export function LearningCenter({
   );
   const allVisibleGoodImportSelected = visibleGoodImportIds.length > 0
     && visibleGoodImportIds.every((noteUid) => goodImportSelection.includes(noteUid));
-  const memoryNotes = useMemo(() => indexedNotes.filter(({ note }) => isMemoryNote(note)), [indexedNotes]);
+  const memoryNotes = useMemo(() => allNotes.filter(({ note }) => isMemoryNote(note)), [allNotes]);
   const quickNotes = useMemo(() => allNotes.filter(({ note }) => isQuickNote(note)), [allNotes]);
   const uncategorizedNotes = useMemo(() => indexedNotes.filter(({ note }) => (
     !isQuickNote(note) && !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
@@ -1097,6 +1110,49 @@ export function LearningCenter({
     }
   };
 
+  const addQuickFacet = async (note: LearningAutoNote, facet: Exclude<LearningRecordFacet, 'quick' | 'method'>) => {
+    if (pendingNoteUid || note.facets.includes(facet)) return;
+    const labels: Record<Exclude<LearningRecordFacet, 'quick' | 'method'>, string> = {
+      mistake: '错题',
+      good: '好题',
+      memory: '背诵',
+      knowledge: '知识库',
+    };
+    try {
+      setPendingNoteUid(note.noteUid);
+      setFeedback('');
+      await onPatchNote(note.noteUid, { facets: uniqueText([...note.facets, 'quick', facet]) as LearningRecordFacet[] });
+      setFeedback(`已加入${labels[facet]}，仍保留在速记中`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : `加入${labels[facet]}失败，请稍后重试。`);
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
+
+  const quickExportAssets = (note: LearningAutoNote): WorkspaceExportAsset[] => noteAttachments(note).map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name,
+    kind: attachment.kind,
+    url: noteFileUrl(noteAttachmentPrimaryPath(note, attachment)),
+    sizeLabel: attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : '未知大小',
+  }));
+
+  const exportQuickNote = async (note: LearningAutoNote, format: 'docx' | 'pdf') => {
+    if (quickExporting) return;
+    try {
+      setQuickExporting(format);
+      setFeedback('');
+      const assets = quickExportAssets(note);
+      if (format === 'docx') await exportWorkspaceDocx(note, assets);
+      else exportWorkspacePdf(note, assets);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '导出失败，请稍后重试。');
+    } finally {
+      setQuickExporting('');
+    }
+  };
+
   const addStudyThought = async (note: LearningAutoNote) => {
     const text = thoughtDraft.trim();
     if (!text || thoughtSaving) return;
@@ -1212,7 +1268,7 @@ export function LearningCenter({
     }
   };
 
-  const renderNoteButton = (entry: IndexedNote, context: 'mistake' | 'good' | 'memory' | 'library' | 'inbox') => {
+  const renderNoteButton = (entry: IndexedNote, context: 'mistake' | 'good' | 'memory' | 'quick' | 'library' | 'inbox') => {
     const { date, note } = entry;
     const knowledge = noteKnowledgePoints(note)[0];
     const pages = pageRefText(note);
@@ -1234,13 +1290,13 @@ export function LearningCenter({
         }}
       >
         <span className="lc-note-button-thumb" aria-hidden="true">
-          <FileImage size={18} />
+          {context === 'quick' ? <Zap size={18} /> : <FileImage size={18} />}
           {thumbnailPaths.length > 0 && <ResilientNoteImage paths={thumbnailPaths} alt="" />}
         </span>
         <span className="lc-note-button-copy">
           <span className="lc-note-button-title">{note.title || note.remark || '未命名笔记'}</span>
           <span className="lc-note-button-meta">
-            {context === 'library' && view !== 'library' && <time>{formatShortDate(date)}</time>}
+            {(context === 'quick' || (context === 'library' && view !== 'library')) && <time>{formatShortDate(date)}</time>}
             {!isDefaultNoteBucket(note.subject) && <span>{displaySubject(note.subject)}</span>}
             {(pages || knowledge) && <span>{pages || knowledge}</span>}
           </span>
@@ -1733,16 +1789,118 @@ export function LearningCenter({
     </div>
   );
 
+  const renderQuickDetail = (entry: IndexedNote | null) => {
+    if (!entry) {
+      return (
+        <div className="lc-detail-empty">
+          <Zap size={28} />
+          <h3>这里还没有速记</h3>
+        </div>
+      );
+    }
+    const { date, note } = entry;
+    const attachments = noteAttachments(note);
+    const paragraphs = note.remark.split(/\r?\n\s*\r?\n/u).map((item) => item.trim()).filter(Boolean);
+    const facetActions: Array<{
+      id: Exclude<LearningRecordFacet, 'quick' | 'method'>;
+      label: string;
+      active: boolean;
+    }> = [
+      { id: 'mistake', label: '错题', active: isMistakeNote(note) },
+      { id: 'good', label: '好题', active: isGoodNote(note) },
+      { id: 'memory', label: '背诵', active: isMemoryNote(note) },
+      { id: 'knowledge', label: '知识库', active: note.facets.includes('knowledge') },
+    ];
+    return (
+      <article className="lc-quick-reader">
+        <button className="lc-mobile-back" type="button" onClick={() => setMobileListOpen(true)} aria-label="返回速记列表">
+          <ChevronLeft size={20} />
+        </button>
+        <div className="lc-quick-page">
+          <header className="lc-quick-document-header">
+            <div className="lc-quick-kicker"><Zap size={15} /><span>速记</span><time>{formatRecordDate(date)}</time></div>
+            <h1>{note.title || '未命名速记'}</h1>
+            <div className="lc-quick-document-actions">
+              {attachments.length > 0 && (
+                <button type="button" onClick={() => {
+                  const url = new URL(window.location.href);
+                  url.searchParams.set('workspaceNote', note.noteUid);
+                  url.searchParams.delete('hub');
+                  url.searchParams.delete('notes');
+                  url.searchParams.delete('noteApp');
+                  window.location.assign(url.toString());
+                }}><FolderOpen size={15} />资料工作区</button>
+              )}
+              <button type="button" disabled={Boolean(quickExporting)} onClick={() => void exportQuickNote(note, 'docx')}>
+                <FileDown size={15} />{quickExporting === 'docx' ? '生成中…' : '导出 Word'}
+              </button>
+              <button type="button" disabled={Boolean(quickExporting)} onClick={() => void exportQuickNote(note, 'pdf')}>
+                <FileText size={15} />{quickExporting === 'pdf' ? '生成中…' : '导出 PDF'}
+              </button>
+            </div>
+          </header>
+
+          <section className="lc-quick-copy" aria-label="速记正文">
+            {paragraphs.length > 0
+              ? paragraphs.map((paragraph, index) => <p key={`${note.noteUid}:paragraph:${index}`}>{paragraph}</p>)
+              : <p className="is-empty">这条速记只有附件，没有文字正文。</p>}
+          </section>
+
+          {attachments.length > 0 && (
+            <section className="lc-quick-assets" aria-label="速记附件">
+              <h2>资料附件 <span>{attachments.length}</span></h2>
+              <div>
+                {attachments.map((attachment) => {
+                  const filePath = noteAttachmentPrimaryPath(note, attachment);
+                  if (attachment.kind === 'image') {
+                    return (
+                      <figure key={attachment.id}>
+                        <ResilientNoteImage paths={noteAttachmentPaths(note, attachment)} alt={attachment.name} loading="lazy" />
+                        <figcaption>{attachment.name}</figcaption>
+                      </figure>
+                    );
+                  }
+                  return (
+                    <a key={attachment.id} href={noteFileUrl(filePath)} download={attachment.name}>
+                      <FileText size={20} />
+                      <span><strong>{attachment.name}</strong><small>{attachment.kind.toUpperCase()}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
+                      <FileDown size={16} />
+                    </a>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
+          <section className="lc-quick-upgrade" aria-label="把速记加入其他栏目">
+            <div><strong>加入到…</strong><span>只增加身份，不会复制这条速记</span></div>
+            <div>
+              {facetActions.map((action) => (
+                <button
+                  className={action.active ? 'active' : ''}
+                  key={action.id}
+                  type="button"
+                  disabled={action.active || pendingNoteUid === note.noteUid}
+                  onClick={() => void addQuickFacet(note, action.id)}
+                >{action.active ? `已在${action.label}` : `加入${action.label}`}</button>
+              ))}
+            </div>
+          </section>
+        </div>
+      </article>
+    );
+  };
+
   const renderQuick = () => (
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
         {renderSearch(visibleQuick.length, '搜索速记内容、附件名或备注')}
         <div className="lc-master-list">
-          {visibleQuick.map((entry) => renderNoteButton(entry, 'library'))}
+          {visibleQuick.map((entry) => renderNoteButton(entry, 'quick'))}
           {visibleQuick.length === 0 && <div className="lc-list-empty"><Zap size={23} /><strong>还没有速记</strong></div>}
         </div>
       </aside>
-      <section className="lc-detail-pane">{renderNoteDetail(selectedNote, 'library')}</section>
+      <section className="lc-detail-pane lc-quick-detail-pane">{renderQuickDetail(selectedNote)}</section>
     </div>
   );
 

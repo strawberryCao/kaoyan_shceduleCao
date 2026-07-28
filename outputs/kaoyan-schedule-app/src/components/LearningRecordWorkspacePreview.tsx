@@ -55,6 +55,8 @@ type FloatingAsset = {
   locked: boolean;
 };
 type Bounds = { width: number; height: number; left: number; top: number; bottom: number };
+type SnapGuides = { vertical: number | null; horizontal: number | null };
+type DragGhost = { x: number; y: number; label: string } | null;
 
 const KIND_SIZE: Record<AssetKind, [number, number]> = {
   image: [430, 300],
@@ -64,8 +66,11 @@ const KIND_SIZE: Record<AssetKind, [number, number]> = {
   file: [340, 260],
 };
 const GAP = 12;
+const SNAP_DISTANCE = 11;
 const MIN_W = 220;
 const MIN_H = 160;
+const EMPTY_GUIDES: SnapGuides = { vertical: null, horizontal: null };
+const FLOATING_LAYOUT_STORAGE_PREFIX = 'kaoyan:learning-workspace-layout:';
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const noteFileUrl = (filePath: string, preview = false) => (
   `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}${preview ? '&preview=1' : ''}`
@@ -163,6 +168,89 @@ function pack(items: FloatingAsset[], bounds: Bounds): FloatingAsset[] {
   return result;
 }
 
+function clampFloating(item: FloatingAsset, bounds: Bounds): FloatingAsset {
+  return {
+    ...item,
+    width: Math.min(item.width, Math.max(MIN_W, bounds.width - bounds.left - GAP * 2)),
+    height: Math.min(item.height, Math.max(MIN_H, bounds.height - bounds.top - bounds.bottom - GAP)),
+    x: clamp(item.x, bounds.left, Math.max(bounds.left, bounds.width - item.width - GAP)),
+    y: clamp(item.y, bounds.top, Math.max(bounds.top, bounds.height - item.height - bounds.bottom)),
+  };
+}
+
+function snapFloating(
+  item: FloatingAsset,
+  others: FloatingAsset[],
+  bounds: Bounds,
+): { item: FloatingAsset; guides: SnapGuides; snapped: boolean } {
+  const candidate = clampFloating(item, bounds);
+  let x = candidate.x;
+  let y = candidate.y;
+  let bestX = SNAP_DISTANCE + 1;
+  let bestY = SNAP_DISTANCE + 1;
+  let vertical: number | null = null;
+  let horizontal: number | null = null;
+
+  const tryX = (nextX: number, guideX: number) => {
+    const distance = Math.abs(nextX - candidate.x);
+    if (distance <= SNAP_DISTANCE && distance < bestX) {
+      bestX = distance;
+      x = nextX;
+      vertical = guideX;
+    }
+  };
+  const tryY = (nextY: number, guideY: number) => {
+    const distance = Math.abs(nextY - candidate.y);
+    if (distance <= SNAP_DISTANCE && distance < bestY) {
+      bestY = distance;
+      y = nextY;
+      horizontal = guideY;
+    }
+  };
+
+  tryX(bounds.left, bounds.left);
+  tryX(bounds.width - candidate.width - GAP, bounds.width - GAP);
+  tryY(bounds.top, bounds.top);
+  tryY(bounds.height - candidate.height - bounds.bottom, bounds.height - bounds.bottom);
+
+  others.forEach((other) => {
+    tryX(other.x + other.width + GAP, other.x + other.width + GAP / 2);
+    tryX(other.x - candidate.width - GAP, other.x - GAP / 2);
+    tryX(other.x, other.x);
+    tryX(other.x + (other.width - candidate.width) / 2, other.x + other.width / 2);
+    tryX(other.x + other.width - candidate.width, other.x + other.width);
+    tryY(other.y + other.height + GAP, other.y + other.height + GAP / 2);
+    tryY(other.y - candidate.height - GAP, other.y - GAP / 2);
+    tryY(other.y, other.y);
+    tryY(other.y + (other.height - candidate.height) / 2, other.y + other.height / 2);
+    tryY(other.y + other.height - candidate.height, other.y + other.height);
+  });
+
+  return {
+    item: clampFloating({ ...candidate, x, y }, bounds),
+    guides: { vertical, horizontal },
+    snapped: vertical !== null || horizontal !== null,
+  };
+}
+
+function readFloatingLayout(noteUid: string, validAssetIds: Set<string>): FloatingAsset[] {
+  try {
+    const raw = window.localStorage.getItem(`${FLOATING_LAYOUT_STORAGE_PREFIX}${noteUid}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is FloatingAsset => (
+      item
+      && typeof item.id === 'string'
+      && typeof item.assetId === 'string'
+      && validAssetIds.has(item.assetId)
+      && ['x', 'y', 'width', 'height', 'z'].every((key) => Number.isFinite(item[key]))
+      && typeof item.locked === 'boolean'
+    ));
+  } catch {
+    return [];
+  }
+}
+
 function AssetGlyph({ kind }: { kind: AssetKind }) {
   if (kind === 'image') return <FileImage size={22} />;
   if (kind === 'html') return <FileCode2 size={22} />;
@@ -228,10 +316,17 @@ function AssetPreview({ item }: { item: Asset }) {
 export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const repairingPathsRef = useRef(new Set<string>());
+  const loadedLayoutKeyRef = useRef('');
   const [snapshot, setSnapshot] = useState<LearningDataSnapshot>(() => readLearningDataCache());
   const [loadError, setLoadError] = useState('');
   const [activeId, setActiveId] = useState('');
   const [floating, setFloating] = useState<FloatingAsset[]>([]);
+  const [dragGhost, setDragGhost] = useState<DragGhost>(null);
+  const [snapGuides, setSnapGuides] = useState<SnapGuides>(EMPTY_GUIDES);
+  const [snappingId, setSnappingId] = useState('');
+  const [interactingId, setInteractingId] = useState('');
+  const [spawningIds, setSpawningIds] = useState<Set<string>>(() => new Set());
+  const [layoutReadyKey, setLayoutReadyKey] = useState('');
   const [compact, setCompact] = useState(() => window.innerWidth < 820);
   const [exporting, setExporting] = useState<'docx' | 'pdf' | ''>('');
   const [actionError, setActionError] = useState('');
@@ -296,9 +391,37 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
 
   useEffect(() => {
     const validIds = new Set(assetKey ? assetKey.split('\u001f') : []);
+    const layoutKey = `${noteUid}:${assetKey}`;
     setActiveId((current) => validIds.has(current) ? current : assets[0]?.id || '');
-    setFloating((current) => current.filter((item) => validIds.has(item.assetId)));
-  }, [assetKey, assets]);
+    if (compact) {
+      loadedLayoutKeyRef.current = '';
+      setLayoutReadyKey('');
+      setFloating([]);
+      return;
+    }
+    if (loadedLayoutKeyRef.current === layoutKey) {
+      setFloating((current) => current.filter((item) => validIds.has(item.assetId)));
+      return;
+    }
+    const root = rootRef.current;
+    const restored = readFloatingLayout(noteUid, validIds);
+    setFloating(root ? restored.map((item) => clampFloating(item, boundsOf(root))) : restored);
+    loadedLayoutKeyRef.current = layoutKey;
+    setLayoutReadyKey(layoutKey);
+  }, [assetKey, assets, compact, noteUid]);
+
+  useEffect(() => {
+    const layoutKey = `${noteUid}:${assetKey}`;
+    if (compact || layoutReadyKey !== layoutKey) return;
+    try {
+      window.localStorage.setItem(
+        `${FLOATING_LAYOUT_STORAGE_PREFIX}${noteUid}`,
+        JSON.stringify(floating),
+      );
+    } catch {
+      // Layout persistence must never interrupt reading or dragging.
+    }
+  }, [assetKey, compact, floating, layoutReadyKey, noteUid]);
 
   useEffect(() => {
     const resize = () => {
@@ -352,11 +475,12 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     }
     const rect = root.getBoundingClientRect();
     const bounds = boundsOf(root);
+    const floatingId = `${item.id}-${Date.now()}`;
     setFloating((current) => {
       const [baseW, baseH] = KIND_SIZE[item.kind];
       const scale = Math.max(0.68, 1 - current.length * 0.07);
-      const next: FloatingAsset = {
-        id: `${item.id}-${Date.now()}`,
+      const candidate: FloatingAsset = {
+        id: floatingId,
         assetId: item.id,
         x: clientX - rect.left - baseW / 2,
         y: clientY - rect.top - 24,
@@ -365,8 +489,20 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         z: current.reduce((max, value) => Math.max(max, value.z), 20) + 1,
         locked: false,
       };
-      return pack([...current, next], bounds);
+      const snapped = snapFloating(candidate, current, bounds);
+      const next = current.some((other) => overlap(snapped.item, other))
+        ? findSlot(snapped.item, current, bounds)
+        : snapped.item;
+      return [...current, next];
     });
+    setSpawningIds((current) => new Set(current).add(floatingId));
+    window.setTimeout(() => {
+      setSpawningIds((current) => {
+        const next = new Set(current);
+        next.delete(floatingId);
+        return next;
+      });
+    }, 260);
   };
 
   const spawnAll = () => {
@@ -401,15 +537,25 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     const startY = event.clientY;
     let moved = false;
     const move = (next: PointerEvent) => {
-      if (Math.hypot(next.clientX - startX, next.clientY - startY) > 8) moved = true;
+      if (Math.hypot(next.clientX - startX, next.clientY - startY) > 8) {
+        moved = true;
+        setDragGhost({ x: next.clientX, y: next.clientY, label: `拖出 ${item.name}` });
+      }
     };
     const up = (next: PointerEvent) => {
       window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointercancel', cancel);
+      setDragGhost(null);
       if (moved) spawn(item, next.clientX, next.clientY);
       else setActiveId(item.id);
     };
+    const cancel = () => {
+      window.removeEventListener('pointermove', move);
+      setDragGhost(null);
+    };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up, { once: true });
+    window.addEventListener('pointercancel', cancel, { once: true });
   };
 
   const startMove = (event: ReactPointerEvent<HTMLElement>, item: FloatingAsset, resize = false) => {
@@ -421,31 +567,51 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     const startX = event.clientX;
     const startY = event.clientY;
     const bounds = boundsOf(root);
+    setInteractingId(item.id);
     const move = (next: PointerEvent) => {
-      setFloating((current) => current.map((value) => {
-        if (value.id !== item.id) return value;
+      setFloating((current) => {
         const dx = next.clientX - startX;
         const dy = next.clientY - startY;
+        const others = current.filter((value) => value.id !== item.id);
         if (resize) {
-          return {
+          setSnapGuides(EMPTY_GUIDES);
+          setSnappingId('');
+          return current.map((value) => value.id === item.id ? {
             ...value,
             width: clamp(item.width + dx, MIN_W, Math.max(MIN_W, bounds.width - value.x - GAP)),
             height: clamp(item.height + dy, MIN_H, Math.max(MIN_H, bounds.height - value.y - bounds.bottom)),
-          };
+          } : value);
         }
-        return {
-          ...value,
-          x: clamp(item.x + dx, bounds.left, Math.max(bounds.left, bounds.width - value.width - GAP)),
-          y: clamp(item.y + dy, bounds.top, Math.max(bounds.top, bounds.height - value.height - bounds.bottom)),
-        };
-      }));
+        const snapped = snapFloating({ ...item, x: item.x + dx, y: item.y + dy }, others, bounds);
+        setSnapGuides(snapped.guides);
+        setSnappingId(snapped.snapped ? item.id : '');
+        return current.map((value) => value.id === item.id ? snapped.item : value);
+      });
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
-      setFloating((current) => pack(current, bounds));
+      window.removeEventListener('pointercancel', cancel);
+      setSnapGuides(EMPTY_GUIDES);
+      setSnappingId('');
+      setInteractingId('');
+      setFloating((current) => {
+        const active = current.find((value) => value.id === item.id);
+        if (!active) return current;
+        const others = current.filter((value) => value.id !== item.id);
+        if (!others.some((other) => overlap(active, other))) return current;
+        const settled = findSlot(active, others, bounds);
+        return current.map((value) => value.id === item.id ? settled : value);
+      });
+    };
+    const cancel = () => {
+      window.removeEventListener('pointermove', move);
+      setSnapGuides(EMPTY_GUIDES);
+      setSnappingId('');
+      setInteractingId('');
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up, { once: true });
+    window.addEventListener('pointercancel', cancel, { once: true });
   };
 
   const exportDocx = async () => {
@@ -549,6 +715,19 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
         </article>
       </section>
 
+      {dragGhost && (
+        <div className="lrp-drag-ghost" style={{ left: dragGhost.x, top: dragGhost.y }}>
+          {dragGhost.label}
+        </div>
+      )}
+
+      {!compact && snapGuides.vertical !== null && (
+        <i className="lrp-snap-guide is-vertical" style={{ left: snapGuides.vertical }} />
+      )}
+      {!compact && snapGuides.horizontal !== null && (
+        <i className="lrp-snap-guide is-horizontal" style={{ top: snapGuides.horizontal }} />
+      )}
+
       {!compact && floating.length > 0 && (
         <div className="lrp-floating-toolbar">
           <button type="button" onClick={arrangeFloating}><LayoutGrid size={14} />自动排列</button>
@@ -563,7 +742,14 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
             if (!current) return null;
             return (
               <section
-                className={`lrp-float ${current.kind} ${item.locked ? 'is-locked' : ''}`}
+                className={[
+                  'lrp-float',
+                  current.kind,
+                  item.locked ? 'is-locked' : '',
+                  snappingId === item.id ? 'is-snapping' : '',
+                  interactingId === item.id ? 'is-interacting' : '',
+                  spawningIds.has(item.id) ? 'is-spawning' : '',
+                ].filter(Boolean).join(' ')}
                 key={item.id}
                 style={{ left: item.x, top: item.y, width: item.width, height: item.height, zIndex: item.z }}
                 onPointerDown={() => setFloating((values) => values.map((value) => value.id === item.id

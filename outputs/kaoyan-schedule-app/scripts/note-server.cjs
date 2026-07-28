@@ -109,8 +109,10 @@ let noteAppReadyAt = null;
 let aiRouter = null;
 let aiRouterInitError = null;
 let aiRouterConfigStamp = null;
-let aiNamingQueue = Promise.resolve();
+const aiNamingQueues = [Promise.resolve(), Promise.resolve()];
+let aiNamingLaneCursor = 0;
 const aiNamingJobs = new Map();
+let pendingAiNamingResumeTimer = null;
 let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
 let noteTitlePolicyPromise = null;
@@ -859,10 +861,22 @@ function guessSubjectFromText(text) {
   return DEFAULT_SUBJECT;
 }
 
+function isIntentOnlyRemark(value) {
+  const remainder = String(value || '')
+    .normalize('NFKC')
+    .replace(/\b\d+(?:\.\d+)*\b/g, ' ')
+    .replace(/错题|好题|背诵|背|记住|记忆|速记/g, ' ')
+    .replace(/[#，,。；;：:、_\-\s]+/g, '');
+  return remainder.length === 0;
+}
+
 function makeFallbackName({ kind, remark, subject }) {
   const text = remark && remark.trim() ? remark : kind === 'canvas' ? '待确认画布笔记' : '待确认题目';
   const safeSubject = sanitizeSegment(subject || guessSubjectFromText(text), DEFAULT_SUBJECT, 24);
-  const safeTitle = sanitizeSegment(text, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+  const pendingTitle = kind !== 'canvas' && isIntentOnlyRemark(remark)
+    ? '正在识别题目内容'
+    : text;
+  const safeTitle = sanitizeSegment(pendingTitle, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
   return {
     subject: safeSubject,
     title: safeTitle,
@@ -913,6 +927,7 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
     `2. title 目标长度为 ${titleMinLength} 到 ${titleMaxLength} 个字符，${titleStyleText}。`,
     '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
     '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
+    '4.1 用户备注里的“错题”“好题”“背”“背诵”“记住”只表示收录分类，不是标题。即使备注只有这些词，也必须阅读图片内容并生成具体标题与科目。',
     '5. 先逐条检查“字段命名规则”。只有图片中能直接看到规则要求的标签及对应值时才算匹配，严禁用相似编号、日期或其他字段猜测。',
     '6. 如果匹配规则：ruleId 填规则 id，ruleValue 填原图中提取到的字段值，ruleEvidence 简述标签和值的位置；title 仍给出普通内容标题。程序会根据模板生成最终标题。',
     options.rejectGenericTitle === false
@@ -1281,6 +1296,7 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
     isGood: parsed.flags?.isClassic === true,
     shouldMemorize: parsed.flags?.shouldMemorize === true,
   };
+  const hasExplicitUserCategory = intent.isMistake || intent.isGood || intent.shouldMemorize;
   if (intent.isGood && !tags.includes('好题')) tags.push('好题');
   const noteType = parsed.flags?.isMistake
     ? 'mistake'
@@ -1333,9 +1349,9 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
       userEditedFields: [],
       intent,
     cards,
-    organizationStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+    organizationStatus: hasExplicitUserCategory || (details.subject && details.subject !== DEFAULT_SUBJECT) ? 'confirmed' : 'pending',
     classificationSource: details.subject && details.subject !== DEFAULT_SUBJECT ? 'local' : 'ai',
-    reviewStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+    reviewStatus: hasExplicitUserCategory || (details.subject && details.subject !== DEFAULT_SUBJECT) ? 'auto_applied' : 'pending',
     decisionRevision: 0,
     proposalId: proposalIdFor(details.noteUid || 'new-note', details.subject || DEFAULT_SUBJECT, knowledgePath, createdAt),
     flags: parsed.flags,
@@ -1358,13 +1374,17 @@ function markAiNamingFailed(noteUid, error, naming = null) {
   const completedAt = new Date().toISOString();
   const currentReviewStatus = normalizedReviewStatus(saved.metadata.learning || {});
   const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const explicitIntent = saved.metadata.learning?.intent || {};
+  const hasExplicitUserCategory = explicitIntent.isMistake === true
+    || explicitIntent.isGood === true
+    || explicitIntent.shouldMemorize === true;
   const storedDecisionRevision = Number(saved.metadata.learning?.decisionRevision);
   const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
     ? storedDecisionRevision
     : keepsHumanDecision ? 1 : 0;
   const reviewStatus = keepsHumanDecision
     ? currentReviewStatus
-    : saved.metadata.subject === DEFAULT_SUBJECT ? 'pending' : 'auto_applied';
+    : hasExplicitUserCategory || saved.metadata.subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending';
   const metadata = {
     ...saved.metadata,
     updatedAt: completedAt,
@@ -1427,6 +1447,10 @@ async function runAiNamingJob(noteUid) {
   const requestedSubject = normalizeStoredSubject(latest.metadata.requestedSubject);
   const currentReviewStatus = normalizedReviewStatus(latest.metadata.learning || {});
   const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const explicitIntent = latest.metadata.learning?.intent || {};
+  const hasExplicitUserCategory = explicitIntent.isMistake === true
+    || explicitIntent.isGood === true
+    || explicitIntent.shouldMemorize === true;
   const storedDecisionRevision = Number(latest.metadata.learning?.decisionRevision);
   const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
     ? storedDecisionRevision
@@ -1490,13 +1514,13 @@ async function runAiNamingJob(noteUid) {
         : [subject, ...((latest.metadata.learning?.knowledgePath || []).filter((item) => item !== latest.metadata.subject && item !== subject))].slice(0, 3),
       organizationStatus: currentReviewStatus === 'ignored'
         ? 'ignored'
-        : keepsHumanDecision || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+        : keepsHumanDecision || hasExplicitUserCategory || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
       classificationSource: currentReviewStatus === 'corrected' ? 'manual' : keepsHumanDecision
         ? latest.metadata.learning?.classificationSource || 'ai'
         : 'ai',
       reviewStatus: keepsHumanDecision
         ? currentReviewStatus
-        : subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+        : hasExplicitUserCategory || subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
       decisionRevision,
       proposalId: keepsHumanDecision
         ? latest.metadata.learning?.proposalId
@@ -1615,8 +1639,10 @@ async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
 }
 
 function queueAiNamingJob(noteUid) {
-  if (aiNamingJobs.has(noteUid)) return;
-  const job = aiNamingQueue.then(async () => {
+  if (aiNamingJobs.has(noteUid)) return false;
+  const lane = aiNamingLaneCursor % aiNamingQueues.length;
+  aiNamingLaneCursor += 1;
+  const job = aiNamingQueues[lane].then(async () => {
     try {
       await runAiNamingJob(noteUid);
       queueNoteEnrichment(noteUid);
@@ -1629,8 +1655,9 @@ function queueAiNamingJob(noteUid) {
     }
   });
   aiNamingJobs.set(noteUid, job);
-  aiNamingQueue = job.catch(() => undefined);
+  aiNamingQueues[lane] = job.catch(() => undefined);
   void job.finally(() => aiNamingJobs.delete(noteUid)).catch(() => undefined);
+  return true;
 }
 
 function resumePendingAiNamingJobs() {
@@ -1641,8 +1668,7 @@ function resumePendingAiNamingJobs() {
     const receipt = readJson(path.join(NOTE_SAVE_RECEIPTS_ROOT, name), null);
     if (!receipt || receipt.aiStatus !== 'pending' || typeof receipt.noteUid !== 'string') continue;
     if (!readSaveReceipt(receipt.noteUid)) continue;
-    queueAiNamingJob(receipt.noteUid);
-    resumed += 1;
+    if (queueAiNamingJob(receipt.noteUid)) resumed += 1;
   }
   return resumed;
 }
@@ -3478,12 +3504,20 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`AI router providers: ${currentRouter ? currentRouter.getStatus().providers.filter((provider) => provider.enabled).map((provider) => provider.id).join(', ') || 'none' : `unavailable (${aiRouterInitError})`}`);
   const resumedJobs = resumePendingAiNamingJobs();
   if (resumedJobs > 0) console.log(`Resumed ${resumedJobs} pending AI naming job(s).`);
+  pendingAiNamingResumeTimer = setInterval(() => {
+    resumePendingAiNamingJobs();
+  }, 30_000);
+  pendingAiNamingResumeTimer.unref?.();
 });
 
 module.exports = {
   server,
   async close() {
     reviewSync.stop();
+    if (pendingAiNamingResumeTimer) {
+      clearInterval(pendingAiNamingResumeTimer);
+      pendingAiNamingResumeTimer = null;
+    }
     server.closeAllConnections?.();
     if (!server.listening) return;
     await new Promise((resolve, reject) => {

@@ -339,7 +339,7 @@ export function NoteDropApp() {
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
         ? '图片已加入可靠上传队列；现在可以立即关闭或继续拍题'
-        : '图片和学习中心条目已写入本地磁盘');
+        : '已保存到本地；正在后台识别标题和科目，可立即继续记录');
       if (isMobileCapture) setMobileStep('success');
     } catch (error) {
       const message = error instanceof Error
@@ -479,7 +479,7 @@ export function NoteDropApp() {
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
         ? `${selected.length} 道题已加入可靠上传队列；现在可以立即关闭`
-        : `${selected.length} 道题及学习中心条目已写入本地磁盘`);
+        : `${selected.length} 道题已保存到本地；正在后台识别标题和科目`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {

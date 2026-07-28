@@ -258,6 +258,25 @@ function primaryAttachmentPath(value) {
   return normalizeAttachments(value)[0]?.filePath || '';
 }
 
+function normalizedAssetPath(value) {
+  return asString(value).split(String.fromCharCode(92)).join('/').toLowerCase();
+}
+
+function rebasePrimaryImageAttachment(value, previousPath, nextPath) {
+  const previousKey = normalizedAssetPath(previousPath);
+  const next = asString(nextPath);
+  if (!previousKey || !next || previousKey === normalizedAssetPath(next)) return value;
+  return normalizeAttachments(value).map((attachment) => {
+    if (attachment.kind !== 'image' || normalizedAssetPath(attachment.filePath) !== previousKey) return attachment;
+    return {
+      ...attachment,
+      filePath: next,
+      previewPath: normalizedAssetPath(attachment.previewPath) === previousKey ? next : attachment.previewPath,
+      posterPath: normalizedAssetPath(attachment.posterPath) === previousKey ? next : attachment.posterPath,
+    };
+  });
+}
+
 
 
 function normalizeAutoNote(value) {
@@ -844,6 +863,13 @@ function createLearningDataStore(options = {}) {
     const keepUserValue = (field, incoming, fallback) => (
       userEditedFields.has(field) ? existingNote?.[field] : incoming ?? fallback
     );
+    const nextFilePath = metadata.filePath ?? existingNote?.filePath;
+    const incomingAttachments = enrichment.attachments ?? metadata.attachments;
+    const syncedAttachments = incomingAttachments ?? rebasePrimaryImageAttachment(
+      existingNote?.attachments,
+      existingNote?.filePath,
+      nextFilePath,
+    );
     const autoNote = normalizeAutoNote({
       ...existingNote,
       noteUid,
@@ -856,7 +882,7 @@ function createLearningDataStore(options = {}) {
       createdAt,
       updatedAt: timestamp,
       firstSyncedAt: existingNote?.firstSyncedAt || timestamp,
-      filePath: metadata.filePath ?? existingNote?.filePath,
+      filePath: nextFilePath,
       pageRefs: enrichment.pageRefs ?? existingNote?.pageRefs,
       tags: keepUserValue('tags', enrichment.tags, existingNote?.tags),
       knowledgePath: preservesExistingDecision
@@ -902,7 +928,7 @@ function createLearningDataStore(options = {}) {
       sourceType: metadata.sourceType ?? enrichment.sourceType ?? existingNote?.sourceType,
       sourceBatchId: metadata.sourceBatchId ?? enrichment.sourceBatchId ?? existingNote?.sourceBatchId,
       sourceSplitIndex: metadata.sourceSplitIndex ?? enrichment.sourceSplitIndex ?? existingNote?.sourceSplitIndex,
-      attachments: enrichment.attachments ?? metadata.attachments ?? existingNote?.attachments,
+      attachments: syncedAttachments,
       facets: enrichment.facets ?? metadata.facets ?? existingNote?.facets,
       wrongReasonSource: enrichment.wrongReasonSource ?? existingNote?.wrongReasonSource,
       wrongReasonConfidence: enrichment.wrongReasonConfidence ?? existingNote?.wrongReasonConfidence,

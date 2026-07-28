@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.join(root, 'src/components/LearningCenter.ts
 
 test('legacy note images use stable noteUid assets in cloud runtime', () => {
   assert.match(source, /github:\/\/data\/assets\/\$\{note\.noteUid\}/);
-  assert.match(source, /IS_CLOUD_RUNTIME \? \[stable, current\] : \[current, stable\]/);
+  assert.match(source, /IS_CLOUD_RUNTIME\s*\?\s*\[stable, current, currentPrimary\]\s*:\s*\[current, currentPrimary, stable\]/);
 });
 
 test('all learning-center image surfaces use the shared resolver', () => {
