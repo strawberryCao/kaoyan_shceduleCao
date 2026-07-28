@@ -77,7 +77,9 @@ export function NoteDropApp() {
   const dragDepthRef = useRef(0);
   const detectionRunRef = useRef(0);
   const [isMobileCapture, setIsMobileCapture] = useState(() => (
-    typeof window.matchMedia === 'function' && window.matchMedia(mobileMediaQuery).matches
+    !window.kaoyanDesktop?.isElectron
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(mobileMediaQuery).matches
   ));
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [sourceImage, setSourceImage] = useState<PendingImage | null>(null);
@@ -97,6 +99,10 @@ export function NoteDropApp() {
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
   useEffect(() => {
+    if (window.kaoyanDesktop?.isElectron) {
+      setIsMobileCapture(false);
+      return undefined;
+    }
     if (typeof window.matchMedia !== 'function') return undefined;
     const media = window.matchMedia(mobileMediaQuery);
     const update = () => setIsMobileCapture(media.matches);
