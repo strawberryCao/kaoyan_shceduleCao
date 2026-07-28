@@ -58,4 +58,14 @@ test('legacy mirror excludes V2 metadata, hash assets, and old conflict copies',
   assert.match(script, /\$segments -contains '\.assets'/);
   assert.match(script, /\*sync-conflict-\*/);
   assert.match(script, /Test-LegacyMirrorPath \$relative/);
+  assert.match(script, /function Push-WithStructuredRetry/);
+  assert.match(script, /function Invoke-LearningMergeWithRetry/);
+  assert.match(script, /Start-Sleep -Milliseconds \(200 \* \$attempt\)/);
+  const commitFunction = script.indexOf('function Commit-Pending');
+  const retryFunction = script.indexOf('function Push-WithStructuredRetry');
+  assert.ok(commitFunction >= 0 && retryFunction > commitFunction);
+  assert.match(script.slice(commitFunction, retryFunction), /return \$false\s*\r?\n\}/);
+  assert.match(script, /rebase', '-X', 'ours'/);
+  assert.match(script, /Learning data re-merge failed after a concurrent cloud write/);
+  assert.match(script, /if \(-not \$meta\.updatedAt -or \$metadataChanged\)/);
 });

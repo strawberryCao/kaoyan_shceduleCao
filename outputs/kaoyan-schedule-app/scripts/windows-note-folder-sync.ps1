@@ -296,6 +296,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $safeTitle = Get-SafeFileName ([string]$meta.title) '普通笔记'
       $desiredName = "${safeTitle}_${shortUid}${extension}"
       $oldRelative = Get-RelativeFilePath $LocalPath $imagePath
+      $metadataChanged = $false
       if ([System.IO.Path]::GetFileName($imagePath) -ne $desiredName) {
         $desiredPath = Join-Path $subjectDir $desiredName
         if (-not (Test-Path -LiteralPath $desiredPath)) { Move-Item -LiteralPath $imagePath -Destination $desiredPath -Force }
@@ -309,8 +310,11 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
         }
         $imagePath = $desiredPath
         $meta.fileName = $desiredName
+        $metadataChanged = $true
       }
-      $meta.updatedAt = [DateTime]::UtcNow.ToString('o')
+      if (-not $meta.updatedAt -or $metadataChanged) {
+        $meta | Add-Member -NotePropertyName updatedAt -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+      }
       Write-JsonAtomic $cloudMetaPath $meta
       $relativeCloudMeta = Get-RelativeFilePath $LocalPath $cloudMetaPath
       Write-JsonAtomic (Join-Path $RemotePath $relativeCloudMeta) $meta
@@ -363,7 +367,10 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
   foreach ($subjectDir in $touchedSubjects) {
     $metaDir = Join-Path $subjectDir '.metadata'
     $items = @()
-    Get-ChildItem -LiteralPath $metaDir -Filter '*.note.json' -File -Force | Where-Object { $_.Name -notlike '*.cloud-note.json' } | ForEach-Object {
+    Get-ChildItem -LiteralPath $metaDir -Filter '*.note.json' -File -Force |
+      Where-Object { $_.Name -notlike '*.cloud-note.json' } |
+      Sort-Object Name |
+      ForEach-Object {
       try { $items += ,(Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
     }
     $indexPath = Join-Path $metaDir 'metadata.json'
@@ -400,6 +407,47 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
     return $true
   }
   return $false
+}
+
+function Invoke-LearningMergeWithRetry(
+  [string]$NodeExecutable,
+  [string]$MergeScript,
+  [string]$ConfigPath,
+  [string]$FailureMessage
+) {
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    & $NodeExecutable $MergeScript --config $ConfigPath | Out-Null
+    if ($LASTEXITCODE -eq 0) { return }
+    if ($attempt -lt 5) { Start-Sleep -Milliseconds (200 * $attempt) }
+  }
+  throw $FailureMessage
+}
+
+function Push-WithStructuredRetry(
+  [string]$ClonePath,
+  [string]$Branch,
+  [string]$MergeScript,
+  [string]$V2Adapter,
+  [string]$ConfigPath,
+  [string]$NodeExecutable
+) {
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    try {
+      Invoke-Git @('push', 'origin', "HEAD:$Branch") $ClonePath | Out-Null
+      return
+    } catch {
+      if ($attempt -ge 5) { throw }
+      # A public Worker may commit between our pull and push. Rebase onto that
+      # immutable remote state, then rerun the structured merge so neither side
+      # wins by whole-file replacement.
+      Invoke-Git @('fetch', 'origin', $Branch) $ClonePath | Out-Null
+      Invoke-Git @('rebase', '-X', 'ours', "origin/$Branch") $ClonePath | Out-Null
+      Invoke-LearningMergeWithRetry $NodeExecutable $MergeScript $ConfigPath 'Learning data re-merge failed after a concurrent cloud write.'
+      & $NodeExecutable $V2Adapter --config $ConfigPath --apply | Out-Null
+      if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 re-merge failed after a concurrent cloud write.' }
+      Commit-Pending $ClonePath "data: merge concurrent cloud update $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-Null
+    }
+  }
 }
 
 if ($NativeCommandSelfTest) {
@@ -512,15 +560,14 @@ try {
   $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
   $nodeExecutable = [string]$nodeCommand.Source
-  & $nodeExecutable $mergeScript --config $ConfigPath | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
+  Invoke-LearningMergeWithRetry $nodeExecutable $mergeScript $ConfigPath 'Learning data merge failed.'
   $v2Adapter = Join-Path $workRoot 'v2-local-adapter.cjs'
   if (-not (Test-Path -LiteralPath $v2Adapter)) { throw 'V2 local data adapter was not found.' }
   & $nodeExecutable $v2Adapter --config $ConfigPath --apply | Out-Null
   if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 entry synchronization failed.' }
   # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-  Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null
+  Push-WithStructuredRetry $clonePath $branch $mergeScript $v2Adapter $ConfigPath $nodeExecutable
 
   $finalLocal = Get-FileMap $localPath
   $finalRemote = Get-FileMap $remotePath
