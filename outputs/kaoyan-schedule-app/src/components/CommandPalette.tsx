@@ -20,7 +20,11 @@ import {
 } from '../utils/learningData';
 import { fuzzySearchScore } from '../utils/fuzzySearch';
 import { selectKnowledgeEligibleNotes } from '../utils/noteReview';
-import { IS_CLOUD_RUNTIME } from '../utils/notes';
+import {
+  IS_CLOUD_RUNTIME,
+  searchLearningRecords,
+  type LearningSearchResult,
+} from '../utils/notes';
 
 type PaletteCommand = {
   id: string;
@@ -45,6 +49,9 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
+  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>('normal');
+  const [semanticResults, setSemanticResults] = useState<LearningSearchResult[]>([]);
+  const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [learningData, setLearningData] = useState<LearningDataSnapshot | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -56,6 +63,32 @@ export function CommandPalette() {
     setLearningData(readLearningDataCache());
     return subscribeLearningDataCache(setLearningData);
   }, [open]);
+
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!open || searchMode !== 'ai' || !normalized) {
+      setSemanticResults([]);
+      setSemanticState('idle');
+      return undefined;
+    }
+    const abort = new AbortController();
+    const timer = window.setTimeout(() => {
+      setSemanticState('loading');
+      void searchLearningRecords(normalized, 'ai', 8).then((response) => {
+        if (abort.signal.aborted) return;
+        setSemanticResults(response.results || []);
+        setSemanticState('ready');
+      }).catch(() => {
+        if (abort.signal.aborted) return;
+        setSemanticResults([]);
+        setSemanticState('error');
+      });
+    }, 260);
+    return () => {
+      abort.abort();
+      window.clearTimeout(timer);
+    };
+  }, [open, query, searchMode]);
 
   const baseCommands = useMemo<PaletteCommand[]>(() => [
     {
@@ -127,7 +160,19 @@ export function CommandPalette() {
   )), []);
 
   const resultCommands = useMemo<PaletteCommand[]>(() => {
-    if (!query.trim() || !learningData) return [];
+    if (!query.trim()) return [];
+    if (searchMode === 'ai') {
+      return semanticResults.map((result) => ({
+        id: `semantic:${result.noteUid}`,
+        label: result.title || '未命名学习记录',
+        description: [result.capturedDate, result.subject, result.reason].filter(Boolean).join(' · '),
+        keywords: result.matchedTerms.join(' '),
+        icon: BrainCircuit,
+        meta: 'AI 语义',
+        run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}&searchMode=ai`),
+      }));
+    }
+    if (!learningData) return [];
     const results: Array<PaletteCommand & { searchScore: number }> = [];
     const eligibleNotes = selectKnowledgeEligibleNotes(
       Object.values(learningData.days).flatMap((day) => day.autoNotes),
@@ -184,7 +229,7 @@ export function CommandPalette() {
     });
 
     return results.sort((left, right) => right.searchScore - left.searchScore).slice(0, 6);
-  }, [learningData, query]);
+  }, [learningData, query, searchMode, semanticResults]);
 
   const visibleCommands = useMemo(() => {
     const filteredBase = query.trim()
@@ -197,12 +242,13 @@ export function CommandPalette() {
         ]),
       })).filter(({ score }) => score > 0).sort((left, right) => right.score - left.score).map(({ command }) => command)
       : baseCommands;
+    if (searchMode === 'ai' && query.trim()) return resultCommands.slice(0, 8);
     return [...resultCommands, ...filteredBase].slice(0, 10);
-  }, [baseCommands, query, resultCommands]);
+  }, [baseCommands, query, resultCommands, searchMode]);
 
   useEffect(() => {
     setActiveIndex(0);
-  }, [query, open]);
+  }, [query, open, searchMode]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -263,6 +309,16 @@ export function CommandPalette() {
                 placeholder="搜索页面、卡片、知识点或页码…"
                 aria-label="搜索快速操作"
               />
+              <button
+                className={`command-search-mode${searchMode === 'ai' ? ' is-active' : ''}`}
+                type="button"
+                aria-pressed={searchMode === 'ai'}
+                title={searchMode === 'ai' ? '切回普通关键词搜索' : '理解语义，查找忘记关键词的资料'}
+                onClick={() => setSearchMode((current) => current === 'ai' ? 'normal' : 'ai')}
+              >
+                <BrainCircuit size={15} />
+                <span>{searchMode === 'ai' ? 'AI 语义' : '普通'}</span>
+              </button>
               <button type="button" onClick={close} aria-label="关闭快速操作"><X size={17} /></button>
             </header>
 
@@ -287,7 +343,11 @@ export function CommandPalette() {
                     {command.meta && <em>{command.meta}</em>}
                   </button>
                 );
-              }) : (
+              }) : searchMode === 'ai' && semanticState === 'loading' ? (
+                <div className="command-empty"><BrainCircuit size={24} /><strong>正在理解你的意思</strong><span>只查找原始资料，不生成总结。</span></div>
+              ) : searchMode === 'ai' && semanticState === 'error' ? (
+                <div className="command-empty"><Search size={24} /><strong>AI 搜索暂时不可用</strong><span>切回“普通”仍可立即搜索关键词。</span></div>
+              ) : (
                 <div className="command-empty"><Search size={24} /><strong>没有匹配内容</strong><span>换一个知识点、页码或功能名称试试。</span></div>
               )}
             </div>

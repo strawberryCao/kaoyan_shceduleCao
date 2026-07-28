@@ -2849,6 +2849,26 @@
   border-radius: 15px;
   background: transparent;
 }
+.lc-detached-material.is-image {
+  min-height: 120px;
+}
+.lc-detached-material:fullscreen {
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  border-radius: 0;
+  background: #f7f7f4;
+}
+.lc-detached-material:fullscreen > header {
+  top: 7px;
+  opacity: .88;
+}
+.lc-detached-material:fullscreen > div {
+  border-radius: 0;
+}
 .lc-detached-material.is-locked > div {
   outline: 0;
 }

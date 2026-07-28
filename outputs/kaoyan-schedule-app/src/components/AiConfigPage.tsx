@@ -51,6 +51,8 @@ const capabilityNames: Record<string, string> = {
 
 const instructionExamples: Record<string, string> = {
   note_naming: '例如：标题优先使用图片里出现的教材章节名；老师姓名不进入标题。',
+  material_naming: '例如：多份资料分别按各自核心概念命名，保留公式名称，不要使用“资料1”。',
+  semantic_search: '例如：允许扩展同义概念和公式别名，但不要回答问题或生成总结。',
   note_enrichment: '例如：错因必须写成可执行的改进动作；不要把单纯计算量大的题判断为好题。',
   note_image_understanding: '无备注时优先使用高质量视觉模型；只依据图片可见内容，不猜测缺失信息。',
   widget_generation: '例如：按钮使用紧凑布局；所有计时状态必须在组件内可重置。',

@@ -6,8 +6,9 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import { Lock, Unlock, X } from 'lucide-react';
+import { Lock, Maximize2, Unlock, X } from 'lucide-react';
 import { WorkspaceAssetPreview, type WorkspaceAssetPreviewItem } from './WorkspaceAssetPreview';
+import { IS_CLOUD_RUNTIME, openSystemMaterialWindow } from '../utils/notes';
 
 type FloatingMaterial = {
   id: string;
@@ -19,6 +20,7 @@ type FloatingMaterial = {
   height: number;
   z: number;
   locked: boolean;
+  intrinsicFitted: boolean;
   onRecovered: (item: WorkspaceAssetPreviewItem) => void;
 };
 
@@ -208,6 +210,7 @@ export const LearningInlineDetachLayer = forwardRef<
         height: Math.round(defaultHeight * scale),
         z: current.reduce((highest, item) => Math.max(highest, item.z), 120) + 1,
         locked: false,
+        intrinsicFitted: false,
         onRecovered,
       };
       const lightlySnapped = snap(candidate, current, layer.clientWidth, layer.clientHeight).item;
@@ -256,7 +259,21 @@ export const LearningInlineDetachLayer = forwardRef<
       const up = (next: PointerEvent) => {
         clear();
         if (moved && window.innerWidth >= 820) {
-          spawn(asset, assets, next.clientX, next.clientY, options.onRecovered || (() => undefined));
+          const fallback = () => spawn(asset, assets, next.clientX, next.clientY, options.onRecovered || (() => undefined));
+          if (IS_CLOUD_RUNTIME) {
+            fallback();
+          } else {
+            void openSystemMaterialWindow({
+              item: asset,
+              assets,
+              screenPoint: {
+                x: window.screenX + next.clientX,
+                y: window.screenY + next.clientY,
+              },
+            }).then((opened) => {
+              if (!opened) fallback();
+            }).catch(fallback);
+          }
         } else {
           options.onSelect?.();
         }
@@ -312,7 +329,29 @@ export const LearningInlineDetachLayer = forwardRef<
       setSnappingId('');
       setInteractingId('');
     };
-    const up = () => clear();
+    const up = () => {
+      if (!resizing) {
+        setFloating((current) => current.map((item) => {
+          if (item.id !== original.id) return item;
+          const snapped = snap(
+            item,
+            current.filter((entry) => entry.id !== item.id),
+            layer.clientWidth,
+            layer.clientHeight,
+          );
+          if (snapped.snapped) {
+            setGuides(snapped.guides);
+            setSnappingId(item.id);
+            window.setTimeout(() => {
+              setGuides(EMPTY_GUIDES);
+              setSnappingId('');
+            }, 260);
+          }
+          return snapped.item;
+        }));
+      }
+      clear();
+    };
     const cancel = () => clear();
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up, { once: true });
@@ -342,6 +381,16 @@ export const LearningInlineDetachLayer = forwardRef<
               <strong>{item.asset.name}</strong>
               <button
                 type="button"
+                aria-label="全屏查看资料"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  const section = event.currentTarget.closest('section');
+                  if (section && !document.fullscreenElement) void section.requestFullscreen();
+                  else if (document.fullscreenElement) void document.exitFullscreen();
+                }}
+              ><Maximize2 size={12} /></button>
+              <button
+                type="button"
                 aria-label={item.locked ? '解除锁定' : '锁定资料'}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={() => setFloating((current) => current.map((entry) => entry.id === item.id
@@ -360,6 +409,20 @@ export const LearningInlineDetachLayer = forwardRef<
                 item={item.asset}
                 assets={item.assets}
                 onRecovered={item.onRecovered}
+                onIntrinsicSize={(width, height) => {
+                  if (item.asset.kind !== 'image' || item.intrinsicFitted || width <= 0 || height <= 0) return;
+                  setFloating((current) => current.map((entry) => {
+                    if (entry.id !== item.id || entry.intrinsicFitted) return entry;
+                    const ratio = Math.max(.25, Math.min(4.5, width / height));
+                    const nextWidth = Math.min(760, Math.max(300, entry.width));
+                    const nextHeight = Math.max(150, Math.min(620, Math.round(nextWidth / ratio)));
+                    return fit({
+                      ...entry,
+                      height: nextHeight,
+                      intrinsicFitted: true,
+                    }, layerRef.current?.clientWidth || window.innerWidth, layerRef.current?.clientHeight || window.innerHeight);
+                  }));
+                }}
               />
             </div>
             {!item.locked && (

@@ -37,6 +37,8 @@ const PROVIDER_MODEL_CATALOG = Object.freeze({
 
 const TASK_PROFILES = Object.freeze({
   note_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
+  material_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
+  semantic_search: Object.freeze({ difficulty: 'low', capabilities: ['text', 'json'] }),
   question_splitting: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
@@ -62,6 +64,17 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'preferSpecificSubject', group: '识别依据', type: 'boolean', label: '优先具体科目', description: '内容可判断时尽量归入具体科目，确实无法判断才进入默认文件夹。', default: true }),
     Object.freeze({ id: 'rejectGenericTitle', group: '质量控制', type: 'boolean', label: '拒绝空泛标题', description: '阻止“待识别、图片笔记、截图”等无信息量标题落盘。', default: true }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '命名只需要短输出，调高通常不会提升识别质量。', default: 900, min: 300, max: 2400, step: 100, unit: 'tokens' }),
+  ]),
+  material_naming: Object.freeze([
+    Object.freeze({ id: 'renameNoteTitle', group: '命名范围', type: 'boolean', label: '同时命名速记标题', description: '根据整组资料与文字为速记生成一个简洁标题。', default: true }),
+    Object.freeze({ id: 'renameAttachments', group: '命名范围', type: 'boolean', label: '逐个命名资料', description: '每份附件保留原后缀，只替换为能表达内容的短标题。', default: true }),
+    Object.freeze({ id: 'titleMaxLength', group: '质量控制', type: 'number', label: '名称最多字数', description: '不含扩展名；程序仍会过滤 Windows 非法字符。', default: 26, min: 8, max: 60, step: 1, unit: '字' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '多资料只返回短名称列表，不生成总结。', default: 1200, min: 400, max: 3000, step: 100, unit: 'tokens' }),
+  ]),
+  semantic_search: Object.freeze([
+    Object.freeze({ id: 'maxExpandedTerms', group: '搜索范围', type: 'number', label: '最多语义扩展词', description: '只扩展同义词、公式名和相关概念，不生成答案或总结。', default: 10, min: 3, max: 20, step: 1, unit: '个' }),
+    Object.freeze({ id: 'candidateLimit', group: '搜索范围', type: 'number', label: '候选资料数量', description: '进入语义排序前最多保留多少条候选资料。', default: 80, min: 20, max: 200, step: 10, unit: '条' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '语义搜索仅生成短检索词，不生成总结。', default: 360, min: 160, max: 900, step: 40, unit: 'tokens' }),
   ]),
   question_splitting: Object.freeze([
     Object.freeze({ id: 'maxQuestions', group: '识别范围', type: 'number', label: '最多识别题目数', description: '一张整页图片最多拆分出的题目数量。', default: 24, min: 1, max: 24, step: 1, unit: '道' }),
@@ -202,6 +215,16 @@ const AI_TASK_DEFINITIONS = Object.freeze({
   note_naming: Object.freeze({
     label: '笔记命名',
     description: '识别截图或画布内容，并生成科目与文件名。',
+    active: true,
+  }),
+  material_naming: Object.freeze({
+    label: '速记资料命名',
+    description: '根据一条速记中的文字、图片和文档内容，为速记及每份附件生成名称。',
+    active: true,
+  }),
+  semantic_search: Object.freeze({
+    label: '语义搜索',
+    description: '理解模糊表达并扩展资料检索词；只返回匹配资料，不生成内容总结。',
     active: true,
   }),
   question_splitting: Object.freeze({

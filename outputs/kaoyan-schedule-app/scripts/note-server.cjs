@@ -60,6 +60,7 @@ const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
 const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
 const SEARCH_INDEX_PATH = path.join(ASSISTANT_ROOT, 'search-index.json');
+const MATERIAL_WINDOW_REQUEST_ROOT = path.join(os.tmpdir(), 'kaoyan-material-previews');
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -118,6 +119,7 @@ let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
 const manualAiJobs = new Map();
 const semanticQueryCache = new Map();
+const materialNamingJobs = new Map();
 let noteTitlePolicyPromise = null;
 function getNoteTitlePolicy() {
   if (!noteTitlePolicyPromise) noteTitlePolicyPromise = import('../shared/note-title-policy.js');
@@ -281,7 +283,7 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
-  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/capture-batches')) return true;
+  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/capture-batches' || pathname === '/material-window')) return true;
   if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
   if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
@@ -340,7 +342,7 @@ function canControlNoteApp(req) {
 
 function launchNoteApp(flag = '--note-app') {
   return new Promise((resolve, reject) => {
-    if (!['--note-app', '--close-note-app'].includes(flag)) {
+    if (!['--note-app', '--close-note-app'].includes(flag) && !flag.startsWith('--material-preview=')) {
       reject(new Error('不支持的笔记 App 操作'));
       return;
     }
@@ -1718,6 +1720,28 @@ function enqueueManualAiRename(noteUid) {
 
   const saved = findSavedNote(noteUid);
   if (!saved) {
+    const materialReceipt = readMaterialReceipt(noteUid);
+    const materialNote = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+    if (materialReceipt && materialNote) {
+      const stagedAt = new Date().toISOString();
+      const job = {
+        id: `job-${crypto.randomUUID()}`,
+        type: 'note-rename',
+        noteUid,
+        status: 'queued',
+        progress: 0,
+        message: '已加入多资料 AI 命名队列',
+        error: '',
+        createdAt: stagedAt,
+        updatedAt: stagedAt,
+        completedAt: '',
+        result: null,
+      };
+      manualAiJobs.set(job.id, job);
+      pruneManualAiJobs();
+      queueMaterialNamingJob(noteUid, { forceTitle: true, manualJobId: job.id });
+      return { job, replayed: false };
+    }
     throw makeReviewError(`Durable note metadata not found: ${noteUid}`, 'NOTE_FILE_METADATA_NOT_FOUND');
   }
   const extension = path.extname(saved.filePath).toLowerCase();
@@ -1844,7 +1868,7 @@ async function expandSemanticSearchQuery(query) {
   const router = getAiRouter();
   if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
   const response = await router.complete({
-    task: 'custom',
+    task: 'semantic_search',
     messages: [{
       role: 'user',
       content: [
@@ -1862,7 +1886,7 @@ async function expandSemanticSearchQuery(query) {
       },
     },
     temperature: 0.1,
-    maxTokens: 320,
+    maxTokens: Number(router.getTaskOptions?.('semantic_search')?.maxTokens) || 360,
   });
   const terms = [...new Set((response.json?.terms || [])
     .map((item) => String(item || '').normalize('NFKC').trim().slice(0, 80))
@@ -1919,6 +1943,9 @@ async function searchLearningDocuments(payload) {
     .slice(0, limit)
     .map(({ document, score, matchedTerms }) => ({
       noteUid: document.noteUid,
+      title: document.title || '',
+      subject: document.subject || '',
+      capturedDate: document.capturedDate || '',
       score,
       matchedTerms,
       reason: matchedTerms.length ? `匹配：${matchedTerms.join('、')}` : '匹配原始记录内容',
@@ -2076,6 +2103,58 @@ async function handleSaveBatch(req, res) {
     learningData: learningData.getSnapshot(),
     idempotentReplay: results.every((result) => result.body.idempotentReplay === true),
   });
+}
+
+function cleanMaterialPreviewItem(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const kind = ['image', 'pdf', 'word', 'html', 'file'].includes(input.kind) ? input.kind : 'file';
+  const clean = (field, limit = 2_000) => String(input[field] || '').trim().slice(0, limit);
+  return {
+    id: clean('id', 200),
+    kind,
+    name: clean('name', 240) || '学习资料',
+    mimeType: clean('mimeType', 180),
+    filePath: clean('filePath'),
+    fallbackPath: clean('fallbackPath'),
+    url: clean('url', 4_000),
+    fallbackUrl: clean('fallbackUrl', 4_000),
+    posterUrl: clean('posterUrl', 4_000),
+    label: clean('label', 80),
+    sizeLabel: clean('sizeLabel', 80),
+  };
+}
+
+async function openMaterialPreviewWindow(payload) {
+  const input = payload?.descriptor && typeof payload.descriptor === 'object' ? payload.descriptor : {};
+  const item = cleanMaterialPreviewItem(input.item);
+  if (!item.id || !item.url) {
+    const error = new Error('资料预览描述无效');
+    error.code = 'INVALID_MATERIAL_PREVIEW';
+    throw error;
+  }
+  const assets = (Array.isArray(input.assets) ? input.assets : [])
+    .slice(0, MAX_MATERIAL_FILES)
+    .map(cleanMaterialPreviewItem);
+  const descriptor = {
+    schemaVersion: 1,
+    item,
+    assets: assets.some((asset) => asset.id === item.id) ? assets : [item, ...assets],
+    screenPoint: {
+      x: Number(input.screenPoint?.x) || 0,
+      y: Number(input.screenPoint?.y) || 0,
+    },
+    createdAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(MATERIAL_WINDOW_REQUEST_ROOT, { recursive: true });
+  const requestPath = path.join(MATERIAL_WINDOW_REQUEST_ROOT, `${crypto.randomUUID()}.json`);
+  fs.writeFileSync(requestPath, JSON.stringify(descriptor), { encoding: 'utf8', flag: 'wx' });
+  try {
+    const pid = await launchNoteApp(`--material-preview=${requestPath}`);
+    return { ok: true, pid };
+  } catch (error) {
+    unlinkFileIfExists(requestPath);
+    throw error;
+  }
 }
 
 function captureJobPath(jobId) {
@@ -2265,6 +2344,207 @@ function writeMaterialReceipt(receipt) {
   atomicWriteJson(materialReceiptPath(receipt.noteUid), receipt);
 }
 
+async function extractMaterialNamingText(attachment) {
+  const filePath = String(attachment?.filePath || '');
+  const extension = path.extname(filePath).toLowerCase();
+  try {
+    const buffer = fs.readFileSync(filePath);
+    if (['.txt', '.md', '.css', '.js', '.mjs', '.json', '.svg'].includes(extension)) {
+      return buffer.toString('utf8').slice(0, 6_000);
+    }
+    if (extension === '.html' || extension === '.htm') {
+      return buffer.toString('utf8')
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&(?:nbsp|amp|lt|gt|quot);/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 8_000);
+    }
+    if (extension === '.docx') {
+      const imported = await import('mammoth');
+      const mammoth = imported.default || imported;
+      const result = await mammoth.extractRawText({ buffer });
+      return String(result.value || '').replace(/\s+/g, ' ').trim().slice(0, 8_000);
+    }
+    if (extension === '.pdf') {
+      const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const document = await getDocument({ data: new Uint8Array(buffer) }).promise;
+      const pages = [];
+      for (let pageNumber = 1; pageNumber <= Math.min(3, document.numPages); pageNumber += 1) {
+        const page = await document.getPage(pageNumber);
+        const content = await page.getTextContent();
+        pages.push(content.items.map((item) => typeof item?.str === 'string' ? item.str : '').join(' '));
+      }
+      await document.destroy();
+      return pages.join(' ').replace(/\s+/g, ' ').trim().slice(0, 8_000);
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function safeAiMaterialStem(value, fallback, maxLength) {
+  return String(value || fallback)
+    .normalize('NFKC')
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, maxLength) || fallback;
+}
+
+async function runMaterialNamingJob(noteUid, options = {}) {
+  const receipt = readMaterialReceipt(noteUid);
+  const note = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+  if (!receipt || !note || receipt.attachments.length === 0) return null;
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const taskOptions = router.getTaskOptions?.('material_naming') || {};
+  const maxLength = Math.max(8, Math.min(60, Number(taskOptions.titleMaxLength) || 26));
+  const fileContexts = [];
+  const content = [];
+  for (let index = 0; index < receipt.attachments.length; index += 1) {
+    const attachment = receipt.attachments[index];
+    const extractedText = await extractMaterialNamingText(attachment);
+    fileContexts.push({
+      index,
+      originalName: attachment.name,
+      mimeType: attachment.mimeType,
+      extractedText,
+    });
+  }
+  content.push({
+    type: 'text',
+    text: [
+      '你只负责为一条考研速记及其附件命名，不回答问题，不总结资料。',
+      '每份资料都必须返回同一个 index；名称不含扩展名、日期、随机数和路径。',
+      '禁止使用“资料、图片、截图、文档、未命名”等空泛名称。',
+      `速记正文：${String(note.remark || '').slice(0, 4_000) || '无'}`,
+      `附件信息：${JSON.stringify(fileContexts)}`,
+    ].join('\n'),
+  });
+  for (let index = 0; index < receipt.attachments.length; index += 1) {
+    const attachment = receipt.attachments[index];
+    if (!String(attachment.mimeType || '').startsWith('image/')) continue;
+    try {
+      const buffer = fs.readFileSync(attachment.filePath);
+      if (buffer.length > MAX_MATERIAL_FILE_BYTES) continue;
+      content.push({ type: 'text', text: `下面是 index=${index} 的图片内容：` });
+      content.push({
+        type: 'image_url',
+        image_url: { url: `data:${attachment.mimeType};base64,${buffer.toString('base64')}` },
+      });
+    } catch {}
+  }
+  const response = await router.complete({
+    task: 'material_naming',
+    messages: [{ role: 'user', content }],
+    responseSchema: {
+      type: 'object',
+      required: ['noteTitle', 'files'],
+      properties: {
+        noteTitle: { type: 'string' },
+        files: {
+          type: 'array',
+          maxItems: receipt.attachments.length,
+          items: {
+            type: 'object',
+            required: ['index', 'name'],
+            properties: {
+              index: { type: 'number' },
+              name: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    temperature: 0.1,
+    maxTokens: Number(taskOptions.maxTokens) || 1200,
+  });
+  const names = new Map((Array.isArray(response.json?.files) ? response.json.files : [])
+    .map((item) => [Number(item?.index), safeAiMaterialStem(item?.name, '', maxLength)])
+    .filter(([index, name]) => Number.isInteger(index) && index >= 0 && name));
+  const renamed = receipt.attachments.map((attachment, index) => {
+    const extension = path.extname(attachment.filePath) || path.extname(attachment.name);
+    const fallbackStem = path.basename(attachment.name, path.extname(attachment.name)) || `资料-${index + 1}`;
+    const stem = names.get(index) || fallbackStem;
+    const storedPrefix = `${String(index + 1).padStart(2, '0')}-`;
+    const targetPath = path.join(path.dirname(attachment.filePath), `${storedPrefix}${stem}${extension.toLowerCase()}`);
+    let finalPath = targetPath;
+    let suffix = 2;
+    while (path.resolve(finalPath) !== path.resolve(attachment.filePath) && fs.existsSync(finalPath)) {
+      finalPath = path.join(path.dirname(targetPath), `${storedPrefix}${stem}-${suffix}${extension.toLowerCase()}`);
+      suffix += 1;
+    }
+    if (path.resolve(finalPath) !== path.resolve(attachment.filePath)) fs.renameSync(attachment.filePath, finalPath);
+    return {
+      ...attachment,
+      name: `${path.basename(finalPath, path.extname(finalPath)).replace(/^\d{2}-/, '')}${path.extname(finalPath)}`,
+      filePath: finalPath,
+    };
+  });
+  const shouldRenameTitle = options.forceTitle === true
+    || (taskOptions.renameNoteTitle !== false && !options.userTitle);
+  const nextTitle = shouldRenameTitle
+    ? safeAiMaterialStem(response.json?.noteTitle, note.title || renamed[0]?.name || '快速记录', maxLength)
+    : note.title;
+  const snapshot = learningData.updateNote(noteUid, {
+    title: nextTitle,
+    attachments: renamed,
+  });
+  writeMaterialReceipt({
+    ...receipt,
+    attachments: renamed,
+    aiNaming: {
+      status: 'complete',
+      provider: response.provider || '',
+      model: response.model || '',
+      completedAt: new Date().toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
+  });
+  broadcastLearningData(snapshot);
+  return { title: nextTitle, attachments: renamed, snapshot };
+}
+
+function queueMaterialNamingJob(noteUid, options = {}) {
+  if (materialNamingJobs.has(noteUid)) return false;
+  if (options.manualJobId) {
+    updateManualAiJob(options.manualJobId, {
+      status: 'processing',
+      progress: 15,
+      message: 'AI 正在读取速记文字和各份资料',
+    });
+  }
+  const job = Promise.resolve().then(() => runMaterialNamingJob(noteUid, options));
+  materialNamingJobs.set(noteUid, job);
+  void job.then((result) => {
+    if (options.manualJobId) {
+      updateManualAiJob(options.manualJobId, {
+        status: result ? 'completed' : 'failed',
+        progress: result ? 100 : 0,
+        message: result ? '速记标题与资料命名完成' : '没有找到可命名的速记资料',
+        error: result ? '' : 'MATERIAL_NOTE_NOT_FOUND',
+        completedAt: new Date().toISOString(),
+        result: result ? { applied: true, title: result.title, revision: result.snapshot.revision } : null,
+      });
+    }
+  }).catch((error) => {
+    if (options.manualJobId) {
+      updateManualAiJob(options.manualJobId, {
+        status: 'failed',
+        progress: 0,
+        message: '多资料 AI 命名失败，原文件名已保留',
+        error: error instanceof Error ? error.message : String(error),
+        completedAt: new Date().toISOString(),
+      });
+    }
+  }).finally(() => materialNamingJobs.delete(noteUid));
+  return true;
+}
+
 async function handleSaveMaterial(req, res) {
   const raw = await readBody(req, 24 * 1024 * 1024);
   const payload = JSON.parse(raw || '{}');
@@ -2389,6 +2669,7 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
@@ -2595,6 +2876,7 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
@@ -2801,6 +3083,7 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
@@ -3715,6 +3998,16 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/save-material-note') {
       await handleSaveMaterial(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/material-window') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'Only the local Kaoyan desktop page can open floating material windows.' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 256 * 1024)) || '{}');
+      sendJson(res, 202, await openMaterialPreviewWindow(payload));
       return;
     }
 

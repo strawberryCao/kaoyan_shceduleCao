@@ -400,8 +400,15 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
   }
   if ($paths.Count -eq 0) { return $false }
   $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
-  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
+  $ignoredAssets = Invoke-Git @('ls-files', '--others', '--ignored', '--exclude-standard', '--', 'data/assets') $ClonePath
+  if ([string]::IsNullOrWhiteSpace($status.Output) -and [string]::IsNullOrWhiteSpace($ignoredAssets.Output)) { return $false }
   Invoke-Git (@('add', '-A', '--') + $paths) $ClonePath | Out-Null
+  # The dedicated data repository used to contain a broad "*.html" ignore
+  # rule. HTML learning materials are real assets, so force-stage only the
+  # bounded data/assets subtree instead of silently publishing broken records.
+  if (Test-Path -LiteralPath (Join-Path $ClonePath 'data/assets')) {
+    Invoke-Git @('add', '-f', '--', 'data/assets') $ClonePath | Out-Null
+  }
   $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
   if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null

@@ -31,6 +31,7 @@ interface WorkspaceAssetPreviewProps {
   item: WorkspaceAssetPreviewItem;
   assets: WorkspaceAssetPreviewItem[];
   onRecovered: (item: WorkspaceAssetPreviewItem) => void;
+  onIntrinsicSize?: (width: number, height: number) => void;
 }
 
 const extensionOf = (name: string): string => name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
@@ -73,10 +74,12 @@ function ErrorPreview({ item, message }: { item: WorkspaceAssetPreviewItem; mess
 function RecoverableImage({
   item,
   onRecovered,
+  onIntrinsicSize,
   className = 'lrp-real-image',
 }: {
   item: WorkspaceAssetPreviewItem;
   onRecovered: (item: WorkspaceAssetPreviewItem) => void;
+  onIntrinsicSize?: (width: number, height: number) => void;
   className?: string;
 }) {
   const [src, setSrc] = useState(item.url);
@@ -141,8 +144,12 @@ function RecoverableImage({
           if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
           else setFailed(true);
         }}
-        onLoad={() => {
+        onLoad={(event) => {
           if (usingFallback) onRecovered(item);
+          const image = event.currentTarget;
+          if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+            onIntrinsicSize?.(image.naturalWidth, image.naturalHeight);
+          }
         }}
       />
       {scale !== 1 && <span className="lrp-image-zoom-level">{Math.round(scale * 100)}%</span>}
@@ -436,13 +443,49 @@ async function loadHtmlProject(
   responsiveStyle.textContent = `
     *,*::before,*::after{box-sizing:border-box}
     html,body{width:100%;max-width:100%;min-width:0;min-height:100%;margin:0;overflow:auto}
-    body>*{max-width:100%}
+    #kaoyan-fit-root{width:100%;min-width:0;transform-origin:0 0}
+    #kaoyan-fit-root>*{max-width:100%}
     img,video,svg{max-width:100%;height:auto}
     canvas,iframe{max-width:100%;height:auto}
     table{max-width:100%;display:block;overflow:auto}
     pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
   `;
   document.head.append(responsiveStyle);
+
+  const fitRoot = document.createElement('div');
+  fitRoot.id = 'kaoyan-fit-root';
+  while (document.body.firstChild) fitRoot.append(document.body.firstChild);
+  document.body.append(fitRoot);
+  const fitScript = document.createElement('script');
+  fitScript.textContent = `
+    (() => {
+      const root = document.getElementById('kaoyan-fit-root');
+      if (!root) return;
+      let fitting = false;
+      let currentScale = 1;
+      const fit = () => {
+        if (fitting) return;
+        fitting = true;
+        requestAnimationFrame(() => {
+          const rect = root.getBoundingClientRect();
+          const naturalWidth = Math.max(root.scrollWidth, rect.width, 1) / currentScale;
+          const naturalHeight = Math.max(root.scrollHeight, rect.height, 1) / currentScale;
+          const widthScale = Math.max(.25, (innerWidth - 2) / naturalWidth);
+          const heightScale = Math.max(.25, (innerHeight - 2) / naturalHeight);
+          currentScale = Math.min(1, widthScale, heightScale);
+          root.style.zoom = String(currentScale);
+          fitting = false;
+        });
+      };
+      addEventListener('resize', fit, { passive: true });
+      addEventListener('load', fit, { once: true });
+      new MutationObserver(fit).observe(root, { childList: true, subtree: true, characterData: true });
+      setTimeout(fit, 0);
+      setTimeout(fit, 250);
+      setTimeout(fit, 900);
+    })();
+  `;
+  document.body.append(fitScript);
 
   document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]').forEach((link) => {
     const css = textMap.get(resourceKey(link.getAttribute('href') || ''));
@@ -550,7 +593,7 @@ function GenericPreview({ item }: { item: WorkspaceAssetPreviewItem }) {
   );
 }
 
-export function WorkspaceAssetPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) {
+export function WorkspaceAssetPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAssetPreviewProps) {
   const onRecoveredRef = useRef(onRecovered);
   useEffect(() => {
     onRecoveredRef.current = onRecovered;
@@ -559,13 +602,13 @@ export function WorkspaceAssetPreview({ item, assets, onRecovered }: WorkspaceAs
     onRecoveredRef.current(recoveredItem);
   }, []);
 
-  if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={stableOnRecovered} />;
+  if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
   if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={stableOnRecovered} />;
   if (item.kind === 'word') return <WordPreview item={item} onRecovered={stableOnRecovered} />;
   if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={stableOnRecovered} />;
   if (/\.(?:txt|md|css|js|mjs|json|svg)$/i.test(item.name)) return <TextPreview item={item} onRecovered={stableOnRecovered} />;
   if (item.posterUrl) {
-    return <RecoverableImage item={{ ...item, url: item.posterUrl, fallbackUrl: '', fallbackPath: '' }} onRecovered={stableOnRecovered} className="lrp-real-image lrp-preview-poster" />;
+    return <RecoverableImage item={{ ...item, url: item.posterUrl, fallbackUrl: '', fallbackPath: '' }} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} className="lrp-real-image lrp-preview-poster" />;
   }
   return <GenericPreview item={item} />;
 }

@@ -129,6 +129,9 @@ export async function searchLearningRecords(env, payload) {
     query,
     results: ranked.slice(0, limit).map((candidate) => ({
       noteUid: candidate.document.noteUid,
+      title: candidate.document.title || '',
+      subject: candidate.document.subject || '',
+      capturedDate: candidate.document.capturedDate || '',
       score: candidate.semanticScore ?? candidate.score,
       matchedTerms: candidate.matchedTerms.slice(0, 8),
       reason: mode === 'ai'

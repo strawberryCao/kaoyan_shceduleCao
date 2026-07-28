@@ -85,6 +85,45 @@ const DEFAULT_WORKFLOWS = Object.freeze({
       outputFormat: '只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据","ruleId":"匹配规则id或空字符串","ruleValue":"提取值或空字符串","ruleEvidence":"原图证据或空字符串"}',
     }),
   }),
+  material_naming: Object.freeze({
+    version: 'material-naming-v1',
+    steps: Object.freeze([
+      '读取局域网 material_naming 任务设置',
+      '读取速记正文、附件原名、可提取文本与图片',
+      '按局域网 Provider/模型/回退约束路由',
+      '分别生成速记标题与每份资料名称',
+      '保留文件后缀并过滤 Windows 非法字符',
+      '异步更新学习记录，不阻塞原文件保存',
+    ]),
+    prompt: Object.freeze({
+      instructions: Object.freeze([
+        '你是考研速记资料命名器，只负责命名，不回答问题，不总结资料。',
+        '根据速记正文以及每份附件的可见内容，为整条速记和每份附件生成简洁、可检索的中文名称。',
+        'files 中 index 必须与输入一致，不能遗漏、合并或新增资料。',
+        '名称不得包含文件后缀、日期、随机数、路径或 Windows 非法字符。',
+        '不要使用“资料、文档、图片、截图、未命名”等无信息量名称。',
+      ]),
+      outputFormat: '只输出 JSON：{"noteTitle":"整条速记标题","files":[{"index":0,"name":"附件内容名称"}]}',
+    }),
+  }),
+  semantic_search: Object.freeze({
+    version: 'semantic-search-v1',
+    steps: Object.freeze([
+      '读取局域网 semantic_search 任务设置',
+      '理解用户自然语言查询意图',
+      '扩展可能出现在考研资料中的同义词、公式名和相关概念',
+      '交给本地索引完成匹配与排序',
+      '返回原始资料命中，不生成答案或总结',
+    ]),
+    prompt: Object.freeze({
+      instructions: Object.freeze([
+        '你只负责扩展考研学习资料搜索词，不回答问题，不总结资料。',
+        '根据用户表达的含义，给出可能出现在笔记中的同义词、相关概念、公式名称和常见中文说法。',
+        '词语应短、具体、适合检索，不得编造结论。',
+      ]),
+      outputFormat: '只输出 JSON：{"terms":["检索词"]}',
+    }),
+  }),
   question_splitting: Object.freeze({
     version: 'question-splitting-v5',
     steps: Object.freeze([

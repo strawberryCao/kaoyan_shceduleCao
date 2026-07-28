@@ -210,12 +210,29 @@ const pageRefText = (note: LearningAutoNote): string => note.pageRefs
   .filter(Boolean)
   .join(' · ');
 
+const inferredAttachmentKind = (
+  value: Pick<LearningAttachment, 'kind' | 'mimeType' | 'name' | 'filePath'>,
+): LearningAttachment['kind'] => {
+  const source = `${value.name} ${value.filePath}`.toLowerCase();
+  const mime = String(value.mimeType || '').toLowerCase();
+  if (mime.startsWith('image/') || /\.(?:png|jpe?g|webp|gif|bmp|avif|heic|heif|svg)(?:$|[?#])/i.test(source)) return 'image';
+  if (mime === 'application/pdf' || /\.pdf(?:$|[?#])/i.test(source)) return 'pdf';
+  if (/word|officedocument/.test(mime) || /\.docx?(?:$|[?#])/i.test(source)) return 'word';
+  if (mime === 'text/html' || /\.html?(?:$|[?#])/i.test(source)) return 'html';
+  return value.kind || 'file';
+};
+
 const noteAttachments = (note: LearningAutoNote) => note.attachments.length > 0
   ? note.attachments
   : note.filePath ? [{
     id: 'legacy-primary',
     assetId: '',
-    kind: 'image' as const,
+    kind: inferredAttachmentKind({
+      kind: 'file',
+      mimeType: '',
+      name: note.title || '',
+      filePath: note.filePath,
+    }),
     name: '原图',
     mimeType: 'image/jpeg',
     size: null,
@@ -300,7 +317,7 @@ const quickPreviewAssets = (note: LearningAutoNote): WorkspaceAssetPreviewItem[]
   const fallbackPath = paths.find((path) => path !== filePath) || '';
   return {
     id: attachment.id,
-    kind: attachment.kind,
+    kind: inferredAttachmentKind(attachment),
     name: attachment.name,
     mimeType: attachment.mimeType,
     filePath,
@@ -524,7 +541,9 @@ export function LearningCenter({
   const [editingClassificationUid, setEditingClassificationUid] = useState<string | null>(null);
   const [classificationDraft, setClassificationDraft] = useState<ClassificationDraft | null>(null);
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
-  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>('normal');
+  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>(() => (
+    new URLSearchParams(window.location.search).get('searchMode') === 'ai' ? 'ai' : 'normal'
+  ));
   const [semanticSearch, setSemanticSearch] = useState<{
     query: string;
     loading: boolean;
@@ -2043,7 +2062,10 @@ export function LearningCenter({
             {!showAllAssets && (
               <div className="lc-quick-asset-row">
                 <strong>资料</strong>
-                <div>
+                <div onWheel={(event) => {
+                  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+                  event.currentTarget.scrollLeft += event.deltaY;
+                }}>
                   {assets.map((asset) => (
                     <button
                       className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}

@@ -35,6 +35,7 @@ import { createCaptureBatch, getCaptureJob, retryCaptureJob } from './capture-ba
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 import { searchLearningRecords } from './search.js';
+import { runConfiguredMaterialNaming } from './material-naming.js';
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -304,6 +305,11 @@ async function handleApi(request, env, pathname, url, ctx) {
       body: payload.remark,
       kind: 'quick',
     });
+    if (!result.idempotentReplay && result.entry.assets.length > 0) {
+      ctx?.waitUntil?.(runConfiguredMaterialNaming(env, result.entry.entryId, {
+        userTitle: Boolean(String(payload.title || '').trim()),
+      }).catch(() => undefined));
+    }
     return json({
       ...result,
       noteUid: result.entry.entryId,

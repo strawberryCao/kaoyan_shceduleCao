@@ -1,0 +1,84 @@
+html:has(.material-float-shell),
+body:has(.material-float-shell),
+#root:has(.material-float-shell) {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent !important;
+}
+.material-float-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: #282a2e;
+  border-radius: 16px;
+  background: transparent;
+  filter: drop-shadow(0 18px 34px rgba(25, 25, 25, .25));
+}
+.material-float-shell > section {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+}
+.material-float-shell.is-loading {
+  display: grid;
+  place-items: center;
+  color: #6c7075;
+  background: rgba(250, 249, 246, .96);
+  font: 12px/1.5 Inter, "Microsoft YaHei", sans-serif;
+}
+.material-float-handle {
+  position: absolute;
+  z-index: 20;
+  top: 5px;
+  left: 50%;
+  max-width: calc(100% - 16px);
+  height: 25px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px 0 9px;
+  opacity: .18;
+  border: 1px solid rgba(36, 38, 41, .12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .94);
+  box-shadow: 0 5px 18px rgba(25, 25, 25, .13);
+  transform: translateX(-50%);
+  transition: opacity .14s ease;
+  -webkit-app-region: drag;
+}
+.material-float-shell:hover .material-float-handle {
+  opacity: 1;
+}
+.material-float-handle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 700 9px/1 Inter, "Microsoft YaHei", sans-serif;
+}
+.material-float-handle button {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: #50555b;
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.material-float-handle button:hover {
+  background: #ecebe7;
+}
+.material-float-shell .lrp-image-viewer,
+.material-float-shell .lrp-real-image {
+  background: transparent;
+}

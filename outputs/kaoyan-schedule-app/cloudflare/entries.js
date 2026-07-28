@@ -217,6 +217,25 @@ function entrySummary(entry) {
   };
 }
 
+function renamedEntryAssets(assets, assetNames) {
+  if (!assetNames || typeof assetNames !== 'object' || Array.isArray(assetNames)) return assets;
+  return assets.map((asset) => {
+    const requested = text(assetNames[asset.assetId], 120);
+    if (!requested) return asset;
+    const extension = asset.originalFileName.match(/\.[A-Za-z0-9]{1,10}$/)?.[0]
+      || asset.path.match(/\.[A-Za-z0-9]{1,10}$/)?.[0]
+      || '';
+    const stem = requested
+      .normalize('NFKC')
+      .replace(/\.[A-Za-z0-9]{1,10}$/i, '')
+      .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/^[.\s]+|[.\s]+$/g, '')
+      .slice(0, 100);
+    return stem ? { ...asset, originalFileName: `${stem}${extension.toLowerCase()}` } : asset;
+  });
+}
+
 function createEntryValue(payload, entryId, assets, timestamp) {
   const body = typeof payload.body === 'string'
     ? payload.body.trim().slice(0, 8000)
@@ -391,6 +410,7 @@ export async function patchEntry(env, entryId, payload) {
       subject: payload.subject === undefined ? current.subject : normalizeSubject(payload.subject),
       facets: payload.facets === undefined ? current.facets : normalizeFacets(payload.facets),
       tags: payload.tags === undefined ? current.tags : [...new Set((Array.isArray(payload.tags) ? payload.tags : []).map((tag) => text(tag, 80)).filter(Boolean))],
+      assets: renamedEntryAssets(current.assets, payload.assetNames),
       version: Number(current.version) + 1,
       updatedAt: timestamp,
     };
