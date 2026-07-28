@@ -1,7 +1,14 @@
-import { useMemo, useRef, useState, type ClipboardEvent, type DragEvent } from 'react';
-import { ArrowLeft, CheckCircle2, FilePlus2, LoaderCircle, Paperclip, Save, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent as ReactDragEvent } from 'react';
+import { ArrowLeft, BookOpenText, CheckCircle2, FilePlus2, LoaderCircle, Paperclip, Plus, Save, Trash2, X } from 'lucide-react';
 import { saveLearningMaterial, type LearningRecordFacet } from '../utils/notes';
-import { saveLearningDataCache } from '../utils/learningData';
+import {
+  fetchLearningData,
+  readLearningDataCache,
+  saveLearningDataCache,
+  subscribeLearningDataCache,
+  subscribeLearningDataFromServer,
+  type LearningDataSnapshot,
+} from '../utils/learningData';
 import '../quick-material-composer.css';
 import '../quick-material-compact.css';
 
@@ -39,8 +46,29 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [showRecent, setShowRecent] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [snapshot, setSnapshot] = useState<LearningDataSnapshot>(() => readLearningDataCache());
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
+  const recentNotes = useMemo(() => Object.entries(snapshot.days)
+    .flatMap(([date, day]) => day.autoNotes
+      .filter((note) => note.noteType === 'quick' || note.facets.includes('quick') || note.sourceType === 'quick-material' || note.sourceType === 'material-note')
+      .map((note) => ({ date: note.capturedDate || date, note })))
+    .sort((left, right) => right.note.updatedAt.localeCompare(left.note.updatedAt) || right.date.localeCompare(left.date))
+    .slice(0, 12), [snapshot.days]);
+
+  useEffect(() => {
+    if (!desktop) return undefined;
+    const abort = new AbortController();
+    const releaseCache = subscribeLearningDataCache(setSnapshot);
+    const releaseServer = subscribeLearningDataFromServer();
+    void fetchLearningData(abort.signal).then(setSnapshot).catch(() => undefined);
+    return () => {
+      abort.abort();
+      releaseCache();
+      releaseServer();
+    };
+  }, [desktop]);
 
   const addFiles = (incoming: FileList | File[] | null) => {
     if (!incoming) return;
@@ -68,7 +96,7 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
       : [...current, facet]);
   };
 
-  const receiveDrop = (event: DragEvent<HTMLElement>) => {
+  const receiveDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!desktop) return;
     event.preventDefault();
     setDragging(false);
@@ -96,7 +124,10 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
       setSaving(true);
       setError('');
       const result = await saveLearningMaterial({ title: title.trim(), remark: remark.trim(), subject, facets, files });
-      if (result.learningData) saveLearningDataCache(result.learningData);
+      if (result.learningData) {
+        saveLearningDataCache(result.learningData);
+        setSnapshot(result.learningData);
+      }
       setSaved(true);
       onSaved('已保存' + (files.length ? ' · ' + files.length + ' 个资料' : '文字速记'));
     } catch (cause) {
@@ -106,13 +137,61 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
     }
   };
 
-  if (saved) {
+  if (saved && !showRecent) {
     return (
       <main className={`quick-material-composer is-saved${desktop ? ' is-desktop note-drop-app' : ''}`}>
         <CheckCircle2 size={42} />
         <h1>记录完成</h1>
-        <p>文字和资料已经写入学习中心。</p>
-        <button className="primary" type="button" onClick={onClose}>返回图片记题</button>
+        <p>文字和资料已经进入速记日记。</p>
+        {desktop && <button className="primary" type="button" onClick={() => setShowRecent(true)}><BookOpenText size={16} />查看刚才的速记</button>}
+        <button type="button" onClick={() => {
+          setSaved(false);
+          setTitle('');
+          setRemark('');
+          setFiles([]);
+        }}><Plus size={16} />继续速记</button>
+      </main>
+    );
+  }
+
+  if (desktop && showRecent) {
+    return (
+      <main className="quick-material-composer is-desktop is-recent note-drop-app">
+        <header className="note-drop-titlebar">
+          <div>
+            <span className="note-drop-grip" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+            <strong>速记日记</strong>
+          </div>
+          <nav aria-label="速记记录控制">
+            <button type="button" onClick={() => {
+              setSaved(false);
+              setShowRecent(false);
+              setTitle('');
+              setRemark('');
+              setFiles([]);
+            }} title="新速记"><Plus size={15} /></button>
+            <button type="button" onClick={onClose} aria-label="返回图片记题"><ArrowLeft size={15} /></button>
+          </nav>
+        </header>
+        <section className="quick-material-recent">
+          <header><div><BookOpenText size={18} /><span><strong>最近速记</strong><small>按时间连续记录，完整资料在学习中心查看</small></span></div></header>
+          <div>
+            {recentNotes.map(({ date, note }) => (
+              <article key={note.noteUid}>
+                <div className="quick-recent-note">
+                  <span><strong>{note.title || note.remark || '未命名速记'}</strong><small>{date} · {note.attachments.length} 个资料</small></span>
+                </div>
+                {note.attachments.length > 0 && <div className="quick-recent-assets">{note.attachments.map((attachment) => (
+                  <span
+                    key={attachment.id}
+                  ><b>{attachment.kind === 'image' ? 'IMG' : attachment.kind.toUpperCase()}</b><span>{attachment.name}</span></span>
+                ))}</div>}
+              </article>
+            ))}
+            {recentNotes.length === 0 && <p className="quick-recent-empty">还没有速记，点右上角 ＋ 写第一条。</p>}
+          </div>
+          {error && <p className="quick-material-error" role="alert">{error}</p>}
+        </section>
       </main>
     );
   }
@@ -135,6 +214,7 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
             <strong>笔记小 App · 速记</strong>
           </div>
           <nav aria-label="速记模式控制">
+            <button type="button" onClick={() => setShowRecent(true)} title="查看速记日记"><BookOpenText size={15} /></button>
             <button type="button" onClick={onClose} aria-label="返回图片记题"><ArrowLeft size={15} /></button>
           </nav>
         </header>

@@ -835,7 +835,27 @@ export const saveLearningDataCache = (snapshot: LearningDataSnapshot) => {
   const raw = JSON.stringify(normalized);
   learningDataMemoryCache = normalized;
   learningDataMemoryRaw = raw;
-  window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
+  try {
+    window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
+  } catch (error) {
+    // The server remains authoritative. A large learning history must never
+    // make the live page fail merely because Chromium's small localStorage
+    // quota was reached. Keep the current snapshot in memory and discard the
+    // stale persistent copy; the next launch will fetch it from the server.
+    if (error instanceof DOMException && (
+      error.name === 'QuotaExceededError'
+      || error.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    )) {
+      try {
+        window.localStorage.removeItem(LEARNING_DATA_CACHE_KEY);
+      } catch {
+        // Storage can also be unavailable in privacy-restricted runtimes.
+      }
+      learningDataMemoryRaw = null;
+    } else {
+      throw error;
+    }
+  }
   window.dispatchEvent(new CustomEvent(LEARNING_DATA_EVENT, { detail: normalized }));
 };
 

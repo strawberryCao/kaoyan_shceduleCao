@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   Archive,
   BookOpenText,
@@ -43,6 +43,11 @@ import { enqueueLearningNoteRename, IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '..
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import {
+  LearningInlineDetachLayer,
+  type LearningInlineDetachLayerHandle,
+} from './LearningInlineDetachLayer';
+import { WorkspaceAssetPreview, type WorkspaceAssetPreviewItem } from './WorkspaceAssetPreview';
+import {
   isDefaultNoteBucket,
   isIgnoredNote,
   isKnowledgeEligibleNote,
@@ -54,11 +59,6 @@ import {
   shiftWeek,
   weeklyReviewFilename,
 } from '../utils/weeklyReview';
-import {
-  exportWorkspaceDocx,
-  exportWorkspacePdf,
-  type WorkspaceExportAsset,
-} from '../utils/workspaceExport';
 import '../learning-center.css';
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -245,6 +245,35 @@ const noteAttachmentPaths = (note: LearningAutoNote, attachment: LearningAttachm
 const noteAttachmentPrimaryPath = (note: LearningAutoNote, attachment: LearningAttachment): string => (
   noteAttachmentPaths(note, attachment)[0] || attachment.filePath
 );
+
+const quickAssetLabel = (attachment: LearningAttachment): string => {
+  if (attachment.kind === 'image') return '图片';
+  if (attachment.kind === 'pdf') return 'PDF';
+  if (attachment.kind === 'word') return 'Word';
+  if (attachment.kind === 'html') return 'HTML';
+  return '文件';
+};
+
+const quickPreviewAssets = (note: LearningAutoNote): WorkspaceAssetPreviewItem[] => noteAttachments(note).map((attachment) => {
+  const paths = noteAttachmentPaths(note, attachment);
+  const filePath = paths[0] || attachment.filePath;
+  const fallbackPath = paths.find((path) => path !== filePath) || '';
+  return {
+    id: attachment.id,
+    kind: attachment.kind,
+    name: attachment.name,
+    mimeType: attachment.mimeType,
+    filePath,
+    fallbackPath,
+    url: noteFileUrl(filePath),
+    fallbackUrl: fallbackPath ? noteFileUrl(fallbackPath) : '',
+    posterUrl: attachment.posterPath
+      ? noteFileUrl(attachment.posterPath)
+      : attachment.previewPath ? noteFileUrl(attachment.previewPath) : '',
+    label: quickAssetLabel(attachment),
+    sizeLabel: attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : '大小未知',
+  };
+});
 
 interface ResilientNoteImageProps {
   paths: string[];
@@ -460,7 +489,9 @@ export function LearningCenter({
   const [wrongReasonEditor, setWrongReasonEditor] = useState<{ noteUid: string; text: string } | null>(null);
   const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
   const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
-  const [quickExporting, setQuickExporting] = useState<'docx' | 'pdf' | ''>('');
+  const [activeQuickAssets, setActiveQuickAssets] = useState<Record<string, string>>({});
+  const [quickExporting, setQuickExporting] = useState(false);
+  const detachLayerRef = useRef<LearningInlineDetachLayerHandle | null>(null);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -1110,6 +1141,48 @@ export function LearningCenter({
     }
   };
 
+  const recoverQuickAsset = useCallback((note: LearningAutoNote, item: WorkspaceAssetPreviewItem) => {
+    if (!item.fallbackPath || note.attachments.length === 0) return;
+    const attachments = note.attachments.map((attachment) => attachment.id === item.id
+      ? { ...attachment, filePath: item.fallbackPath }
+      : attachment);
+    void Promise.resolve(onPatchNote(note.noteUid, { attachments })).catch(() => undefined);
+  }, [onPatchNote]);
+
+  const beginInlineDetach = (
+    event: ReactPointerEvent<HTMLElement>,
+    note: LearningAutoNote,
+    attachmentId: string,
+    onSelect?: () => void,
+  ) => {
+    const assets = quickPreviewAssets(note);
+    const asset = assets.find((item) => item.id === attachmentId);
+    if (!asset) return;
+    detachLayerRef.current?.begin(event, asset, assets, {
+      onSelect,
+      onRecovered: (item) => recoverQuickAsset(note, item),
+    });
+  };
+
+  const exportQuickJournal = async () => {
+    if (quickExporting || visibleQuick.length === 0) return;
+    try {
+      setQuickExporting(true);
+      setFeedback('');
+      const { exportQuickJournalPackage } = await import('../utils/quickJournalExport');
+      await exportQuickJournalPackage(visibleQuick.map((entry) => ({
+        date: entry.date,
+        note: entry.note,
+        assets: quickPreviewAssets(entry.note),
+      })));
+      setFeedback('速记日记包已生成');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '速记日记导出失败');
+    } finally {
+      setQuickExporting(false);
+    }
+  };
+
   const addQuickFacet = async (note: LearningAutoNote, facet: Exclude<LearningRecordFacet, 'quick' | 'method'>) => {
     if (pendingNoteUid || note.facets.includes(facet)) return;
     const labels: Record<Exclude<LearningRecordFacet, 'quick' | 'method'>, string> = {
@@ -1127,29 +1200,6 @@ export function LearningCenter({
       setFeedback(error instanceof Error ? error.message : `加入${labels[facet]}失败，请稍后重试。`);
     } finally {
       setPendingNoteUid(null);
-    }
-  };
-
-  const quickExportAssets = (note: LearningAutoNote): WorkspaceExportAsset[] => noteAttachments(note).map((attachment) => ({
-    id: attachment.id,
-    name: attachment.name,
-    kind: attachment.kind,
-    url: noteFileUrl(noteAttachmentPrimaryPath(note, attachment)),
-    sizeLabel: attachment.size ? `${Math.max(1, Math.round(attachment.size / 1024))} KB` : '未知大小',
-  }));
-
-  const exportQuickNote = async (note: LearningAutoNote, format: 'docx' | 'pdf') => {
-    if (quickExporting) return;
-    try {
-      setQuickExporting(format);
-      setFeedback('');
-      const assets = quickExportAssets(note);
-      if (format === 'docx') await exportWorkspaceDocx(note, assets);
-      else exportWorkspacePdf(note, assets);
-    } catch (error) {
-      setFeedback(error instanceof Error ? error.message : '导出失败，请稍后重试。');
-    } finally {
-      setQuickExporting('');
     }
   };
 
@@ -1376,10 +1426,14 @@ export function LearningCenter({
           <section className="lc-attachments" aria-label="资料附件">
             <div><h3>资料附件</h3><span>{attachments.length}</span></div>
             <ul>{attachments.map((attachment) => (
-              <li key={attachment.id}>
+              <li
+                key={attachment.id}
+                title="按住资料直接拖出显示"
+                onPointerDown={(event) => beginInlineDetach(event, note, attachment.id)}
+              >
                 <FileText size={17} aria-hidden="true" />
                 <span><strong>{attachment.name}</strong><small>{attachment.kind === 'image' ? '图片' : attachment.kind === 'pdf' ? 'PDF' : attachment.kind === 'word' ? 'Word' : attachment.kind === 'html' ? 'HTML' : '文件'}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
-                <a href={noteFileUrl(noteAttachmentPrimaryPath(note, attachment))} download={attachment.name}><FileDown size={15} />打开 / 下载</a>
+                <em>按住拖出</em>
               </li>
             ))}</ul>
           </section>
@@ -1388,16 +1442,6 @@ export function LearningCenter({
         <header className="lc-detail-heading">
           <h2>{note.title || '未命名笔记'}</h2>
           <div className="lc-heading-actions">
-            {attachments.length > 0 && (
-              <button type="button" onClick={() => {
-                const url = new URL(window.location.href);
-                url.searchParams.set('workspaceNote', note.noteUid);
-                url.searchParams.delete('hub');
-                url.searchParams.delete('notes');
-                url.searchParams.delete('noteApp');
-                window.location.assign(url.toString());
-              }}><FolderOpen size={15} />资料工作区</button>
-            )}
             {imagePath && <button type="button" disabled={Boolean(aiRenameNoteUid)} onClick={() => void renameNoteWithAi(note)}><Zap size={15} />{aiRenameNoteUid === note.noteUid ? 'AI处理中…' : 'AI重命名'}</button>}
             <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
             {context === 'good' && (
@@ -1789,105 +1833,94 @@ export function LearningCenter({
     </div>
   );
 
-  const renderQuickDetail = (entry: IndexedNote | null) => {
-    if (!entry) {
-      return (
-        <div className="lc-detail-empty">
-          <Zap size={28} />
-          <h3>这里还没有速记</h3>
-        </div>
-      );
-    }
+  const renderQuickEntry = (entry: IndexedNote) => {
     const { date, note } = entry;
-    const attachments = noteAttachments(note);
+    const assets = quickPreviewAssets(note);
+    const activeAsset = assets.find((asset) => asset.id === activeQuickAssets[note.noteUid]) || assets[0] || null;
+    const showAllAssets = assets.length <= 3;
     const paragraphs = note.remark.split(/\r?\n\s*\r?\n/u).map((item) => item.trim()).filter(Boolean);
-    const facetActions: Array<{
-      id: Exclude<LearningRecordFacet, 'quick' | 'method'>;
-      label: string;
-      active: boolean;
-    }> = [
-      { id: 'mistake', label: '错题', active: isMistakeNote(note) },
-      { id: 'good', label: '好题', active: isGoodNote(note) },
-      { id: 'memory', label: '背诵', active: isMemoryNote(note) },
-      { id: 'knowledge', label: '知识库', active: note.facets.includes('knowledge') },
-    ];
     return (
-      <article className="lc-quick-reader">
+      <article className="lc-quick-record" key={note.noteUid}>
+        <header className="lc-quick-record-heading">
+          <div>
+            <time>{formatRecordDate(date)}</time>
+            {!isDefaultNoteBucket(note.subject) && <span>{displaySubject(note.subject)}</span>}
+          </div>
+          <h1>{note.title || '未命名速记'}</h1>
+        </header>
+
+        {paragraphs.length > 0 && (
+          <div className="lc-quick-record-copy" aria-label="速记正文">
+            {paragraphs.map((paragraph, index) => <p key={`${note.noteUid}:paragraph:${index}`}>{paragraph}</p>)}
+          </div>
+        )}
+
+        {assets.length > 0 && (
+          <div className="lc-quick-entry-assets" aria-label="速记相关资料">
+            {!showAllAssets && (
+              <div className="lc-quick-asset-row">
+                <strong>资料</strong>
+                <div>
+                  {assets.map((asset) => (
+                    <button
+                      className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}
+                      type="button"
+                      key={asset.id}
+                      title="点击查看；按住资料直接拖出显示"
+                      onPointerDown={(event) => beginInlineDetach(event, note, asset.id, () => {
+                        setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
+                      })}
+                    ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {showAllAssets ? (
+              <div className={`lc-quick-all-assets has-${assets.length}`}>
+                {assets.map((asset) => (
+                  <article className={`lc-quick-expanded-asset is-${asset.kind}`} key={asset.id}>
+                    <button
+                      className="lc-quick-asset-chip active"
+                      type="button"
+                      title="按住资料直接拖出显示"
+                      onPointerDown={(event) => beginInlineDetach(event, note, asset.id)}
+                    ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                    <div className="lc-quick-active-preview">
+                      <WorkspaceAssetPreview
+                        item={asset}
+                        assets={assets}
+                        onRecovered={(item) => recoverQuickAsset(note, item)}
+                      />
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : activeAsset && (
+              <div className={`lc-quick-active-preview is-${activeAsset.kind}`}>
+                <WorkspaceAssetPreview
+                  item={activeAsset}
+                  assets={assets}
+                  onRecovered={(item) => recoverQuickAsset(note, item)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </article>
+    );
+  };
+
+  const renderQuickJournal = () => {
+    if (!selectedNote) {
+      return <div className="lc-detail-empty"><Zap size={28} /><h3>这里还没有速记</h3></div>;
+    }
+    return (
+      <section className="lc-quick-reader lc-quick-single-reader">
         <button className="lc-mobile-back" type="button" onClick={() => setMobileListOpen(true)} aria-label="返回速记列表">
           <ChevronLeft size={20} />
         </button>
-        <div className="lc-quick-page">
-          <header className="lc-quick-document-header">
-            <div className="lc-quick-kicker"><Zap size={15} /><span>速记</span><time>{formatRecordDate(date)}</time></div>
-            <h1>{note.title || '未命名速记'}</h1>
-            <div className="lc-quick-document-actions">
-              {attachments.length > 0 && (
-                <button type="button" onClick={() => {
-                  const url = new URL(window.location.href);
-                  url.searchParams.set('workspaceNote', note.noteUid);
-                  url.searchParams.delete('hub');
-                  url.searchParams.delete('notes');
-                  url.searchParams.delete('noteApp');
-                  window.location.assign(url.toString());
-                }}><FolderOpen size={15} />资料工作区</button>
-              )}
-              <button type="button" disabled={Boolean(quickExporting)} onClick={() => void exportQuickNote(note, 'docx')}>
-                <FileDown size={15} />{quickExporting === 'docx' ? '生成中…' : '导出 Word'}
-              </button>
-              <button type="button" disabled={Boolean(quickExporting)} onClick={() => void exportQuickNote(note, 'pdf')}>
-                <FileText size={15} />{quickExporting === 'pdf' ? '生成中…' : '导出 PDF'}
-              </button>
-            </div>
-          </header>
-
-          <section className="lc-quick-copy" aria-label="速记正文">
-            {paragraphs.length > 0
-              ? paragraphs.map((paragraph, index) => <p key={`${note.noteUid}:paragraph:${index}`}>{paragraph}</p>)
-              : <p className="is-empty">这条速记只有附件，没有文字正文。</p>}
-          </section>
-
-          {attachments.length > 0 && (
-            <section className="lc-quick-assets" aria-label="速记附件">
-              <h2>资料附件 <span>{attachments.length}</span></h2>
-              <div>
-                {attachments.map((attachment) => {
-                  const filePath = noteAttachmentPrimaryPath(note, attachment);
-                  if (attachment.kind === 'image') {
-                    return (
-                      <figure key={attachment.id}>
-                        <ResilientNoteImage paths={noteAttachmentPaths(note, attachment)} alt={attachment.name} loading="lazy" />
-                        <figcaption>{attachment.name}</figcaption>
-                      </figure>
-                    );
-                  }
-                  return (
-                    <a key={attachment.id} href={noteFileUrl(filePath)} download={attachment.name}>
-                      <FileText size={20} />
-                      <span><strong>{attachment.name}</strong><small>{attachment.kind.toUpperCase()}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
-                      <FileDown size={16} />
-                    </a>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-
-          <section className="lc-quick-upgrade" aria-label="把速记加入其他栏目">
-            <div><strong>加入到…</strong><span>只增加身份，不会复制这条速记</span></div>
-            <div>
-              {facetActions.map((action) => (
-                <button
-                  className={action.active ? 'active' : ''}
-                  key={action.id}
-                  type="button"
-                  disabled={action.active || pendingNoteUid === note.noteUid}
-                  onClick={() => void addQuickFacet(note, action.id)}
-                >{action.active ? `已在${action.label}` : `加入${action.label}`}</button>
-              ))}
-            </div>
-          </section>
-        </div>
-      </article>
+        {renderQuickEntry(selectedNote)}
+      </section>
     );
   };
 
@@ -1895,12 +1928,18 @@ export function LearningCenter({
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
         {renderSearch(visibleQuick.length, '搜索速记内容、附件名或备注')}
+        <div className="lc-quick-list-tools">
+          {feedback && <span role="status">{feedback}</span>}
+          <button type="button" disabled={quickExporting || visibleQuick.length === 0} onClick={() => void exportQuickJournal()}>
+            <FileDown size={14} />{quickExporting ? '正在打包…' : '导出分页日记'}
+          </button>
+        </div>
         <div className="lc-master-list">
           {visibleQuick.map((entry) => renderNoteButton(entry, 'quick'))}
           {visibleQuick.length === 0 && <div className="lc-list-empty"><Zap size={23} /><strong>还没有速记</strong></div>}
         </div>
       </aside>
-      <section className="lc-detail-pane lc-quick-detail-pane">{renderQuickDetail(selectedNote)}</section>
+      <section className="lc-detail-pane lc-quick-detail-pane">{renderQuickJournal()}</section>
     </div>
   );
 
@@ -2016,6 +2055,8 @@ export function LearningCenter({
         {view === 'weekly' && renderWeeklyReview()}
         {view === 'inbox' && renderInbox()}
       </div>
+
+      <LearningInlineDetachLayer ref={detachLayerRef} />
 
       {reviewNotice && <div className="lc-review-notice" role="status">{reviewNotice}</div>}
 

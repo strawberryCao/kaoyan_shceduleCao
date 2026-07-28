@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, File, FileCode2, FileImage, FileText } from 'lucide-react';
 import * as mammoth from 'mammoth';
+import '../learning-record-workspace-preview.css';
 
 export type WorkspacePreviewKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
 
@@ -234,6 +235,21 @@ async function loadHtmlProject(
     charset.setAttribute('charset', 'utf-8');
     document.head.prepend(charset);
   }
+  if (!document.querySelector('meta[name="viewport"]')) {
+    const viewport = document.createElement('meta');
+    viewport.setAttribute('name', 'viewport');
+    viewport.setAttribute('content', 'width=device-width, initial-scale=1');
+    document.head.append(viewport);
+  }
+  const responsiveStyle = document.createElement('style');
+  responsiveStyle.textContent = `
+    *,*::before,*::after{box-sizing:border-box}
+    html,body{max-width:100%;min-height:100%;margin:0;overflow:auto}
+    img,video,svg{max-width:100%;height:auto}
+    table{max-width:100%;display:block;overflow:auto}
+    pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
+  `;
+  document.head.append(responsiveStyle);
 
   document.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"][href]').forEach((link) => {
     const css = textMap.get(resourceKey(link.getAttribute('href') || ''));
@@ -268,7 +284,6 @@ async function loadHtmlProject(
 
 function HtmlPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) {
   const [html, setHtml] = useState('');
-  const [mode, setMode] = useState<'safe' | 'run'>('safe');
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -295,14 +310,9 @@ function HtmlPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) 
   if (!html) return <div className="lrp-preview-loading">正在装载 HTML / Web 资料…</div>;
   return (
     <div className="lrp-html-preview">
-      <div className="lrp-html-mode">
-        <button type="button" className={mode === 'safe' ? 'active' : ''} onClick={() => setMode('safe')}>安全查看</button>
-        <button type="button" className={mode === 'run' ? 'active' : ''} onClick={() => setMode('run')}>隔离运行</button>
-        <span>{mode === 'run' ? '脚本在无同源权限且禁止联网的沙箱中运行' : '脚本已禁用'}</span>
-      </div>
       <iframe
         className="lrp-document-frame"
-        sandbox={mode === 'run' ? 'allow-scripts allow-forms allow-modals allow-downloads' : ''}
+        sandbox="allow-scripts allow-forms allow-modals allow-downloads"
         srcDoc={html}
         title={item.name}
       />
@@ -348,13 +358,21 @@ function GenericPreview({ item }: { item: WorkspaceAssetPreviewItem }) {
 }
 
 export function WorkspaceAssetPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) {
-  if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={onRecovered} />;
-  if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={onRecovered} />;
-  if (item.kind === 'word') return <WordPreview item={item} onRecovered={onRecovered} />;
-  if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={onRecovered} />;
-  if (/\.(?:txt|md|css|js|mjs|json|svg)$/i.test(item.name)) return <TextPreview item={item} onRecovered={onRecovered} />;
+  const onRecoveredRef = useRef(onRecovered);
+  useEffect(() => {
+    onRecoveredRef.current = onRecovered;
+  }, [onRecovered]);
+  const stableOnRecovered = useCallback((recoveredItem: WorkspaceAssetPreviewItem) => {
+    onRecoveredRef.current(recoveredItem);
+  }, []);
+
+  if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={stableOnRecovered} />;
+  if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={stableOnRecovered} />;
+  if (item.kind === 'word') return <WordPreview item={item} onRecovered={stableOnRecovered} />;
+  if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={stableOnRecovered} />;
+  if (/\.(?:txt|md|css|js|mjs|json|svg)$/i.test(item.name)) return <TextPreview item={item} onRecovered={stableOnRecovered} />;
   if (item.posterUrl) {
-    return <RecoverableImage item={{ ...item, url: item.posterUrl, fallbackUrl: '', fallbackPath: '' }} onRecovered={onRecovered} className="lrp-real-image lrp-preview-poster" />;
+    return <RecoverableImage item={{ ...item, url: item.posterUrl, fallbackUrl: '', fallbackPath: '' }} onRecovered={stableOnRecovered} className="lrp-real-image lrp-preview-poster" />;
   }
   return <GenericPreview item={item} />;
 }
