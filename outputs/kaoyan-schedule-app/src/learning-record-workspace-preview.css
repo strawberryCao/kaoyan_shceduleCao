@@ -130,17 +130,51 @@
   font-weight: 720;
   pointer-events: none;
 }
+.lrp-image-zoom-controls {
+  position: absolute;
+  z-index: 2;
+  right: 9px;
+  bottom: 9px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 5px 18px rgba(25, 27, 30, .16);
+  backdrop-filter: blur(8px);
+}
+.lrp-image-zoom-controls button {
+  min-width: 27px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  color: #555a60;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+}
+.lrp-image-zoom-controls button:hover {
+  background: #ecebe7;
+}
 .lrp-document-frame {
   min-width: 0;
   min-height: 0;
 }
 .lrp-float {
   filter: drop-shadow(0 18px 38px rgba(28, 25, 22, .24));
+  overscroll-behavior: contain;
 }
 .lrp-float > div {
   border: 0;
   border-radius: 15px;
   background: transparent;
+  overscroll-behavior: contain;
 }
 .lrp-float.is-locked > div,
 .lrp-float.is-snapping > div {

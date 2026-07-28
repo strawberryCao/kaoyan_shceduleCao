@@ -405,23 +405,6 @@ export const searchLearningRecords = async (
   mode === 'ai' ? 45_000 : AI_ENQUEUE_TIMEOUT_MS,
 );
 
-export const openSystemMaterialWindow = async (descriptor: Record<string, unknown>): Promise<boolean> => {
-  if (IS_CLOUD_RUNTIME) return false;
-  if (window.kaoyanDesktop?.openMaterialWindow) {
-    return window.kaoyanDesktop.openMaterialWindow(descriptor);
-  }
-  const result = await fetchJsonWithTimeout<{ ok: boolean }>(
-    `${NOTE_SERVER_URL}/material-window`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ descriptor }),
-    },
-    8_000,
-  );
-  return result.ok === true;
-};
-
 const fetchLearningSnapshot = async (): Promise<LearningDataSnapshot> => (
   fetchJsonWithTimeout<LearningDataSnapshot>(
     `${NOTE_SERVER_URL}/learning-data`,

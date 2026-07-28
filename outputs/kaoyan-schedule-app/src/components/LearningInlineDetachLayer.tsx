@@ -8,7 +8,6 @@ import {
 import { createPortal } from 'react-dom';
 import { Lock, Maximize2, Unlock, X } from 'lucide-react';
 import { WorkspaceAssetPreview, type WorkspaceAssetPreviewItem } from './WorkspaceAssetPreview';
-import { IS_CLOUD_RUNTIME, openSystemMaterialWindow } from '../utils/notes';
 
 type FloatingMaterial = {
   id: string;
@@ -259,21 +258,7 @@ export const LearningInlineDetachLayer = forwardRef<
       const up = (next: PointerEvent) => {
         clear();
         if (moved && window.innerWidth >= 820) {
-          const fallback = () => spawn(asset, assets, next.clientX, next.clientY, options.onRecovered || (() => undefined));
-          if (IS_CLOUD_RUNTIME) {
-            fallback();
-          } else {
-            void openSystemMaterialWindow({
-              item: asset,
-              assets,
-              screenPoint: {
-                x: window.screenX + next.clientX,
-                y: window.screenY + next.clientY,
-              },
-            }).then((opened) => {
-              if (!opened) fallback();
-            }).catch(fallback);
-          }
+          spawn(asset, assets, next.clientX, next.clientY, options.onRecovered || (() => undefined));
         } else {
           options.onSelect?.();
         }
@@ -376,6 +361,7 @@ export const LearningInlineDetachLayer = forwardRef<
             onPointerDown={() => setFloating((current) => current.map((entry) => entry.id === item.id
               ? { ...entry, z: Math.max(...current.map((value) => value.z), 120) + 1 }
               : entry))}
+            onWheel={(event) => event.stopPropagation()}
           >
             <header onPointerDown={(event) => startMove(event, item)}>
               <strong>{item.asset.name}</strong>
@@ -410,14 +396,21 @@ export const LearningInlineDetachLayer = forwardRef<
                 assets={item.assets}
                 onRecovered={item.onRecovered}
                 onIntrinsicSize={(width, height) => {
-                  if (item.asset.kind !== 'image' || item.intrinsicFitted || width <= 0 || height <= 0) return;
+                  if (item.intrinsicFitted || width <= 0 || height <= 0) return;
                   setFloating((current) => current.map((entry) => {
                     if (entry.id !== item.id || entry.intrinsicFitted) return entry;
+                    const isImage = item.asset.kind === 'image';
                     const ratio = Math.max(.25, Math.min(4.5, width / height));
-                    const nextWidth = Math.min(760, Math.max(300, entry.width));
-                    const nextHeight = Math.max(150, Math.min(620, Math.round(nextWidth / ratio)));
+                    const nextWidth = isImage
+                      ? Math.min(760, Math.max(300, entry.width))
+                      : Math.min(820, Math.max(300, Math.round(width + 12)));
+                    const documentScale = isImage ? 1 : Math.min(1, Math.max(.25, (nextWidth - 12) / width));
+                    const nextHeight = isImage
+                      ? Math.max(150, Math.min(620, Math.round(nextWidth / ratio)))
+                      : Math.min(700, Math.max(180, Math.round(height * documentScale + 12)));
                     return fit({
                       ...entry,
+                      width: nextWidth,
                       height: nextHeight,
                       intrinsicFitted: true,
                     }, layerRef.current?.clientWidth || window.innerWidth, layerRef.current?.clientHeight || window.innerHeight);

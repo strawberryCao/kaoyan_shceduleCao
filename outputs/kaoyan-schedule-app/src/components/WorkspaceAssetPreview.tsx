@@ -43,6 +43,27 @@ const resourceKey = (value: string): string => value
   .at(-1)
   ?.toLowerCase() || '';
 
+function usePreviewSizeBridge(onIntrinsicSize?: (width: number, height: number) => void) {
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const tokenRef = useRef(`kaoyan-preview-${Math.random().toString(36).slice(2)}-${Date.now()}`);
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      const payload = event.data;
+      if (
+        event.source !== frameRef.current?.contentWindow
+        || payload?.type !== 'kaoyan-preview-intrinsic-size'
+        || payload?.token !== tokenRef.current
+      ) return;
+      const width = Number(payload.width);
+      const height = Number(payload.height);
+      if (width > 0 && height > 0) onIntrinsicSize?.(width, height);
+    };
+    window.addEventListener('message', listener);
+    return () => window.removeEventListener('message', listener);
+  }, [onIntrinsicSize]);
+  return { frameRef, token: tokenRef.current };
+}
+
 async function fetchAsset(
   item: WorkspaceAssetPreviewItem,
   signal: AbortSignal,
@@ -99,16 +120,10 @@ function RecoverableImage({
   return (
     <div
       className={`lrp-image-viewer${scale > 1 ? ' is-zoomed' : ''}`}
-      title="滚轮缩放，放大后按住拖动；双击恢复"
+      title="用右下角按钮缩放；放大后按住拖动，双击恢复"
       onDoubleClick={() => {
         setScale((value) => value > 1 ? 1 : 2);
         setOffset({ x: 0, y: 0 });
-      }}
-      onWheel={(event) => {
-        event.preventDefault();
-        const next = Math.max(.5, Math.min(6, Math.round((scale + (event.deltaY < 0 ? .2 : -.2)) * 10) / 10));
-        setScale(next);
-        if (next <= 1) setOffset({ x: 0, y: 0 });
       }}
       onPointerDown={(event) => {
         if (event.button !== 0 || scale <= 1) return;
@@ -152,7 +167,32 @@ function RecoverableImage({
           }
         }}
       />
-      {scale !== 1 && <span className="lrp-image-zoom-level">{Math.round(scale * 100)}%</span>}
+      <div className="lrp-image-zoom-controls" onDoubleClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          onClick={() => setScale((value) => Math.max(.5, Math.round((value - .25) * 100) / 100))}
+          aria-label="缩小图片"
+        >
+          <ZoomOut size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setScale(1);
+            setOffset({ x: 0, y: 0 });
+          }}
+          title="适合窗口"
+        >
+          <Maximize2 size={13} /><span>{Math.round(scale * 100)}%</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setScale((value) => Math.min(6, Math.round((value + .25) * 100) / 100))}
+          aria-label="放大图片"
+        >
+          <ZoomIn size={14} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -210,7 +250,7 @@ function PdfPageCanvas({
   );
 }
 
-function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
+function PdfPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [fitScale, setFitScale] = useState(1);
@@ -253,6 +293,9 @@ function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'ass
       const natural = page.getViewport({ scale: 1 });
       const availableWidth = Math.max(180, viewport.clientWidth - 28);
       setFitScale(Math.max(.25, Math.min(3, availableWidth / natural.width)));
+      const preferredWidth = Math.min(760, Math.max(420, natural.width + 28));
+      const preferredHeight = Math.min(680, Math.max(300, (preferredWidth - 28) * (natural.height / natural.width) + 62));
+      onIntrinsicSize?.(preferredWidth, preferredHeight);
     };
     void resize();
     const observer = new ResizeObserver(() => { void resize(); });
@@ -261,7 +304,7 @@ function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'ass
       cancelled = true;
       observer.disconnect();
     };
-  }, [document]);
+  }, [document, onIntrinsicSize]);
 
   const beginPan = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !viewportRef.current) return;
@@ -305,11 +348,6 @@ function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'ass
         className="lrp-pdf-scroll"
         ref={viewportRef}
         onPointerDown={beginPan}
-        onWheel={(event) => {
-          if (!event.ctrlKey) return;
-          event.preventDefault();
-          setZoom((value) => Math.max(.5, Math.min(4, value + (event.deltaY < 0 ? .2 : -.2))));
-        }}
       >
         <div className="lrp-pdf-pages">
           {Array.from({ length: document.numPages }, (_, index) => (
@@ -321,9 +359,10 @@ function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'ass
   );
 }
 
-function WordPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
+function WordPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
   const [documentHtml, setDocumentHtml] = useState('');
   const [error, setError] = useState('');
+  const { frameRef, token } = usePreviewSizeBridge(onIntrinsicSize);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -350,24 +389,26 @@ function WordPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'as
           : '';
         setDocumentHtml(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
           *,*::before,*::after{box-sizing:border-box}
-          html,body{width:100%;max-width:100%;min-width:0;margin:0;overflow:auto}
+          html,body{width:100%;max-width:100%;min-width:0;margin:0;overflow:auto;overscroll-behavior:contain}
           body{font:16px/1.75 system-ui,sans-serif;padding:clamp(14px,4vw,28px);color:#202124;overflow-wrap:anywhere}
           body>*{max-width:100%}
           img,svg,video,canvas,iframe{max-width:100%;height:auto}
           table{width:max-content;max-width:100%;display:block;overflow:auto;border-collapse:collapse}
           td,th{border:1px solid #bbb;padding:6px}p{white-space:normal}
           pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
-        </style></head><body>${result.value}${warningHtml}</body></html>`);
+        </style></head><body>${result.value}${warningHtml}<script>
+          (()=>{const send=()=>parent.postMessage({type:'kaoyan-preview-intrinsic-size',token:${JSON.stringify(token)},width:Math.min(760,Math.max(320,document.documentElement.scrollWidth)),height:Math.min(700,Math.max(180,document.documentElement.scrollHeight))},'*');addEventListener('load',()=>setTimeout(send,180),{once:true});setTimeout(send,600)})()
+        </script></body></html>`);
       })
       .catch((reason: unknown) => {
         if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'Word 读取失败');
       });
     return () => abort.abort();
-  }, [item.url, item.fallbackUrl, onRecovered]);
+  }, [item.url, item.fallbackUrl, onRecovered, token]);
 
   if (error) return <ErrorPreview item={item} message={error} />;
   if (!documentHtml) return <div className="lrp-preview-loading">正在解析 Word 文档…</div>;
-  return <iframe className="lrp-document-frame" sandbox="" srcDoc={documentHtml} title={item.name} />;
+  return <iframe ref={frameRef} className="lrp-document-frame" sandbox="allow-scripts" srcDoc={documentHtml} title={item.name} />;
 }
 
 interface LoadedResource {
@@ -381,6 +422,7 @@ async function loadHtmlProject(
   assets: WorkspaceAssetPreviewItem[],
   signal: AbortSignal,
   onRecovered: (item: WorkspaceAssetPreviewItem) => void,
+  sizeToken: string,
 ): Promise<{ html: string; objectUrls: string[] }> {
   const entryHtml = await fetchAsset(item, signal, onRecovered).then((response) => response.text());
   const resources: LoadedResource[] = [];
@@ -442,11 +484,9 @@ async function loadHtmlProject(
   const responsiveStyle = document.createElement('style');
   responsiveStyle.textContent = `
     *,*::before,*::after{box-sizing:border-box}
-    html,body{width:100%;max-width:100%;min-width:0;min-height:100%;margin:0;overflow:auto}
-    #kaoyan-fit-root{width:100%;min-width:0;transform-origin:0 0}
-    #kaoyan-fit-root>*{max-width:100%}
-    img,video,svg{max-width:100%;height:auto}
-    canvas,iframe{max-width:100%;height:auto}
+    html,body{width:max-content;max-width:none;min-width:0;height:auto;min-height:0;margin:0;overflow:auto;overscroll-behavior:contain}
+    #kaoyan-fit-root{display:inline-block;width:max-content;min-width:0;height:auto;min-height:0;transform-origin:0 0}
+    img,video,svg{height:auto}
     table{max-width:100%;display:block;overflow:auto}
     pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
   `;
@@ -461,28 +501,45 @@ async function loadHtmlProject(
     (() => {
       const root = document.getElementById('kaoyan-fit-root');
       if (!root) return;
+      const sizeToken = ${JSON.stringify(sizeToken)};
       let fitting = false;
-      let currentScale = 1;
       const fit = () => {
         if (fitting) return;
         fitting = true;
         requestAnimationFrame(() => {
+          root.style.zoom = '1';
           const rect = root.getBoundingClientRect();
-          const naturalWidth = Math.max(root.scrollWidth, rect.width, 1) / currentScale;
-          const naturalHeight = Math.max(root.scrollHeight, rect.height, 1) / currentScale;
+          const children = [...root.children].map((child) => child.getBoundingClientRect());
+          const naturalWidth = Math.max(
+            root.scrollWidth,
+            rect.width,
+            ...children.map((child) => child.right - rect.left),
+            1
+          );
+          const naturalHeight = Math.max(
+            root.scrollHeight,
+            rect.height,
+            ...children.map((child) => child.bottom - rect.top),
+            1
+          );
           const widthScale = Math.max(.25, (innerWidth - 2) / naturalWidth);
-          const heightScale = Math.max(.25, (innerHeight - 2) / naturalHeight);
-          currentScale = Math.min(1, widthScale, heightScale);
-          root.style.zoom = String(currentScale);
+          const scale = Math.min(1, widthScale);
+          root.style.zoom = String(scale);
+          parent.postMessage({
+            type: 'kaoyan-preview-intrinsic-size',
+            token: sizeToken,
+            width: Math.ceil(naturalWidth),
+            height: Math.ceil(naturalHeight),
+          }, '*');
           fitting = false;
         });
       };
       addEventListener('resize', fit, { passive: true });
-      addEventListener('load', fit, { once: true });
-      new MutationObserver(fit).observe(root, { childList: true, subtree: true, characterData: true });
-      setTimeout(fit, 0);
-      setTimeout(fit, 250);
-      setTimeout(fit, 900);
+      addEventListener('load', () => setTimeout(fit, 60), { once: true });
+      new MutationObserver(fit).observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+      if (document.fonts?.ready) document.fonts.ready.then(fit);
+      setTimeout(fit, 80);
+      setTimeout(fit, 500);
     })();
   `;
   document.body.append(fitScript);
@@ -518,16 +575,17 @@ async function loadHtmlProject(
   };
 }
 
-function HtmlPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) {
+function HtmlPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAssetPreviewProps) {
   const [html, setHtml] = useState('');
   const [error, setError] = useState('');
+  const { frameRef, token } = usePreviewSizeBridge(onIntrinsicSize);
 
   useEffect(() => {
     const abort = new AbortController();
     let objectUrls: string[] = [];
     setHtml('');
     setError('');
-    void loadHtmlProject(item, assets, abort.signal, onRecovered)
+    void loadHtmlProject(item, assets, abort.signal, onRecovered, token)
       .then((result) => {
         if (abort.signal.aborted) return;
         objectUrls = result.objectUrls;
@@ -540,13 +598,14 @@ function HtmlPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) 
       abort.abort();
       objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [item.url, item.fallbackUrl, assets, onRecovered]);
+  }, [item.url, item.fallbackUrl, assets, onRecovered, token]);
 
   if (error) return <ErrorPreview item={item} message={error} />;
   if (!html) return <div className="lrp-preview-loading">正在装载 HTML / Web 资料…</div>;
   return (
     <div className="lrp-html-preview">
       <iframe
+        ref={frameRef}
         className="lrp-document-frame"
         sandbox="allow-scripts allow-forms allow-modals allow-downloads"
         srcDoc={html}
@@ -556,7 +615,7 @@ function HtmlPreview({ item, assets, onRecovered }: WorkspaceAssetPreviewProps) 
   );
 }
 
-function TextPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
+function TextPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
   const [text, setText] = useState('');
   const [error, setError] = useState('');
 
@@ -574,6 +633,16 @@ function TextPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'as
       });
     return () => abort.abort();
   }, [item.url, item.fallbackUrl, onRecovered]);
+
+  useEffect(() => {
+    if (!text) return;
+    const lines = text.split(/\r?\n/);
+    const longest = lines.reduce((length, line) => Math.max(length, line.length), 0);
+    onIntrinsicSize?.(
+      Math.min(760, Math.max(340, longest * 7.5 + 40)),
+      Math.min(700, Math.max(200, lines.length * 22 + 40)),
+    );
+  }, [onIntrinsicSize, text]);
 
   if (error) return <ErrorPreview item={item} message={error} />;
   if (!text) return <div className="lrp-preview-loading">正在读取文本…</div>;
@@ -603,10 +672,10 @@ export function WorkspaceAssetPreview({ item, assets, onRecovered, onIntrinsicSi
   }, []);
 
   if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
-  if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={stableOnRecovered} />;
-  if (item.kind === 'word') return <WordPreview item={item} onRecovered={stableOnRecovered} />;
-  if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={stableOnRecovered} />;
-  if (/\.(?:txt|md|css|js|mjs|json|svg)$/i.test(item.name)) return <TextPreview item={item} onRecovered={stableOnRecovered} />;
+  if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
+  if (item.kind === 'word') return <WordPreview item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
+  if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
+  if (/\.(?:txt|md|css|js|mjs|json|svg)$/i.test(item.name)) return <TextPreview item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
   if (item.posterUrl) {
     return <RecoverableImage item={{ ...item, url: item.posterUrl, fallbackUrl: '', fallbackPath: '' }} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} className="lrp-real-image lrp-preview-poster" />;
   }

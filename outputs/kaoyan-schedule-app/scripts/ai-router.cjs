@@ -66,9 +66,10 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '命名只需要短输出，调高通常不会提升识别质量。', default: 900, min: 300, max: 2400, step: 100, unit: 'tokens' }),
   ]),
   material_naming: Object.freeze([
-    Object.freeze({ id: 'renameNoteTitle', group: '命名范围', type: 'boolean', label: '同时命名速记标题', description: '根据整组资料与文字为速记生成一个简洁标题。', default: true }),
-    Object.freeze({ id: 'renameAttachments', group: '命名范围', type: 'boolean', label: '逐个命名资料', description: '每份附件保留原后缀，只替换为能表达内容的短标题。', default: true }),
-    Object.freeze({ id: 'titleMaxLength', group: '质量控制', type: 'number', label: '名称最多字数', description: '不含扩展名；程序仍会过滤 Windows 非法字符。', default: 26, min: 8, max: 60, step: 1, unit: '字' }),
+    Object.freeze({ id: 'renameNoteTitle', group: '命名范围', type: 'boolean', label: '同时命名速记标题', description: '先理解整组资料之间的关系，再为整条速记生成一个简短主题。', default: true }),
+    Object.freeze({ id: 'renameAttachments', group: '命名范围', type: 'boolean', label: '关联命名全部资料', description: '在同一轮分析中看完全部资料，再按每份资料在本条速记中的作用命名。', default: true }),
+    Object.freeze({ id: 'noteTitleMaxLength', group: '质量控制', type: 'number', label: '速记标题最多字数', description: '只概括整组资料的共同主题，避免标题过长。', default: 18, min: 8, max: 32, step: 1, unit: '字' }),
+    Object.freeze({ id: 'titleMaxLength', group: '质量控制', type: 'number', label: '资料名称最多字数', description: '不含扩展名；程序仍会过滤 Windows 非法字符。', default: 26, min: 8, max: 60, step: 1, unit: '字' }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '多资料只返回短名称列表，不生成总结。', default: 1200, min: 400, max: 3000, step: 100, unit: 'tokens' }),
   ]),
   semantic_search: Object.freeze([
@@ -168,12 +169,17 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'preferExistingTaxonomy', group: '分类策略', type: 'boolean', label: '优先已有目录', description: '优先匹配已经存在的科目和知识点名称。', default: true }),
   ]),
   taxonomy: Object.freeze([
-    Object.freeze({ id: 'mergeStrategy', group: '目录策略', type: 'select', label: '同义知识点处理', description: '控制近义名称是自动归并还是保持独立。', default: 'conservative', options: [
+    Object.freeze({ id: 'mergeStrategy', group: '目录策略', type: 'select', label: '同义知识点处理', description: '控制近义名称是自动归并还是保持独立。', default: 'balanced', options: [
       { value: 'conservative', label: '保守归并' },
       { value: 'balanced', label: '平衡归并' },
       { value: 'aggressive', label: '积极归并' },
     ] }),
     Object.freeze({ id: 'allowNewKnowledgePoints', group: '目录策略', type: 'boolean', label: '允许新建知识点', description: '一级科目仍受程序白名单约束。', default: true }),
+    Object.freeze({ id: 'minKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最少知识组', description: '资料足够多时避免把整门课压成少数大类。', default: 5, min: 2, max: 12, step: 1, unit: '组' }),
+    Object.freeze({ id: 'maxKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最多知识组', description: '避免为每一道题生成一个新的知识点分类。', default: 18, min: 8, max: 40, step: 1, unit: '组' }),
+    Object.freeze({ id: 'wrongReasonGroupCount', group: '目录规模', type: 'number', label: '错因类别目标数', description: '推荐保持 7 到 10 个稳定类别，具体错误仍保留为详情。', default: 9, min: 4, max: 12, step: 1, unit: '类' }),
+    Object.freeze({ id: 'minimumCoverage', group: '安全校验', type: 'number', label: '最低归并覆盖率', description: 'AI 未覆盖足够旧分类时整批拒绝写入，避免静默丢失。', default: 0.8, min: 0.6, max: 1, step: 0.05 }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大完成 Token', description: '全局分类整理需要同时理解大量已有名称和错因。', default: 6000, min: 2000, max: 12000, step: 500, unit: 'tokens' }),
   ]),
   flashcard_generation: Object.freeze([
     Object.freeze({ id: 'maxCards', group: '卡片策略', type: 'number', label: '最多生成卡片', description: '独立卡片任务的一次生成硬上限。', default: 3, min: 1, max: 10, step: 1, unit: '张' }),
@@ -219,7 +225,7 @@ const AI_TASK_DEFINITIONS = Object.freeze({
   }),
   material_naming: Object.freeze({
     label: '速记资料命名',
-    description: '根据一条速记中的文字、图片和文档内容，为速记及每份附件生成名称。',
+    description: '综合理解一条速记中的全部文字、图片和文档，再按共同主题及每份资料的作用关联命名。',
     active: true,
   }),
   semantic_search: Object.freeze({
@@ -261,9 +267,10 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     active: false,
   }),
   taxonomy: Object.freeze({
-    label: '知识目录整理',
-    description: '供知识目录归并与层级调整任务使用。',
-    active: false,
+    label: '全局分类体系整理',
+    description: '跨全部笔记归并同义知识点与错因类别，在分类过多和过少之间保持稳定粒度。',
+    active: true,
+    defaultTimeoutMs: 120_000,
   }),
   flashcard_generation: Object.freeze({
     label: '独立卡片生成',
@@ -461,7 +468,11 @@ function inferCapabilities(providerId, modelId) {
   ) {
     capabilities.push('vision');
   }
-  if (providerId === 'gemini' || /(?:long|128k|256k|k2)/i.test(model)) {
+  if (
+    providerId === 'gemini'
+    || /(?:long|128k|256k|k2)/i.test(model)
+    || /^qwen(?:3)?-(?:max|plus)$/i.test(model)
+  ) {
     capabilities.push('longContext');
   }
   if (/(?:pro|max|thinking|reason|k2\.[56])/i.test(model)) {

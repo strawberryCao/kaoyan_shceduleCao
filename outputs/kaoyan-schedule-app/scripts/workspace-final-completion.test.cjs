@@ -16,7 +16,8 @@ test('workspace renders DOCX and runs HTML only in an isolated offline sandbox',
   assert.doesNotMatch(renderer, /安全查看|隔离运行/);
   assert.match(renderer, /connect-src 'none'/);
   assert.match(renderer, /name="viewport"/);
-  assert.match(renderer, /img,video,svg\{max-width:100%;height:auto\}/);
+  assert.match(renderer, /#kaoyan-fit-root\{display:inline-block;width:max-content/);
+  assert.match(renderer, /img,video,svg\{height:auto\}/);
 });
 
 test('historical paths derive stable GitHub asset paths and persist after recovery', () => {

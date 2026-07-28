@@ -68,6 +68,70 @@ import {
 } from '../utils/weeklyReview';
 import '../learning-center.css';
 
+const QUICK_NOTE_MASCOTS = [
+  { kind: 'cat', body: '#f3dfbd', line: '#8e5b2e', blush: '#e8a690', accent: '#d69a42', face: 'smile', deco: 'spark' },
+  { kind: 'bunny', body: '#f7dce2', line: '#935b69', blush: '#e99aaa', accent: '#d8758a', face: 'smile', deco: 'heart' },
+  { kind: 'bear', body: '#dfc4a8', line: '#76513a', blush: '#dc927e', accent: '#b77a45', face: 'w', deco: 'dot' },
+  { kind: 'blob', body: '#dcebc9', line: '#61754c', blush: '#e3a38f', accent: '#8cab64', face: 'wink', deco: 'leaf' },
+  { kind: 'cat', body: '#dce8f4', line: '#526f88', blush: '#e3a5a4', accent: '#79a4ca', face: 'w', deco: 'star' },
+  { kind: 'bunny', body: '#eadff5', line: '#735f8d', blush: '#daa0b9', accent: '#a781cc', face: 'wink', deco: 'flower' },
+  { kind: 'bear', body: '#f3e5ae', line: '#827039', blush: '#e5a27d', accent: '#d1a638', face: 'smile', deco: 'spark' },
+  { kind: 'blob', body: '#cfe9e4', line: '#47776f', blush: '#e9a29b', accent: '#60aaa0', face: 'w', deco: 'heart' },
+  { kind: 'cat', body: '#efd3bd', line: '#885c42', blush: '#e28c80', accent: '#c87e50', face: 'wink', deco: 'leaf' },
+  { kind: 'bunny', body: '#e4e4f4', line: '#62648a', blush: '#d998aa', accent: '#898bc3', face: 'w', deco: 'star' },
+  { kind: 'bear', body: '#d9e4bc', line: '#637044', blush: '#dfa08c', accent: '#94a85d', face: 'wink', deco: 'flower' },
+  { kind: 'blob', body: '#f1d8cb', line: '#875f51', blush: '#db8e85', accent: '#c77c6c', face: 'smile', deco: 'dot' },
+] as const;
+
+function quickMascotIndex(noteUid: string): number {
+  let hash = 0;
+  for (const character of noteUid) hash = ((hash * 31) + character.charCodeAt(0)) >>> 0;
+  return hash % QUICK_NOTE_MASCOTS.length;
+}
+
+function QuickNoteMascot({ noteUid }: { noteUid: string }) {
+  const mascot = QUICK_NOTE_MASCOTS[quickMascotIndex(noteUid)];
+  return (
+    <svg className="lc-quick-mascot" viewBox="0 0 52 44" focusable="false" aria-hidden="true">
+      {mascot.kind === 'cat' && <path className="lc-quick-mascot-ear" style={{ stroke: mascot.line }} d="M15.7 15.2 14 7.8l6.5 3.1m15.8 4.3L38 7.8l-6.5 3.1" />}
+      {mascot.kind === 'bunny' && <path className="lc-quick-mascot-ear" style={{ stroke: mascot.line }} d="M18.9 13.1C15.5 7.4 17 3.7 19.4 4.2c2.7.5 2.4 5.7 2.2 8m11.5.9C36.5 7.4 35 3.7 32.6 4.2c-2.7.5-2.4 5.7-2.2 8" />}
+      {mascot.kind === 'bear' && (
+        <>
+          <circle className="lc-quick-mascot-ear-fill" style={{ fill: mascot.body, stroke: mascot.line }} cx="17.4" cy="12.2" r="4.1" />
+          <circle className="lc-quick-mascot-ear-fill" style={{ fill: mascot.body, stroke: mascot.line }} cx="34.6" cy="12.2" r="4.1" />
+        </>
+      )}
+      <path className="lc-quick-mascot-body" style={{ fill: mascot.body, stroke: mascot.line }} d="M13.5 20.5c0-8 5.6-13 12.5-13s12.5 5 12.5 13v8.2c0 5.1-4.7 8.8-12.5 8.8s-12.5-3.7-12.5-8.8z" />
+      {mascot.face === 'wink'
+        ? <path className="lc-quick-mascot-eye-line" style={{ stroke: mascot.line }} d="m19.3 23.2 1.8 1.2 1.8-1.2" />
+        : <circle className="lc-quick-mascot-eye" style={{ fill: mascot.line }} cx="21.2" cy="23.1" r="1.45" />}
+      <circle className="lc-quick-mascot-eye" style={{ fill: mascot.line }} cx="30.8" cy="23.1" r="1.45" />
+      <path
+        className="lc-quick-mascot-smile"
+        style={{ stroke: mascot.line }}
+        d={mascot.face === 'w' ? 'm22.7 27.1 2.2 1.6 1.1-1.3 1.1 1.3 2.2-1.6' : 'M23.1 27.2c1.8 1.7 4 1.7 5.8 0'}
+      />
+      <circle className="lc-quick-mascot-blush" style={{ fill: mascot.blush }} cx="18.2" cy="27.3" r="2.05" />
+      <circle className="lc-quick-mascot-blush" style={{ fill: mascot.blush }} cx="33.8" cy="27.3" r="2.05" />
+      {mascot.deco === 'spark' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="m42.2 8 .7 2.1 2.1.7-2.1.8-.7 2.1-.8-2.1-2.1-.8 2.1-.7z" />}
+      {mascot.deco === 'heart' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="M42.2 13.6c-4-2.3-4-6.4-.8-6.4 1 0 1.7.6 2.1 1.4.5-.8 1.2-1.4 2.2-1.4 3.1 0 3.1 4.1-.9 6.4l-1.3.8z" />}
+      {mascot.deco === 'leaf' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="M39.2 13.3c.3-4.5 3.2-7.1 7.1-6.8-.3 4.2-2.9 6.8-7.1 6.8m.4-.3 5-4.3" />}
+      {mascot.deco === 'star' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="m43 6.4 1.2 2.8 3 .3-2.3 2  .7 2.9-2.6-1.6-2.6 1.6.7-2.9-2.3-2 3-.3z" />}
+      {mascot.deco === 'flower' && (
+        <g className="lc-quick-mascot-deco" style={{ fill: mascot.accent }}>
+          <circle cx="43" cy="7.8" r="2" /><circle cx="46" cy="10.5" r="2" /><circle cx="43" cy="13.2" r="2" /><circle cx="40" cy="10.5" r="2" />
+          <circle cx="43" cy="10.5" r="1.55" fill="#fff4cf" />
+        </g>
+      )}
+      {mascot.deco === 'dot' && (
+        <g className="lc-quick-mascot-deco" style={{ fill: mascot.accent }}>
+          <circle cx="41" cy="8" r="1.25" /><circle cx="45" cy="11" r="1.65" /><circle cx="40.5" cy="14" r=".85" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
   reviewResult?: 'remembered' | 'forgotten';
   reviewThought?: string;
@@ -395,10 +459,23 @@ const formatRecordDate = (value: string): string => {
   return `${year}年${month}月${day}日 · ${weekday}`;
 };
 
-const noteKnowledgePoints = (note: LearningAutoNote): string[] => uniqueText([
-  ...note.knowledgePath.filter((item) => item !== note.subject),
-  ...(note.classificationSource === 'manual' ? [] : note.items.map((item) => item.knowledgePoint)),
-]);
+const isUsefulTaxonomyLabel = (value: string): boolean => {
+  const normalized = value.trim();
+  return normalized.length > 0
+    && normalized.length <= 32
+    && !/[。！？；\n]/u.test(normalized)
+    && (normalized.match(/[,，、]/gu)?.length ?? 0) <= 1;
+};
+
+const noteKnowledgePoints = (note: LearningAutoNote): string[] => {
+  const canonical = uniqueText(note.knowledgePath.filter((item) => (
+    item !== note.subject && isUsefulTaxonomyLabel(item)
+  )));
+  if (canonical.length > 0 || note.classificationSource === 'manual') return canonical;
+  return uniqueText(note.items.map((item) => item.knowledgePoint))
+    .filter(isUsefulTaxonomyLabel)
+    .slice(0, 1);
+};
 
 const noteQuestionTypes = (note: LearningAutoNote): string[] => uniqueText([
   note.questionType,
@@ -415,6 +492,26 @@ const noteWrongReasons = (note: LearningAutoNote): string[] => uniqueText([
     .filter((tag) => /^错因[:：]/.test(tag))
     .map((tag) => tag.replace(/^错因[:：]\s*/, '')),
 ]);
+
+const wrongReasonCategory = (value: string): string => {
+  const normalized = value.normalize('NFKC').toLowerCase();
+  if (/(审题|题意|条件|范围看错|漏看|漏掉|遗漏条件|已知|要求)/u.test(normalized)) return '审题与条件';
+  if (/(定义|概念|性质|理解|混淆|不熟|不会判断)/u.test(normalized)) return '概念理解';
+  if (/(适用|区间|定义域|前提|边界|端点|条件不满足|使用范围)/u.test(normalized)) return '适用范围';
+  if (/(公式|定理|法则|结论|恒等式|展开式)/u.test(normalized)) return '公式与定理';
+  if (/(计算|化简|运算|求导|积分|代数|算错|约分|通分)/u.test(normalized)) return '计算与化简';
+  if (/(步骤|方法|思路|过程|顺序|分类讨论|辅助线|构造)/u.test(normalized)) return '步骤与方法';
+  if (/(符号|正负|抄写|看错|写错|下标|上标|括号)/u.test(normalized)) return '符号与抄写';
+  if (/(记忆|忘记|没记住|遗漏|漏写|漏项)/u.test(normalized)) return '记忆与遗漏';
+  return '其他';
+};
+
+const noteWrongReasonCategories = (note: LearningAutoNote): string[] => {
+  const stored = uniqueText(note.tags
+    .filter((tag) => /^错因(?:分类|类别)[:：]/u.test(tag))
+    .map((tag) => tag.replace(/^错因(?:分类|类别)[:：]\s*/u, '')));
+  return stored.length > 0 ? stored : uniqueText(noteWrongReasons(note).map(wrongReasonCategory));
+};
 
 const noteHasTag = (note: LearningAutoNote, words: string[]): boolean => note.tags.some((tag) => (
   words.some((word) => tag === word || tag.includes(word))
@@ -706,7 +803,7 @@ export function LearningCenter({
     subjects: uniqueText(mistakeNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
     knowledgePoints: uniqueText(mistakeNotes.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
     questionTypes: uniqueText(mistakeNotes.flatMap(({ note }) => noteQuestionTypes(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    wrongReasons: uniqueText(mistakeNotes.flatMap(({ note }) => noteWrongReasons(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+    wrongReasons: uniqueText(mistakeNotes.flatMap(({ note }) => noteWrongReasonCategories(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
   }), [mistakeNotes]);
 
   const visibleMistakes = useMemo(() => rankNotesForQuery(mistakeNotes.filter((entry) => {
@@ -714,7 +811,7 @@ export function LearningCenter({
     if (mistakeFilters.subject && note.subject !== mistakeFilters.subject) return false;
     if (mistakeFilters.knowledgePoint && !noteKnowledgePoints(note).includes(mistakeFilters.knowledgePoint)) return false;
     if (mistakeFilters.questionType && !noteQuestionTypes(note).includes(mistakeFilters.questionType)) return false;
-    if (mistakeFilters.wrongReason && !noteWrongReasons(note).includes(mistakeFilters.wrongReason)) return false;
+    if (mistakeFilters.wrongReason && !noteWrongReasonCategories(note).includes(mistakeFilters.wrongReason)) return false;
     return mistakeFilters.status === 'all' || mistakeStatus(note, snapshot.cards, today) === mistakeFilters.status;
   }), query, semanticScores), [mistakeFilters, mistakeNotes, query, semanticScores, snapshot.cards, today]);
 
@@ -1487,7 +1584,7 @@ export function LearningCenter({
         }}
       >
         <span className="lc-note-button-thumb" aria-hidden="true">
-          {context === 'quick' ? <Zap size={18} /> : <FileImage size={18} />}
+          {context === 'quick' ? <QuickNoteMascot noteUid={note.noteUid} /> : <FileImage size={18} />}
           {thumbnailPaths.length > 0 && <ResilientNoteImage paths={thumbnailPaths} alt="" />}
         </span>
         <span className="lc-note-button-copy">

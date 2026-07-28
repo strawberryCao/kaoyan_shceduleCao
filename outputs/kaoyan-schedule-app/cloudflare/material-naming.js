@@ -36,6 +36,7 @@ export async function runConfiguredMaterialNaming(env, entryId, options = {}) {
   if (!Array.isArray(entry.assets) || entry.assets.length === 0) return { applied: false };
   const settings = await getTaskSettings(env, 'material_naming');
   const maxLength = Math.max(8, Math.min(60, Number(settings.options?.titleMaxLength) || 26));
+  const noteTitleMaxLength = Math.max(8, Math.min(32, Number(settings.options?.noteTitleMaxLength) || 18));
   const contexts = [];
   const content = [];
   for (let index = 0; index < entry.assets.length; index += 1) {
@@ -60,6 +61,8 @@ export async function runConfiguredMaterialNaming(env, entryId, options = {}) {
       ...(settings.workflow?.prompt?.instructions || []),
       settings.workflow?.prompt?.outputFormat || '',
       settings.customInstructions || '',
+      '以下正文与附件属于同一条速记。必须先整体判断共同主题和资料间关系，再一次性完成全部命名。',
+      '速记标题只保留共同主题；附件名称要说明该附件在本条速记中的具体作用。',
       `速记正文：${String(entry.body || '').slice(0, 4_000) || '无'}`,
       `附件信息：${JSON.stringify(contexts)}`,
     ].filter(Boolean).join('\n'),
@@ -91,7 +94,7 @@ export async function runConfiguredMaterialNaming(env, entryId, options = {}) {
         : null;
     })
     .filter((item) => item?.[1]));
-  const generatedTitle = cleanName(response.json?.noteTitle, maxLength);
+  const generatedTitle = cleanName(response.json?.noteTitle, noteTitleMaxLength);
   return patchEntry(env, entry.entryId, {
     expectedVersion: entry.version,
     ...(options.userTitle || settings.options?.renameNoteTitle === false || !generatedTitle

@@ -152,7 +152,16 @@ test('all common formats adapt, scroll and detach as borderless floating materia
     {
       name: 'e2e.html',
       mimeType: 'text/html',
-      buffer: Buffer.from('<!doctype html><meta name="viewport" content="width=device-width"><h1>HTML 自适应预览</h1><div style="width:1400px;max-width:100%">宽内容</div><script>document.body.dataset.scriptRan="yes"</script>', 'utf8'),
+      buffer: Buffer.from(`<!doctype html>
+        <meta name="viewport" content="width=device-width">
+        <style>
+          *{box-sizing:border-box}html,body{margin:0}
+          .wrap{width:430px;margin:0 auto;padding:8px}
+          .box{height:270px;padding:12px;border-radius:13px;background:#faf7f1}
+          svg{display:block;width:100%;height:190px}
+        </style>
+        <div class="wrap"><div class="box"><h1>HTML 自适应预览</h1><svg viewBox="0 0 390 190"><path d="M20 150L370 30" stroke="#222"/></svg></div></div>
+        <script>document.body.dataset.scriptRan="yes"</script>`, 'utf8'),
     },
     {
       name: 'e2e-image.png',
@@ -227,6 +236,11 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   await expect(record.locator('.lrp-pdf-preview')).toBeVisible();
   await expect(record.locator('.lrp-pdf-page canvas')).toBeVisible();
   await expect.poll(() => record.locator('.lrp-pdf-page canvas').evaluate((canvas: HTMLCanvasElement) => canvas.width)).toBeGreaterThan(100);
+  const pdfZoomLabel = record.locator('.lrp-pdf-toolbar button').nth(1);
+  await expect(pdfZoomLabel).toContainText('100%');
+  await record.locator('.lrp-pdf-scroll').hover();
+  await page.mouse.wheel(0, 480);
+  await expect(pdfZoomLabel).toContainText('100%');
 
   const chipBox = await pdfChip.boundingBox();
   expect(chipBox).toBeTruthy();
@@ -262,6 +276,31 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   await page.mouse.up();
   const afterMove = await detached.boundingBox();
   expect(Math.abs(afterMove!.x - beforeMove!.x) + Math.abs(afterMove!.y - beforeMove!.y)).toBeGreaterThan(50);
+  await detached.locator(':scope > header button').last().click();
+  await expect(detached).toHaveCount(0);
+
+  const htmlChip = record.getByRole('button', { name: /e2e\.html/ });
+  await htmlChip.evaluate((element) => element.scrollIntoView({ block: 'nearest', inline: 'center' }));
+  const htmlChipBox = await htmlChip.boundingBox();
+  expect(htmlChipBox).toBeTruthy();
+  await page.mouse.move(htmlChipBox!.x + htmlChipBox!.width / 2, htmlChipBox!.y + htmlChipBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(690, 300, { steps: 8 });
+  await page.mouse.up();
+
+  const detachedHtml = page.locator('.lc-detached-material.is-html').last();
+  await expect(detachedHtml).toBeVisible();
+  const detachedHtmlFrame = detachedHtml.frameLocator('iframe[title="e2e.html"]');
+  await expect(detachedHtmlFrame.getByText('HTML 自适应预览')).toBeVisible();
+  await expect.poll(async () => {
+    const box = await detachedHtml.boundingBox();
+    return box?.width || 0;
+  }).toBeLessThan(500);
+  const floatingBox = await detachedHtml.boundingBox();
+  const wrapBox = await detachedHtmlFrame.locator('.wrap').boundingBox();
+  expect(floatingBox && wrapBox).toBeTruthy();
+  expect(wrapBox!.width).toBeGreaterThan(410);
+  expect(floatingBox!.height / wrapBox!.height).toBeLessThan(1.5);
 });
 
 test('cloud session cookie protects APIs and cloud delete stays disabled', async ({ request }) => {

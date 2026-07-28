@@ -25,7 +25,6 @@ const LearningRecordWorkspacePreview = lazy(() => import('./components/LearningR
 const DesktopConsole = lazy(() => import('./desktop/DesktopConsole').then((module) => ({ default: module.DesktopConsole })));
 const DesktopWorkspace = lazy(() => import('./desktop/DesktopWorkspace').then((module) => ({ default: module.DesktopWorkspace })));
 const AiConfigPage = lazy(() => import('./components/AiConfigPage').then((module) => ({ default: module.AiConfigPage })));
-const MaterialFloatWindow = lazy(() => import('./components/MaterialFloatWindow').then((module) => ({ default: module.MaterialFloatWindow })));
 
 const deferred = (content: ReactNode) => <Suspense fallback={null}>{content}</Suspense>;
 
@@ -42,12 +41,7 @@ export default function App() {
   const isNoteAppMode = params.get('noteApp') === '1';
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
-  const isMaterialWindow = params.get('materialWindow') === '1';
   const workspaceNoteUid = params.get('workspaceNote')?.trim() || '';
-
-  if (isMaterialWindow) {
-    return deferred(<MaterialFloatWindow />);
-  }
 
   if (workspaceNoteUid) {
     return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />);

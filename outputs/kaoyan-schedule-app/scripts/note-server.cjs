@@ -60,6 +60,7 @@ const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
 const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
 const SEARCH_INDEX_PATH = path.join(ASSISTANT_ROOT, 'search-index.json');
+const TAXONOMY_CONSOLIDATION_STATE_PATH = path.join(ASSISTANT_ROOT, 'taxonomy-consolidation-state.json');
 const MATERIAL_WINDOW_REQUEST_ROOT = path.join(os.tmpdir(), 'kaoyan-material-previews');
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
@@ -115,6 +116,7 @@ const aiNamingQueues = [Promise.resolve(), Promise.resolve()];
 let aiNamingLaneCursor = 0;
 const aiNamingJobs = new Map();
 let pendingAiNamingResumeTimer = null;
+let taxonomyConsolidationTimer = null;
 let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
 const manualAiJobs = new Map();
@@ -1961,6 +1963,361 @@ async function searchLearningDocuments(payload) {
   };
 }
 
+function taxonomyLabel(value, maxLength = 80) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function collectTaxonomyCandidates(snapshot) {
+  const knowledge = new Map();
+  const wrongReasons = new Map();
+  for (const day of Object.values(snapshot?.days || {})) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      const subject = normalizeStoredSubject(note.subject);
+      const manualKnowledge = note.classificationSource === 'manual'
+        || (Array.isArray(note.userEditedFields) && note.userEditedFields.includes('knowledgePath'));
+      if (!manualKnowledge) {
+        const values = [
+          ...(Array.isArray(note.knowledgePath) ? note.knowledgePath : []).filter((item) => item !== subject),
+          ...(Array.isArray(note.items) ? note.items.map((item) => item?.knowledgePoint) : []),
+        ];
+        for (const value of values) {
+          const label = taxonomyLabel(value);
+          if (!label) continue;
+          const key = `${subject}\u0000${label}`;
+          const previous = knowledge.get(key);
+          knowledge.set(key, {
+            subject,
+            label,
+            count: (previous?.count || 0) + 1,
+          });
+        }
+      }
+      const reasons = [
+        note.wrongReason,
+        ...(Array.isArray(note.items) ? note.items.map((item) => item?.wrongReason) : []),
+        ...(Array.isArray(note.tags) ? note.tags
+          .filter((tag) => /^错因[:：]/u.test(tag))
+          .map((tag) => tag.replace(/^错因[:：]\s*/u, '')) : []),
+      ];
+      for (const value of reasons) {
+        const label = taxonomyLabel(value, 300);
+        if (!label) continue;
+        wrongReasons.set(label, (wrongReasons.get(label) || 0) + 1);
+      }
+    }
+  }
+  return {
+    knowledge: [...knowledge.values()].sort((left, right) => (
+      left.subject.localeCompare(right.subject, 'zh-CN')
+      || right.count - left.count
+      || left.label.localeCompare(right.label, 'zh-CN')
+    )),
+    wrongReasons: [...wrongReasons].map(([label, count]) => ({ label, count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'zh-CN')),
+  };
+}
+
+function taxonomyNeedsConsolidation(snapshot) {
+  const candidates = collectTaxonomyCandidates(snapshot);
+  const bySubject = new Map();
+  for (const candidate of candidates.knowledge) {
+    bySubject.set(candidate.subject, (bySubject.get(candidate.subject) || 0) + 1);
+  }
+  return candidates.wrongReasons.length > 12
+    || candidates.knowledge.filter((candidate) => (
+      candidate.label.length > 32 || /[。！？；\n]/u.test(candidate.label)
+    )).length > 3
+    || [...bySubject.values()].some((count) => count > 20);
+}
+
+function validateTaxonomyGroups(result, candidates, options) {
+  const knowledgeInputs = new Map(candidates.knowledge.map((item) => [`${item.subject}\u0000${item.label}`, item]));
+  const wrongInputs = new Set(candidates.wrongReasons.map((item) => item.label));
+  const knowledgeMap = new Map();
+  const wrongMap = new Map();
+  const groupsBySubject = new Map();
+
+  for (const group of Array.isArray(result?.knowledgeGroups) ? result.knowledgeGroups : []) {
+    const subject = normalizeStoredSubject(group?.subject);
+    if (subject !== taxonomyLabel(group?.subject)) continue;
+    const canonical = taxonomyLabel(group?.canonical, 32);
+    if (!canonical || /[。！？；\n]/u.test(canonical)) continue;
+    for (const rawAlias of Array.isArray(group?.aliases) ? group.aliases : []) {
+      const alias = taxonomyLabel(rawAlias);
+      const key = `${subject}\u0000${alias}`;
+      if (!knowledgeInputs.has(key) || knowledgeMap.has(key)) continue;
+      knowledgeMap.set(key, canonical);
+    }
+    if ([...knowledgeMap].some(([key, value]) => key.startsWith(`${subject}\u0000`) && value === canonical)) {
+      const subjectGroups = groupsBySubject.get(subject) || new Set();
+      subjectGroups.add(canonical);
+      groupsBySubject.set(subject, subjectGroups);
+    }
+  }
+
+  for (const group of Array.isArray(result?.wrongReasonGroups) ? result.wrongReasonGroups : []) {
+    const category = taxonomyLabel(group?.category, 20);
+    if (!category || /[。！？；\n]/u.test(category)) continue;
+    for (const rawAlias of Array.isArray(group?.aliases) ? group.aliases : []) {
+      const alias = taxonomyLabel(rawAlias, 300);
+      if (!wrongInputs.has(alias) || wrongMap.has(alias)) continue;
+      wrongMap.set(alias, category);
+    }
+  }
+
+  const totalInputs = knowledgeInputs.size + wrongInputs.size;
+  const coveredInputs = knowledgeMap.size + wrongMap.size;
+  const coverage = totalInputs === 0 ? 1 : coveredInputs / totalInputs;
+  const minimumCoverage = Math.max(0.6, Math.min(1, Number(options.minimumCoverage) || 0.8));
+  if (coverage < minimumCoverage) {
+    throw new Error(`分类整理覆盖率 ${(coverage * 100).toFixed(1)}% 低于安全阈值 ${(minimumCoverage * 100).toFixed(0)}%，本次未写入`);
+  }
+
+  const minGroups = Math.max(2, Math.min(12, Number(options.minKnowledgeGroupsPerSubject) || 5));
+  const maxGroups = Math.max(8, Math.min(40, Number(options.maxKnowledgeGroupsPerSubject) || 18));
+  for (const [subject, inputs] of [...knowledgeInputs.values()].reduce((map, item) => {
+    const list = map.get(item.subject) || [];
+    list.push(item);
+    map.set(item.subject, list);
+    return map;
+  }, new Map())) {
+    const coveredForSubject = inputs.filter((item) => knowledgeMap.has(`${subject}\u0000${item.label}`)).length;
+    if (coveredForSubject === 0) continue;
+    const count = groupsBySubject.get(subject)?.size || 0;
+    const effectiveMinimum = Math.min(minGroups, coveredForSubject);
+    const effectiveMaximum = Math.min(maxGroups, coveredForSubject);
+    if (count < effectiveMinimum || count > effectiveMaximum) {
+      throw new Error(`${subject} 归并为 ${count} 组，不在安全范围 ${effectiveMinimum}-${effectiveMaximum} 内，本次未写入`);
+    }
+  }
+  return { knowledgeMap, wrongMap, groupsBySubject, coverage };
+}
+
+function applyTaxonomyConsolidation(snapshot, mappings) {
+  const next = JSON.parse(JSON.stringify(snapshot));
+  let changedNotes = 0;
+  for (const day of Object.values(next.days || {})) {
+    day.autoNotes = (day.autoNotes || []).map((note) => {
+      const subject = normalizeStoredSubject(note.subject);
+      const locksKnowledge = note.classificationSource === 'manual'
+        || (Array.isArray(note.userEditedFields) && note.userEditedFields.includes('knowledgePath'));
+      let changed = false;
+      let knowledgePath = Array.isArray(note.knowledgePath) ? [...note.knowledgePath] : [];
+      let items = Array.isArray(note.items) ? note.items.map((item) => ({ ...item })) : [];
+      if (!locksKnowledge) {
+        knowledgePath = knowledgePath.map((item) => {
+          if (item === note.subject || item === subject) return subject;
+          const mapped = mappings.knowledgeMap.get(`${subject}\u0000${taxonomyLabel(item)}`);
+          if (mapped && mapped !== item) changed = true;
+          return mapped || item;
+        });
+        knowledgePath = [...new Set([subject, ...knowledgePath.filter((item) => item !== subject && item !== note.subject)])].slice(0, 3);
+        items = items.map((item) => {
+          const mapped = mappings.knowledgeMap.get(`${subject}\u0000${taxonomyLabel(item.knowledgePoint)}`);
+          if (!mapped || mapped === item.knowledgePoint) return item;
+          changed = true;
+          return { ...item, knowledgePoint: mapped };
+        });
+      }
+      const reasons = [
+        note.wrongReason,
+        ...items.map((item) => item?.wrongReason),
+      ].map((value) => taxonomyLabel(value, 300)).filter(Boolean);
+      const categories = [...new Set(reasons.map((reason) => mappings.wrongMap.get(reason)).filter(Boolean))];
+      const previousTags = Array.isArray(note.tags) ? note.tags : [];
+      const tags = [
+        ...previousTags.filter((tag) => !/^错因(?:分类|类别)[:：]/u.test(tag)),
+        ...categories.map((category) => `错因分类:${category}`),
+      ];
+      if (JSON.stringify(tags) !== JSON.stringify(previousTags)) changed = true;
+      if (!changed) return note;
+      changedNotes += 1;
+      return {
+        ...note,
+        knowledgePath,
+        items,
+        tags,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  }
+  return { snapshot: next, changedNotes };
+}
+
+function persistConsolidatedNoteMetadata(note) {
+  const saved = findSavedNote(note.noteUid);
+  if (!saved) return false;
+  const metadata = {
+    ...saved.metadata,
+    updatedAt: note.updatedAt || new Date().toISOString(),
+    learning: {
+      ...(saved.metadata.learning || {}),
+      knowledgePath: note.knowledgePath,
+      items: note.items,
+      tags: note.tags,
+    },
+  };
+  atomicWriteJson(saved.receipt.sidecarPath, metadata);
+  appendMetadata(path.dirname(saved.filePath), metadata);
+  writeSaveReceipt(note.noteUid, metadata, saved.receipt.learningSyncError);
+  return true;
+}
+
+async function runTaxonomyConsolidation(jobId) {
+  const sourceSnapshot = learningData.getSnapshot();
+  const candidates = collectTaxonomyCandidates(sourceSnapshot);
+  if (candidates.knowledge.length === 0 && candidates.wrongReasons.length === 0) {
+    updateManualAiJob(jobId, {
+      status: 'completed',
+      progress: 100,
+      message: '当前没有需要整理的分类',
+      completedAt: new Date().toISOString(),
+      result: { changedNotes: 0, coverage: 1 },
+    });
+    return;
+  }
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const options = router.getTaskOptions?.('taxonomy') || {};
+  updateManualAiJob(jobId, {
+    status: 'processing',
+    progress: 20,
+    message: 'AI 正在全库比较知识点与错因，原始详情不会删除',
+  });
+  const response = await router.complete({
+    task: 'taxonomy',
+    messages: [{
+      role: 'user',
+      content: [
+        '请全局整理以下考研笔记分类候选。只输出 JSON。',
+        `归并策略：${options.mergeStrategy || 'balanced'}`,
+        `每个资料充分的科目保持 ${Number(options.minKnowledgeGroupsPerSubject) || 5} 到 ${Number(options.maxKnowledgeGroupsPerSubject) || 18} 个知识组。`,
+        `错因类别目标约 ${Number(options.wrongReasonGroupCount) || 9} 个。`,
+        'aliases 必须逐字复制输入 label，每个输入只出现一次；禁止跨 subject 合并。',
+        `知识点候选：${JSON.stringify(candidates.knowledge)}`,
+        `错因候选：${JSON.stringify(candidates.wrongReasons)}`,
+      ].join('\n'),
+    }],
+    responseSchema: {
+      type: 'object',
+      required: ['knowledgeGroups', 'wrongReasonGroups'],
+      properties: {
+        knowledgeGroups: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['subject', 'canonical', 'aliases'],
+            properties: {
+              subject: { type: 'string' },
+              canonical: { type: 'string' },
+              aliases: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+        wrongReasonGroups: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['category', 'aliases'],
+            properties: {
+              category: { type: 'string' },
+              aliases: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
+    temperature: 0.05,
+    maxTokens: Number(options.maxTokens) || 6000,
+  });
+  const mappings = validateTaxonomyGroups(response.json, candidates, options);
+  updateManualAiJob(jobId, {
+    progress: 72,
+    message: '归并结果已通过覆盖率与科目边界校验，正在原子写入',
+  });
+  const applied = applyTaxonomyConsolidation(sourceSnapshot, mappings);
+
+  const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
+  for (const [subject, groups] of mappings.groupsBySubject) {
+    const subjectNode = ensureSubject(taxonomy, subject, { createdBy: 'ai' });
+    for (const canonical of groups) {
+      const aliases = [...mappings.knowledgeMap]
+        .filter(([key, value]) => key.startsWith(`${subject}\u0000`) && value === canonical)
+        .map(([key]) => key.slice(subject.length + 1));
+      ensureKnowledgePoint(taxonomy, subjectNode, canonical, { aliases, createdBy: 'ai' });
+    }
+  }
+  saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
+  const nextSnapshot = learningData.restoreSnapshot(applied.snapshot, {
+    expectedRevision: sourceSnapshot.revision,
+  });
+  let durableNotes = 0;
+  for (const day of Object.values(nextSnapshot.days || {})) {
+    for (const note of day.autoNotes || []) {
+      if (persistConsolidatedNoteMetadata(note)) durableNotes += 1;
+    }
+  }
+  broadcastLearningData(nextSnapshot);
+  atomicWriteJson(TAXONOMY_CONSOLIDATION_STATE_PATH, {
+    completedAt: new Date().toISOString(),
+    sourceRevision: sourceSnapshot.revision,
+    resultRevision: nextSnapshot.revision,
+    coverage: mappings.coverage,
+    changedNotes: applied.changedNotes,
+    provider: response.provider || '',
+    model: response.model || '',
+  });
+  updateManualAiJob(jobId, {
+    status: 'completed',
+    progress: 100,
+    message: `分类整理完成：更新 ${applied.changedNotes} 条记录`,
+    completedAt: new Date().toISOString(),
+    result: {
+      changedNotes: applied.changedNotes,
+      durableNotes,
+      coverage: mappings.coverage,
+      revision: nextSnapshot.revision,
+    },
+  });
+}
+
+function enqueueTaxonomyConsolidation(options = {}) {
+  const existing = [...manualAiJobs.values()].find((job) => (
+    job.type === 'taxonomy-consolidation' && ['queued', 'processing'].includes(job.status)
+  ));
+  if (existing) return { job: existing, replayed: true };
+  const stagedAt = new Date().toISOString();
+  const job = {
+    id: `job-${crypto.randomUUID()}`,
+    type: 'taxonomy-consolidation',
+    status: 'queued',
+    progress: 0,
+    message: options.automatic ? '检测到分类过细，已加入后台整理队列' : '已加入全局分类整理队列',
+    error: '',
+    createdAt: stagedAt,
+    updatedAt: stagedAt,
+    completedAt: '',
+    result: null,
+  };
+  manualAiJobs.set(job.id, job);
+  pruneManualAiJobs();
+  void runTaxonomyConsolidation(job.id).catch((error) => {
+    updateManualAiJob(job.id, {
+      status: 'failed',
+      progress: 0,
+      message: '分类整理未通过安全校验，原数据未被覆盖',
+      error: error instanceof Error ? error.message : String(error),
+      completedAt: new Date().toISOString(),
+    });
+  });
+  return { job, replayed: false };
+}
+
 function resumePendingAiNamingJobs() {
   if (!fs.existsSync(NOTE_SAVE_RECEIPTS_ROOT)) return 0;
   let resumed = 0;
@@ -2403,6 +2760,7 @@ async function runMaterialNamingJob(noteUid, options = {}) {
   if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
   const taskOptions = router.getTaskOptions?.('material_naming') || {};
   const maxLength = Math.max(8, Math.min(60, Number(taskOptions.titleMaxLength) || 26));
+  const noteTitleMaxLength = Math.max(8, Math.min(32, Number(taskOptions.noteTitleMaxLength) || 18));
   const fileContexts = [];
   const content = [];
   for (let index = 0; index < receipt.attachments.length; index += 1) {
@@ -2419,6 +2777,10 @@ async function runMaterialNamingJob(noteUid, options = {}) {
     type: 'text',
     text: [
       '你只负责为一条考研速记及其附件命名，不回答问题，不总结资料。',
+      '命名前必须先完整理解正文与全部附件的共同主题、顺序和互补关系；禁止逐个孤立判断。',
+      '速记标题只写共同主题，不得机械拼接附件名，且必须控制在很短的长度内。',
+      '每个附件名要体现它在本条速记中的作用，例如概念原文、例题解析、我的批注、动态演示、总结图或补充证明。',
+      '同组附件名称要彼此区分并保持统一主题，不能使用资料一、资料二。',
       '每份资料都必须返回同一个 index；名称不含扩展名、日期、随机数和路径。',
       '禁止使用“资料、图片、截图、文档、未命名”等空泛名称。',
       `速记正文：${String(note.remark || '').slice(0, 4_000) || '无'}`,
@@ -2488,7 +2850,7 @@ async function runMaterialNamingJob(noteUid, options = {}) {
   const shouldRenameTitle = options.forceTitle === true
     || (taskOptions.renameNoteTitle !== false && !options.userTitle);
   const nextTitle = shouldRenameTitle
-    ? safeAiMaterialStem(response.json?.noteTitle, note.title || renamed[0]?.name || '快速记录', maxLength)
+    ? safeAiMaterialStem(response.json?.noteTitle, note.title || renamed[0]?.name || '快速记录', noteTitleMaxLength)
     : note.title;
   const snapshot = learningData.updateNote(noteUid, {
     title: nextTitle,
@@ -3459,6 +3821,15 @@ async function handleLearningDataRoute(req, res, pathname) {
     sendJson(res, 200, await searchLearningDocuments(JSON.parse((await readBody(req, 64 * 1024)) || '{}')));
     return true;
   }
+  if (req.method === 'POST' && pathname === '/ai/taxonomy/consolidate') {
+    if (!canControlNoteApp(req)) {
+      sendJson(res, 403, { ok: false, error: '全局分类整理只能由运行服务的本机发起' });
+      return true;
+    }
+    const result = enqueueTaxonomyConsolidation();
+    sendJson(res, 202, { ok: true, accepted: true, ...result });
+    return true;
+  }
   const aiJobMatch = /^\/ai\/jobs\/([^/]+)$/.exec(pathname);
   if (req.method === 'GET' && aiJobMatch) {
     const job = manualAiJobs.get(decodeURIComponent(aiJobMatch[1]));
@@ -4096,6 +4467,15 @@ server.listen(PORT, '127.0.0.1', () => {
     resumePendingAiNamingJobs();
   }, 30_000);
   pendingAiNamingResumeTimer.unref?.();
+  taxonomyConsolidationTimer = setTimeout(() => {
+    const previous = readJson(TAXONOMY_CONSOLIDATION_STATE_PATH, null);
+    const completedAt = Date.parse(previous?.completedAt || '');
+    const weekElapsed = !Number.isFinite(completedAt) || Date.now() - completedAt >= 7 * 24 * 60 * 60 * 1000;
+    if (weekElapsed && taxonomyNeedsConsolidation(learningData.getSnapshot())) {
+      enqueueTaxonomyConsolidation({ automatic: true });
+    }
+  }, 20_000);
+  taxonomyConsolidationTimer.unref?.();
 });
 
 module.exports = {
@@ -4105,6 +4485,10 @@ module.exports = {
     if (pendingAiNamingResumeTimer) {
       clearInterval(pendingAiNamingResumeTimer);
       pendingAiNamingResumeTimer = null;
+    }
+    if (taxonomyConsolidationTimer) {
+      clearTimeout(taxonomyConsolidationTimer);
+      taxonomyConsolidationTimer = null;
     }
     server.closeAllConnections?.();
     if (!server.listening) return;

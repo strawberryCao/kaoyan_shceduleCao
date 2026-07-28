@@ -369,6 +369,43 @@
   display: none;
 }
 
+.lc-quick-mascot {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.lc-quick-mascot-body {
+  fill: #f3dfbd;
+  stroke: #b67b3d;
+  stroke-width: 1.35;
+}
+
+.lc-quick-mascot-ear,
+.lc-quick-mascot-smile,
+.lc-quick-mascot-eye-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+}
+
+.lc-quick-mascot-ear-fill {
+  stroke-width: 1.35;
+}
+
+.lc-quick-mascot-eye {
+}
+
+.lc-quick-mascot-blush {
+  opacity: 0.7;
+}
+
+.lc-quick-mascot-deco {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .lc-note-button-copy {
   min-width: 0;
   display: grid;
@@ -2786,6 +2823,7 @@
   position: absolute;
   min-width: 220px;
   min-height: 150px;
+  overscroll-behavior: contain;
   pointer-events: auto;
   filter: drop-shadow(0 18px 38px rgba(28, 25, 22, .24));
   transition: left .22s ease, top .22s ease, width .18s ease, height .18s ease, transform .2s ease, opacity .18s ease;
@@ -2845,6 +2883,7 @@
   display: grid;
   place-items: center;
   overflow: hidden;
+  overscroll-behavior: contain;
   border: 0;
   border-radius: 15px;
   background: transparent;
@@ -2879,6 +2918,13 @@
   border: 0;
   border-radius: 0;
   box-shadow: none;
+  overscroll-behavior: contain;
+}
+
+.lc-detached-material .lrp-pdf-scroll,
+.lc-detached-material .lrp-text-preview,
+.lc-detached-material .lrp-image-viewer {
+  overscroll-behavior: contain;
 }
 .lc-detached-resize {
   position: absolute;

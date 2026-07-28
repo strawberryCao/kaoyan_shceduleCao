@@ -759,6 +759,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
                 onPointerDown={() => setFloating((values) => values.map((value) => value.id === item.id
                   ? { ...value, z: Math.max(...values.map((entry) => entry.z), 20) + 1 }
                   : value))}
+                onWheel={(event) => event.stopPropagation()}
               >
                 <header onPointerDown={(event) => startMove(event, item)}>
                   <strong>{current.name}</strong>
