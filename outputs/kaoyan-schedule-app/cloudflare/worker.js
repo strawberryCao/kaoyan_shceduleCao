@@ -61,6 +61,9 @@ function enforceWriteRequest(request, url, pathname) {
   if (fetchSite === 'cross-site' || (origin && origin !== url.origin)) {
     throw new HttpError(403, 'Cross-site writes are not allowed.', 'CSRF_REJECTED');
   }
+  // Cloud delete routes are policy endpoints, not JSON writes. Let the route
+  // return the promised 405 even when the client sends an empty DELETE body.
+  if (request.method === 'DELETE') return;
   const noJsonBody = new Set(['/admin/bootstrap', '/organizer/run']);
   if (noJsonBody.has(pathname)) return;
   const contentType = request.headers.get('content-type')?.toLowerCase() ?? '';

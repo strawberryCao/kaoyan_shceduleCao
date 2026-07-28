@@ -179,9 +179,7 @@ test('cloud session cookie protects APIs and cloud delete stays disabled', async
   const authenticated = await request.get(`${origin}/api/auth/status`);
   expect((await authenticated.json()).authenticated).toBe(true);
 
-  const cloudDelete = await request.delete(`${origin}/api/entries/e2e-entry`, {
-    data: {},
-  });
+  const cloudDelete = await request.delete(`${origin}/api/entries/e2e-entry`);
   expect(cloudDelete.status()).toBe(405);
   expect((await cloudDelete.json()).code).toBe('CLOUD_DELETE_DISABLED');
 });
