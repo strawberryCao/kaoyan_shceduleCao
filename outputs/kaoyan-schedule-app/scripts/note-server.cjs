@@ -2022,6 +2022,13 @@ function collectTaxonomyCandidates(snapshot) {
   };
 }
 
+function taxonomyCandidateFingerprint(candidates) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(candidates || { knowledge: [], wrongReasons: [] }))
+    .digest('hex');
+}
+
 function taxonomyNeedsConsolidation(snapshot) {
   const candidates = collectTaxonomyCandidates(snapshot);
   const bySubject = new Map();
@@ -2240,7 +2247,33 @@ async function runTaxonomyConsolidation(jobId) {
     progress: 72,
     message: '归并结果已通过覆盖率与科目边界校验，正在原子写入',
   });
-  const applied = applyTaxonomyConsolidation(sourceSnapshot, mappings);
+  const sourceCandidateFingerprint = taxonomyCandidateFingerprint(candidates);
+  let applied = null;
+  let appliedSourceSnapshot = null;
+  let nextSnapshot = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const currentSnapshot = learningData.getSnapshot();
+    const currentFingerprint = taxonomyCandidateFingerprint(collectTaxonomyCandidates(currentSnapshot));
+    if (currentFingerprint !== sourceCandidateFingerprint) {
+      throw new Error('整理期间分类候选发生变化，本轮未写入；稍后将基于最新资料重新整理');
+    }
+    const currentApplied = applyTaxonomyConsolidation(currentSnapshot, mappings);
+    try {
+      nextSnapshot = learningData.restoreSnapshot(currentApplied.snapshot, {
+        expectedRevision: currentSnapshot.revision,
+      });
+      applied = currentApplied;
+      appliedSourceSnapshot = currentSnapshot;
+      break;
+    } catch (error) {
+      if (!/revision conflict/i.test(error instanceof Error ? error.message : String(error)) || attempt >= 3) {
+        throw error;
+      }
+    }
+  }
+  if (!nextSnapshot || !applied || !appliedSourceSnapshot) {
+    throw new Error('学习数据持续更新，本轮未写入；稍后将自动重试');
+  }
 
   const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
   for (const [subject, groups] of mappings.groupsBySubject) {
@@ -2253,9 +2286,6 @@ async function runTaxonomyConsolidation(jobId) {
     }
   }
   saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
-  const nextSnapshot = learningData.restoreSnapshot(applied.snapshot, {
-    expectedRevision: sourceSnapshot.revision,
-  });
   let durableNotes = 0;
   for (const day of Object.values(nextSnapshot.days || {})) {
     for (const note of day.autoNotes || []) {
@@ -2265,7 +2295,7 @@ async function runTaxonomyConsolidation(jobId) {
   broadcastLearningData(nextSnapshot);
   atomicWriteJson(TAXONOMY_CONSOLIDATION_STATE_PATH, {
     completedAt: new Date().toISOString(),
-    sourceRevision: sourceSnapshot.revision,
+    sourceRevision: appliedSourceSnapshot.revision,
     resultRevision: nextSnapshot.revision,
     coverage: mappings.coverage,
     changedNotes: applied.changedNotes,

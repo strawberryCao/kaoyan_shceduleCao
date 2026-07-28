@@ -48,6 +48,9 @@ test('taxonomy consolidation is an active guarded global workflow', () => {
   assert.match(workflows, /version: 'taxonomy-consolidation-v1'/);
   assert.match(workflows, /每个输入 knowledgePoint 必须且只能原样出现在一个 aliases 数组中/);
   assert.match(server, /function validateTaxonomyGroups/);
+  assert.match(server, /function taxonomyCandidateFingerprint/);
+  assert.match(server, /for \(let attempt = 0; attempt < 4; attempt \+= 1\)/);
+  assert.match(server, /currentFingerprint !== sourceCandidateFingerprint/);
   assert.match(server, /分类整理覆盖率/);
   assert.match(server, /pathname === '\/ai\/taxonomy\/consolidate'/);
 });
