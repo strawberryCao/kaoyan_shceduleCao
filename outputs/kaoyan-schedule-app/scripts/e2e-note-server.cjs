@@ -17,7 +17,7 @@ fs.writeFileSync(
   'utf8',
 );
 
-process.env.KAOYAN_NOTE_PORT = '5174';
+process.env.KAOYAN_NOTE_PORT = process.env.KAOYAN_E2E_NOTE_PORT || '15174';
 process.env.KAOYAN_NOTES_ROOT = path.join(runtimeRoot, 'notes');
 process.env.KAOYAN_ASSISTANT_ROOT = assistantRoot;
 process.env.KAOYAN_AI_CONFIG_PATH = path.join(assistantRoot, 'ai-providers.json');

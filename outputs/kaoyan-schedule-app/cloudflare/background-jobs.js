@@ -23,12 +23,20 @@ function isStaleProcessing(job, now = Date.now()) {
 export function isRenameEligibleNote(note) {
   const sourceType = String(note?.sourceType || '');
   const filePath = String(note?.filePath || '').replaceAll('\\', '/');
+  const hasImageAttachment = Array.isArray(note?.attachments) && note.attachments.some((attachment) => (
+    String(attachment?.mimeType || '').startsWith('image/')
+    || /\.(?:jpe?g|png|webp|gif|avif)$/i.test(String(attachment?.name || attachment?.filePath || attachment?.cloudPath || ''))
+  ) && Boolean(
+    attachment?.assetId
+    || String(attachment?.cloudPath || attachment?.filePath || '').startsWith('github://'),
+  ));
   return Boolean(note) && (
     sourceType === 'ai-multi-question'
     || sourceType === 'single-capture'
     || /^multi_[A-Za-z0-9_-]+/i.test(String(note.noteUid || ''))
     || (Array.isArray(note.tags) && note.tags.includes('AI多题拆分'))
     || /^github:\/\/data\/assets\/.+\.(?:jpe?g|png|webp|gif|avif)$/i.test(filePath)
+    || hasImageAttachment
   );
 }
 

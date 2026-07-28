@@ -5,6 +5,8 @@ import gatewayPolicy from './scripts/lan-gateway-policy.cjs';
 
 const { createAllowedHosts, hostnameFromHostHeader, isAllowedLanApiRoute } = gatewayPolicy;
 const lanHosts = createAllowedHosts(os.networkInterfaces());
+const noteServerTarget = process.env.VITE_DEV_NOTE_SERVER_TARGET || 'http://127.0.0.1:5174';
+const localAppOrigin = process.env.VITE_DEV_APP_ORIGIN || 'http://127.0.0.1:5173';
 
 const lanGatewayGuard = () => ({
   name: 'kaoyan-lan-gateway-guard',
@@ -53,7 +55,7 @@ export default defineConfig({
     fs: { strict: true },
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:5174',
+        target: noteServerTarget,
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
         configure: (proxy) => {
@@ -61,7 +63,7 @@ export default defineConfig({
             // The note service stays loopback-only and trusts LAN traffic only
             // when it arrives through this route-limited same-origin gateway.
             proxyRequest.setHeader('x-kaoyan-lan-proxy', '1');
-            proxyRequest.setHeader('origin', 'http://127.0.0.1:5173');
+            proxyRequest.setHeader('origin', localAppOrigin);
             proxyRequest.removeHeader('authorization');
             proxyRequest.removeHeader('cookie');
           });

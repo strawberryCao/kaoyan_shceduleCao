@@ -57,6 +57,67 @@ function ensureCopy(source, destination, apply) {
   return true;
 }
 
+function learningNotesByUid(config) {
+  const snapshot = readJson(path.resolve(config.learningDataLocalPath || ''));
+  const notes = new Map();
+  for (const day of Object.values(snapshot?.days || {})) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      const noteUid = safeId(note?.noteUid);
+      if (noteUid) notes.set(noteUid, note);
+    }
+  }
+  return notes;
+}
+
+function materializeMaterialReceipts({ config, notesRoot, learningNotes, apply, report }) {
+  const receiptRoot = path.join(path.resolve(config.assistantRoot || ''), 'material-note-receipts');
+  if (!fs.existsSync(receiptRoot)) return;
+  for (const receiptPath of walk(receiptRoot).filter((filePath) => /\.json$/i.test(filePath))) {
+    const receipt = readJson(receiptPath);
+    const noteUid = safeId(receipt?.noteUid);
+    const note = noteUid ? learningNotes.get(noteUid) : null;
+    if (!note || !Array.isArray(receipt?.attachments)) continue;
+    const subject = canonicalSubject(note.subject);
+    const sidecarPath = path.join(notesRoot, subject, '.metadata', `${noteUid}.note.json`);
+    const current = readJson(sidecarPath);
+    const attachments = receipt.attachments
+      .filter((attachment) => typeof attachment?.filePath === 'string' && fs.existsSync(attachment.filePath))
+      .map((attachment, index) => ({
+        ...attachment,
+        id: safeId(attachment.id) || `material-${index + 1}`,
+        filePath: path.resolve(attachment.filePath),
+      }));
+    const sidecar = {
+      ...(current || {}),
+      schemaVersion: 2,
+      entryId: noteUid,
+      id: noteUid,
+      noteUid,
+      kind: 'quick',
+      subject,
+      requestedSubject: subject,
+      title: String(note.title || '').trim(),
+      remark: String(note.remark || '').trim(),
+      facets: [...new Set(['quick', ...(Array.isArray(note.facets) ? note.facets : [])])],
+      tags: Array.isArray(note.tags) ? note.tags : [],
+      fileName: attachments[0]?.name || '',
+      filePath: attachments[0]?.filePath || '',
+      attachments,
+      state: 'active',
+      createdAt: note.createdAt || receipt.createdAt,
+      updatedAt: note.updatedAt || receipt.updatedAt,
+      learning: { ...(current?.learning || {}), ...note },
+    };
+    const unchanged = current
+      && current.filePath === sidecar.filePath
+      && JSON.stringify(current.attachments || []) === JSON.stringify(sidecar.attachments)
+      && String(current.updatedAt || '') === String(sidecar.updatedAt || '');
+    if (unchanged) continue;
+    if (apply) atomicJson(sidecarPath, sidecar);
+    report.materialSidecarsCreated += 1;
+  }
+}
+
 function publishLocalEntries({ repoRoot, notesRoot, apply, report }) {
   const entryRoot = path.join(repoRoot, 'data', 'v2', 'entries');
   const assetRecordRoot = path.join(repoRoot, 'data', 'v2', 'assets');
@@ -101,7 +162,7 @@ function publishLocalEntries({ repoRoot, notesRoot, apply, report }) {
   }
 }
 
-function materializeRemoteEntries({ repoRoot, notesRoot, apply, report }) {
+function materializeRemoteEntries({ repoRoot, notesRoot, learningNotes, apply, report }) {
   const entryRoot = path.join(repoRoot, 'data', 'v2', 'entries');
   const existingByEntryId = new Map();
   for (const sidecarPath of walk(notesRoot).filter((filePath) => (
@@ -163,12 +224,15 @@ function materializeRemoteEntries({ repoRoot, notesRoot, apply, report }) {
         name: asset.originalFileName,
         mimeType: asset.mime,
         size: asset.size,
-        filePath: `github://${String(asset.path).replaceAll('\\', '/')}`,
+        filePath: destination,
+        cloudPath: `github://${String(asset.path).replaceAll('\\', '/')}`,
         localPathKey: localRelative.replaceAll('\\', '/'),
         createdAt: asset.createdAt,
       });
     }
+    const syncedNote = learningNotes.get(entryId) || null;
     const sidecar = {
+      ...(current || {}),
       schemaVersion: 2,
       entryId,
       id: entryId,
@@ -190,6 +254,8 @@ function materializeRemoteEntries({ repoRoot, notesRoot, apply, report }) {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
       learning: {
+        ...(current?.learning || {}),
+        ...(syncedNote || {}),
         capturedDate: entry.capturedDate,
         title: entry.title,
         subject,
@@ -202,7 +268,26 @@ function materializeRemoteEntries({ repoRoot, notesRoot, apply, report }) {
               : entry.facets?.includes('method') ? 'method' : 'note',
       },
     };
-    if (current && Number(current.v2Version) === Number(entry.version)) {
+    const currentFilePath = String(current?.filePath || '');
+    const expectsAssets = localAssets.length > 0;
+    const currentAttachments = Array.isArray(current?.attachments) ? current.attachments : [];
+    const currentNeedsRepair = Boolean(current) && (
+      expectsAssets && (
+        !path.isAbsolute(currentFilePath)
+        || !fs.existsSync(currentFilePath)
+        || currentAttachments.length !== localAssets.length
+        || currentAttachments.some((attachment) => (
+          typeof attachment?.filePath !== 'string'
+          || !path.isAbsolute(attachment.filePath)
+          || !fs.existsSync(attachment.filePath)
+        ))
+      )
+    );
+    const learningNeedsRefresh = Boolean(syncedNote) && (
+      String(current?.learning?.updatedAt || current?.updatedAt || '')
+      < String(syncedNote.updatedAt || '')
+    );
+    if (current && Number(current.v2Version) === Number(entry.version) && !currentNeedsRepair && !learningNeedsRefresh) {
       pruneGeneratedCanonical();
       report.unchanged += 1;
       continue;
@@ -211,6 +296,72 @@ function materializeRemoteEntries({ repoRoot, notesRoot, apply, report }) {
     pruneGeneratedCanonical();
     report.remoteMaterialized += 1;
   }
+}
+
+function repairLearningAttachmentReferences({ repoRoot, notesRoot, config, apply, report }) {
+  const localSnapshotPath = path.resolve(config.learningDataLocalPath || '');
+  const remoteSnapshotPath = path.join(repoRoot, String(config.learningDataRemotePath || 'data/cloud/learning-data.json'));
+  const snapshot = readJson(localSnapshotPath) || readJson(remoteSnapshotPath);
+  if (!snapshot?.days) return;
+  let changed = 0;
+  for (const day of Object.values(snapshot.days)) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      const entryId = safeId(note?.noteUid);
+      if (!entryId) continue;
+      const entry = readJson(path.join(repoRoot, 'data', 'v2', 'entries', `${entryId}.json`));
+      if (!entry || !Array.isArray(entry.assets) || entry.assets.length === 0) continue;
+      const subject = canonicalSubject(entry.subject || note.subject);
+      const existing = Array.isArray(note.attachments) ? note.attachments : [];
+      const attachments = entry.assets.map((asset, index) => {
+        const extension = path.extname(String(asset.path || '')) || '.bin';
+        const localRelative = path.join(subject, '.assets', `${asset.assetId}${extension}`).replaceAll('\\', '/');
+        const current = existing.find((attachment) => attachment?.assetId === asset.assetId)
+          || existing.find((attachment) => String(attachment?.name || '') === String(asset.originalFileName || ''))
+          || existing[index]
+          || {};
+        return {
+          ...current,
+          id: asset.assetId,
+          assetId: asset.assetId,
+          kind: asset.kind,
+          name: asset.originalFileName,
+          mimeType: asset.mime,
+          size: asset.size,
+          filePath: path.join(notesRoot, localRelative),
+          cloudPath: `github://${String(asset.path || '').replaceAll('\\', '/')}`,
+          localPathKey: localRelative,
+          createdAt: asset.createdAt || current.createdAt,
+        };
+      });
+      const before = JSON.stringify(existing.map((attachment) => ({
+        assetId: attachment?.assetId || '',
+        cloudPath: attachment?.cloudPath || '',
+        localPathKey: attachment?.localPathKey || '',
+        filePath: attachment?.filePath || '',
+      })));
+      const after = JSON.stringify(attachments.map((attachment) => ({
+        assetId: attachment.assetId,
+        cloudPath: attachment.cloudPath,
+        localPathKey: attachment.localPathKey,
+        filePath: attachment.filePath,
+      })));
+      if (before === after) continue;
+      note.attachments = attachments;
+      note.filePath = attachments[0]?.filePath || note.filePath;
+      note.fileName = attachments[0]?.name || note.fileName;
+      changed += 1;
+    }
+  }
+  if (changed === 0) return;
+  report.learningAttachmentRefsRepaired += changed;
+  if (!apply) return;
+  const next = {
+    ...snapshot,
+    revision: Math.max(0, Number(snapshot.revision) || 0) + 1,
+    updatedAt: new Date().toISOString(),
+  };
+  atomicJson(localSnapshotPath, next);
+  atomicJson(remoteSnapshotPath, next);
 }
 
 function rebuildIndex(repoRoot, apply, report) {
@@ -239,6 +390,7 @@ function main() {
   if (!config) throw new Error('Sync configuration is required.');
   const repoRoot = path.resolve(config.clonePath);
   const notesRoot = path.resolve(config.localPath);
+  const learningNotes = learningNotesByUid(config);
   const report = {
     schemaVersion: 2,
     mode: options.apply ? 'apply' : 'dry-run',
@@ -246,6 +398,8 @@ function main() {
     remoteMaterialized: 0,
     assetsPublished: 0,
     assetsMaterialized: 0,
+    materialSidecarsCreated: 0,
+    learningAttachmentRefsRepaired: 0,
     remoteWins: 0,
     localWins: 0,
     unchanged: 0,
@@ -253,8 +407,28 @@ function main() {
     indexRebuilt: false,
     manual: [],
   };
+  materializeMaterialReceipts({
+    config,
+    notesRoot,
+    learningNotes,
+    apply: options.apply,
+    report,
+  });
   publishLocalEntries({ repoRoot, notesRoot, apply: options.apply, report });
-  materializeRemoteEntries({ repoRoot, notesRoot, apply: options.apply, report });
+  materializeRemoteEntries({
+    repoRoot,
+    notesRoot,
+    learningNotes,
+    apply: options.apply,
+    report,
+  });
+  repairLearningAttachmentReferences({
+    repoRoot,
+    notesRoot,
+    config,
+    apply: options.apply,
+    report,
+  });
   rebuildIndex(repoRoot, options.apply, report);
   process.stdout.write(`${JSON.stringify(report)}\n`);
   if (report.manual.length) process.exitCode = 2;

@@ -17,7 +17,15 @@ const waitFor = async (url: string) => {
 
 export default async function globalSetup() {
   const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+  const appPort = 15173;
+  const notePort = 15174;
+  const workerPort = 18787;
   const noteEnvironment = { ...process.env };
+  noteEnvironment.KAOYAN_E2E_NOTE_PORT = String(notePort);
+  process.env.KAOYAN_E2E_WORKER_PORT = String(workerPort);
+  process.env.VITE_NOTE_SERVER_URL = '/api';
+  process.env.VITE_DEV_NOTE_SERVER_TARGET = `http://127.0.0.1:${notePort}`;
+  process.env.VITE_DEV_APP_ORIGIN = 'http://127.0.0.1:5173';
   for (const key of ['QWEN_API_KEY', 'DASHSCOPE_API_KEY', 'GEMINI_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY']) {
     delete noteEnvironment[key];
   }
@@ -31,15 +39,15 @@ export default async function globalSetup() {
     configFile: fileURLToPath(new URL('../vite.config.mjs', import.meta.url)),
     server: {
       host: '127.0.0.1',
-      port: 5173,
+      port: appPort,
       strictPort: true,
     },
   });
   await vite.listen();
   await Promise.all([
-    waitFor('http://127.0.0.1:5173/?noteApp=1'),
-    waitFor('http://127.0.0.1:5174/health'),
-    waitFor('http://127.0.0.1:8787/api/auth/status'),
+    waitFor(`http://127.0.0.1:${appPort}/?noteApp=1`),
+    waitFor(`http://127.0.0.1:${notePort}/health`),
+    waitFor(`http://127.0.0.1:${workerPort}/api/auth/status`),
   ]);
 
   return async () => {

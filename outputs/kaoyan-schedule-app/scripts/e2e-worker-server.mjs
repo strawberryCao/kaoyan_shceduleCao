@@ -11,13 +11,14 @@ const env = {
   GITHUB_REPO: 'test-data',
   GITHUB_BRANCH: 'main',
 };
+const workerPort = Number.parseInt(process.env.KAOYAN_E2E_WORKER_PORT || '18787', 10);
 
 const server = http.createServer(async (incoming, outgoing) => {
   try {
     const chunks = [];
     for await (const chunk of incoming) chunks.push(chunk);
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
-    const request = new Request(`http://127.0.0.1:8787${incoming.url || '/'}`, {
+    const request = new Request(`http://127.0.0.1:${workerPort}${incoming.url || '/'}`, {
       method: incoming.method,
       headers: incoming.headers,
       body,
@@ -40,8 +41,8 @@ const server = http.createServer(async (incoming, outgoing) => {
   }
 });
 
-server.listen(8787, '127.0.0.1', () => {
-  console.log('E2E Worker adapter: http://127.0.0.1:8787');
+server.listen(workerPort, '127.0.0.1', () => {
+  console.log(`E2E Worker adapter: http://127.0.0.1:${workerPort}`);
 });
 
 export { server };

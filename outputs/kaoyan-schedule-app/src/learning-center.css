@@ -170,6 +170,43 @@
   background: rgba(32, 33, 36, 0.06);
 }
 
+.lc-searchbar .lc-search-mode {
+  width: auto;
+  min-width: 56px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--lc-line);
+  border-radius: 999px;
+  color: #6c6e72;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.lc-searchbar .lc-search-mode.is-active {
+  color: #805126;
+  border-color: rgba(147, 96, 46, .25);
+  background: var(--lc-accent-soft);
+}
+
+.lc-semantic-state {
+  max-width: 76px;
+  overflow: hidden;
+  color: #8a6747;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lc-semantic-state.is-error {
+  color: #a25046;
+}
+
 .lc-searchbar .lc-add-button {
   width: auto;
   min-width: 82px;
@@ -2652,11 +2689,17 @@
 }
 .lc-quick-asset-row > div {
   min-width: 0;
+  flex: 1 1 auto;
   display: flex;
   gap: 6px;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #c9c0b5 transparent;
 }
 .lc-quick-asset-chip {
+  flex: 0 0 auto;
   min-width: 0;
   max-width: 180px;
   height: 32px;
@@ -2744,7 +2787,7 @@
   min-width: 220px;
   min-height: 150px;
   pointer-events: auto;
-  filter: drop-shadow(0 15px 30px rgba(28, 25, 22, .24));
+  filter: drop-shadow(0 18px 38px rgba(28, 25, 22, .24));
   transition: left .22s ease, top .22s ease, width .18s ease, height .18s ease, transform .2s ease, opacity .18s ease;
 }
 .lc-detached-material > header {
@@ -2802,12 +2845,12 @@
   display: grid;
   place-items: center;
   overflow: hidden;
-  border: 1px solid rgba(36, 39, 44, .12);
-  border-radius: 9px;
-  background: #fff;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
 }
 .lc-detached-material.is-locked > div {
-  outline: 2px solid rgba(147, 96, 46, .24);
+  outline: 0;
 }
 .lc-detached-material .lrp-file-preview {
   width: 100%;
@@ -2843,7 +2886,7 @@
   will-change: left, top, width, height;
 }
 .lc-detached-material.is-snapping > div {
-  outline: 2px solid rgba(147, 96, 46, .3);
+  outline: 0;
 }
 .lc-detached-material.is-spawning {
   animation: lc-detached-spawn .22s cubic-bezier(.2, .82, .2, 1) both;

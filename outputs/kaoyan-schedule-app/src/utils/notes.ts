@@ -113,6 +113,23 @@ export interface AiJobResponse {
   job: AiBackgroundJob;
 }
 
+export interface LearningSearchResult {
+  noteUid: string;
+  score: number;
+  matchedTerms: string[];
+  reason: string;
+}
+
+export interface LearningSearchResponse {
+  ok: boolean;
+  mode: 'normal' | 'ai';
+  query: string;
+  terms?: string[];
+  results: LearningSearchResult[];
+  degraded?: boolean;
+  sourceRevision?: number;
+}
+
 export interface CaptureBatchJob {
   jobId: string;
   status: 'queued' | 'waiting_configuration' | 'processing' | 'completed' | 'configuration_mismatch' | 'needs_review' | 'waiting_quota' | 'failed_retryable';
@@ -147,6 +164,8 @@ export const IS_CLOUD_RUNTIME = typeof window !== 'undefined'
 
 const resolveNoteServerUrl = (): string => {
   if (typeof window === 'undefined') return 'http://127.0.0.1:5174';
+  const explicitRuntimeUrl = String(import.meta.env?.VITE_NOTE_SERVER_URL || '').trim().replace(/\/+$/, '');
+  if (explicitRuntimeUrl) return explicitRuntimeUrl;
   const hostname = window.location.hostname.toLowerCase();
   return isLoopbackHostname(hostname) || window.location.protocol === 'file:'
     ? 'http://127.0.0.1:5174'
@@ -368,6 +387,20 @@ export const getAiBackgroundJob = async (jobId: string): Promise<AiBackgroundJob
   );
   return response.job;
 };
+
+export const searchLearningRecords = async (
+  query: string,
+  mode: 'normal' | 'ai',
+  limit = 120,
+): Promise<LearningSearchResponse> => fetchJsonWithTimeout<LearningSearchResponse>(
+  `${NOTE_SERVER_URL}/search`,
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, mode, limit }),
+  },
+  mode === 'ai' ? 45_000 : AI_ENQUEUE_TIMEOUT_MS,
+);
 
 const fetchLearningSnapshot = async (): Promise<LearningDataSnapshot> => (
   fetchJsonWithTimeout<LearningDataSnapshot>(

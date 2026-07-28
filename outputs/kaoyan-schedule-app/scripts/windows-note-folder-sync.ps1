@@ -386,6 +386,7 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
     'data/cloud/learning-data.json',
     'data/v2',
     'data/assets',
+    'data/search',
     'data/config',
     'data/deletions',
     'data/local-delete-recycle',
@@ -565,6 +566,11 @@ try {
   if (-not (Test-Path -LiteralPath $v2Adapter)) { throw 'V2 local data adapter was not found.' }
   & $nodeExecutable $v2Adapter --config $ConfigPath --apply | Out-Null
   if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 entry synchronization failed.' }
+  $searchIndexer = Join-Path $workRoot 'build-search-index.cjs'
+  if (Test-Path -LiteralPath $searchIndexer) {
+    & $nodeExecutable $searchIndexer --config $ConfigPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Learning search index build failed.' }
+  }
   # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
   Push-WithStructuredRetry $clonePath $branch $mergeScript $v2Adapter $ConfigPath $nodeExecutable

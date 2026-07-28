@@ -43,8 +43,8 @@ const MIN_HEIGHT = 150;
 const EMPTY_GUIDES: Guides = { vertical: null, horizontal: null };
 const DEFAULT_SIZE: Record<WorkspaceAssetPreviewItem['kind'], [number, number]> = {
   image: [440, 330],
-  pdf: [430, 500],
-  word: [430, 460],
+  pdf: [760, 560],
+  word: [560, 500],
   html: [520, 420],
   file: [360, 270],
 };
@@ -294,15 +294,14 @@ export const LearningInlineDetachLayer = forwardRef<
             height: Math.max(MIN_HEIGHT, original.height + dy),
           }, layer.clientWidth, layer.clientHeight) : item);
         }
-        const others = current.filter((item) => item.id !== original.id);
-        const nextItem = snap({
+        const nextItem = fit({
           ...original,
           x: original.x + dx,
           y: original.y + dy,
-        }, others, layer.clientWidth, layer.clientHeight);
-        setGuides(nextItem.guides);
-        setSnappingId(nextItem.snapped ? original.id : '');
-        return current.map((item) => item.id === original.id ? nextItem.item : item);
+        }, layer.clientWidth, layer.clientHeight);
+        setGuides(EMPTY_GUIDES);
+        setSnappingId('');
+        return current.map((item) => item.id === original.id ? nextItem : item);
       });
     };
     const clear = () => {
@@ -313,17 +312,7 @@ export const LearningInlineDetachLayer = forwardRef<
       setSnappingId('');
       setInteractingId('');
     };
-    const up = () => {
-      setFloating((current) => {
-        const active = current.find((item) => item.id === original.id);
-        if (!active) return current;
-        const others = current.filter((item) => item.id !== original.id);
-        if (!others.some((item) => overlaps(active, item))) return current;
-        const settled = nearestFreePosition(active, others, layer.clientWidth, layer.clientHeight);
-        return current.map((item) => item.id === original.id ? settled : item);
-      });
-      clear();
-    };
+    const up = () => clear();
     const cancel = () => clear();
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up, { once: true });

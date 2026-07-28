@@ -60,8 +60,8 @@ type DragGhost = { x: number; y: number; label: string } | null;
 
 const KIND_SIZE: Record<AssetKind, [number, number]> = {
   image: [430, 300],
-  pdf: [390, 440],
-  word: [380, 400],
+  pdf: [720, 540],
+  word: [520, 480],
   html: [420, 320],
   file: [340, 260],
 };
@@ -72,9 +72,13 @@ const MIN_H = 160;
 const EMPTY_GUIDES: SnapGuides = { vertical: null, horizontal: null };
 const FLOATING_LAYOUT_STORAGE_PREFIX = 'kaoyan:learning-workspace-layout:';
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
-const noteFileUrl = (filePath: string, preview = false) => (
-  `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}${preview ? '&preview=1' : ''}`
-);
+const noteFileUrl = (filePath: string, preview = false) => {
+  const assetId = /^asset:\/\/([a-f0-9]{64})$/i.exec(filePath.trim())?.[1]?.toLowerCase();
+  if (assetId && IS_CLOUD_RUNTIME) {
+    return `${NOTE_SERVER_URL}/assets/${assetId}${preview ? '?preview=1' : ''}`;
+  }
+  return `${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}${preview ? '&preview=1' : ''}`;
+};
 const extensionForAttachment = (attachment: LearningAttachment): string => {
   const named = attachment.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
   const pathed = attachment.filePath.split('\\').join('/').toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];

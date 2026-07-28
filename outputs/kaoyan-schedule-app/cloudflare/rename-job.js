@@ -1,5 +1,6 @@
 import { runLocalAgentTask } from './agent-provider.js';
 import { getTaskSettings } from './ai-config.js';
+import { getAssetRecord } from './entries.js';
 import { HttpError } from './http.js';
 import { assertRepoPath, readFile } from './github-store.js';
 import { applyAiNoteNaming, findNote, getLearningSnapshot } from './learning.js';
@@ -15,13 +16,40 @@ const ALLOWED_SUBJECTS = [...ALLOWED_NOTE_SUBJECTS];
 function isRenameEligibleNote(note) {
   const sourceType = String(note?.sourceType || '');
   const filePath = String(note?.filePath || '').replaceAll('\\', '/');
+  const hasImageAttachment = Array.isArray(note?.attachments) && note.attachments.some((attachment) => (
+    String(attachment?.mimeType || '').startsWith('image/')
+    || /\.(?:jpe?g|png|webp|gif|avif)$/i.test(String(attachment?.name || attachment?.filePath || attachment?.cloudPath || ''))
+  ) && Boolean(
+    attachment?.assetId
+    || String(attachment?.cloudPath || attachment?.filePath || '').startsWith('github://'),
+  ));
   return Boolean(note) && (
     sourceType === 'ai-multi-question'
     || sourceType === 'single-capture'
     || /^multi_[A-Za-z0-9_-]+/i.test(String(note.noteUid || ''))
     || (Array.isArray(note.tags) && note.tags.includes('AI多题拆分'))
     || /^github:\/\/data\/assets\/.+\.(?:jpe?g|png|webp|gif|avif)$/i.test(filePath)
+    || hasImageAttachment
   );
+}
+
+async function resolveImageRepoPath(env, note) {
+  const candidates = [
+    { filePath: note?.filePath },
+    ...(Array.isArray(note?.attachments) ? note.attachments : []),
+  ];
+  for (const candidate of candidates) {
+    const declared = String(candidate?.cloudPath || candidate?.filePath || '').trim().replaceAll('\\', '/');
+    if (/^github:\/\/data\/assets\/.+\.(?:jpe?g|png|webp|gif|avif)$/i.test(declared)) {
+      return assertRepoPath(declared.slice('github://'.length), ASSET_ROOT);
+    }
+    const assetId = String(candidate?.assetId || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(assetId)) continue;
+    const record = await getAssetRecord(env, assetId);
+    const repoPath = assertRepoPath(String(record?.path || ''), ASSET_ROOT);
+    if (/\.(?:jpe?g|png|webp|gif|avif)$/i.test(repoPath)) return repoPath;
+  }
+  throw new HttpError(422, '这条笔记没有可供 AI 识别的云端原图。', 'NOTE_IMAGE_UNAVAILABLE');
 }
 
 function bytesToBase64(bytes) {
@@ -156,9 +184,7 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   if (!isRenameEligibleNote(initialEntry.note)) throw new HttpError(403, '这条记录没有可供局域网命名 Agent 处理的云端原图。', 'AI_RENAME_NOT_ALLOWED');
 
   const settings = await getTaskSettings(env, 'note_naming');
-  const normalized = String(initialEntry.note.filePath || '').trim().replaceAll('\\', '/');
-  if (!normalized.startsWith('github://')) throw new HttpError(422, '这条笔记没有可供 AI 识别的云端原图。', 'NOTE_IMAGE_UNAVAILABLE');
-  const repoPath = assertRepoPath(normalized.slice('github://'.length), ASSET_ROOT);
+  const repoPath = await resolveImageRepoPath(env, initialEntry.note);
   const file = await readFile(env, repoPath, { maxBytes: MAX_IMAGE_BYTES });
   const extension = repoPath.split('.').at(-1)?.toLowerCase() || 'jpg';
   const image = `data:${MIME_BY_EXTENSION[extension] || 'image/jpeg'};base64,${bytesToBase64(file.bytes)}`;

@@ -8,11 +8,11 @@ export class CaptureWorkflow extends WorkflowEntrypoint {
       'recognize crop and atomically save results',
       {
         retries: {
-          limit: 3,
-          delay: '30 seconds',
-          backoff: 'exponential',
+          limit: 1,
+          delay: '15 seconds',
+          backoff: 'constant',
         },
-        timeout: '10 minutes',
+        timeout: '90 seconds',
       },
       () => processCaptureBatch(this.env, jobId),
     );

@@ -34,6 +34,7 @@ import { createEntry, getAssetRecord, getEntry, listEntries, patchEntry } from '
 import { createCaptureBatch, getCaptureJob, retryCaptureJob } from './capture-batches.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
+import { searchLearningRecords } from './search.js';
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -213,6 +214,9 @@ function streamQuestionDetection(env, payload) {
 async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { Allow: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' } });
   if (request.method === 'DELETE') cloudDeleteDisabled();
+  if (request.method === 'POST' && pathname === '/search') {
+    return json(await searchLearningRecords(env, await readJson(request, 64 * 1024)));
+  }
   if (request.method === 'POST' && pathname === '/capture-batches') {
     return json(await createCaptureBatch(env, await readJson(request, 28 * 1024 * 1024), ctx), 202);
   }
@@ -393,7 +397,9 @@ export async function handleRequest(request, env, ctx) {
   const url = new URL(request.url);
   const pathname = apiPath(url.pathname);
   const isPublic = publicReadEnabled(env);
-  if (pathname === '/health' && request.method === 'GET') return json(await healthPayload(env, isPublic));
+  if ((url.pathname === '/health' || pathname === '/health') && request.method === 'GET') {
+    return json(await healthPayload(env, isPublic));
+  }
 
   if (pathname !== null) {
     const authRoute = await handleAuthRoute(request, env, pathname, readJson);

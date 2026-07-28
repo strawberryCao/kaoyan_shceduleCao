@@ -171,15 +171,19 @@ export async function getCaptureJob(env, jobId) {
   const job = file.value;
   const updatedAt = Date.parse(String(job.updatedAt || job.createdAt || ''));
   const stalledMs = Number.isFinite(updatedAt) ? Date.now() - updatedAt : 0;
+  const workflowState = String(workflow?.status || workflow?.state || '').toLowerCase();
+  const workflowStopped = /error|fail|terminate|cancel|complete/.test(workflowState);
   if (
     ['queued', 'processing'].includes(job.status)
-    && stalledMs >= 90_000
-    && (!workflow || workflowError)
+    && (
+      stalledMs >= 5 * 60_000
+      || (stalledMs >= 90_000 && (!workflow || workflowError || workflowStopped))
+    )
   ) {
     const recovered = await updateJob(env, jobId, {
       status: 'failed_retryable',
       progress: Number(job.progress) || 5,
-      message: '后台任务超过 90 秒没有继续更新；原图已保留，可以安全重试',
+      message: '后台任务超过 90 秒没有继续更新（或已运行超过 5 分钟）；原图已保留，可以安全重试',
       error: workflowError || 'Capture workflow stopped reporting progress',
     });
     return { ok: true, job: recovered, workflow, stalled: true };

@@ -39,7 +39,14 @@ import type {
   LearningRecordFacet,
 } from '../utils/learningData';
 import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
-import { enqueueLearningNoteRename, IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
+import {
+  enqueueLearningNoteRename,
+  getAiBackgroundJob,
+  IS_CLOUD_RUNTIME,
+  NOTE_SERVER_URL,
+  searchLearningRecords,
+  type LearningSearchResult,
+} from '../utils/notes';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import {
@@ -439,8 +446,19 @@ const isQuickNote = (note: LearningAutoNote): boolean => (
   || note.sourceType === 'quick-material'
 );
 
-const rankNotesForQuery = (entries: IndexedNote[], query: string): IndexedNote[] => {
+const rankNotesForQuery = (
+  entries: IndexedNote[],
+  query: string,
+  semanticScores?: ReadonlyMap<string, number>,
+): IndexedNote[] => {
   if (!query.trim()) return entries;
+  if (semanticScores) {
+    return entries
+      .map((entry, index) => ({ entry, index, score: semanticScores.get(entry.note.noteUid) }))
+      .filter((item): item is { entry: IndexedNote; index: number; score: number } => item.score !== undefined)
+      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .map(({ entry }) => entry);
+  }
   return entries.map((entry, index) => ({
     entry,
     index,
@@ -506,6 +524,14 @@ export function LearningCenter({
   const [editingClassificationUid, setEditingClassificationUid] = useState<string | null>(null);
   const [classificationDraft, setClassificationDraft] = useState<ClassificationDraft | null>(null);
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
+  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>('normal');
+  const [semanticSearch, setSemanticSearch] = useState<{
+    query: string;
+    loading: boolean;
+    degraded: boolean;
+    error: string;
+    results: LearningSearchResult[];
+  }>({ query: '', loading: false, degraded: false, error: '', results: [] });
   const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>(EMPTY_FILTERS);
   const [selectedWeekStart, setSelectedWeekStart] = useState(currentWeekStart);
   const [weeklyFeedback, setWeeklyFeedback] = useState('');
@@ -603,6 +629,55 @@ export function LearningCenter({
     !isQuickNote(note) && !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
   )), [indexedNotes]);
   const pendingNotes = useMemo(() => allNotes.filter(({ note }) => isPendingNoteReview(note)), [allNotes]);
+  useEffect(() => {
+    const normalizedQuery = query.trim();
+    if (searchMode !== 'ai' || !normalizedQuery) {
+      setSemanticSearch({ query: '', loading: false, degraded: false, error: '', results: [] });
+      return undefined;
+    }
+    let cancelled = false;
+    setSemanticSearch((current) => ({
+      ...current,
+      query: normalizedQuery,
+      loading: true,
+      error: '',
+    }));
+    const timer = window.setTimeout(() => {
+      void searchLearningRecords(normalizedQuery, 'ai').then((response) => {
+        if (cancelled) return;
+        setSemanticSearch({
+          query: normalizedQuery,
+          loading: false,
+          degraded: response.degraded === true,
+          error: '',
+          results: response.results || [],
+        });
+      }).catch((error) => {
+        if (cancelled) return;
+        setSemanticSearch({
+          query: normalizedQuery,
+          loading: false,
+          degraded: true,
+          error: error instanceof Error ? error.message : 'AI 搜索暂时不可用',
+          results: [],
+        });
+      });
+    }, 360);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query, searchMode, snapshot.revision]);
+  const semanticScores = useMemo(() => {
+    if (
+      searchMode !== 'ai'
+      || !query.trim()
+      || semanticSearch.loading
+      || semanticSearch.query !== query.trim()
+      || semanticSearch.error
+    ) return undefined;
+    return new Map(semanticSearch.results.map((result) => [result.noteUid, result.score]));
+  }, [query, searchMode, semanticSearch]);
   const weeklyPackage = useMemo(
     () => buildWeeklyReviewPackage(snapshot, scheduleDays, selectedWeekStart, today),
     [scheduleDays, selectedWeekStart, snapshot, today],
@@ -622,13 +697,13 @@ export function LearningCenter({
     if (mistakeFilters.questionType && !noteQuestionTypes(note).includes(mistakeFilters.questionType)) return false;
     if (mistakeFilters.wrongReason && !noteWrongReasons(note).includes(mistakeFilters.wrongReason)) return false;
     return mistakeFilters.status === 'all' || mistakeStatus(note, snapshot.cards, today) === mistakeFilters.status;
-  }), query), [mistakeFilters, mistakeNotes, query, snapshot.cards, today]);
+  }), query, semanticScores), [mistakeFilters, mistakeNotes, query, semanticScores, snapshot.cards, today]);
 
-  const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes, query), [memoryNotes, query]);
-  const visibleGood = useMemo(() => rankNotesForQuery(goodNotes, query), [goodNotes, query]);
-  const visibleQuick = useMemo(() => rankNotesForQuery(quickNotes, query), [query, quickNotes]);
-  const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes, query), [indexedNotes, query]);
-  const visibleUncategorized = useMemo(() => rankNotesForQuery(uncategorizedNotes, query), [query, uncategorizedNotes]);
+  const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes, query, semanticScores), [memoryNotes, query, semanticScores]);
+  const visibleGood = useMemo(() => rankNotesForQuery(goodNotes, query, semanticScores), [goodNotes, query, semanticScores]);
+  const visibleQuick = useMemo(() => rankNotesForQuery(quickNotes, query, semanticScores), [query, quickNotes, semanticScores]);
+  const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes, query, semanticScores), [indexedNotes, query, semanticScores]);
+  const visibleUncategorized = useMemo(() => rankNotesForQuery(uncategorizedNotes, query, semanticScores), [query, semanticScores, uncategorizedNotes]);
 
   const groupedLibrary = useMemo(() => {
     const groups = new Map<string, IndexedNote[]>();
@@ -809,8 +884,22 @@ export function LearningCenter({
     try {
       setAiRenameNoteUid(note.noteUid);
       setFeedback('');
-      await enqueueLearningNoteRename(note.noteUid);
-      setFeedback('AI 重命名已加入后台队列；可以继续浏览，完成后标题会自动刷新。');
+      const queued = await enqueueLearningNoteRename(note.noteUid);
+      let job = queued.job;
+      setFeedback(job.message || 'AI 重命名已加入后台队列；可以继续浏览。');
+      for (let attempt = 0; attempt < 120 && ['queued', 'processing'].includes(job.status); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        job = await getAiBackgroundJob(job.id);
+        setFeedback(job.message || `AI 重命名处理中（${Math.round(job.progress)}%）`);
+      }
+      if (job.status === 'failed') throw new Error(job.error || 'AI 重命名失败，请稍后重试。');
+      if (job.status === 'completed') {
+        setFeedback(job.result?.title ? `已重命名为“${job.result.title}”` : 'AI 重命名与分类已完成。');
+      } else if (job.status === 'skipped') {
+        setFeedback(job.message || '记录已变化，AI 没有覆盖你的修改。');
+      } else {
+        setFeedback('AI 仍在后台处理；完成后标题会自动刷新。');
+      }
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : 'AI 重命名任务提交失败，请重试。');
     } finally {
@@ -1296,6 +1385,15 @@ export function LearningCenter({
         aria-label={placeholder}
       />
       {query && <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"><X size={15} /></button>}
+      <button
+        className={`lc-search-mode${searchMode === 'ai' ? ' is-active' : ''}`}
+        type="button"
+        onClick={() => setSearchMode((current) => current === 'ai' ? 'normal' : 'ai')}
+        title={searchMode === 'ai' ? '切回普通关键词搜索' : '按语义查找忘记关键词的资料'}
+        aria-pressed={searchMode === 'ai'}
+      >
+        <Brain size={14} />{searchMode === 'ai' ? 'AI语义' : '普通'}
+      </button>
       <strong>{count}</strong>
       {addLabel && onAdd && <button className="lc-add-button" type="button" onClick={onAdd}><Plus size={15} />{addLabel}</button>}
     </div>
@@ -1860,6 +1958,17 @@ export function LearningCenter({
         </div>
       </aside>
       <section className="lc-detail-pane">{renderNoteDetail(selectedNote, 'library')}</section>
+      {searchMode === 'ai' && query.trim() && (
+        <span className={`lc-semantic-state${semanticSearch.error ? ' is-error' : ''}`}>
+          {semanticSearch.loading
+            ? '理解语义…'
+            : semanticSearch.error
+              ? '已回退关键词'
+              : semanticSearch.degraded
+                ? '语义降级'
+                : ''}
+        </span>
+      )}
     </div>
   );
 

@@ -59,6 +59,7 @@ const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
 const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
+const SEARCH_INDEX_PATH = path.join(ASSISTANT_ROOT, 'search-index.json');
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -115,6 +116,8 @@ const aiNamingJobs = new Map();
 let pendingAiNamingResumeTimer = null;
 let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
+const manualAiJobs = new Map();
+const semanticQueryCache = new Map();
 let noteTitlePolicyPromise = null;
 function getNoteTitlePolicy() {
   if (!noteTitlePolicyPromise) noteTitlePolicyPromise = import('../shared/note-title-policy.js');
@@ -282,7 +285,10 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
   if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
+  if (method === 'GET' && /^\/ai\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
+  if (method === 'POST' && pathname === '/search') return true;
   if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
+  if (method === 'POST' && /^\/learning-data\/notes\/[^/]+\/rename$/.test(pathname)) return true;
   if (method === 'POST' && pathname === '/learning-data/note-review-actions') return true;
   if (method === 'PATCH' && pathname === '/learning-data/day') return true;
   if (method === 'PUT' && pathname === '/learning-data/manual-records') return true;
@@ -562,6 +568,26 @@ function readSaveReceipt(noteUid) {
   };
 }
 
+function localMetadataFilePath(metadata) {
+  const candidates = [
+    metadata?.filePath,
+    ...(Array.isArray(metadata?.attachments)
+      ? metadata.attachments.flatMap((attachment) => [attachment?.filePath, attachment?.localPathKey])
+      : []),
+    metadata?.localPathKey,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const localCandidate = path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : path.resolve(NOTES_ROOT, candidate);
+    const relative = path.relative(path.resolve(NOTES_ROOT), localCandidate);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+    if (fs.existsSync(localCandidate) && fs.statSync(localCandidate).isFile()) return localCandidate;
+  }
+  return '';
+}
+
 function findSavedNote(noteUid) {
   const saved = readSaveReceipt(noteUid);
   if (saved && fs.existsSync(saved.filePath)) return saved;
@@ -583,8 +609,8 @@ function findSavedNote(noteUid) {
       }
       if (!entry.isFile() || !/\.note\.json$/i.test(entry.name) || path.basename(directory) !== '.metadata') continue;
       const metadata = readJson(fullPath, null);
-      const filePath = metadata?.filePath;
-      if (metadata?.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) continue;
+      const filePath = localMetadataFilePath(metadata);
+      if (metadata?.noteUid !== noteUid || !filePath) continue;
       return {
         receipt: {
           noteUid,
@@ -1658,6 +1684,254 @@ function queueAiNamingJob(noteUid) {
   aiNamingQueues[lane] = job.catch(() => undefined);
   void job.finally(() => aiNamingJobs.delete(noteUid)).catch(() => undefined);
   return true;
+}
+
+function pruneManualAiJobs() {
+  if (manualAiJobs.size <= 160) return;
+  const removable = [...manualAiJobs.values()]
+    .filter((job) => !['queued', 'processing'].includes(job.status))
+    .sort((left, right) => String(left.updatedAt).localeCompare(String(right.updatedAt)));
+  while (manualAiJobs.size > 140 && removable.length > 0) {
+    manualAiJobs.delete(removable.shift().id);
+  }
+}
+
+function updateManualAiJob(jobId, patch) {
+  const current = manualAiJobs.get(jobId);
+  if (!current) return null;
+  const job = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  manualAiJobs.set(jobId, job);
+  return job;
+}
+
+function enqueueManualAiRename(noteUid) {
+  const existing = [...manualAiJobs.values()].find((job) => (
+    job.noteUid === noteUid
+    && job.type === 'note-rename'
+    && ['queued', 'processing'].includes(job.status)
+  ));
+  if (existing) return { job: existing, replayed: true };
+
+  const saved = findSavedNote(noteUid);
+  if (!saved) {
+    throw makeReviewError(`Durable note metadata not found: ${noteUid}`, 'NOTE_FILE_METADATA_NOT_FOUND');
+  }
+  const extension = path.extname(saved.filePath).toLowerCase();
+  const mime = saved.metadata.mime || MATERIAL_MIME_BY_EXT.get(extension) || 'image/png';
+  if (!String(mime).startsWith('image/')) {
+    throw makeReviewError('AI 重命名目前只处理有原图的学习记录', 'AI_RENAME_NOT_ALLOWED');
+  }
+
+  const stagedAt = new Date().toISOString();
+  const metadata = {
+    ...saved.metadata,
+    filePath: saved.filePath,
+    fileName: path.basename(saved.filePath),
+    mime,
+    updatedAt: stagedAt,
+    naming: {
+      ...(saved.metadata.naming || {}),
+      status: 'pending',
+      reason: 'manual_retry',
+      error: null,
+      completedAt: null,
+    },
+    learning: {
+      ...(saved.metadata.learning || {}),
+      pendingAiOrganization: true,
+    },
+  };
+  atomicWriteJson(saved.receipt.sidecarPath, metadata);
+  appendMetadata(path.dirname(saved.filePath), metadata);
+  const learningSyncError = syncLearningMetadata(metadata);
+  writeSaveReceipt(noteUid, metadata, learningSyncError);
+
+  const job = {
+    id: `job-${crypto.randomUUID()}`,
+    type: 'note-rename',
+    noteUid,
+    status: 'queued',
+    progress: 0,
+    message: '已加入本机 AI 命名队列',
+    error: '',
+    createdAt: stagedAt,
+    updatedAt: stagedAt,
+    completedAt: '',
+    result: null,
+  };
+  manualAiJobs.set(job.id, job);
+  pruneManualAiJobs();
+  queueAiNamingJob(noteUid);
+  updateManualAiJob(job.id, {
+    status: 'processing',
+    progress: 15,
+    message: 'AI 正在读取原图并按本地规则命名、分类',
+  });
+  const running = aiNamingJobs.get(noteUid);
+  void Promise.resolve(running).then(() => {
+    const latest = findSavedNote(noteUid);
+    const naming = latest?.metadata?.naming || {};
+    const completed = naming.status === 'complete';
+    const completedAt = new Date().toISOString();
+    updateManualAiJob(job.id, {
+      status: completed ? 'completed' : 'failed',
+      progress: completed ? 100 : 0,
+      message: completed ? 'AI 命名与分类已完成' : 'AI 命名失败，可稍后重试',
+      error: completed ? '' : String(naming.error || 'AI 命名未能完成'),
+      completedAt,
+      result: completed ? {
+        applied: true,
+        title: String(latest?.metadata?.title || ''),
+        revision: Number(learningData.getSnapshot().revision) || 0,
+      } : null,
+    });
+  }).catch((error) => {
+    updateManualAiJob(job.id, {
+      status: 'failed',
+      progress: 0,
+      message: 'AI 命名失败，可稍后重试',
+      error: error instanceof Error ? error.message : String(error),
+      completedAt: new Date().toISOString(),
+    });
+  });
+  return { job: manualAiJobs.get(job.id), replayed: false };
+}
+
+function searchTokens(value) {
+  const normalized = String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+  const tokens = new Set(normalized.match(/[\p{L}\p{N}]{2,}/gu) || []);
+  const chinese = normalized.replace(/[^\p{Script=Han}]/gu, '');
+  for (let index = 0; index < chinese.length - 1; index += 1) tokens.add(chinese.slice(index, index + 2));
+  return [...tokens].slice(0, 80);
+}
+
+function fallbackSearchDocuments() {
+  const documents = [];
+  for (const [date, day] of Object.entries(learningData.getSnapshot()?.days || {})) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      documents.push({
+        noteUid: note.noteUid,
+        capturedDate: note.capturedDate || date,
+        updatedAt: note.updatedAt || '',
+        title: note.title || '',
+        subject: note.subject || '',
+        facets: note.facets || [],
+        tags: note.tags || [],
+        attachmentNames: (note.attachments || []).map((attachment) => attachment?.name || ''),
+        content: [
+          note.title,
+          note.remark,
+          note.subject,
+          ...(note.tags || []),
+          ...(note.facets || []),
+          ...(note.knowledgePath || []),
+          ...(note.questions || []),
+          ...(note.items || []).flatMap((item) => [item?.title, item?.question, item?.answer, item?.remark]),
+        ].filter(Boolean).join('\n'),
+      });
+    }
+  }
+  return documents;
+}
+
+async function expandSemanticSearchQuery(query) {
+  const cacheKey = query.normalize('NFKC').trim().toLowerCase();
+  if (semanticQueryCache.has(cacheKey)) return semanticQueryCache.get(cacheKey);
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const response = await router.complete({
+    task: 'custom',
+    messages: [{
+      role: 'user',
+      content: [
+        '你只负责扩展学习资料搜索词，不回答问题，不总结资料。',
+        '根据用户表达的含义，给出可能出现在考研笔记里的同义词、相关概念、公式名称、常见中文说法。',
+        '只输出 JSON，terms 为 3 到 12 个简短检索词，不能编造结论。',
+        `查询：${query}`,
+      ].join('\n'),
+    }],
+    responseSchema: {
+      type: 'object',
+      required: ['terms'],
+      properties: {
+        terms: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+      },
+    },
+    temperature: 0.1,
+    maxTokens: 320,
+  });
+  const terms = [...new Set((response.json?.terms || [])
+    .map((item) => String(item || '').normalize('NFKC').trim().slice(0, 80))
+    .filter(Boolean))]
+    .slice(0, 12);
+  semanticQueryCache.set(cacheKey, terms);
+  if (semanticQueryCache.size > 120) semanticQueryCache.delete(semanticQueryCache.keys().next().value);
+  return terms;
+}
+
+async function searchLearningDocuments(payload) {
+  const query = String(payload?.query || '').normalize('NFKC').trim().slice(0, 500);
+  const mode = payload?.mode === 'ai' ? 'ai' : 'normal';
+  const limit = Math.max(1, Math.min(200, Number(payload?.limit) || 80));
+  if (!query) return { ok: true, mode, query, terms: [], results: [] };
+  const index = readJson(SEARCH_INDEX_PATH, null);
+  const documents = Array.isArray(index?.documents) ? index.documents : fallbackSearchDocuments();
+  let expandedTerms = [];
+  let degraded = false;
+  if (mode === 'ai') {
+    try {
+      expandedTerms = await expandSemanticSearchQuery(query);
+    } catch {
+      degraded = true;
+    }
+  }
+  const directTerms = searchTokens(query);
+  const semanticTerms = searchTokens(expandedTerms.join(' '));
+  const results = documents.map((document, originalIndex) => {
+    const title = String(document.title || '').normalize('NFKC').toLowerCase();
+    const haystack = [
+      document.title,
+      document.subject,
+      ...(document.tags || []),
+      ...(document.facets || []),
+      ...(document.attachmentNames || []),
+      document.content,
+    ].join(' ').normalize('NFKC').toLowerCase();
+    let score = haystack.includes(query.toLowerCase()) ? 80 : 0;
+    const matchedTerms = [];
+    for (const term of directTerms) {
+      if (!haystack.includes(term)) continue;
+      score += title.includes(term) ? 18 : 7;
+      matchedTerms.push(term);
+    }
+    for (const term of semanticTerms) {
+      if (!haystack.includes(term)) continue;
+      score += title.includes(term) ? 12 : 5;
+      matchedTerms.push(term);
+    }
+    return { document, originalIndex, score, matchedTerms: [...new Set(matchedTerms)].slice(0, 8) };
+  }).filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.originalIndex - right.originalIndex)
+    .slice(0, limit)
+    .map(({ document, score, matchedTerms }) => ({
+      noteUid: document.noteUid,
+      score,
+      matchedTerms,
+      reason: matchedTerms.length ? `匹配：${matchedTerms.join('、')}` : '匹配原始记录内容',
+    }));
+  return {
+    ok: true,
+    mode,
+    query,
+    terms: expandedTerms,
+    results,
+    degraded,
+    sourceRevision: Number(index?.sourceRevision) || Number(learningData.getSnapshot().revision) || 0,
+  };
 }
 
 function resumePendingAiNamingJobs() {
@@ -2898,6 +3172,21 @@ async function handleCanvasProjectRoute(req, res, pathname) {
 }
 
 async function handleLearningDataRoute(req, res, pathname) {
+  if (req.method === 'POST' && pathname === '/search') {
+    sendJson(res, 200, await searchLearningDocuments(JSON.parse((await readBody(req, 64 * 1024)) || '{}')));
+    return true;
+  }
+  const aiJobMatch = /^\/ai\/jobs\/([^/]+)$/.exec(pathname);
+  if (req.method === 'GET' && aiJobMatch) {
+    const job = manualAiJobs.get(decodeURIComponent(aiJobMatch[1]));
+    if (!job) {
+      sendJson(res, 404, { ok: false, code: 'JOB_NOT_FOUND', error: '找不到这个 AI 任务' });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, job });
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/learning-data/events') {
     handleLearningEvents(req, res);
     return true;
@@ -3038,6 +3327,12 @@ async function handleLearningDataRoute(req, res, pathname) {
 
   const cardMatch = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
   const noteMatch = /^\/learning-data\/notes\/([^/]+)$/.exec(pathname);
+  const noteRenameMatch = /^\/learning-data\/notes\/([^/]+)\/rename$/.exec(pathname);
+  if (noteRenameMatch && req.method === 'POST') {
+    const result = enqueueManualAiRename(decodeURIComponent(noteRenameMatch[1]));
+    sendJson(res, 202, { ok: true, accepted: true, ...result });
+    return true;
+  }
   const noteAnalyzeMatch = /^\/learning-data\/notes\/([^/]+)\/analyze-wrong-reason$/.exec(pathname);
   if (noteAnalyzeMatch && req.method === 'POST') {
     const noteUid = decodeURIComponent(noteAnalyzeMatch[1]);

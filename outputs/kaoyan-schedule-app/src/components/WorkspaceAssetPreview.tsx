@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Download, File, FileCode2, FileImage, FileText } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Download, File, FileCode2, FileImage, FileText, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
 import * as mammoth from 'mammoth';
+import {
+  getDocument,
+  GlobalWorkerOptions,
+  type PDFDocumentProxy,
+} from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import '../learning-record-workspace-preview.css';
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 export type WorkspacePreviewKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
 
@@ -74,58 +82,236 @@ function RecoverableImage({
   const [src, setSrc] = useState(item.url);
   const usingFallback = Boolean(item.fallbackUrl) && src === item.fallbackUrl;
   const [failed, setFailed] = useState(false);
+  const [scale, setScale] = useState(1);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
 
   useEffect(() => {
     setSrc(item.url);
     setFailed(false);
+    setScale(1);
+    setOffset({ x: 0, y: 0 });
   }, [item.url]);
 
   if (failed) return <ErrorPreview item={item} message="图片文件不存在或无法读取" />;
   return (
-    <img
-      className={className}
-      src={src}
-      alt={item.name}
-      draggable={false}
-      onError={() => {
-        if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
-        else setFailed(true);
+    <div
+      className={`lrp-image-viewer${scale > 1 ? ' is-zoomed' : ''}`}
+      title="滚轮缩放，放大后按住拖动；双击恢复"
+      onDoubleClick={() => {
+        setScale((value) => value > 1 ? 1 : 2);
+        setOffset({ x: 0, y: 0 });
       }}
-      onLoad={() => {
-        if (usingFallback) onRecovered(item);
+      onWheel={(event) => {
+        event.preventDefault();
+        const next = Math.max(.5, Math.min(6, Math.round((scale + (event.deltaY < 0 ? .2 : -.2)) * 10) / 10));
+        setScale(next);
+        if (next <= 1) setOffset({ x: 0, y: 0 });
       }}
-    />
+      onPointerDown={(event) => {
+        if (event.button !== 0 || scale <= 1) return;
+        const start = { x: offset.x, y: offset.y };
+        const clientX = event.clientX;
+        const clientY = event.clientY;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.classList.add('is-panning');
+        const move = (next: PointerEvent) => {
+          setOffset({
+            x: start.x + next.clientX - clientX,
+            y: start.y + next.clientY - clientY,
+          });
+        };
+        const stop = () => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', stop);
+          window.removeEventListener('pointercancel', stop);
+          event.currentTarget.classList.remove('is-panning');
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', stop, { once: true });
+        window.addEventListener('pointercancel', stop, { once: true });
+      }}
+    >
+      <img
+        className={className}
+        src={src}
+        alt={item.name}
+        draggable={false}
+        style={{ transform: `translate3d(${offset.x}px,${offset.y}px,0) scale(${scale})` }}
+        onError={() => {
+          if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
+          else setFailed(true);
+        }}
+        onLoad={() => {
+          if (usingFallback) onRecovered(item);
+        }}
+      />
+      {scale !== 1 && <span className="lrp-image-zoom-level">{Math.round(scale * 100)}%</span>}
+    </div>
+  );
+}
+
+function PdfPageCanvas({
+  document,
+  pageNumber,
+  scale,
+}: {
+  document: PDFDocumentProxy;
+  pageNumber: number;
+  scale: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let renderTask: { cancel: () => void; promise: Promise<unknown> } | null = null;
+    setError('');
+    void document.getPage(pageNumber).then((page) => {
+      if (cancelled || !canvasRef.current) return;
+      const viewport = page.getViewport({ scale });
+      const outputScale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+      const canvas = canvasRef.current;
+      const context = canvas.getContext('2d', { alpha: false });
+      if (!context) throw new Error('浏览器无法创建 PDF 画布');
+      canvas.width = Math.max(1, Math.floor(viewport.width * outputScale));
+      canvas.height = Math.max(1, Math.floor(viewport.height * outputScale));
+      canvas.style.width = `${Math.round(viewport.width)}px`;
+      canvas.style.height = `${Math.round(viewport.height)}px`;
+      renderTask = page.render({
+        canvas,
+        canvasContext: context,
+        viewport,
+        transform: outputScale === 1 ? undefined : [outputScale, 0, 0, outputScale, 0, 0],
+      });
+      return renderTask.promise;
+    }).catch((reason: unknown) => {
+      if (!cancelled && (reason as { name?: string })?.name !== 'RenderingCancelledException') {
+        setError(reason instanceof Error ? reason.message : 'PDF 页面渲染失败');
+      }
+    });
+    return () => {
+      cancelled = true;
+      renderTask?.cancel();
+    };
+  }, [document, pageNumber, scale]);
+
+  return (
+    <section className="lrp-pdf-page" aria-label={`PDF 第 ${pageNumber} 页`}>
+      <canvas ref={canvasRef} />
+      {error && <span>{error}</span>}
+    </section>
   );
 }
 
 function PdfPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
-  const [objectUrl, setObjectUrl] = useState('');
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
+  const [fitScale, setFitScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const abort = new AbortController();
-    let nextObjectUrl = '';
-    setObjectUrl('');
+    let loadingTask: ReturnType<typeof getDocument> | null = null;
+    setDocument(null);
+    setZoom(1);
     setError('');
     void fetchAsset(item, abort.signal, onRecovered)
-      .then((response) => response.blob())
-      .then((blob) => {
+      .then((response) => response.arrayBuffer())
+      .then((arrayBuffer) => {
         if (abort.signal.aborted) return;
-        nextObjectUrl = URL.createObjectURL(blob);
-        setObjectUrl(nextObjectUrl);
+        loadingTask = getDocument({ data: new Uint8Array(arrayBuffer) });
+        return loadingTask.promise;
+      })
+      .then((pdf) => {
+        if (!pdf || abort.signal.aborted) return;
+        setDocument(pdf);
       })
       .catch((reason: unknown) => {
         if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'PDF 读取失败');
       });
     return () => {
       abort.abort();
-      if (nextObjectUrl) URL.revokeObjectURL(nextObjectUrl);
+      loadingTask?.destroy();
     };
   }, [item.url, item.fallbackUrl, onRecovered]);
 
+  useEffect(() => {
+    if (!document || !viewportRef.current) return undefined;
+    let cancelled = false;
+    const viewport = viewportRef.current;
+    const resize = async () => {
+      const page = await document.getPage(1);
+      if (cancelled) return;
+      const natural = page.getViewport({ scale: 1 });
+      const availableWidth = Math.max(180, viewport.clientWidth - 28);
+      setFitScale(Math.max(.25, Math.min(3, availableWidth / natural.width)));
+    };
+    void resize();
+    const observer = new ResizeObserver(() => { void resize(); });
+    observer.observe(viewport);
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+    };
+  }, [document]);
+
+  const beginPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || !viewportRef.current) return;
+    const viewport = viewportRef.current;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startLeft = viewport.scrollLeft;
+    const startTop = viewport.scrollTop;
+    let moved = false;
+    viewport.setPointerCapture(event.pointerId);
+    viewport.classList.add('is-panning');
+    const move = (next: PointerEvent) => {
+      if (Math.hypot(next.clientX - startX, next.clientY - startY) > 3) moved = true;
+      viewport.scrollLeft = startLeft - (next.clientX - startX);
+      viewport.scrollTop = startTop - (next.clientY - startY);
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      viewport.classList.remove('is-panning');
+      if (moved) window.getSelection()?.removeAllRanges();
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop, { once: true });
+    window.addEventListener('pointercancel', stop, { once: true });
+  };
+
   if (error) return <ErrorPreview item={item} message={error} />;
-  if (!objectUrl) return <div className="lrp-preview-loading">正在读取 PDF…</div>;
-  return <iframe className="lrp-document-frame" src={objectUrl} title={item.name} />;
+  if (!document) return <div className="lrp-preview-loading">正在读取 PDF…</div>;
+  const scale = fitScale * zoom;
+  return (
+    <div className="lrp-pdf-preview">
+      <div className="lrp-pdf-toolbar">
+        <button type="button" onClick={() => setZoom((value) => Math.max(.5, Math.round((value - .2) * 10) / 10))} aria-label="缩小 PDF"><ZoomOut size={14} /></button>
+        <button type="button" onClick={() => setZoom(1)} title="适合窗口"><Maximize2 size={13} /><span>{Math.round(zoom * 100)}%</span></button>
+        <button type="button" onClick={() => setZoom((value) => Math.min(4, Math.round((value + .2) * 10) / 10))} aria-label="放大 PDF"><ZoomIn size={14} /></button>
+        <em>{document.numPages} 页</em>
+      </div>
+      <div
+        className="lrp-pdf-scroll"
+        ref={viewportRef}
+        onPointerDown={beginPan}
+        onWheel={(event) => {
+          if (!event.ctrlKey) return;
+          event.preventDefault();
+          setZoom((value) => Math.max(.5, Math.min(4, value + (event.deltaY < 0 ? .2 : -.2))));
+        }}
+      >
+        <div className="lrp-pdf-pages">
+          {Array.from({ length: document.numPages }, (_, index) => (
+            <PdfPageCanvas document={document} pageNumber={index + 1} scale={scale} key={index + 1} />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function WordPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
@@ -155,10 +341,15 @@ function WordPreview({ item, onRecovered }: Omit<WorkspaceAssetPreviewProps, 'as
         const warningHtml = warnings.length > 0
           ? `<hr><small>${warnings.map((value) => value.replace(/[<>&]/g, '')).join('；')}</small>`
           : '';
-        setDocumentHtml(`<!doctype html><html><head><meta charset="utf-8"><style>
-          body{font:16px/1.75 system-ui,sans-serif;padding:24px;max-width:900px;margin:auto;color:#202124}
-          img{max-width:100%;height:auto}table{border-collapse:collapse;max-width:100%}
+        setDocumentHtml(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+          *,*::before,*::after{box-sizing:border-box}
+          html,body{width:100%;max-width:100%;min-width:0;margin:0;overflow:auto}
+          body{font:16px/1.75 system-ui,sans-serif;padding:clamp(14px,4vw,28px);color:#202124;overflow-wrap:anywhere}
+          body>*{max-width:100%}
+          img,svg,video,canvas,iframe{max-width:100%;height:auto}
+          table{width:max-content;max-width:100%;display:block;overflow:auto;border-collapse:collapse}
           td,th{border:1px solid #bbb;padding:6px}p{white-space:normal}
+          pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
         </style></head><body>${result.value}${warningHtml}</body></html>`);
       })
       .catch((reason: unknown) => {
@@ -244,8 +435,10 @@ async function loadHtmlProject(
   const responsiveStyle = document.createElement('style');
   responsiveStyle.textContent = `
     *,*::before,*::after{box-sizing:border-box}
-    html,body{max-width:100%;min-height:100%;margin:0;overflow:auto}
+    html,body{width:100%;max-width:100%;min-width:0;min-height:100%;margin:0;overflow:auto}
+    body>*{max-width:100%}
     img,video,svg{max-width:100%;height:auto}
+    canvas,iframe{max-width:100%;height:auto}
     table{max-width:100%;display:block;overflow:auto}
     pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
   `;

@@ -131,7 +131,9 @@ test('V2 local adapter converges after one apply cycle', () => {
       originalSidecarPath,
       'utf8',
     ));
-    assert.equal(materialized.filePath, `github://${entry.assets[0].path}`);
+    assert.equal(path.isAbsolute(materialized.filePath), true);
+    assert.equal(fs.existsSync(materialized.filePath), true);
+    assert.equal(materialized.attachments[0].cloudPath, `github://${entry.assets[0].path}`);
     assert.equal(materialized.v2Version, entry.version);
     assert.equal(fs.existsSync(path.join(notesRoot, '默认文件夹', '.metadata', 'stable-entry.note.json')), false);
   } finally {
