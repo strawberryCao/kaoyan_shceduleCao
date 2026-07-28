@@ -3267,7 +3267,10 @@ const server = http.createServer(async (req, res) => {
         'Content-Disposition': noteFileContentDisposition(file, fileName, preview),
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
-        'Cross-Origin-Resource-Policy': 'same-origin',
+        // The desktop UI is served from :5173 while note files are served from
+        // :5174. Keep path access restricted by resolveNoteFile and CORS, but
+        // allow the image response itself to be embedded by that local UI.
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       fs.createReadStream(file.filePath).pipe(res);
       return;

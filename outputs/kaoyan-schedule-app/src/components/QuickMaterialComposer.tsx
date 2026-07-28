@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState, type DragEvent } from 'react';
 import { ArrowLeft, CheckCircle2, FilePlus2, LoaderCircle, Paperclip, Save, Trash2, X } from 'lucide-react';
 import { saveLearningMaterial, type LearningRecordFacet } from '../utils/notes';
 import { saveLearningDataCache } from '../utils/learningData';
@@ -20,6 +20,7 @@ const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 
 interface QuickMaterialComposerProps {
   compact?: boolean;
+  desktop?: boolean;
   onClose: () => void;
   onSaved: (message: string) => void;
 }
@@ -28,7 +29,7 @@ const formatBytes = (bytes: number): string => bytes >= 1024 * 1024
   ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
   : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 
-export function QuickMaterialComposer({ compact = false, onClose, onSaved }: QuickMaterialComposerProps) {
+export function QuickMaterialComposer({ compact = false, desktop = false, onClose, onSaved }: QuickMaterialComposerProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState('');
   const [remark, setRemark] = useState('');
@@ -38,6 +39,7 @@ export function QuickMaterialComposer({ compact = false, onClose, onSaved }: Qui
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
 
   const addFiles = (incoming: FileList | null) => {
@@ -66,6 +68,13 @@ export function QuickMaterialComposer({ compact = false, onClose, onSaved }: Qui
       : [...current, facet]);
   };
 
+  const receiveDrop = (event: DragEvent<HTMLElement>) => {
+    if (!desktop) return;
+    event.preventDefault();
+    setDragging(false);
+    addFiles(event.dataTransfer.files);
+  };
+
   const submit = async () => {
     if (saving) return;
     if (!title.trim() && !remark.trim() && files.length === 0) {
@@ -88,30 +97,58 @@ export function QuickMaterialComposer({ compact = false, onClose, onSaved }: Qui
 
   if (saved) {
     return (
-      <main className="quick-material-composer is-saved">
+      <main className={`quick-material-composer is-saved${desktop ? ' is-desktop note-drop-app' : ''}`}>
         <CheckCircle2 size={42} />
         <h1>记录完成</h1>
         <p>文字和资料已经写入学习中心。</p>
-        <button className="primary" type="button" onClick={onClose}>返回笔记小 App</button>
+        <button className="primary" type="button" onClick={onClose}>返回图片记题</button>
       </main>
     );
   }
 
   return (
-    <main className={`quick-material-composer${compact ? ' is-compact' : ''}`}>
-      <header>
-        <button type="button" onClick={onClose} aria-label="返回"><ArrowLeft size={20} /></button>
-        <strong>速记</strong>
-        <button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
-      </header>
+    <main
+      className={`quick-material-composer${compact ? ' is-compact' : ''}${desktop ? ' is-desktop note-drop-app' : ''}${dragging ? ' is-dragging' : ''}`}
+      onDragEnter={desktop ? (event) => { event.preventDefault(); setDragging(true); } : undefined}
+      onDragOver={desktop ? (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } : undefined}
+      onDragLeave={desktop ? (event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+      } : undefined}
+      onDrop={receiveDrop}
+    >
+      {desktop ? (
+        <header className="note-drop-titlebar">
+          <div>
+            <span className="note-drop-grip" aria-hidden="true"><i /><i /><i /><i /><i /><i /></span>
+            <strong>笔记小 App · 速记</strong>
+          </div>
+          <nav aria-label="速记模式控制">
+            <button type="button" onClick={onClose} aria-label="返回图片记题"><ArrowLeft size={15} /></button>
+          </nav>
+        </header>
+      ) : (
+        <header>
+          <button type="button" onClick={onClose} aria-label="返回"><ArrowLeft size={20} /></button>
+          <strong>速记</strong>
+          <button type="button" onClick={onClose} aria-label="关闭"><X size={20} /></button>
+        </header>
+      )}
       <section className="quick-material-form">
         {!compact && <label><span>标题 <small>可选</small></span><input value={title} maxLength={240} onChange={(event) => setTitle(event.target.value)} placeholder="例如：拉格朗日中值定理的构造思路" /></label>}
-        <label className="quick-material-page"><span>{compact ? '写下这条速记' : '正文 / 备注'} <small>{compact ? '标题会自动生成' : '可只写文字'}</small></span><textarea autoFocus={compact} value={remark} maxLength={8000} onChange={(event) => setRemark(event.target.value)} placeholder="直接写下想法、结论、错因或待解决问题……" /></label>
+        <label className="quick-material-page"><span>{desktop ? '速记内容' : compact ? '写下这条速记' : '正文 / 备注'} <small>{desktop ? '标题自动生成' : compact ? '标题会自动生成' : '可只写文字'}</small></span><textarea autoFocus={compact} value={remark} maxLength={8000} onChange={(event) => setRemark(event.target.value)} placeholder={desktop ? '直接写文字，或把资料拖进这个窗口……' : '直接写下想法、结论、错因或待解决问题……'} /></label>
         {!compact && <label><span>科目</span><select value={subject} onChange={(event) => setSubject(event.target.value)}>{SUBJECTS.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>}
         {!compact && <fieldset><legend>记录身份 <small>可多选</small></legend><div className="quick-material-facets">{FACETS.map((facet) => <button className={facets.includes(facet.id) ? 'active' : ''} key={facet.id} type="button" onClick={() => toggleFacet(facet.id)}>{facet.label}</button>)}</div></fieldset>}
         <div className={`quick-material-files${compact ? ' is-secondary' : ''}`}>
           <div><span>资料附件</span><small>{files.length}/{MAX_FILES} · {formatBytes(totalBytes)}/16 MB</small></div>
-          <button type="button" onClick={() => inputRef.current?.click()}><FilePlus2 size={17} />{compact ? '拍照或选择附件（可选）' : '加入图片、PDF、Word、HTML、网页资源或文本'}</button>
+          {desktop ? (
+            <button className="quick-material-drop-target" type="button" onClick={() => inputRef.current?.click()}>
+              <Paperclip size={17} />
+              <span>{dragging ? '松手加入资料' : '把 PDF、Word、HTML、图片直接拖到这里'}</span>
+              <small>文件名和类型自动识别</small>
+            </button>
+          ) : (
+            <button type="button" onClick={() => inputRef.current?.click()}><FilePlus2 size={17} />{compact ? '拍照或选择附件（可选）' : '加入图片、PDF、Word、HTML、网页资源或文本'}</button>
+          )}
           <input ref={inputRef} type="file" multiple hidden accept="image/*,.pdf,.doc,.docx,.html,.htm,.css,.js,.mjs,.json,.svg,.txt,.md" onChange={(event) => { addFiles(event.currentTarget.files); event.currentTarget.value = ''; }} />
           {files.length > 0 && <ul>{files.map((file, index) => <li key={[file.name, file.size, file.lastModified].join(':')}><Paperclip size={15} /><span><strong>{file.name}</strong><small>{formatBytes(file.size)}</small></span><button type="button" onClick={() => setFiles((current) => current.filter((_, itemIndex) => itemIndex !== index))} aria-label={'移除 ' + file.name}><Trash2 size={15} /></button></li>)}</ul>}
         </div>

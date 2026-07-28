@@ -6,14 +6,19 @@
   gap: 5px;
 }
 
+.note-drop-source-actions,
+.note-drop-quick-switch {
+  min-width: 0;
+}
+
 .note-drop-source-actions {
   display: grid;
-  min-width: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
 }
 
-.note-drop-source-actions button {
+.note-drop-source-actions button,
+.note-drop-quick-switch {
   display: inline-flex;
   min-width: 0;
   min-height: 27px;
@@ -33,12 +38,14 @@
   transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
 }
 
-.note-drop-source-actions button svg {
+.note-drop-source-actions button svg,
+.note-drop-quick-switch svg {
   flex: 0 0 auto;
   color: var(--dh-gold);
 }
 
-.note-drop-source-actions button span {
+.note-drop-source-actions button span,
+.note-drop-quick-switch span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -46,9 +53,18 @@
 }
 
 .note-drop-source-actions button:hover,
-.note-drop-source-actions button:focus-visible {
+.note-drop-source-actions button:focus-visible,
+.note-drop-quick-switch:hover,
+.note-drop-quick-switch:focus-visible {
   border-color: rgba(230, 195, 142, 0.52);
   background: rgba(230, 195, 142, 0.12);
+  color: var(--dh-text);
+}
+
+.note-drop-quick-switch {
+  width: 100%;
+  border-color: rgba(230, 195, 142, 0.26);
+  background: rgba(230, 195, 142, 0.09);
   color: var(--dh-text);
 }
 

@@ -216,9 +216,9 @@ export function NoteDropApp() {
   }, [acceptImage, saving]);
 
   useEffect(() => {
-    const mode = pendingImage ? 'remark' : 'compact';
+    const mode = pendingImage || materialOpen ? 'remark' : 'compact';
     if (window.kaoyanDesktop?.setNoteAppMode) void window.kaoyanDesktop.setNoteAppMode(mode);
-  }, [pendingImage]);
+  }, [materialOpen, pendingImage]);
 
   useEffect(() => {
     if (window.kaoyanDesktop?.setNoteAppDirty) {
@@ -542,7 +542,12 @@ export function NoteDropApp() {
   );
 
   if (materialOpen) {
-    return <QuickMaterialComposer compact={isMobileCapture} onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;
+    return <QuickMaterialComposer
+      compact={isMobileCapture || Boolean(window.kaoyanDesktop?.isElectron)}
+      desktop={Boolean(window.kaoyanDesktop?.isElectron)}
+      onClose={() => setMaterialOpen(false)}
+      onSaved={(message) => { setSaved(true); setStatus(message); }}
+    />;
   }
 
   if (isMobileCapture) {
@@ -774,18 +779,19 @@ export function NoteDropApp() {
           <button
             className="note-drop-zone"
             type="button"
-            aria-label="从相册选择图片，也可拖入或粘贴图片"
+            aria-label="选择题目图片，也可以直接拖入图片"
             onClick={() => galleryInputRef.current?.click()}
           >
             <span className="note-drop-zone-icon"><ImagePlus size={18} aria-hidden="true" /></span>
-            <span className="note-drop-zone-copy"><strong>{dragActive ? '松手放入图片' : '快速记录题目图片'}</strong></span>
+            <span className="note-drop-zone-copy">
+              <strong>{dragActive ? '松手放入图片' : '拖入题目图片'}</strong>
+              {!dragActive && <small>自动保存，分析在后台完成</small>}
+            </span>
           </button>
-          <div className="note-drop-source-actions" role="group" aria-label="图片来源">
-            <button type="button" onClick={() => cameraInputRef.current?.click()}><Camera size={15} /><span>拍照</span></button>
-            <button type="button" onClick={() => galleryInputRef.current?.click()}><Images size={15} /><span>相册</span></button>
-            <button type="button" onClick={() => void pasteFromClipboard()}><ClipboardPaste size={15} /><span>粘贴</span></button>
-            <button type="button" onClick={() => setMaterialOpen(true)}><FilePlus2 size={15} /><span>速记</span></button>
-          </div>
+          <button className="note-drop-quick-switch" type="button" onClick={() => setMaterialOpen(true)}>
+            <FilePlus2 size={15} aria-hidden="true" />
+            <span>切换到速记</span>
+          </button>
         </div>
         <button className="note-canvas-launch" type="button" onClick={openCanvas} title="在浏览器打开笔记大画布" aria-label="在浏览器打开笔记大画布">
           <ExternalLink size={16} aria-hidden="true" />
