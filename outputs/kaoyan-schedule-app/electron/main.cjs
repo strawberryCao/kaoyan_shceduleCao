@@ -7,6 +7,8 @@ const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
 const noteAppFlag = '--note-app';
 const noteAppCloseFlag = '--close-note-app';
+const materialPreviewArgPrefix = '--material-preview=';
+const materialPreviewRequestRoot = path.join(require('os').tmpdir(), 'kaoyan-material-previews');
 const launchAsNoteAppClose = process.argv.includes(noteAppCloseFlag);
 const noteCompactSize = { width: 300, height: 132 };
 const noteRemarkSize = { width: 400, height: 440 };
@@ -26,6 +28,9 @@ let quitAfterNoteClose = false;
 let tray = null;
 let quitting = false;
 let saveBoundsTimer = null;
+const materialWindows = new Set();
+const materialWindowDescriptors = new Map();
+const materialSnapTimers = new Map();
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -366,6 +371,158 @@ function loadRendererRoute(targetWindow, search = '') {
   });
 }
 
+function materialPreviewRequestPath(argv = process.argv) {
+  const raw = argv.find((argument) => String(argument).startsWith(materialPreviewArgPrefix));
+  if (!raw) return '';
+  const requested = path.resolve(String(raw).slice(materialPreviewArgPrefix.length));
+  const relative = path.relative(materialPreviewRequestRoot, requested);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative) && relative.endsWith('.json')
+    ? requested
+    : '';
+}
+
+function readMaterialPreviewRequest(argv = process.argv) {
+  const requestPath = materialPreviewRequestPath(argv);
+  if (!requestPath) return null;
+  try {
+    const stat = fs.statSync(requestPath);
+    if (!stat.isFile() || stat.size > 256 * 1024) return null;
+    const descriptor = JSON.parse(fs.readFileSync(requestPath, 'utf8'));
+    return descriptor && descriptor.item && Array.isArray(descriptor.assets) ? descriptor : null;
+  } catch {
+    return null;
+  } finally {
+    if (requestPath) {
+      try { fs.unlinkSync(requestPath); } catch {}
+    }
+  }
+}
+
+function materialDefaultSize(kind) {
+  if (kind === 'image') return { width: 680, height: 430 };
+  if (kind === 'pdf') return { width: 820, height: 680 };
+  if (kind === 'html') return { width: 760, height: 600 };
+  if (kind === 'word') return { width: 680, height: 620 };
+  return { width: 520, height: 360 };
+}
+
+function materialBounds(descriptor) {
+  const size = materialDefaultSize(descriptor?.item?.kind);
+  const point = descriptor?.screenPoint || {};
+  const display = Number.isFinite(point.x) && Number.isFinite(point.y) && (point.x || point.y)
+    ? screen.getDisplayNearestPoint({ x: Math.round(point.x), y: Math.round(point.y) })
+    : screen.getPrimaryDisplay();
+  const area = display.workArea;
+  const width = Math.min(size.width, area.width);
+  const height = Math.min(size.height, area.height);
+  const origin = {
+    x: Number.isFinite(point.x) && point.x ? Math.round(point.x - width / 2) : area.x + Math.round((area.width - width) / 2),
+    y: Number.isFinite(point.y) && point.y ? Math.round(point.y - 28) : area.y + Math.round((area.height - height) / 2),
+  };
+  const candidates = [];
+  for (let ring = 0; ring < 7; ring += 1) {
+    const offset = ring * 34;
+    candidates.push(
+      { x: origin.x + offset, y: origin.y + offset },
+      { x: origin.x - offset, y: origin.y + offset },
+      { x: origin.x + offset, y: origin.y - offset },
+    );
+  }
+  const occupied = [...materialWindows]
+    .filter((window) => !window.isDestroyed() && !window.isFullScreen())
+    .map((window) => window.getBounds());
+  const overlaps = (candidate, other) => !(
+    candidate.x + width + 10 <= other.x
+    || other.x + other.width + 10 <= candidate.x
+    || candidate.y + height + 10 <= other.y
+    || other.y + other.height + 10 <= candidate.y
+  );
+  const selected = candidates.map((candidate) => ({
+    x: clamp(candidate.x, area.x, area.x + area.width - width),
+    y: clamp(candidate.y, area.y, area.y + area.height - height),
+  })).find((candidate) => !occupied.some((other) => overlaps(candidate, other)))
+    || { x: area.x + 18, y: area.y + 18 };
+  return { ...selected, width, height };
+}
+
+function snapMaterialWindow(target) {
+  if (!target || target.isDestroyed() || target.isFullScreen()) return;
+  const bounds = target.getBounds();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const threshold = 14;
+  let x = bounds.x;
+  let y = bounds.y;
+  const trySnap = (value, candidate) => Math.abs(value - candidate) <= threshold ? candidate : value;
+  x = trySnap(x, area.x);
+  y = trySnap(y, area.y);
+  x = trySnap(x, area.x + area.width - bounds.width);
+  y = trySnap(y, area.y + area.height - bounds.height);
+  for (const other of materialWindows) {
+    if (other === target || other.isDestroyed() || other.isFullScreen()) continue;
+    const peer = other.getBounds();
+    const verticalOverlap = bounds.y < peer.y + peer.height + 24 && bounds.y + bounds.height + 24 > peer.y;
+    const horizontalOverlap = bounds.x < peer.x + peer.width + 24 && bounds.x + bounds.width + 24 > peer.x;
+    if (verticalOverlap) {
+      x = trySnap(x, peer.x + peer.width + 10);
+      x = trySnap(x, peer.x - bounds.width - 10);
+    }
+    if (horizontalOverlap) {
+      y = trySnap(y, peer.y + peer.height + 10);
+      y = trySnap(y, peer.y - bounds.height - 10);
+    }
+  }
+  if (x !== bounds.x || y !== bounds.y) target.setPosition(x, y, true);
+}
+
+function createMaterialWindow(descriptor) {
+  if (!descriptor?.item || !Array.isArray(descriptor.assets)) return null;
+  const bounds = materialBounds(descriptor);
+  const target = new BrowserWindow({
+    ...bounds,
+    minWidth: 240,
+    minHeight: 150,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    hasShadow: true,
+    alwaysOnTop: true,
+    resizable: true,
+    maximizable: true,
+    fullscreenable: true,
+    skipTaskbar: false,
+    title: descriptor.item.name || '学习资料',
+    icon: createTrayIcon(),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  });
+  materialWindows.add(target);
+  materialWindowDescriptors.set(target.webContents.id, descriptor);
+  loadRendererRoute(target, '?materialWindow=1');
+  target.once('ready-to-show', () => target.show());
+  target.on('moved', () => {
+    clearTimeout(materialSnapTimers.get(target));
+    materialSnapTimers.set(target, setTimeout(() => snapMaterialWindow(target), 90));
+  });
+  target.on('closed', () => {
+    clearTimeout(materialSnapTimers.get(target));
+    materialSnapTimers.delete(target);
+    materialWindowDescriptors.delete(target.webContents.id);
+    materialWindows.delete(target);
+  });
+  return target;
+}
+
+function openMaterialPreviewFromArgs(argv = process.argv) {
+  const descriptor = readMaterialPreviewRequest(argv);
+  if (!descriptor) return false;
+  createMaterialWindow(descriptor);
+  return true;
+}
+
 function createWindow() {
   // Electron is reserved for the tiny always-on-top note window. Keeping this
   // compatibility entry point prevents old shortcuts and packaged executables
@@ -529,6 +686,35 @@ function registerIpcHandlers() {
     if (error) throw new Error(error);
     return true;
   });
+  ipcMain.handle('material-window:open', (_event, descriptor) => Boolean(createMaterialWindow(descriptor)));
+  ipcMain.handle('material-window:descriptor', (event) => materialWindowDescriptors.get(event.sender.id) || null);
+  ipcMain.handle('material-window:toggle-fullscreen', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow || !materialWindows.has(senderWindow)) return false;
+    senderWindow.setFullScreen(!senderWindow.isFullScreen());
+    return senderWindow.isFullScreen();
+  });
+  ipcMain.handle('material-window:fit-content', (event, width, height) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow || !materialWindows.has(senderWindow) || senderWindow.isFullScreen()) return false;
+    const display = screen.getDisplayMatching(senderWindow.getBounds());
+    const safeWidth = clamp(Math.round(Number(width) || 0), 240, Math.min(1100, display.workArea.width));
+    const safeHeight = clamp(Math.round(Number(height) || 0), 150, Math.min(850, display.workArea.height));
+    const current = senderWindow.getBounds();
+    senderWindow.setBounds(fitBoundsToWorkArea({
+      x: current.x + Math.round((current.width - safeWidth) / 2),
+      y: current.y + Math.round((current.height - safeHeight) / 2),
+      width: safeWidth,
+      height: safeHeight,
+    }), true);
+    return true;
+  });
+  ipcMain.handle('material-window:close', (event) => {
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    if (!senderWindow || !materialWindows.has(senderWindow)) return false;
+    senderWindow.close();
+    return true;
+  });
   ipcMain.on('window:minimize', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.minimize();
   });
@@ -562,6 +748,7 @@ if (!hasSingleInstanceLock) {
       void closeNoteWindow();
       return;
     }
+    if (openMaterialPreviewFromArgs(argv)) return;
     createNoteWindow();
   });
 
@@ -578,7 +765,7 @@ if (!hasSingleInstanceLock) {
     // Remove any legacy full-desktop auto-start shortcut. Electron now owns
     // only the compact note window; full pages stay in the system browser.
     setAutoLaunch(false);
-    createNoteWindow();
+    if (!openMaterialPreviewFromArgs(process.argv)) createNoteWindow();
   });
 
   app.on('activate', () => {

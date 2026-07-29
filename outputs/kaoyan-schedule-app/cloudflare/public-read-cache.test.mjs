@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker from './worker.js';
 
-const auth = `Basic ${Buffer.from('tester:secret').toString('base64')}`;
-
 function environment(overrides = {}) {
   return {
     PUBLIC_READ_ENABLED: 'true',
@@ -23,6 +21,21 @@ function environment(overrides = {}) {
   };
 }
 
+async function authenticatedRequest(env, path, init = {}) {
+  const login = await worker.fetch(new Request('https://study.example/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'tester', password: 'secret' }),
+  }), env, {});
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie);
+  return worker.fetch(new Request(`https://study.example${path}`, {
+    ...init,
+    headers: { cookie, ...(init.headers ?? {}) },
+  }), env, {});
+}
+
 test('public mode exposes static pages but protects every data and configuration API', async () => {
   const env = environment();
 
@@ -38,9 +51,7 @@ test('public mode exposes static pages but protects every data and configuration
   assert.equal(unauthorizedRead.status, 401);
   assert.equal((await unauthorizedRead.json()).code, 'AUTH_REQUIRED');
 
-  const authorizedRead = await worker.fetch(new Request('https://study.example/api/organizer/status', {
-    headers: { Authorization: auth },
-  }), env, {});
+  const authorizedRead = await authenticatedRequest(env, '/api/organizer/status');
   assert.equal(authorizedRead.status, 200);
   assert.equal((await authorizedRead.json()).available, false);
 

@@ -648,12 +648,13 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     if (!uniqueTags.includes(wrongReasonTag)) uniqueTags.push(wrongReasonTag);
   }
   const noteType = intent.isMistake ? 'mistake' : intent.shouldMemorize ? 'memory' : intent.isQuestion ? 'question' : 'note';
+  const hasExplicitUserCategory = intent.isMistake || intent.isGood || intent.shouldMemorize;
   const cards = reviewStatusBefore === 'ignored'
     ? []
     : makeDraftCards(metadata, parsed, analysis, intent, knowledgePath, uniqueTags, pageRefs);
   const reviewStatus = keepsHumanDecision
     ? reviewStatusBefore
-    : !isDefaultBucket(subject.name) ? 'auto_applied' : 'pending';
+    : hasExplicitUserCategory || !isDefaultBucket(subject.name) ? 'auto_applied' : 'pending';
   const proposalSeed = metadata.organizer?.inputHash || metadata.updatedAt || metadata.createdAt || '';
   const proposalDigest = crypto.createHash('sha256')
     .update(`${metadata.noteUid}|${subject.name}|${knowledgePath.join('/')}|${proposalSeed}`)

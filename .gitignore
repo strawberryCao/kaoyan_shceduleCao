@@ -73,3 +73,8 @@ temp/
 # Local assistant / agent files
 .agents/
 .codex/
+
+# Generated diagnostics and local recovery snapshots must never be published.
+diagnostics/
+deployment-receipts/*diagnostic*
+**/.vat-test-backup/

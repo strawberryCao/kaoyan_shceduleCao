@@ -1,12 +1,22 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "kaoyan-study-center",
-  "main": "cloudflare/worker.js",
+  "main": "cloudflare/index.js",
   "compatibility_date": "2026-07-23",
   "compatibility_flags": ["nodejs_compat"],
   "ai": {
     "binding": "AI"
   },
+  "images": {
+    "binding": "IMAGES"
+  },
+  "workflows": [
+    {
+      "name": "kaoyan-capture-workflow",
+      "binding": "CAPTURE_WORKFLOW",
+      "class_name": "CaptureWorkflow"
+    }
+  ],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
@@ -15,10 +25,35 @@
   },
   "vars": {
     "APP_USERNAME": "caobiji",
-    "PUBLIC_READ_ENABLED": "true",
+    "PUBLIC_READ_ENABLED": "false",
     "GITHUB_OWNER": "strawberryCao",
     "GITHUB_REPO": "Caobijidata",
     "GITHUB_BRANCH": "main"
+  },
+  "env": {
+    "preview": {
+      "name": "kaoyan-study-center-preview",
+      "ai": {
+        "binding": "AI"
+      },
+      "images": {
+        "binding": "IMAGES"
+      },
+      "workflows": [
+        {
+          "name": "kaoyan-capture-workflow-preview",
+          "binding": "CAPTURE_WORKFLOW",
+          "class_name": "CaptureWorkflow"
+        }
+      ],
+      "vars": {
+        "APP_USERNAME": "caobiji",
+        "PUBLIC_READ_ENABLED": "false",
+        "GITHUB_OWNER": "strawberryCao",
+        "GITHUB_REPO": "Caobijidata",
+        "GITHUB_BRANCH": "main"
+      }
+    }
   },
   "observability": {
     "enabled": true,

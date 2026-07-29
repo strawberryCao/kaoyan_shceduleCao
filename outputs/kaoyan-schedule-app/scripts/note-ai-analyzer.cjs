@@ -9,6 +9,7 @@ const {
 } = require('./ai-subject-policy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
 const { NOTE_ANALYSIS_INSTRUCTIONS, NOTE_ANALYSIS_OUTPUT } = require('./agent-workflow-contracts.cjs');
+const { normalizeMathOneQuestionType } = require('./math-one-question-types.cjs');
 
 const ANALYZER_VERSION = 'note-ai-analyzer-v4';
 const DEFAULT_TAXONOMY_MAX_CHARS = 12_000;
@@ -536,9 +537,28 @@ function createNoteAiAnalyzer(options = {}) {
       tags: analysis.tags,
       items: analysis.items,
     });
+    const questionType = normalizeMathOneQuestionType(
+      subjectDecision.subject,
+      analysis.questionType,
+      [analysis.title, analysis.summary, analysis.knowledgePoint, metadata.remark].filter(Boolean).join(' '),
+    );
+    const items = analysis.items.map((item) => ({
+      ...item,
+      questionType: normalizeMathOneQuestionType(
+        subjectDecision.subject,
+        item.questionType,
+        [item.title, item.summary, item.knowledgePoint, analysis.title].filter(Boolean).join(' '),
+      ),
+    }));
     return {
       ...analysis,
       subject: subjectDecision.subject,
+      questionType,
+      items,
+      tags: uniqueStrings([
+        ...analysis.tags.filter((tag) => !tag.startsWith('题型:')),
+        ...(questionType ? [`题型:${questionType}`] : []),
+      ], 20, 40),
       // Never attach an unknown model-proposed first-level name as an alias to
       // a valid standard exam subject or to the fallback bucket.
       aliases: {

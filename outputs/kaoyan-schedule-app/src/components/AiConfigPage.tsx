@@ -26,6 +26,7 @@ import {
   pullReviewPdfs,
   pushReviewData,
   saveAiConfiguration,
+  saveAiProviderCredential,
   selectReviewOutputDirectory,
   type AiConfigurationSnapshot,
   type ReviewSyncStatus,
@@ -39,6 +40,7 @@ const providerNames: Record<string, string> = {
   qwen: '通义千问',
   gemini: 'Gemini',
   kimi: 'Kimi',
+  deepseek: 'DeepSeek',
 };
 
 const capabilityNames: Record<string, string> = {
@@ -51,6 +53,8 @@ const capabilityNames: Record<string, string> = {
 
 const instructionExamples: Record<string, string> = {
   note_naming: '例如：标题优先使用图片里出现的教材章节名；老师姓名不进入标题。',
+  material_naming: '例如：多份资料分别按各自核心概念命名，保留公式名称，不要使用“资料1”。',
+  semantic_search: '例如：允许扩展同义概念和公式别名，但不要回答问题或生成总结。',
   note_enrichment: '例如：错因必须写成可执行的改进动作；不要把单纯计算量大的题判断为好题。',
   note_image_understanding: '无备注时优先使用高质量视觉模型；只依据图片可见内容，不猜测缺失信息。',
   widget_generation: '例如：按钮使用紧凑布局；所有计时状态必须在组件内可重置。',
@@ -100,6 +104,9 @@ export function AiConfigPage() {
   const [savedMessage, setSavedMessage] = useState('');
   const [reviewStatus, setReviewStatus] = useState<ReviewSyncStatus | null>(null);
   const [reviewAction, setReviewAction] = useState<'push' | 'pull' | 'directory' | 'refresh' | ''>('');
+  const [deepseekKey, setDeepseekKey] = useState('');
+  const [deepseekModel, setDeepseekModel] = useState('deepseek-v4-flash');
+  const [providerSaving, setProviderSaving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -288,6 +295,27 @@ export function AiConfigPage() {
     }
   };
 
+  const handleSaveDeepseek = async () => {
+    setProviderSaving(true);
+    setError('');
+    setSavedMessage('');
+    try {
+      const next = await saveAiProviderCredential({
+        providerId: 'deepseek',
+        apiKey: deepseekKey,
+        model: deepseekModel,
+      });
+      setSnapshot(next);
+      setDraft(cloneTasks(next.tasks));
+      setDeepseekKey('');
+      setSavedMessage('DeepSeek 已接入本地主机；密钥只保存在本机配置文件中。');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setProviderSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <main className="ai-config-page ai-config-loading">
@@ -377,6 +405,54 @@ export function AiConfigPage() {
             <span><strong>没有可用模型</strong><small>请先检查 ai-providers.json 中的供应商与 Key。</small></span>
           </article>
         )}
+      </section>
+
+      <section className="ai-provider-tools">
+        <details>
+          <summary><ServerCog size={16} /> 接入 DeepSeek（自动分配文本任务）</summary>
+          <div>
+            <label>
+              <span>API Key</span>
+              <input
+                autoComplete="off"
+                type="password"
+                value={deepseekKey}
+                onChange={(event) => setDeepseekKey(event.target.value)}
+                placeholder="只保存在这台电脑"
+              />
+            </label>
+            <label>
+              <span>默认模型</span>
+              <select value={deepseekModel} onChange={(event) => setDeepseekModel(event.target.value)}>
+                <option value="deepseek-v4-flash">deepseek-v4-flash（结构化与日常任务）</option>
+                <option value="deepseek-v4-pro">deepseek-v4-pro（复杂推理）</option>
+                <option value="deepseek-chat">deepseek-chat（兼容旧名）</option>
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={providerSaving || deepseekKey.trim().length < 10}
+              onClick={() => void handleSaveDeepseek()}
+            >
+              {providerSaving ? <LoaderCircle className="is-spinning" size={15} /> : <Save size={15} />}
+              保存并应用推荐分工
+            </button>
+          </div>
+        </details>
+        <div className="ai-usage-summary" aria-label="AI Token 使用统计">
+          <header><CircleGauge size={16} /><span>本机 Token 统计</span><small>从本版本起累计</small></header>
+          <div>
+            {Object.entries(snapshot.usage?.providers || {}).length > 0
+              ? Object.entries(snapshot.usage.providers).map(([providerId, usage]) => (
+                <article key={providerId}>
+                  <strong>{providerNames[providerId] || providerId}</strong>
+                  <span>{Number(usage.totalTokens || 0).toLocaleString()} tokens</span>
+                  <small>{Number(usage.calls || 0).toLocaleString()} 次调用</small>
+                </article>
+              ))
+              : <p>完成下一次 AI 任务后开始记录。</p>}
+          </div>
+        </div>
       </section>
 
       <div className="ai-config-workspace">

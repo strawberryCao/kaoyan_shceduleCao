@@ -29,7 +29,13 @@ import {
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
-import { enqueueMultiQuestionJob, resumeMultiQuestionJobs } from '../utils/noteBackgroundJobs';
+import {
+  enqueueMultiQuestionJob,
+  retryMultiQuestionJob,
+  resumeMultiQuestionJobs,
+  subscribeMultiQuestionJobs,
+  type MultiQuestionJob,
+} from '../utils/noteBackgroundJobs';
 import { enqueueCaptureUpload, installCaptureUploadResumer, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
@@ -77,7 +83,9 @@ export function NoteDropApp() {
   const dragDepthRef = useRef(0);
   const detectionRunRef = useRef(0);
   const [isMobileCapture, setIsMobileCapture] = useState(() => (
-    IS_CLOUD_RUNTIME && typeof window.matchMedia === 'function' && window.matchMedia(mobileMediaQuery).matches
+    !window.kaoyanDesktop?.isElectron
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(mobileMediaQuery).matches
   ));
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [sourceImage, setSourceImage] = useState<PendingImage | null>(null);
@@ -94,10 +102,15 @@ export function NoteDropApp() {
   const [batchSubject, setBatchSubject] = useState('默认文件夹');
   const [batchRemark, setBatchRemark] = useState('');
   const [materialOpen, setMaterialOpen] = useState(false);
+  const [backgroundJob, setBackgroundJob] = useState<MultiQuestionJob | null>(null);
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
 
   useEffect(() => {
-    if (!IS_CLOUD_RUNTIME || typeof window.matchMedia !== 'function') return undefined;
+    if (window.kaoyanDesktop?.isElectron) {
+      setIsMobileCapture(false);
+      return undefined;
+    }
+    if (typeof window.matchMedia !== 'function') return undefined;
     const media = window.matchMedia(mobileMediaQuery);
     const update = () => setIsMobileCapture(media.matches);
     update();
@@ -106,10 +119,21 @@ export function NoteDropApp() {
   }, []);
 
   useEffect(() => {
-    if (isMobileCapture) void resumeMultiQuestionJobs();
+    if (!isMobileCapture) return undefined;
+    const dispose = subscribeMultiQuestionJobs((job) => {
+      setBackgroundJob(job);
+      const progress = job.progress > 0 && !['completed', 'failed', 'needs_review'].includes(job.status)
+        ? ` ${job.progress}%`
+        : '';
+      setStatus(`${job.message || '后台任务状态已更新'}${progress}`);
+      if (['failed', 'needs_review'].includes(job.status) && job.error) setDialogError(job.error);
+    });
+    void resumeMultiQuestionJobs();
+    return dispose;
   }, [isMobileCapture]);
 
   useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
     const disposeResumer = installCaptureUploadResumer();
     const disposeSubscription = subscribeCaptureUploads(setUploadSummary);
     return () => {
@@ -209,9 +233,9 @@ export function NoteDropApp() {
   }, [acceptImage, saving]);
 
   useEffect(() => {
-    const mode = pendingImage ? 'remark' : 'compact';
+    const mode = pendingImage || materialOpen ? 'remark' : 'compact';
     if (window.kaoyanDesktop?.setNoteAppMode) void window.kaoyanDesktop.setNoteAppMode(mode);
-  }, [pendingImage]);
+  }, [materialOpen, pendingImage]);
 
   useEffect(() => {
     if (window.kaoyanDesktop?.setNoteAppDirty) {
@@ -322,11 +346,17 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      await enqueueCaptureUpload([payload]);
+      if (IS_CLOUD_RUNTIME) {
+        await enqueueCaptureUpload([payload]);
+      } else {
+        await saveImageReliably(payload, setStatus);
+      }
       setPendingImage(null);
       setRemark('');
       setSaved(true);
-      setStatus('图片已安全保存在本机，后台自动上传和整理；现在可以立即关闭或继续拍题');
+      setStatus(IS_CLOUD_RUNTIME
+        ? '图片已加入可靠上传队列；现在可以立即关闭或继续拍题'
+        : '已保存到本地；正在后台识别标题和科目，可立即继续记录');
       if (isMobileCapture) setMobileStep('success');
     } catch (error) {
       const message = error instanceof Error
@@ -405,7 +435,7 @@ export function NoteDropApp() {
       setSaving(true);
       setSaved(false);
       setDialogError('');
-      await enqueueMultiQuestionJob(sourceImage.src, {
+      const job = await enqueueMultiQuestionJob(sourceImage.src, {
         subject: batchSubject,
         remark: batchRemark,
       });
@@ -413,7 +443,7 @@ export function NoteDropApp() {
       setBatchImages([]);
       setBatchProgress('');
       setSaved(true);
-      setStatus('整页原图已安全保存在本机；AI 会在后台自动拆分并保存，无需停留或逐题确认');
+      setStatus(job.message || '整页原图已安全保存，可以离开当前页面，无需停留或逐题确认');
       setMobileStep('success');
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : '无法加入后台多题队列，请重试。');
@@ -458,9 +488,15 @@ export function NoteDropApp() {
     try {
       setSaving(true);
       setDialogError('');
-      await enqueueCaptureUpload(payloads);
+      if (IS_CLOUD_RUNTIME) {
+        await enqueueCaptureUpload(payloads);
+      } else {
+        await saveBatchReliably(payloads, setBatchProgress);
+      }
       setSaved(true);
-      setStatus(`${selected.length} 道题已安全保存在本机，后台自动上传；现在可以立即关闭`);
+      setStatus(IS_CLOUD_RUNTIME
+        ? `${selected.length} 道题已加入可靠上传队列；现在可以立即关闭`
+        : `${selected.length} 道题已保存到本地；正在后台识别标题和科目`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {
@@ -523,7 +559,12 @@ export function NoteDropApp() {
   );
 
   if (materialOpen) {
-    return <QuickMaterialComposer onClose={() => setMaterialOpen(false)} onSaved={(message) => { setSaved(true); setStatus(message); }} />;
+    return <QuickMaterialComposer
+      compact={isMobileCapture || Boolean(window.kaoyanDesktop?.isElectron)}
+      desktop={Boolean(window.kaoyanDesktop?.isElectron)}
+      onClose={() => setMaterialOpen(false)}
+      onSaved={(message) => { setSaved(true); setStatus(message); }}
+    />;
   }
 
   if (isMobileCapture) {
@@ -698,8 +739,31 @@ export function NoteDropApp() {
         {mobileStep === 'success' && (
           <section className="mobile-capture-success">
             <span><CheckCircle2 size={38} /></span>
-            <h1>记录完成</h1>
+            <h1>{backgroundJob && !['completed', 'failed', 'needs_review'].includes(backgroundJob.status) ? '原图已保存' : '记录完成'}</h1>
             <p>{status || '笔记已保存并同步到学习中心。'}</p>
+            {backgroundJob && (
+              <div className={`mobile-background-job is-${backgroundJob.status}`} role="status" aria-live="polite">
+                <span style={{ width: `${Math.max(4, Math.min(100, backgroundJob.progress || 4))}%` }} />
+                <small>
+                  {backgroundJob.status === 'completed'
+                    ? `AI 已完成，生成 ${backgroundJob.detectedCount} 道题`
+                    : ['failed', 'needs_review'].includes(backgroundJob.status)
+                      ? 'AI 未完成，原图仍然安全保留'
+                      : `AI 后台处理中 ${backgroundJob.progress || 5}%`}
+                </small>
+              </div>
+            )}
+            {backgroundJob && ['failed', 'needs_review'].includes(backgroundJob.status) && (
+              <button type="button" onClick={() => {
+                setDialogError('');
+                void retryMultiQuestionJob(backgroundJob.id).catch((error) => {
+                  setDialogError(error instanceof Error ? error.message : '重试失败，请稍后再试。');
+                });
+              }}>
+                <Sparkles size={18} />重试 AI 裁剪
+              </button>
+            )}
+            {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
             <button className="primary" type="button" onClick={resetMobileCapture}><Camera size={19} />继续拍题</button>
             <button type="button" onClick={() => window.location.assign(`${window.location.origin}/?panel=learning&view=uncategorized`)}>查看普通笔记</button>
           </section>
@@ -755,18 +819,19 @@ export function NoteDropApp() {
           <button
             className="note-drop-zone"
             type="button"
-            aria-label="从相册选择图片，也可拖入或粘贴图片"
+            aria-label="选择题目图片，也可以直接拖入图片"
             onClick={() => galleryInputRef.current?.click()}
           >
             <span className="note-drop-zone-icon"><ImagePlus size={18} aria-hidden="true" /></span>
-            <span className="note-drop-zone-copy"><strong>{dragActive ? '松手放入图片' : '快速记录题目图片'}</strong></span>
+            <span className="note-drop-zone-copy">
+              <strong>{dragActive ? '松手放入图片' : '拖入题目图片'}</strong>
+              {!dragActive && <small>自动保存，分析在后台完成</small>}
+            </span>
           </button>
-          <div className="note-drop-source-actions" role="group" aria-label="图片来源">
-            <button type="button" onClick={() => cameraInputRef.current?.click()}><Camera size={15} /><span>拍照</span></button>
-            <button type="button" onClick={() => galleryInputRef.current?.click()}><Images size={15} /><span>相册</span></button>
-            <button type="button" onClick={() => void pasteFromClipboard()}><ClipboardPaste size={15} /><span>粘贴</span></button>
-            <button type="button" onClick={() => setMaterialOpen(true)}><FilePlus2 size={15} /><span>速记</span></button>
-          </div>
+          <button className="note-drop-quick-switch" type="button" onClick={() => setMaterialOpen(true)}>
+            <FilePlus2 size={15} aria-hidden="true" />
+            <span>切换到速记</span>
+          </button>
         </div>
         <button className="note-canvas-launch" type="button" onClick={openCanvas} title="在浏览器打开笔记大画布" aria-label="在浏览器打开笔记大画布">
           <ExternalLink size={16} aria-hidden="true" />

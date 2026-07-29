@@ -243,7 +243,7 @@ test('keeps an old AI-organized note inside its user-owned custom subject', asyn
   assert.equal(reloadedCustom.knowledgePoints.some((point) => point.name === '二叉树'), false);
 });
 
-test('treats every compatible default bucket name as pending review', async (t) => {
+test('keeps an explicit mistake or memory category visible even when its subject needs review', async (t) => {
   const fixture = makeFixture('kaoyan-organizer-default-alias-');
   t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
   fs.mkdirSync(fixture.assistantRoot, { recursive: true });
@@ -267,7 +267,7 @@ test('treats every compatible default bucket name as pending review', async (t) 
   const metadata = JSON.parse(fs.readFileSync(movedSidecar, 'utf8'));
   assert.equal(metadata.subject, '未分类');
   assert.equal(metadata.organizer.status, 'needs_review');
-  assert.equal(metadata.learning.organizationStatus, 'pending');
+  assert.equal(metadata.learning.organizationStatus, 'confirmed');
 });
 
 test('does not create a taxonomy root from a non-manual unknown physical directory', async (t) => {

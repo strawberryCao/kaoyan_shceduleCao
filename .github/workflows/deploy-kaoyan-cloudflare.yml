@@ -1,304 +1,167 @@
-name: Deploy kaoyan study center to Cloudflare
+name: Deploy validated kaoyan Worker
 
 on:
   workflow_dispatch:
-  push:
-    branches: [fix/learning-detail-title-latex]
-    paths:
-      - 'outputs/kaoyan-schedule-app/**'
-      - '.github/workflows/deploy-kaoyan-cloudflare.yml'
-  pull_request:
-    branches: [fix/learning-detail-title-latex]
-    types: [opened, reopened, synchronize]
+    inputs:
+      target:
+        description: Deploy preview first; production requires an explicit second run.
+        required: true
+        type: choice
+        default: preview
+        options:
+          - preview
+          - production
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: kaoyan-cloudflare-production
+  group: kaoyan-cloudflare-${{ inputs.target }}
   cancel-in-progress: false
 
 jobs:
   deploy:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.head_ref == 'deploy/cloudflare-production'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment:
+      name: cloudflare-${{ inputs.target }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      KAOYAN_SESSION_SECRET: ${{ secrets.KAOYAN_SESSION_SECRET }}
       CAOBIJI_GITHUB_TOKEN: ${{ secrets.CAOBIJI_GITHUB_TOKEN }}
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-      APP_USERNAME: caobiji
-      WORKER_NAME: kaoyan-study-center
       DATA_REPOSITORY: strawberryCao/Caobijidata
-      DATA_BRANCH: main
-
+    defaults:
+      run:
+        working-directory: outputs/kaoyan-schedule-app
     steps:
-      - name: Check out deployment source
+      - name: Check out the immutable dispatch commit
         uses: actions/checkout@v4
         with:
-          ref: fix/learning-detail-title-latex
+          ref: ${{ github.sha }}
           fetch-depth: 1
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Record deployment source
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(git rev-parse HEAD)"
+          [[ "$actual" == "$GITHUB_SHA" ]]
+          echo "Deploying immutable commit $actual to ${{ inputs.target }}"
+
+      - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
 
-      - name: Verify protected deployment inputs
+      - name: Verify required protected inputs
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { echo 'CLOUDFLARE_API_TOKEN is missing' >&2; exit 2; }
-          [[ -n "$CLOUDFLARE_ACCOUNT_ID" ]] || { echo 'CLOUDFLARE_ACCOUNT_ID is missing' >&2; exit 2; }
-          [[ -n "$KAOYAN_APP_PASSWORD" ]] || { echo 'KAOYAN_APP_PASSWORD is missing' >&2; exit 2; }
-          [[ -n "$CAOBIJI_GITHUB_TOKEN" ]] || { echo 'CAOBIJI_GITHUB_TOKEN is missing' >&2; exit 2; }
-          echo 'Cloudflare credentials, app password, and GitHub storage token are configured.'
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID KAOYAN_APP_PASSWORD KAOYAN_SESSION_SECRET CAOBIJI_GITHUB_TOKEN; do
+            [[ -n "${!name:-}" ]] || { echo "$name is missing" >&2; exit 2; }
+          done
+          (( ${#KAOYAN_SESSION_SECRET} >= 32 )) || { echo 'KAOYAN_SESSION_SECRET must be at least 32 characters' >&2; exit 2; }
 
-      - name: Verify GitHub storage access
+      - name: Refuse deployment while the data repository is public
         shell: bash
         run: |
           set -euo pipefail
           curl --fail --silent --show-error \
             -H 'Accept: application/vnd.github+json' \
             -H "Authorization: Bearer $CAOBIJI_GITHUB_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "https://api.github.com/repos/$DATA_REPOSITORY/git/ref/heads/$DATA_BRANCH" \
-            > "$RUNNER_TEMP/github-ref.json"
-          node -e "const v=require(process.argv[1]); if(!/^[a-f0-9]{40}$/i.test(v?.object?.sha||'')) process.exit(1);" "$RUNNER_TEMP/github-ref.json"
-          echo 'GitHub repository access verified.'
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$DATA_REPOSITORY" > "$RUNNER_TEMP/data-repository.json"
+          node -e "const v=require(process.argv[1]); if(v.private!==true||v.full_name!=='strawberryCao/Caobijidata') process.exit(1)" "$RUNNER_TEMP/data-repository.json"
 
-      - name: Install dependencies
-        working-directory: outputs/kaoyan-schedule-app
-        run: npm ci
-
-      - name: Upload migrated source export
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: learning-record-migration-export-${{ github.run_id }}
-          path: outputs/kaoyan-schedule-app/public/migration-export.json
-          if-no-files-found: ignore
-          retention-days: 1
-
-      - name: Run automated tests
-        working-directory: outputs/kaoyan-schedule-app
+      - name: Install and validate exact source
         shell: bash
-        env:
-          CAOBIJI_GITHUB_TOKEN: ''
         run: |
           set -euo pipefail
+          npm ci
           mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
-          (( ${#test_files[@]} > 0 ))
           node --test "${test_files[@]}"
+          npm run build
 
-      - name: Validate Windows synchronization scripts
-        working-directory: outputs/kaoyan-schedule-app
-        shell: pwsh
-        run: |
-          $failed = $false
-          foreach ($file in @(
-            'scripts/windows-note-folder-sync.ps1',
-            'scripts/windows-assistant-config-sync.ps1',
-            'scripts/install-note-folder-sync.ps1'
-          )) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
-            if (@($errors).Count -gt 0) {
-              $failed = $true
-              $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
-            }
-          }
-          foreach ($file in @(
-            'scripts/export-agent-runtime.cjs',
-            'scripts/assistant-config-watch.cjs'
-          )) {
-            node --check $file
-            if ($LASTEXITCODE -ne 0) { $failed = $true }
-          }
-          if ($failed) { exit 1 }
-
-      - name: Build and validate Worker bundle
-        working-directory: outputs/kaoyan-schedule-app
-        run: npm run build
-
-      - name: Verify Cloudflare authentication
-        working-directory: outputs/kaoyan-schedule-app
-        run: npx wrangler whoami
-
-      - name: Deploy Worker
-        id: deploy
-        working-directory: outputs/kaoyan-schedule-app
+      - name: Select Wrangler environment
+        id: target
         shell: bash
         run: |
-          set -euo pipefail
-          npx wrangler deploy 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
-          worker_url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | tail -n 1 || true)"
-          [[ -n "$worker_url" ]] || {
-            echo 'Unable to determine workers.dev URL from Wrangler output.' >&2
-            tail -n 80 "$RUNNER_TEMP/wrangler-deploy.log" >&2
-            exit 3
-          }
-          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
-          echo "Worker URL: $worker_url"
-
-      - name: Configure Worker secrets
-        working-directory: outputs/kaoyan-schedule-app
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD
-          printf '%s' "$CAOBIJI_GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN
-
-          configured=()
-          for secret_name in QWEN_API_KEY GEMINI_API_KEY KIMI_API_KEY; do
-            secret_value="${!secret_name:-}"
-            if [[ -n "$secret_value" ]]; then
-              printf '%s' "$secret_value" | npx wrangler secret put "$secret_name"
-              configured+=("$secret_name")
-            else
-              echo "$secret_name is not configured in GitHub Actions; the existing Worker Secret is left unchanged."
-            fi
-          done
-          if (( ${#configured[@]} > 0 )); then
-            printf 'Configured Agent provider secrets: %s\n' "${configured[*]}"
+          if [[ '${{ inputs.target }}' == 'preview' ]]; then
+            echo 'args=--env preview' >> "$GITHUB_OUTPUT"
           else
-            echo 'No Agent provider secrets were supplied by GitHub Actions.'
+            echo 'args=' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Bootstrap and verify GitHub-backed learning center
-        id: verify
+      - name: Create preview Worker before adding its first secrets
+        if: inputs.target == 'preview'
+        run: npx wrangler deploy ${{ steps.target.outputs.args }}
+
+      - name: Configure server-only secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_args=()
+          if [[ '${{ inputs.target }}' == 'preview' ]]; then target_args=(--env preview); fi
+          printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD "${target_args[@]}"
+          printf '%s' "$KAOYAN_SESSION_SECRET" | npx wrangler secret put SESSION_SECRET "${target_args[@]}"
+          printf '%s' "$CAOBIJI_GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN "${target_args[@]}"
+          for name in QWEN_API_KEY GEMINI_API_KEY KIMI_API_KEY; do
+            value="${!name:-}"
+            if [[ -n "$value" ]]; then
+              printf '%s' "$value" | npx wrangler secret put "$name" "${target_args[@]}"
+            fi
+          done
+
+      - name: Deploy validated Worker version
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy ${{ steps.target.outputs.args }} 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          worker_url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | tail -n 1 || true)"
+          [[ -n "$worker_url" ]] || { tail -n 100 "$RUNNER_TEMP/wrangler-deploy.log" >&2; exit 3; }
+          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify login, protected reads and disabled cloud deletion
         shell: bash
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          auth_header="Basic $(printf '%s' "$APP_USERNAME:$KAOYAN_APP_PASSWORD" | base64 -w0)"
-
           for attempt in {1..12}; do
-            health_status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
-            if [[ "$health_status" == "200" ]] && node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.repository!=='strawberryCao/Caobijidata'||!v.aiConfigured||v.syncArchitectureVersion!==6||v.agentRuntime?.strictMode!==true||v.agentRuntime?.failClosed!==true||v.cloudDeleteEnabled||v.d1Bound||v.r2Bound) process.exit(1);" "$RUNNER_TEMP/health.json"; then
-              break
-            fi
-            echo "Health attempt $attempt returned HTTP $health_status"
+            status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
+            [[ "$status" == 200 ]] && break
             sleep 5
           done
-          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||!v.aiConfigured||v.syncArchitectureVersion!==6||v.agentRuntime?.strictMode!==true||v.agentRuntime?.failClosed!==true) process.exit(1);" "$RUNNER_TEMP/health.json"
-
-          bootstrap_ok=0
-          for attempt in {1..12}; do
-            bootstrap_status="$(curl --silent --show-error -o "$RUNNER_TEMP/bootstrap.json" -w '%{http_code}' -X POST -H "Authorization: $auth_header" "$WORKER_URL/api/admin/bootstrap" || true)"
-            if [[ "$bootstrap_status" =~ ^2[0-9][0-9]$ ]]; then
-              bootstrap_ok=1
-              break
-            fi
-            echo "Bootstrap attempt $attempt returned HTTP $bootstrap_status"
-            head -c 3000 "$RUNNER_TEMP/bootstrap.json" || true
-            echo
-            sleep 5
-          done
-          if (( bootstrap_ok == 0 )); then
-            {
-              echo '## GitHub-backed bootstrap failed'
-              echo
-              echo "- Worker URL: $WORKER_URL"
-              echo "- Last HTTP status: $bootstrap_status"
-              echo '```json'
-              head -c 6000 "$RUNNER_TEMP/bootstrap.json" || true
-              echo
-              echo '```'
-            } > "$RUNNER_TEMP/bootstrap-failure.md"
-            if [[ -n "$PR_NUMBER" ]]; then gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/bootstrap-failure.md"; fi
-            exit 1
-          fi
-
-          learning_ok=0
-          for attempt in {1..12}; do
-            learning_status="$(curl --silent --show-error -o "$RUNNER_TEMP/learning-data.json" -w '%{http_code}' -H "Authorization: $auth_header" "$WORKER_URL/api/learning-data" || true)"
-            if [[ "$learning_status" == "200" ]]; then learning_ok=1; break; fi
-            echo "Learning-data attempt $attempt returned HTTP $learning_status"
-            sleep 5
-          done
-          if (( learning_ok == 0 )); then
-            {
-              echo '## Learning-data verification failed'
-              echo
-              echo "- Worker URL: $WORKER_URL"
-              echo "- Last HTTP status: $learning_status"
-              echo '```json'
-              head -c 6000 "$RUNNER_TEMP/learning-data.json" || true
-              echo
-              echo '```'
-            } > "$RUNNER_TEMP/learning-failure.md"
-            if [[ -n "$PR_NUMBER" ]]; then gh pr comment "$PR_NUMBER" --body-file "$RUNNER_TEMP/learning-failure.md"; fi
-            exit 1
-          fi
-
-          curl --fail --silent --show-error \
-            -H 'Accept: application/vnd.github+json' \
-            -H "Authorization: Bearer $CAOBIJI_GITHUB_TOKEN" \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "https://api.github.com/repos/$DATA_REPOSITORY/contents/data/cloud/learning-data.json?ref=$DATA_BRANCH" \
-            > "$RUNNER_TEMP/github-learning-file.json"
-
-          node <<'NODE'
-          const fs = require('node:fs');
-          const bootstrap = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/bootstrap.json', 'utf8'));
-          const snapshot = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/learning-data.json', 'utf8'));
-          const health = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/health.json', 'utf8'));
-          const githubFile = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/github-learning-file.json', 'utf8'));
-          const notes = Object.values(snapshot.days || {}).reduce((total, day) => total + (Array.isArray(day.autoNotes) ? day.autoNotes.length : 0), 0);
-          const cards = Array.isArray(snapshot.cards) ? snapshot.cards.length : 0;
-          if (!bootstrap.ok || notes < 1 || cards < 1 || !githubFile.sha || !health.agentRuntime?.configurationHash || !health.agentRuntime?.workflowHash) {
-            throw new Error(`GitHub bootstrap verification failed: notes=${notes}, cards=${cards}`);
-          }
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `notes=${notes}\ncards=${cards}\nrevision=${snapshot.revision}\nconfiguration_hash=${health.agentRuntime.configurationHash}\nworkflow_hash=${health.agentRuntime.workflowHash}\nai_execution_ready=${health.aiExecutionReady}\n`);
-          console.log(`Verified strict local Agent runtime: ${health.agentRuntime.configuredTasks.length} tasks, executionReady=${health.aiExecutionReady}.`);
-          NODE
+          node -e "const v=require(process.argv[1]); if(!v.ok||v.storage!=='github'||!v.githubConfigured||v.cloudDeleteEnabled||v.publicRead) process.exit(1)" "$RUNNER_TEMP/health.json"
+          login_status="$(curl --silent --show-error -c "$RUNNER_TEMP/cookies.txt" -o "$RUNNER_TEMP/login.json" -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            --data "$(node -e "process.stdout.write(JSON.stringify({username:'caobiji',password:process.env.KAOYAN_APP_PASSWORD}))")" \
+            "$WORKER_URL/api/auth/login")"
+          [[ "$login_status" == 200 ]]
+          curl --fail --silent --show-error -b "$RUNNER_TEMP/cookies.txt" "$WORKER_URL/api/auth/status" > "$RUNNER_TEMP/status.json"
+          node -e "const v=require(process.argv[1]); if(!v.authenticated||!v.dedicatedSessionSecret) process.exit(1)" "$RUNNER_TEMP/status.json"
+          delete_status="$(curl --silent --show-error -b "$RUNNER_TEMP/cookies.txt" -o "$RUNNER_TEMP/delete.json" -w '%{http_code}' \
+            -X DELETE -H 'Content-Type: application/json' --data '{}' "$WORKER_URL/api/entries/deployment-probe")"
+          [[ "$delete_status" == 405 ]]
+          node -e "const v=require(process.argv[1]); if(v.code!=='CLOUD_DELETE_DISABLED') process.exit(1)" "$RUNNER_TEMP/delete.json"
 
       - name: Publish deployment summary
-        if: always()
         shell: bash
         env:
           WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
-          NOTES: ${{ steps.verify.outputs.notes }}
-          CARDS: ${{ steps.verify.outputs.cards }}
-          REVISION: ${{ steps.verify.outputs.revision }}
-          CONFIGURATION_HASH: ${{ steps.verify.outputs.configuration_hash }}
-          WORKFLOW_HASH: ${{ steps.verify.outputs.workflow_hash }}
-          AI_EXECUTION_READY: ${{ steps.verify.outputs.ai_execution_ready }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo '## Cloudflare production deployment'
+            echo "## Kaoyan ${{ inputs.target }} deployment"
             echo
-            if [[ "${{ job.status }}" == 'success' ]]; then
-              echo '- Status: success'
-              echo "- URL: $WORKER_URL"
-              echo "- Login username: $APP_USERNAME"
-              echo "- Learning notes: $NOTES"
-              echo "- Review cards: $CARDS"
-              echo "- GitHub data revision: $REVISION"
-              echo '- Local Agent runtime: strict / fail-closed'
-              echo "- Configuration hash: $CONFIGURATION_HASH"
-              echo "- Workflow hash: $WORKFLOW_HASH"
-              echo "- Provider API ready: $AI_EXECUTION_READY"
-              echo "- Storage: $DATA_REPOSITORY ($DATA_BRANCH), no D1 or R2"
-            else
-              echo '- Status: failed'
-              echo "- Worker URL: $WORKER_URL"
-              echo '- Inspect the diagnostic comment; no credential values were logged.'
-            fi
-          } | tee "$RUNNER_TEMP/deployment-summary.md" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "${{ github.event_name }}" == 'pull_request' ]]; then
-            gh pr comment "${{ github.event.pull_request.number }}" --body-file "$RUNNER_TEMP/deployment-summary.md"
-          fi
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Worker: $WORKER_URL"
+            echo "- Data repository privacy gate: passed"
+            echo "- Session login and cloud delete 405: passed"
+          } >> "$GITHUB_STEP_SUMMARY"

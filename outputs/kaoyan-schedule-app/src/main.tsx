@@ -1,13 +1,13 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
-import { installCloudWriteAuthentication } from './utils/cloudWriteAuth';
+import { CloudAuthGate } from './components/CloudAuthGate';
 import './styles.css';
-
-installCloudWriteAuthentication();
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <CloudAuthGate>
+      <App />
+    </CloudAuthGate>
   </React.StrictMode>,
 );

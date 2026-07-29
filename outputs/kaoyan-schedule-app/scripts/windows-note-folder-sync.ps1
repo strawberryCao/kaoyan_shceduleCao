@@ -12,6 +12,16 @@ $script:BlockedExtensions = @(
   '.exe', '.dll', '.msi', '.msp', '.ps1', '.psm1', '.bat', '.cmd', '.vbs', '.vbe',
   '.js', '.jse', '.wsf', '.wsh', '.scr', '.com', '.lnk', '.hta', '.cpl', '.reg'
 )
+$script:AllowedSubjects = @(
+  '默认文件夹', '高等数学', '线性代数', '概率论', '数据结构',
+  '计算机组成', '操作系统', '计算机网络', '英语', '政治'
+)
+
+function Get-CanonicalSubject([string]$Value) {
+  $candidate = if ($null -eq $Value) { '' } else { $Value.Normalize([Text.NormalizationForm]::FormKC).Trim() }
+  if ($script:AllowedSubjects -contains $candidate) { return $candidate }
+  return '默认文件夹'
+}
 
 function Ensure-Directory([string]$Path) {
   if ($Path -and -not (Test-Path -LiteralPath $Path)) {
@@ -94,12 +104,24 @@ function Test-SafeFile([System.IO.FileInfo]$File) {
   return $script:BlockedExtensions -notcontains $File.Extension.ToLowerInvariant()
 }
 
+function Test-LegacyMirrorPath([string]$RelativePath) {
+  $segments = @($RelativePath.Replace('/', '\').Split('\', [System.StringSplitOptions]::RemoveEmptyEntries))
+  if ($segments -contains '.metadata' -or $segments -contains '.assets') { return $false }
+  if ([System.IO.Path]::GetFileName($RelativePath) -like '*sync-conflict-*') { return $false }
+  # V2 sidecars and hash assets are synchronized by v2-local-adapter.cjs.
+  # Mirroring them here would compare machine-local paths with cloud paths and
+  # recreate the conflict-copy loop that this adapter is designed to avoid.
+  if ($RelativePath -match '\.(?:cloud-)?note\.json$') { return $false }
+  return $true
+}
+
 function Get-FileMap([string]$Root) {
   $map = @{}
   if (-not (Test-Path -LiteralPath $Root)) { return $map }
   Get-ChildItem -LiteralPath $Root -File -Recurse -Force | ForEach-Object {
     if (-not (Test-SafeFile $_)) { return }
     $relative = Get-RelativeFilePath $Root $_.FullName
+    if (-not (Test-LegacyMirrorPath $relative)) { return }
     $map[$relative] = [pscustomobject]@{
       FullName = $_.FullName
       Hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -261,7 +283,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $metaDir = $_.DirectoryName
       if ([System.IO.Path]::GetFileName($metaDir) -ne '.metadata') { return }
       $subjectDir = [System.IO.Path]::GetDirectoryName($metaDir)
-      $subjectName = [System.IO.Path]::GetFileName($subjectDir)
+      $subjectName = Get-CanonicalSubject ([System.IO.Path]::GetFileName($subjectDir))
       $meta = Get-Content -LiteralPath $cloudMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
       if (-not $meta.noteUid -or -not $meta.fileName) { return }
       $imagePath = Join-Path $subjectDir ([string]$meta.fileName)
@@ -274,6 +296,7 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $safeTitle = Get-SafeFileName ([string]$meta.title) '普通笔记'
       $desiredName = "${safeTitle}_${shortUid}${extension}"
       $oldRelative = Get-RelativeFilePath $LocalPath $imagePath
+      $metadataChanged = $false
       if ([System.IO.Path]::GetFileName($imagePath) -ne $desiredName) {
         $desiredPath = Join-Path $subjectDir $desiredName
         if (-not (Test-Path -LiteralPath $desiredPath)) { Move-Item -LiteralPath $imagePath -Destination $desiredPath -Force }
@@ -287,12 +310,16 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
         }
         $imagePath = $desiredPath
         $meta.fileName = $desiredName
+        $metadataChanged = $true
       }
-      $meta.updatedAt = [DateTime]::UtcNow.ToString('o')
+      if (-not $meta.updatedAt -or $metadataChanged) {
+        $meta | Add-Member -NotePropertyName updatedAt -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+      }
       Write-JsonAtomic $cloudMetaPath $meta
       $relativeCloudMeta = Get-RelativeFilePath $LocalPath $cloudMetaPath
       Write-JsonAtomic (Join-Path $RemotePath $relativeCloudMeta) $meta
       $created = try { [DateTime]::Parse([string]$meta.createdAt) } catch { Get-Date }
+      $canonicalAssetPath = 'github://source-notes/' + (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
       $sidecar = [ordered]@{
         schemaVersion = 2
         id = [string]$meta.noteUid
@@ -303,7 +330,8 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
         title = [string]$meta.title
         remark = [string]$meta.remark
         fileName = [System.IO.Path]::GetFileName($imagePath)
-        filePath = $imagePath
+        filePath = $canonicalAssetPath
+        localPathKey = (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
         createdAt = $created.ToUniversalTime().ToString('o')
         updatedAt = [string]$meta.updatedAt
         source = [ordered]@{
@@ -332,28 +360,23 @@ function Materialize-CloudNotes([string]$LocalPath, [string]$RemotePath) {
       $localSidecar = Join-Path $metaDir $sidecarName
       Write-JsonAtomic $localSidecar $sidecar
       $remoteSidecar = Join-Path $RemotePath (Get-RelativeFilePath $LocalPath $localSidecar)
-      $remoteSidecarValue = [ordered]@{} + $sidecar
-      $remoteSidecarValue.filePath = (Get-RelativeFilePath $LocalPath $imagePath).Replace('\', '/')
-      Write-JsonAtomic $remoteSidecar $remoteSidecarValue
+      Write-JsonAtomic $remoteSidecar $sidecar
       [void]$touchedSubjects.Add($subjectDir)
     } catch {}
   }
   foreach ($subjectDir in $touchedSubjects) {
     $metaDir = Join-Path $subjectDir '.metadata'
     $items = @()
-    Get-ChildItem -LiteralPath $metaDir -Filter '*.note.json' -File -Force | Where-Object { $_.Name -notlike '*.cloud-note.json' } | ForEach-Object {
+    Get-ChildItem -LiteralPath $metaDir -Filter '*.note.json' -File -Force |
+      Where-Object { $_.Name -notlike '*.cloud-note.json' } |
+      Sort-Object Name |
+      ForEach-Object {
       try { $items += ,(Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json) } catch {}
     }
     $indexPath = Join-Path $metaDir 'metadata.json'
     Write-JsonAtomic $indexPath $items
     $remoteIndex = Join-Path $RemotePath (Get-RelativeFilePath $LocalPath $indexPath)
-    $remoteItems = @()
-    foreach ($item in $items) {
-      $copy = $item | ConvertTo-Json -Depth 30 | ConvertFrom-Json
-      if ($copy.fileName) { $copy.filePath = (Join-Path ([System.IO.Path]::GetFileName($subjectDir)) ([string]$copy.fileName)).Replace('\', '/') }
-      $remoteItems += ,$copy
-    }
-    Write-JsonAtomic $remoteIndex $remoteItems
+    Write-JsonAtomic $remoteIndex $items
   }
 }
 
@@ -361,6 +384,9 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
   $candidatePaths = @(
     'source-notes',
     'data/cloud/learning-data.json',
+    'data/v2',
+    'data/assets',
+    'data/search',
     'data/config',
     'data/deletions',
     'data/local-delete-recycle',
@@ -374,14 +400,62 @@ function Commit-Pending([string]$ClonePath, [string]$Message) {
   }
   if ($paths.Count -eq 0) { return $false }
   $status = Invoke-Git (@('status', '--porcelain', '--') + $paths) $ClonePath
-  if ([string]::IsNullOrWhiteSpace($status.Output)) { return $false }
+  $ignoredAssets = Invoke-Git @('ls-files', '--others', '--ignored', '--exclude-standard', '--', 'data/assets') $ClonePath
+  if ([string]::IsNullOrWhiteSpace($status.Output) -and [string]::IsNullOrWhiteSpace($ignoredAssets.Output)) { return $false }
   Invoke-Git (@('add', '-A', '--') + $paths) $ClonePath | Out-Null
+  # The dedicated data repository used to contain a broad "*.html" ignore
+  # rule. HTML learning materials are real assets, so force-stage only the
+  # bounded data/assets subtree instead of silently publishing broken records.
+  if (Test-Path -LiteralPath (Join-Path $ClonePath 'data/assets')) {
+    Invoke-Git @('add', '-f', '--', 'data/assets') $ClonePath | Out-Null
+  }
   $diff = Invoke-Git (@('diff', '--cached', '--quiet', '--') + $paths) $ClonePath @(0, 1)
   if ($diff.ExitCode -eq 1) {
     Invoke-Git @('commit', '-m', $Message) $ClonePath | Out-Null
     return $true
   }
   return $false
+}
+
+function Invoke-LearningMergeWithRetry(
+  [string]$NodeExecutable,
+  [string]$MergeScript,
+  [string]$ConfigPath,
+  [string]$FailureMessage
+) {
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    & $NodeExecutable $MergeScript --config $ConfigPath | Out-Null
+    if ($LASTEXITCODE -eq 0) { return }
+    if ($attempt -lt 5) { Start-Sleep -Milliseconds (200 * $attempt) }
+  }
+  throw $FailureMessage
+}
+
+function Push-WithStructuredRetry(
+  [string]$ClonePath,
+  [string]$Branch,
+  [string]$MergeScript,
+  [string]$V2Adapter,
+  [string]$ConfigPath,
+  [string]$NodeExecutable
+) {
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    try {
+      Invoke-Git @('push', 'origin', "HEAD:$Branch") $ClonePath | Out-Null
+      return
+    } catch {
+      if ($attempt -ge 5) { throw }
+      # A public Worker may commit between our pull and push. Rebase onto that
+      # immutable remote state, then rerun the structured merge so neither side
+      # wins by whole-file replacement.
+      Invoke-Git @('fetch', 'origin', $Branch) $ClonePath | Out-Null
+      Invoke-Git @('rebase', '-X', 'ours', "origin/$Branch") $ClonePath | Out-Null
+      Invoke-LearningMergeWithRetry $NodeExecutable $MergeScript $ConfigPath 'Learning data re-merge failed after a concurrent cloud write.'
+      & $NodeExecutable $V2Adapter --config $ConfigPath --apply | Out-Null
+      if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 re-merge failed after a concurrent cloud write.' }
+      Commit-Pending $ClonePath "data: merge concurrent cloud update $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" | Out-Null
+    }
+  }
 }
 
 if ($NativeCommandSelfTest) {
@@ -494,11 +568,19 @@ try {
   $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
   if ($null -eq $nodeCommand) { $nodeCommand = Get-Command node -ErrorAction Stop }
   $nodeExecutable = [string]$nodeCommand.Source
-  & $nodeExecutable $mergeScript --config $ConfigPath | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Learning data merge failed.' }
+  Invoke-LearningMergeWithRetry $nodeExecutable $mergeScript $ConfigPath 'Learning data merge failed.'
+  $v2Adapter = Join-Path $workRoot 'v2-local-adapter.cjs'
+  if (-not (Test-Path -LiteralPath $v2Adapter)) { throw 'V2 local data adapter was not found.' }
+  & $nodeExecutable $v2Adapter --config $ConfigPath --apply | Out-Null
+  if ($LASTEXITCODE -notin @(0, 2)) { throw 'V2 entry synchronization failed.' }
+  $searchIndexer = Join-Path $workRoot 'build-search-index.cjs'
+  if (Test-Path -LiteralPath $searchIndexer) {
+    & $nodeExecutable $searchIndexer --config $ConfigPath | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Learning search index build failed.' }
+  }
   # Agent configuration is published one-way by windows-assistant-config-sync.ps1.
   $committed = Commit-Pending $clonePath "data: synchronize global notes and settings $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-  Invoke-Git @('push', 'origin', "HEAD:$branch") $clonePath | Out-Null
+  Push-WithStructuredRetry $clonePath $branch $mergeScript $v2Adapter $ConfigPath $nodeExecutable
 
   $finalLocal = Get-FileMap $localPath
   $finalRemote = Get-FileMap $remotePath

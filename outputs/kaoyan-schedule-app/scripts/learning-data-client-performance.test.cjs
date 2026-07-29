@@ -25,6 +25,7 @@ let eventSourcesClosed = 0;
 let intervalsCreated = 0;
 let intervalsCleared = 0;
 let fetches = 0;
+let failNextStorageWrite = false;
 
 class FakeEventSource {
   constructor() {
@@ -61,8 +62,13 @@ global.window = {
     getItem: (key) => storedValues.get(key) ?? null,
     setItem: (key, value) => {
       storageWrites += 1;
+      if (failNextStorageWrite) {
+        failNextStorageWrite = false;
+        throw new DOMException('quota exceeded', 'QuotaExceededError');
+      }
       storedValues.set(key, value);
     },
+    removeItem: (key) => storedValues.delete(key),
   },
   dispatchEvent: () => {
     dispatchedEvents += 1;
@@ -109,6 +115,24 @@ test('does not rewrite and redispatch an identical learning snapshot', () => {
   });
   assert.equal(storageWrites, 2);
   assert.equal(dispatchedEvents, 2);
+});
+
+test('keeps the live snapshot usable when localStorage reaches its quota', () => {
+  failNextStorageWrite = true;
+  assert.doesNotThrow(() => learningData.saveLearningDataCache({
+    version: 1,
+    revision: 3,
+    updatedAt: '2026-07-18T09:02:00.000Z',
+    days: {
+      '2026-07-18': {
+        manual: {},
+        autoNotes: [{ noteUid: 'large-live-note', title: '仍可查看的速记' }],
+      },
+    },
+    cards: [],
+  }));
+  assert.equal(storedValues.has('kaoyan-learning-data-v1'), false);
+  assert.equal(learningData.readLearningDataCache().days['2026-07-18'].autoNotes[0].title, '仍可查看的速记');
 });
 
 test('reuses one normalized in-memory snapshot while local storage is unchanged', () => {

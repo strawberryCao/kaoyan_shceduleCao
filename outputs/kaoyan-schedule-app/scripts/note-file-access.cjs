@@ -47,7 +47,29 @@ function resolveNoteFile(notesRoot, requestedPath, options = {}) {
   const cloneRoot = path.resolve(options.cloneRoot || process.env.KAOYAN_DATA_CLONE_PATH || 'D:\\kaoyandata\\Caobijidata');
   let filePath;
   let allowedRoot;
-  if (normalized.startsWith('github://data/assets/')) {
+  const assetId = /^asset:\/\/([a-f0-9]{64})$/i.exec(normalized)?.[1]?.toLowerCase();
+  if (assetId) {
+    const recordPath = path.join(cloneRoot, 'data', 'v2', 'assets', `${assetId}.json`);
+    let record;
+    try {
+      record = JSON.parse(fs.readFileSync(recordPath, 'utf8').replace(/^\uFEFF/, ''));
+    } catch {
+      const error = new Error('找不到资料资源记录');
+      error.code = 'NOTE_ASSET_NOT_FOUND';
+      throw error;
+    }
+    if (
+      String(record?.assetId || '').toLowerCase() !== assetId
+      || typeof record?.path !== 'string'
+      || !record.path.startsWith('data/assets/')
+    ) {
+      const error = new Error('资料资源记录无效');
+      error.code = 'NOTE_ASSET_INVALID';
+      throw error;
+    }
+    allowedRoot = path.join(cloneRoot, 'data', 'assets');
+    filePath = path.resolve(cloneRoot, record.path);
+  } else if (normalized.startsWith('github://data/assets/')) {
     allowedRoot = path.join(cloneRoot, 'data', 'assets');
     filePath = path.resolve(cloneRoot, normalized.slice('github://'.length));
   } else if (normalized.startsWith('github://source-notes/')) {
@@ -87,8 +109,8 @@ function noteFileContentDisposition(resolved, fileName, preview = false) {
   return inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`;
 }
 
-function resolveNoteImage(notesRoot, requestedPath) {
-  const resolved = resolveNoteFile(notesRoot, requestedPath);
+function resolveNoteImage(notesRoot, requestedPath, options = {}) {
+  const resolved = resolveNoteFile(notesRoot, requestedPath, options);
   if (!resolved.inline) {
     const error = new Error('不支持的笔记图片类型');
     error.code = 'NOTE_FILE_UNSUPPORTED';

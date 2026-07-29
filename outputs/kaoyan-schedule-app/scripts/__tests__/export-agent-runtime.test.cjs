@@ -32,6 +32,10 @@ test('classifies uploaded assistant JSON by purpose instead of treating runtime 
   assert.equal(classify('canvas-projects/.trash/document-1/document.json'), 'backup');
   assert.equal(classify('note-save-receipts/id.json'), 'runtime-state');
   assert.equal(classify('review-github-sync/status.json'), 'runtime-state');
+  assert.equal(classify('ai-usage.json'), 'runtime-state');
+  assert.equal(classify('search-index.json'), 'runtime-state');
+  assert.equal(classify('search-extraction-cache.json'), 'runtime-state');
+  assert.equal(classify('taxonomy-consolidation-state.json'), 'runtime-state');
   assert.equal(classify('repair-backups/a/learning-data.json'), 'backup');
 });
 
@@ -83,6 +87,11 @@ test('exports every local Agent task contract, excludes runtime data, and stays 
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
   });
   writeJson(path.join(assistantRoot, 'note-taxonomy.json'), { subjects: [] });
+  writeJson(path.join(assistantRoot, 'desktop-layout.json'), { x: 10, y: 20 });
+  writeJson(path.join(assistantRoot, 'ai-usage.json'), { qwen: { inputTokens: 123 } });
+  writeJson(path.join(assistantRoot, 'search-index.json'), { revision: 1, entries: [] });
+  writeJson(path.join(assistantRoot, 'search-extraction-cache.json'), { cached: true });
+  writeJson(path.join(assistantRoot, 'taxonomy-consolidation-state.json'), { revision: 1 });
   writeJson(path.join(assistantRoot, 'note-save-receipts', 'receipt.json'), {
     filePath: 'C:\\Users\\ASUS\\Desktop\\笔记\\a.png',
   });
@@ -101,13 +110,17 @@ test('exports every local Agent task contract, excludes runtime data, and stays 
   assert.equal(runtime.tasks.note_naming.settings.customInstructions, '只输出中文标题');
   assert.equal(runtime.providers.kimi.secretRef, 'KIMI_API_KEY');
   assert.doesNotMatch(serialized, /do-not-publish|qwen-secret/);
-  assert.deepEqual(manifest.excludedByRule, ['backup', 'runtime-state', 'user-data', 'unclassified']);
-  assert.equal(first.excludedCounts['runtime-state'], 1);
+  assert.deepEqual(manifest.excludedByRule, ['backup', 'runtime-state', 'user-data', 'ui-setting', 'unclassified-root-config', 'unclassified']);
+  assert.equal(first.excludedCounts['runtime-state'], 5);
   assert.equal(first.excludedCounts['user-data'], 1);
+  assert.equal(first.excludedCounts['ui-setting'], 1);
   assert.equal(fs.existsSync(path.join(outputRoot, 'files', 'note-save-receipts', 'receipt.json')), false);
   assert.equal(fs.existsSync(path.join(outputRoot, 'files', 'canvas-projects', 'canvas-1', 'document.json')), false);
 
   writeJson(path.join(assistantRoot, 'note-save-receipts', 'another-receipt.json'), { status: 'new' });
+  writeJson(path.join(assistantRoot, 'ai-usage.json'), { qwen: { inputTokens: 999999 } });
+  writeJson(path.join(assistantRoot, 'search-index.json'), { revision: 2, entries: [{ id: 'new' }] });
+  writeJson(path.join(assistantRoot, 'desktop-layout.json'), { x: 999, y: 999 });
   const second = runExport(assistantRoot, outputRoot);
   assert.equal(second.runtimeHash, first.runtimeHash);
   assert.equal(fs.readFileSync(path.join(outputRoot, 'agent-runtime.json'), 'utf8'), firstRuntimeText);

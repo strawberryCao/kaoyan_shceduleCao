@@ -23,7 +23,7 @@ export interface MaterialFilePayload {
   dataUrl: string;
 }
 
-export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge' | 'method';
 
 export interface SaveMaterialPayload {
   noteUid?: string;
@@ -43,6 +43,16 @@ export interface SaveMaterialResult {
   learningData?: LearningDataSnapshot;
   idempotentReplay?: boolean;
   error?: string;
+}
+
+export interface AppendMaterialPayload {
+  noteUid: string;
+  title?: string;
+  remark?: string;
+  subject?: string;
+  tags?: string[];
+  facets?: LearningRecordFacet[];
+  files: File[];
 }
 
 export interface SaveNoteResult {
@@ -113,6 +123,47 @@ export interface AiJobResponse {
   job: AiBackgroundJob;
 }
 
+export interface LearningSearchResult {
+  noteUid: string;
+  title?: string;
+  subject?: string;
+  capturedDate?: string;
+  score: number;
+  matchedTerms: string[];
+  reason: string;
+}
+
+export interface LearningSearchResponse {
+  ok: boolean;
+  mode: 'normal' | 'ai';
+  query: string;
+  terms?: string[];
+  results: LearningSearchResult[];
+  degraded?: boolean;
+  sourceRevision?: number;
+}
+
+export interface CaptureBatchJob {
+  jobId: string;
+  status: 'queued' | 'waiting_configuration' | 'processing' | 'completed' | 'configuration_mismatch' | 'needs_review' | 'waiting_quota' | 'failed_retryable';
+  progress: number;
+  message: string;
+  error: string;
+  resultEntryIds: string[];
+  configurationHash: string;
+  workflowHash: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface CaptureBatchResponse {
+  ok: boolean;
+  accepted: boolean;
+  jobId: string;
+  entryId: string;
+  job: CaptureBatchJob;
+}
+
 const isLoopbackHostname = (hostname: string): boolean => (
   hostname === '127.0.0.1'
   || hostname === 'localhost'
@@ -126,6 +177,8 @@ export const IS_CLOUD_RUNTIME = typeof window !== 'undefined'
 
 const resolveNoteServerUrl = (): string => {
   if (typeof window === 'undefined') return 'http://127.0.0.1:5174';
+  const explicitRuntimeUrl = String(import.meta.env?.VITE_NOTE_SERVER_URL || '').trim().replace(/\/+$/, '');
+  if (explicitRuntimeUrl) return explicitRuntimeUrl;
   const hostname = window.location.hostname.toLowerCase();
   return isLoopbackHostname(hostname) || window.location.protocol === 'file:'
     ? 'http://127.0.0.1:5174'
@@ -224,6 +277,95 @@ export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promis
   }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
 };
 
+export const appendLearningMaterials = async (payload: AppendMaterialPayload): Promise<SaveMaterialResult> => {
+  if (!payload.noteUid.trim()) throw new Error('没有可追加资料的速记。');
+  if (!payload.files.length) throw new Error('请选择要加入的资料。');
+  const files: MaterialFilePayload[] = [];
+  for (const file of payload.files) {
+    files.push({
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      dataUrl: await fileToDataUrl(file),
+    });
+  }
+  return fetchJsonWithTimeout<SaveMaterialResult>(`${NOTE_SERVER_URL}/append-material-note`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, files }),
+  }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
+};
+
+export const updateCloudEntryAssets = async (
+  noteUid: string,
+  assetIds: string[],
+): Promise<SaveMaterialResult | null> => {
+  if (!IS_CLOUD_RUNTIME) return null;
+  const result = await fetchJsonWithTimeout<{
+    ok: boolean;
+    entry: {
+      entryId: string;
+      assets: Array<{
+        assetId: string;
+        kind: string;
+        originalFileName: string;
+        mime: string;
+        size: number | null;
+        path: string;
+        createdAt: string;
+      }>;
+    };
+    learningData?: LearningDataSnapshot;
+  }>(`${NOTE_SERVER_URL}/entries/${encodeURIComponent(noteUid)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assetIds }),
+  }, Math.max(NOTE_SAVE_TIMEOUT_MS, 30_000));
+  return {
+    ok: result.ok,
+    noteUid: result.entry.entryId,
+    learningData: result.learningData,
+    attachments: result.entry.assets.map((asset) => ({
+      id: asset.assetId,
+      kind: asset.kind,
+      name: asset.originalFileName,
+      mimeType: asset.mime,
+      size: asset.size,
+      filePath: `github://${asset.path}`,
+    })),
+  };
+};
+
+export const createCaptureBatch = async (
+  imageDataUrl: string,
+  options: { batchId: string; subject?: string; remark?: string },
+): Promise<CaptureBatchResponse> => fetchJsonWithTimeout<CaptureBatchResponse>(`${NOTE_SERVER_URL}/capture-batches`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    imageDataUrl,
+    batchId: options.batchId,
+    subject: options.subject || '默认文件夹',
+    remark: options.remark || '',
+  }),
+}, 90_000);
+
+export const getCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; job: CaptureBatchJob }> => (
+  fetchJsonWithTimeout<{ ok: boolean; job: CaptureBatchJob }>(
+    `${NOTE_SERVER_URL}/jobs/${encodeURIComponent(jobId)}`,
+    { method: 'GET' },
+    15_000,
+  )
+);
+
+export const retryCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }> => (
+  fetchJsonWithTimeout<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }>(
+    `${NOTE_SERVER_URL}/jobs/${encodeURIComponent(jobId)}/retry`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    20_000,
+  )
+);
+
 const detectQuestionRegionsOnce = async (
   imageDataUrl: string,
   onProgress?: (message: string) => void,
@@ -317,6 +459,20 @@ export const getAiBackgroundJob = async (jobId: string): Promise<AiBackgroundJob
   );
   return response.job;
 };
+
+export const searchLearningRecords = async (
+  query: string,
+  mode: 'normal' | 'ai',
+  limit = 120,
+): Promise<LearningSearchResponse> => fetchJsonWithTimeout<LearningSearchResponse>(
+  `${NOTE_SERVER_URL}/search`,
+  {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, mode, limit }),
+  },
+  mode === 'ai' ? 45_000 : AI_ENQUEUE_TIMEOUT_MS,
+);
 
 const fetchLearningSnapshot = async (): Promise<LearningDataSnapshot> => (
   fetchJsonWithTimeout<LearningDataSnapshot>(

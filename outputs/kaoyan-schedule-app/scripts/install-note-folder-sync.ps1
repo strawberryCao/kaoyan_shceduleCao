@@ -10,7 +10,8 @@ param(
   [ValidateRange(2, 60)]
   [int]$IntervalMinutes = 5,
   [switch]$Uninstall,
-  [switch]$ResetToken
+  [switch]$ResetToken,
+  [switch]$EnableNow
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +66,9 @@ $runtimePath = Join-Path $installRoot 'windows-note-folder-sync.ps1'
 $configSyncPath = Join-Path $installRoot 'windows-assistant-config-sync.ps1'
 $exporterPath = Join-Path $installRoot 'export-agent-runtime.cjs'
 $learningMergePath = Join-Path $installRoot 'merge-learning-data.cjs'
+$v2AdapterPath = Join-Path $installRoot 'v2-local-adapter.cjs'
+$v2MigrationPath = Join-Path $installRoot 'migrate-learning-data-v2.cjs'
+$searchIndexPath = Join-Path $installRoot 'build-search-index.cjs'
 $watcherPath = Join-Path $installRoot 'assistant-config-watch.cjs'
 $runnerPath = Join-Path $installRoot 'run-global-sync.ps1'
 $configPath = Join-Path $installRoot 'config.json'
@@ -105,14 +109,17 @@ Remove-Item -LiteralPath $legacyStartup -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContinue
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
 
-$codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/fix/learning-detail-title-latex/outputs/kaoyan-schedule-app/scripts'
-$version = '20260726-mobile-local-first-v12'
+$codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/main/outputs/kaoyan-schedule-app/scripts'
+$version = '20260729-entry-v2-v14'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
 Install-ScriptFile 'merge-learning-data.cjs' $learningMergePath "$codeRoot/merge-learning-data.cjs?v=$version"
+Install-ScriptFile 'v2-local-adapter.cjs' $v2AdapterPath "$codeRoot/v2-local-adapter.cjs?v=$version"
+Install-ScriptFile 'migrate-learning-data-v2.cjs' $v2MigrationPath "$codeRoot/migrate-learning-data-v2.cjs?v=$version"
+Install-ScriptFile 'build-search-index.cjs' $searchIndexPath "$codeRoot/build-search-index.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
-foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
+foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'math-one-question-types.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 
@@ -132,7 +139,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 12
+  version = 14
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository
@@ -153,7 +160,8 @@ $config = [ordered]@{
   agentRuntimeExporter = $exporterPath
   agentRuntimeRemotePath = 'data/config/local-assistant'
   strictAgentRuntime = $true
-  persistenceMode = 'current-user-startup-hidden-watcher'
+  persistenceMode = if ($EnableNow) { 'current-user-startup-hidden-watcher' } else { 'installed-paused' }
+  autoSyncEnabled = [bool]$EnableNow
   taskSchedulerRequired = $false
   optionalGitPathsAreFiltered = $true
 }
@@ -206,23 +214,28 @@ command = "powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Execut
 shell.Run command, 0, False
 "@
 Write-Utf8NoBom $watchLauncherPath $watchLauncher
-Copy-Item -LiteralPath $watchLauncherPath -Destination $startupLauncherPath -Force
+if ($EnableNow) {
+  Copy-Item -LiteralPath $watchLauncherPath -Destination $startupLauncherPath -Force
+  Write-Host ''
+  Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
+  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
+  if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log')) }
+  Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
+}
 
 Write-Host ''
-Write-Host '正在执行首次全局同步…' -ForegroundColor Cyan
-& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $runnerPath -ConfigPath $configPath
-if ($LASTEXITCODE -ne 0) { throw ('首次同步失败，请查看：' + (Join-Path $installRoot 'sync.log')) }
-Start-Process -FilePath 'wscript.exe' -ArgumentList @('//B', '//Nologo', $watchLauncherPath) -WindowStyle Hidden
-
-Write-Host ''
-Write-Host '全局同步 v12 已启用。' -ForegroundColor Green
+if ($EnableNow) {
+  Write-Host '全局同步 v13 已启用。' -ForegroundColor Green
+} else {
+  Write-Host '全局同步 v13 已安装但保持暂停。通过 -EnableNow 明确启用。' -ForegroundColor Yellow
+}
 Write-Host ('本地笔记：' + $LocalPath)
 Write-Host ('本地配置：' + $AssistantRoot)
 Write-Host ('GitHub 数据：' + $Repository)
 Write-Host '配置方向：只允许本地配置发布到 GitHub；GitHub 不会覆盖本地配置。'
 Write-Host '学习数据：本地与 GitHub 按 noteUid、thought id、card id 和 review id 双向合并。'
 Write-Host 'Git 路径：不存在且未跟踪的可选目录会自动跳过；已跟踪删除仍会正常提交。'
-Write-Host '运行方式：当前用户启动目录 + 隐藏监督进程，不需要管理员或计划任务权限。'
+Write-Host ('运行方式：' + $(if ($EnableNow) { '当前用户启动目录 + 隐藏监督进程。' } else { '暂停；未写入启动目录、未执行首次同步、未启动监督进程。' }))
 Write-Host ('笔记状态：' + (Join-Path $installRoot 'status.json'))
 Write-Host ('学习数据状态：' + (Join-Path $installRoot 'learning-data-sync-status.json'))
 Write-Host ('配置状态：' + (Join-Path $installRoot 'config-status.json'))

@@ -143,6 +143,49 @@ test('local material endpoint saves text and PDF attachments idempotently', { ti
     const conflict = await conflictingResponse.json();
     assert.equal(conflictingResponse.status, 409);
     assert.equal(conflict.code, 'SAVE_OPERATION_REUSED');
+
+    const htmlBytes = Buffer.from('<!doctype html><title>append test</title><p>辅助推导</p>', 'utf8');
+    const appendPayload = {
+      noteUid: payload.noteUid,
+      files: [{
+        name: '辅助推导.html',
+        mimeType: 'text/html',
+        size: htmlBytes.length,
+        dataUrl: `data:text/html;base64,${htmlBytes.toString('base64')}`,
+      }],
+    };
+    const appendResponse = await fetch(`${baseUrl}/append-material-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kaoyan-lan-proxy': '1' },
+      body: JSON.stringify(appendPayload),
+    });
+    const appended = await appendResponse.json();
+    assert.equal(appendResponse.status, 200);
+    assert.equal(appended.idempotentReplay, false);
+    assert.equal(appended.attachments.length, 2);
+    assert.equal(appended.attachments[1].kind, 'html');
+    assert.ok(fs.existsSync(appended.attachments[1].filePath));
+
+    const duplicateAppendResponse = await fetch(`${baseUrl}/append-material-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kaoyan-lan-proxy': '1' },
+      body: JSON.stringify(appendPayload),
+    });
+    const duplicateAppend = await duplicateAppendResponse.json();
+    assert.equal(duplicateAppendResponse.status, 200);
+    assert.equal(duplicateAppend.idempotentReplay, true);
+    assert.equal(duplicateAppend.attachments.length, 2);
+
+    const detachResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'x-kaoyan-lan-proxy': '1' },
+      body: JSON.stringify({ patch: { attachments: [] } }),
+    });
+    const detached = await detachResponse.json();
+    assert.equal(detachResponse.status, 200);
+    const detachedNote = findNote(detached, payload.noteUid);
+    assert.deepEqual(detachedNote.attachments, []);
+    assert.equal(detachedNote.filePath, '');
   } finally {
     await stopChild(child);
     fs.rmSync(tempRoot, { recursive: true, force: true });

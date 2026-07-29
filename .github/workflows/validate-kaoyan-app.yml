@@ -1,61 +1,89 @@
-name: Validate kaoyan app changes
+name: Validate kaoyan recovery architecture
 
 on:
   push:
-    branches: [fix/public-read-cache-local-sync]
-  pull_request:
-    branches: [fix/learning-detail-title-latex]
+    branches: [main]
     paths:
       - 'outputs/kaoyan-schedule-app/**'
       - '.github/workflows/validate-kaoyan-app.yml'
+      - '.github/workflows/deploy-kaoyan-cloudflare.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'outputs/kaoyan-schedule-app/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: validate-kaoyan-app-${{ github.ref }}
+  group: validate-kaoyan-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: outputs/kaoyan-schedule-app
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the immutable event commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
-      - name: Validate PowerShell syntax
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Validate PowerShell synchronization scripts
         shell: pwsh
         run: |
           $failed = $false
-          Get-ChildItem outputs/kaoyan-schedule-app/scripts -Filter '*note-folder-sync.ps1' | ForEach-Object {
+          foreach ($file in @(
+            'scripts/windows-note-folder-sync.ps1',
+            'scripts/windows-assistant-config-sync.ps1',
+            'scripts/install-note-folder-sync.ps1'
+          )) {
             $tokens = $null
             $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
-            if ($errors.Count -gt 0) {
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$tokens, [ref]$errors) | Out-Null
+            if (@($errors).Count -gt 0) {
               $failed = $true
-              Write-Error ("{0}: {1}" -f $_.FullName, ($errors | ForEach-Object Message -join '; '))
+              $errors | ForEach-Object { Write-Error "$file : $($_.Message)" }
             }
           }
           if ($failed) { exit 1 }
-      - name: Install dependencies
-        working-directory: outputs/kaoyan-schedule-app
-        run: npm ci
-      - name: Run automated tests
-        working-directory: outputs/kaoyan-schedule-app
+
+      - name: Run unit and contract tests
         shell: bash
         run: |
           set -euo pipefail
           mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
           (( ${#test_files[@]} > 0 ))
           node --test "${test_files[@]}"
-      - name: Build production app
-        working-directory: outputs/kaoyan-schedule-app
+
+      - name: Build production application
         run: npm run build
-      - name: Validate Worker bundle
-        working-directory: outputs/kaoyan-schedule-app
-        run: npx wrangler deploy --dry-run
+
+      - name: Install browser used by E2E
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real browser acceptance tests
+        env:
+          CI: 'true'
+        run: npx playwright test
+
+      - name: Validate production Worker bundle
+        run: npx wrangler deploy --dry-run --env=""
+
+      - name: Validate preview Worker bundle
+        run: npx wrangler deploy --dry-run --env preview

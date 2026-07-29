@@ -3,15 +3,18 @@ import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 import { fetchWithTimeout } from './localService';
 
 export type LearningAttachmentKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
-export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge';
+export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge' | 'method';
 
 export interface LearningAttachment {
   id: string;
+  assetId?: string;
   kind: LearningAttachmentKind;
   name: string;
   mimeType: string;
   size: number | null;
   filePath: string;
+  cloudPath?: string;
+  localPathKey?: string;
   previewPath: string;
   posterPath: string;
   createdAt: string;
@@ -306,7 +309,7 @@ const normalizeReviewHistory = (value: unknown): LearningReviewEntry[] => Array.
     }))
   : [];
 const LEARNING_ATTACHMENT_KINDS = new Set<LearningAttachmentKind>(['image', 'pdf', 'word', 'html', 'file']);
-const LEARNING_RECORD_FACETS = new Set<LearningRecordFacet>(['quick', 'mistake', 'good', 'memory', 'knowledge']);
+const LEARNING_RECORD_FACETS = new Set<LearningRecordFacet>(['quick', 'mistake', 'good', 'memory', 'knowledge', 'method']);
 
 const attachmentKind = (name: string, mimeType: string): LearningAttachmentKind => {
   const mime = mimeType.toLowerCase();
@@ -337,13 +340,19 @@ const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = 
     const inferred = attachmentKind(name, typeof item.mimeType === 'string' ? item.mimeType : '');
     const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind as LearningAttachmentKind) ? item.kind as LearningAttachmentKind : inferred;
     const size = Number(item.size);
+    const assetId = typeof item.assetId === 'string' && /^[a-f0-9]{64}$/i.test(item.assetId.trim())
+      ? item.assetId.trim().toLowerCase()
+      : '';
     return {
       id: (typeof item.id === 'string' && item.id.trim() ? item.id.trim() : `attachment-${index + 1}`).slice(0, 160),
+      assetId,
       kind,
       name,
       mimeType: attachmentMime(kind, name, item.mimeType),
       size: Number.isFinite(size) && size >= 0 ? Math.round(size) : null,
       filePath,
+      cloudPath: typeof item.cloudPath === 'string' ? item.cloudPath.slice(0, 2000) : '',
+      localPathKey: typeof item.localPathKey === 'string' ? item.localPathKey.slice(0, 2000) : '',
       previewPath: typeof item.previewPath === 'string' ? item.previewPath.slice(0, 2000) : '',
       posterPath: typeof item.posterPath === 'string' ? item.posterPath.slice(0, 2000) : '',
       createdAt: typeof item.createdAt === 'string' ? item.createdAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
@@ -354,8 +363,8 @@ const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = 
     const name = legacyPath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
     const kind = attachmentKind(name, '');
     normalized.unshift({
-      id: 'legacy-primary', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
-      filePath: legacyPath, previewPath: '', posterPath: '',
+      id: 'legacy-primary', assetId: '', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
+      filePath: legacyPath, cloudPath: '', localPathKey: '', previewPath: '', posterPath: '',
       createdAt: typeof legacy.firstSyncedAt === 'string' ? legacy.firstSyncedAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
     });
   }
@@ -835,7 +844,27 @@ export const saveLearningDataCache = (snapshot: LearningDataSnapshot) => {
   const raw = JSON.stringify(normalized);
   learningDataMemoryCache = normalized;
   learningDataMemoryRaw = raw;
-  window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
+  try {
+    window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
+  } catch (error) {
+    // The server remains authoritative. A large learning history must never
+    // make the live page fail merely because Chromium's small localStorage
+    // quota was reached. Keep the current snapshot in memory and discard the
+    // stale persistent copy; the next launch will fetch it from the server.
+    if (error instanceof DOMException && (
+      error.name === 'QuotaExceededError'
+      || error.name === 'NS_ERROR_DOM_QUOTA_REACHED'
+    )) {
+      try {
+        window.localStorage.removeItem(LEARNING_DATA_CACHE_KEY);
+      } catch {
+        // Storage can also be unavailable in privacy-restricted runtimes.
+      }
+      learningDataMemoryRaw = null;
+    } else {
+      throw error;
+    }
+  }
   window.dispatchEvent(new CustomEvent(LEARNING_DATA_EVENT, { detail: normalized }));
 };
 

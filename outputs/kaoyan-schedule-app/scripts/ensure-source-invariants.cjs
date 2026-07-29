@@ -9,13 +9,19 @@ const repositoryRoot = path.resolve(root, '..', '..');
 function patchFile(relativePath, patches) {
   const filePath = path.join(root, relativePath);
   let content = fs.readFileSync(filePath, 'utf8');
+  const eol = content.includes('\r\n') ? '\r\n' : '\n';
   let changed = false;
   for (const patch of patches) {
-    if (content.includes(patch.replacementMarker || patch.replacement)) continue;
-    if (!content.includes(patch.search)) {
+    let normalized = content.replace(/\r\n/g, '\n');
+    const marker = String(patch.replacementMarker || patch.replacement).replace(/\r\n/g, '\n');
+    const search = String(patch.search).replace(/\r\n/g, '\n');
+    const replacement = String(patch.replacement).replace(/\r\n/g, '\n');
+    if (normalized.includes(marker)) continue;
+    if (!normalized.includes(search)) {
       throw new Error(`Source invariant anchor was not found in ${relativePath}: ${patch.name}`);
     }
-    content = content.replace(patch.search, patch.replacement);
+    normalized = normalized.replace(search, replacement);
+    content = eol === '\r\n' ? normalized.replace(/\n/g, '\r\n') : normalized;
     changed = true;
   }
   if (changed) fs.writeFileSync(filePath, content, 'utf8');

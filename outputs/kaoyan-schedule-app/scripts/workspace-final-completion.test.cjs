@@ -11,11 +11,13 @@ const read = (relative) => fs.readFileSync(path.join(root, relative), 'utf8');
 test('workspace renders DOCX and runs HTML only in an isolated offline sandbox', () => {
   const renderer = read('src/components/WorkspaceAssetPreview.tsx');
   assert.match(renderer, /mammoth\.convertToHtml/);
-  assert.match(renderer, /安全查看/);
-  assert.match(renderer, /隔离运行/);
   assert.match(renderer, /allow-scripts allow-forms/);
   assert.doesNotMatch(renderer, /allow-same-origin/);
+  assert.doesNotMatch(renderer, /安全查看|隔离运行/);
   assert.match(renderer, /connect-src 'none'/);
+  assert.match(renderer, /name="viewport"/);
+  assert.match(renderer, /#kaoyan-fit-root\{display:inline-block;width:max-content/);
+  assert.match(renderer, /img,video,svg\{height:auto\}/);
 });
 
 test('historical paths derive stable GitHub asset paths and persist after recovery', () => {

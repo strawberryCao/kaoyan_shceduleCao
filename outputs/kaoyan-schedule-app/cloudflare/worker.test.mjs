@@ -106,6 +106,17 @@ class FakeGitHub {
       const ref = url.searchParams.get('ref') || 'main';
       const bytes = this.file(path, ref);
       if (!bytes) return this.response({ message: 'Not Found' }, 404);
+      const headers = new Headers(options.headers);
+      if (headers.get('Accept') === 'application/vnd.github.raw+json') {
+        assert.equal(headers.get('Authorization'), 'Bearer test-token');
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            'Content-Type': path.endsWith('.json') ? 'application/json' : 'application/octet-stream',
+            'Content-Length': String(bytes.byteLength),
+          },
+        });
+      }
       return this.response({
         type: 'file',
         sha: this.contentSha(bytes),
@@ -175,7 +186,7 @@ class FakeGitHub {
   }
 }
 
-const auth = `Basic ${Buffer.from('tester:secret').toString('base64')}`;
+const sessionCookies = new WeakMap();
 
 function makeContext(t) {
   const repository = new FakeGitHub();
@@ -201,12 +212,30 @@ function makeContext(t) {
 function request(path, init = {}) {
   return new Request(`https://study.example${path}`, {
     ...init,
-    headers: { authorization: auth, ...(init.headers ?? {}) },
+    headers: { ...(init.headers ?? {}) },
   });
 }
 
+async function sessionCookie(env) {
+  if (sessionCookies.has(env)) return sessionCookies.get(env);
+  const response = await worker.fetch(request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'tester', password: 'secret' }),
+  }), env, {});
+  assert.equal(response.status, 200);
+  const cookie = response.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie);
+  sessionCookies.set(env, cookie);
+  return cookie;
+}
+
 async function call(env, path, init = {}) {
-  return worker.fetch(request(path, init), env, {});
+  const cookie = await sessionCookie(env);
+  return worker.fetch(request(path, {
+    ...init,
+    headers: { cookie, ...(init.headers ?? {}) },
+  }), env, {});
 }
 
 async function body(response) {
@@ -235,7 +264,7 @@ function validCanvas(id = 'canvas-1') {
   };
 }
 
-test('health is public while static assets and APIs require configured Basic auth', async (t) => {
+test('health is public while static assets and APIs require a signed session', async (t) => {
   const { env } = makeContext(t);
   const health = await worker.fetch(new Request('https://study.example/api/health'), env, {});
   assert.equal(health.status, 200);
@@ -246,7 +275,7 @@ test('health is public while static assets and APIs require configured Basic aut
 
   const unauthorized = await worker.fetch(new Request('https://study.example/api/learning-data'), env, {});
   assert.equal(unauthorized.status, 401);
-  assert.match(unauthorized.headers.get('www-authenticate'), /^Basic /);
+  assert.equal((await body(unauthorized)).code, 'AUTH_REQUIRED');
 
   const missingSecret = await worker.fetch(request('/api/learning-data'), { ...env, APP_PASSWORD: undefined }, {});
   assert.equal(missingSecret.status, 503);

@@ -137,6 +137,22 @@ test('three-way set and attachment merge respects explicit local removals', () =
   assert.deepEqual(note.attachments.map((item) => item.id), ['a']);
 });
 
+test('an agreed attachment order stays stable across repeated merges', () => {
+  const previous = base();
+  const current = structuredClone(previous);
+  const note = current.days['2026-07-24'].autoNotes[0];
+  note.attachments = [
+    { id: 'z-last-by-id', name: '第一页.png', createdAt: '2026-07-24T00:00:00.000Z' },
+    { id: 'a-first-by-id', name: '第二页.png', createdAt: '2026-07-24T00:00:00.000Z' },
+  ];
+
+  const merged = mergeSnapshots(current, structuredClone(current), previous);
+  assert.deepEqual(merged.days['2026-07-24'].autoNotes[0].attachments.map((item) => item.id), [
+    'z-last-by-id',
+    'a-first-by-id',
+  ]);
+});
+
 test('card text edits and remote review progress merge independently', () => {
   const previous = base();
   const local = structuredClone(previous);
@@ -159,4 +175,29 @@ test('card text edits and remote review progress merge independently', () => {
   assert.equal(card.front, '本地改过的问题');
   assert.equal(card.reviewHistory[0].thought, '远端完成复习');
   assert.equal(card.reviewCount, 1);
+});
+
+test('a local tombstone cannot be resurrected by a newer remote enrichment', () => {
+  const previous = base();
+  const local = structuredClone(previous);
+  const remote = structuredClone(previous);
+
+  local.updatedAt = '2026-07-24T02:00:00.000Z';
+  local.days['2026-07-24'].autoNotes = [];
+  local.cards = [];
+  local.deletedNotes.n1 = {
+    noteUid: 'n1',
+    deletedAt: local.updatedAt,
+    note: previous.days['2026-07-24'].autoNotes[0],
+    cards: previous.cards,
+  };
+
+  remote.updatedAt = '2026-07-24T03:00:00.000Z';
+  remote.days['2026-07-24'].autoNotes[0].updatedAt = remote.updatedAt;
+  remote.days['2026-07-24'].autoNotes[0].title = 'remote enrichment must not restore this note';
+
+  const merged = mergeSnapshots(local, remote, previous);
+  assert.equal(merged.days['2026-07-24'].autoNotes.length, 0);
+  assert.equal(merged.cards.length, 0);
+  assert.equal(merged.deletedNotes.n1.deletedAt, local.updatedAt);
 });

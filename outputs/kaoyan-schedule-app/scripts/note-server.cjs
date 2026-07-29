@@ -50,6 +50,7 @@ const ORGANIZER_STATE_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-state.jso
 const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
 const ORGANIZER_MOVE_LOG_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-moves.jsonl');
 const AI_PROVIDER_CONFIG_PATH = process.env.KAOYAN_AI_CONFIG_PATH || path.join(ASSISTANT_ROOT, 'ai-providers.json');
+const AI_USAGE_PATH = path.join(ASSISTANT_ROOT, 'ai-usage.json');
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
 const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
 const ACTIVE_CANVAS_MAX_BODY_BYTES = 16 * 1024;
@@ -58,6 +59,10 @@ const LIVE_STROKE_MAX_POINTS = 4096;
 const NOTE_TAXONOMY_PATH = path.join(ASSISTANT_ROOT, 'note-taxonomy.json');
 const NOTE_SAVE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'note-save-receipts');
 const MATERIAL_NOTE_RECEIPTS_ROOT = path.join(ASSISTANT_ROOT, 'material-note-receipts');
+const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
+const SEARCH_INDEX_PATH = path.join(ASSISTANT_ROOT, 'search-index.json');
+const TAXONOMY_CONSOLIDATION_STATE_PATH = path.join(ASSISTANT_ROOT, 'taxonomy-consolidation-state.json');
+const MATERIAL_WINDOW_REQUEST_ROOT = path.join(os.tmpdir(), 'kaoyan-material-previews');
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -72,6 +77,22 @@ const MATERIAL_MIME_BY_EXT = new Map([
 ]);
 const MATERIAL_EXT_BY_MIME = new Map([...MATERIAL_MIME_BY_EXT].map(([extension, mime]) => [mime, extension]));
 const DEFAULT_SUBJECT = '默认文件夹';
+const ALLOWED_STORED_SUBJECTS = new Set([
+  DEFAULT_SUBJECT,
+  '高等数学',
+  '线性代数',
+  '概率论',
+  '数据结构',
+  '计算机组成',
+  '操作系统',
+  '计算机网络',
+  '英语',
+  '政治',
+]);
+const normalizeStoredSubject = (value) => {
+  const candidate = String(value || '').normalize('NFKC').trim();
+  return ALLOWED_STORED_SUBJECTS.has(candidate) ? candidate : DEFAULT_SUBJECT;
+};
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const qwen = loadQwenConfig();
 const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
@@ -92,10 +113,16 @@ let noteAppReadyAt = null;
 let aiRouter = null;
 let aiRouterInitError = null;
 let aiRouterConfigStamp = null;
-let aiNamingQueue = Promise.resolve();
+const aiNamingQueues = [Promise.resolve(), Promise.resolve()];
+let aiNamingLaneCursor = 0;
 const aiNamingJobs = new Map();
+let pendingAiNamingResumeTimer = null;
+let taxonomyConsolidationTimer = null;
 let noteEnrichmentQueue = Promise.resolve();
 const noteEnrichmentJobs = new Map();
+const manualAiJobs = new Map();
+const semanticQueryCache = new Map();
+const materialNamingJobs = new Map();
 let noteTitlePolicyPromise = null;
 function getNoteTitlePolicy() {
   if (!noteTitlePolicyPromise) noteTitlePolicyPromise = import('../shared/note-title-policy.js');
@@ -103,6 +130,63 @@ function getNoteTitlePolicy() {
 }
 let canvasOrganizationQueue = Promise.resolve();
 const canvasOrganizationJobs = new Map();
+
+function emptyAiUsage() {
+  return { schemaVersion: 1, updatedAt: null, providers: {}, daily: {} };
+}
+
+function readAiUsage() {
+  if (!fs.existsSync(AI_USAGE_PATH)) return emptyAiUsage();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(AI_USAGE_PATH, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { ...emptyAiUsage(), ...parsed, providers: parsed.providers || {}, daily: parsed.daily || {} }
+      : emptyAiUsage();
+  } catch {
+    return emptyAiUsage();
+  }
+}
+
+function usageCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+}
+
+function addUsage(target, event) {
+  const usage = event.usage && typeof event.usage === 'object' ? event.usage : {};
+  const promptTokens = usageCount(usage.prompt_tokens ?? usage.input_tokens);
+  const completionTokens = usageCount(usage.completion_tokens ?? usage.output_tokens);
+  const totalTokens = usageCount(usage.total_tokens) || promptTokens + completionTokens;
+  target.calls = usageCount(target.calls) + 1;
+  target.promptTokens = usageCount(target.promptTokens) + promptTokens;
+  target.completionTokens = usageCount(target.completionTokens) + completionTokens;
+  target.totalTokens = usageCount(target.totalTokens) + totalTokens;
+  target.lastUsedAt = event.at;
+}
+
+function recordAiUsage(event) {
+  const providerId = String(event.provider || 'unknown').trim().slice(0, 60) || 'unknown';
+  const modelId = String(event.model || 'unknown').trim().slice(0, 160) || 'unknown';
+  const date = String(event.at || new Date().toISOString()).slice(0, 10);
+  const snapshot = readAiUsage();
+  const provider = snapshot.providers[providerId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, models: {} };
+  addUsage(provider, event);
+  const model = provider.models[modelId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  addUsage(model, event);
+  provider.models[modelId] = model;
+  snapshot.providers[providerId] = provider;
+  const day = snapshot.daily[date] || { providers: {} };
+  const dayProvider = day.providers[providerId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  addUsage(dayProvider, event);
+  day.providers[providerId] = dayProvider;
+  snapshot.daily[date] = day;
+  const cutoff = new Date(Date.now() - 35 * 86_400_000).toISOString().slice(0, 10);
+  for (const dayKey of Object.keys(snapshot.daily)) {
+    if (dayKey < cutoff) delete snapshot.daily[dayKey];
+  }
+  snapshot.updatedAt = event.at;
+  atomicWriteJson(AI_USAGE_PATH, snapshot);
+}
 
 function getFileStamp(filePath) {
   try {
@@ -119,7 +203,7 @@ function getAiRouter() {
   if (aiRouterConfigStamp === stamp && aiRouterInitError) return null;
   aiRouterConfigStamp = stamp;
   try {
-    aiRouter = createAiRouter({ configPath: AI_PROVIDER_CONFIG_PATH });
+    aiRouter = createAiRouter({ configPath: AI_PROVIDER_CONFIG_PATH, onUsage: recordAiUsage });
     aiRouterInitError = null;
   } catch (error) {
     aiRouterInitError = error instanceof Error ? error.message : String(error);
@@ -179,6 +263,7 @@ function getAiConfigurationSnapshot() {
     tasks: normalizeTaskConfigurations(loaded.tasks),
     providers: status.providers || [],
     routing: loaded.routing,
+    usage: readAiUsage(),
     error: currentRouter ? null : aiRouterInitError,
   };
 }
@@ -229,6 +314,65 @@ function saveAiTaskConfigurations(input) {
   return getAiConfigurationSnapshot();
 }
 
+function saveAiProviderCredential(input) {
+  const providerId = String(input?.providerId || '').trim().toLowerCase();
+  const supported = {
+    qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-vl-plus' },
+    gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+    kimi: { baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3' },
+    deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
+  };
+  if (!supported[providerId]) throw new SyntaxError('不支持这个 AI 厂家');
+  const apiKey = String(input?.apiKey || '').replace(/[\r\n\t ]+/g, '').trim();
+  if (apiKey.length < 10 || apiKey.length > 10000) throw new SyntaxError('API Key 格式不正确');
+  const model = String(input?.model || supported[providerId].model).trim().slice(0, 160) || supported[providerId].model;
+  const current = readAiConfigFile();
+  const existingProviders = Array.isArray(current.providers)
+    ? Object.fromEntries(current.providers.map((provider) => [provider?.id, provider]).filter(([id]) => id))
+    : current.providers && typeof current.providers === 'object' ? current.providers : {};
+  const existing = existingProviders[providerId] && typeof existingProviders[providerId] === 'object'
+    ? existingProviders[providerId]
+    : {};
+  const next = {
+    ...current,
+    providers: {
+      ...existingProviders,
+      [providerId]: {
+        ...existing,
+        enabled: true,
+        apiKey,
+        baseUrl: supported[providerId].baseUrl,
+        model,
+      },
+    },
+    ...(providerId === 'deepseek' ? {
+      tasks: {
+        ...(current.tasks || {}),
+        semantic_search: {
+          ...(current.tasks?.semantic_search || {}),
+          providerId: 'deepseek',
+          modelId: 'deepseek-v4-flash',
+          fallback: true,
+        },
+        taxonomy: {
+          ...(current.tasks?.taxonomy || {}),
+          providerId: 'deepseek',
+          modelId: 'deepseek-v4-pro',
+          fallback: true,
+        },
+      },
+    } : {}),
+  };
+  loadAiProviderConfigs({ configPath: AI_PROVIDER_CONFIG_PATH, localConfig: next, legacyQwenConfig: qwen });
+  fs.mkdirSync(path.dirname(AI_PROVIDER_CONFIG_PATH), { recursive: true });
+  atomicWriteJson(AI_PROVIDER_CONFIG_PATH, next);
+  aiRouter = null;
+  aiRouterInitError = null;
+  aiRouterConfigStamp = null;
+  getAiRouter();
+  return getAiConfigurationSnapshot();
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
@@ -259,9 +403,14 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
-  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-material-note')) return true;
+  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/append-material-note' || pathname === '/capture-batches' || pathname === '/material-window')) return true;
+  if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
+  if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
+  if (method === 'GET' && /^\/ai\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
+  if (method === 'POST' && pathname === '/search') return true;
   if (method === 'POST' && (pathname === '/learning-data/notes' || pathname === '/learning-data/cards')) return true;
+  if (method === 'POST' && /^\/learning-data\/notes\/[^/]+\/rename$/.test(pathname)) return true;
   if (method === 'POST' && pathname === '/learning-data/note-review-actions') return true;
   if (method === 'PATCH' && pathname === '/learning-data/day') return true;
   if (method === 'PUT' && pathname === '/learning-data/manual-records') return true;
@@ -313,7 +462,7 @@ function canControlNoteApp(req) {
 
 function launchNoteApp(flag = '--note-app') {
   return new Promise((resolve, reject) => {
-    if (!['--note-app', '--close-note-app'].includes(flag)) {
+    if (!['--note-app', '--close-note-app'].includes(flag) && !flag.startsWith('--material-preview=')) {
       reject(new Error('不支持的笔记 App 操作'));
       return;
     }
@@ -541,6 +690,26 @@ function readSaveReceipt(noteUid) {
   };
 }
 
+function localMetadataFilePath(metadata) {
+  const candidates = [
+    metadata?.filePath,
+    ...(Array.isArray(metadata?.attachments)
+      ? metadata.attachments.flatMap((attachment) => [attachment?.filePath, attachment?.localPathKey])
+      : []),
+    metadata?.localPathKey,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const localCandidate = path.isAbsolute(candidate)
+      ? path.resolve(candidate)
+      : path.resolve(NOTES_ROOT, candidate);
+    const relative = path.relative(path.resolve(NOTES_ROOT), localCandidate);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+    if (fs.existsSync(localCandidate) && fs.statSync(localCandidate).isFile()) return localCandidate;
+  }
+  return '';
+}
+
 function findSavedNote(noteUid) {
   const saved = readSaveReceipt(noteUid);
   if (saved && fs.existsSync(saved.filePath)) return saved;
@@ -562,8 +731,8 @@ function findSavedNote(noteUid) {
       }
       if (!entry.isFile() || !/\.note\.json$/i.test(entry.name) || path.basename(directory) !== '.metadata') continue;
       const metadata = readJson(fullPath, null);
-      const filePath = metadata?.filePath;
-      if (metadata?.noteUid !== noteUid || typeof filePath !== 'string' || !fs.existsSync(filePath)) continue;
+      const filePath = localMetadataFilePath(metadata);
+      if (metadata?.noteUid !== noteUid || !filePath) continue;
       return {
         receipt: {
           noteUid,
@@ -674,10 +843,8 @@ function persistNoteReviewAction(action, snapshot) {
   const proposed = actionType === 'accept' && saved.metadata.organizer?.proposed
     ? saved.metadata.organizer.proposed
     : {};
-  const subject = sanitizeSegment(
+  const subject = normalizeStoredSubject(
     patch.subject || proposed.subject || currentLearning.subject || saved.metadata.subject,
-    DEFAULT_SUBJECT,
-    60,
   );
   const incomingPath = Array.isArray(patch.knowledgePath)
     ? patch.knowledgePath
@@ -842,10 +1009,22 @@ function guessSubjectFromText(text) {
   return DEFAULT_SUBJECT;
 }
 
+function isIntentOnlyRemark(value) {
+  const remainder = String(value || '')
+    .normalize('NFKC')
+    .replace(/\b\d+(?:\.\d+)*\b/g, ' ')
+    .replace(/错题|好题|背诵|背|记住|记忆|速记/g, ' ')
+    .replace(/[#，,。；;：:、_\-\s]+/g, '');
+  return remainder.length === 0;
+}
+
 function makeFallbackName({ kind, remark, subject }) {
   const text = remark && remark.trim() ? remark : kind === 'canvas' ? '待确认画布笔记' : '待确认题目';
   const safeSubject = sanitizeSegment(subject || guessSubjectFromText(text), DEFAULT_SUBJECT, 24);
-  const safeTitle = sanitizeSegment(text, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
+  const pendingTitle = kind !== 'canvas' && isIntentOnlyRemark(remark)
+    ? '正在识别题目内容'
+    : text;
+  const safeTitle = sanitizeSegment(pendingTitle, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
   return {
     subject: safeSubject,
     title: safeTitle,
@@ -896,6 +1075,7 @@ async function generateNameWithAi({ imageDataUrl, kind, remark }) {
     `2. title 目标长度为 ${titleMinLength} 到 ${titleMaxLength} 个字符，${titleStyleText}。`,
     '3. 不要输出随机数，不要输出日期，不要输出文件后缀。',
     '4. 不要使用 Windows 非法字符：<>:"/\\|?*。',
+    '4.1 用户备注里的“错题”“好题”“背”“背诵”“记住”只表示收录分类，不是标题。即使备注只有这些词，也必须阅读图片内容并生成具体标题与科目。',
     '5. 先逐条检查“字段命名规则”。只有图片中能直接看到规则要求的标签及对应值时才算匹配，严禁用相似编号、日期或其他字段猜测。',
     '6. 如果匹配规则：ruleId 填规则 id，ruleValue 填原图中提取到的字段值，ruleEvidence 简述标签和值的位置；title 仍给出普通内容标题。程序会根据模板生成最终标题。',
     options.rejectGenericTitle === false
@@ -1264,6 +1444,7 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
     isGood: parsed.flags?.isClassic === true,
     shouldMemorize: parsed.flags?.shouldMemorize === true,
   };
+  const hasExplicitUserCategory = intent.isMistake || intent.isGood || intent.shouldMemorize;
   if (intent.isGood && !tags.includes('好题')) tags.push('好题');
   const noteType = parsed.flags?.isMistake
     ? 'mistake'
@@ -1316,9 +1497,9 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
       userEditedFields: [],
       intent,
     cards,
-    organizationStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+    organizationStatus: hasExplicitUserCategory || (details.subject && details.subject !== DEFAULT_SUBJECT) ? 'confirmed' : 'pending',
     classificationSource: details.subject && details.subject !== DEFAULT_SUBJECT ? 'local' : 'ai',
-    reviewStatus: details.subject && details.subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+    reviewStatus: hasExplicitUserCategory || (details.subject && details.subject !== DEFAULT_SUBJECT) ? 'auto_applied' : 'pending',
     decisionRevision: 0,
     proposalId: proposalIdFor(details.noteUid || 'new-note', details.subject || DEFAULT_SUBJECT, knowledgePath, createdAt),
     flags: parsed.flags,
@@ -1341,13 +1522,17 @@ function markAiNamingFailed(noteUid, error, naming = null) {
   const completedAt = new Date().toISOString();
   const currentReviewStatus = normalizedReviewStatus(saved.metadata.learning || {});
   const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const explicitIntent = saved.metadata.learning?.intent || {};
+  const hasExplicitUserCategory = explicitIntent.isMistake === true
+    || explicitIntent.isGood === true
+    || explicitIntent.shouldMemorize === true;
   const storedDecisionRevision = Number(saved.metadata.learning?.decisionRevision);
   const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
     ? storedDecisionRevision
     : keepsHumanDecision ? 1 : 0;
   const reviewStatus = keepsHumanDecision
     ? currentReviewStatus
-    : saved.metadata.subject === DEFAULT_SUBJECT ? 'pending' : 'auto_applied';
+    : hasExplicitUserCategory || saved.metadata.subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending';
   const metadata = {
     ...saved.metadata,
     updatedAt: completedAt,
@@ -1407,18 +1592,22 @@ async function runAiNamingJob(noteUid) {
   try {
   const latest = readSaveReceipt(noteUid);
   if (!latest) return;
-  const requestedSubject = sanitizeSegment(latest.metadata.requestedSubject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
+  const requestedSubject = normalizeStoredSubject(latest.metadata.requestedSubject);
   const currentReviewStatus = normalizedReviewStatus(latest.metadata.learning || {});
   const keepsHumanDecision = ['accepted', 'corrected', 'ignored'].includes(currentReviewStatus);
+  const explicitIntent = latest.metadata.learning?.intent || {};
+  const hasExplicitUserCategory = explicitIntent.isMistake === true
+    || explicitIntent.isGood === true
+    || explicitIntent.shouldMemorize === true;
   const storedDecisionRevision = Number(latest.metadata.learning?.decisionRevision);
   const decisionRevision = Number.isInteger(storedDecisionRevision) && storedDecisionRevision >= 0
     ? storedDecisionRevision
     : keepsHumanDecision ? 1 : 0;
   const subject = keepsHumanDecision
-    ? sanitizeSegment(latest.metadata.subject, DEFAULT_SUBJECT, 60)
+    ? normalizeStoredSubject(latest.metadata.subject)
     : naming.subject === DEFAULT_SUBJECT && requestedSubject !== DEFAULT_SUBJECT
       ? requestedSubject
-      : sanitizeSegment(naming.subject, DEFAULT_SUBJECT, 24);
+      : normalizeStoredSubject(naming.subject);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -1473,13 +1662,13 @@ async function runAiNamingJob(noteUid) {
         : [subject, ...((latest.metadata.learning?.knowledgePath || []).filter((item) => item !== latest.metadata.subject && item !== subject))].slice(0, 3),
       organizationStatus: currentReviewStatus === 'ignored'
         ? 'ignored'
-        : keepsHumanDecision || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
+        : keepsHumanDecision || hasExplicitUserCategory || subject !== DEFAULT_SUBJECT ? 'confirmed' : 'pending',
       classificationSource: currentReviewStatus === 'corrected' ? 'manual' : keepsHumanDecision
         ? latest.metadata.learning?.classificationSource || 'ai'
         : 'ai',
       reviewStatus: keepsHumanDecision
         ? currentReviewStatus
-        : subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
+        : hasExplicitUserCategory || subject !== DEFAULT_SUBJECT ? 'auto_applied' : 'pending',
       decisionRevision,
       proposalId: keepsHumanDecision
         ? latest.metadata.learning?.proposalId
@@ -1598,8 +1787,10 @@ async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
 }
 
 function queueAiNamingJob(noteUid) {
-  if (aiNamingJobs.has(noteUid)) return;
-  const job = aiNamingQueue.then(async () => {
+  if (aiNamingJobs.has(noteUid)) return false;
+  const lane = aiNamingLaneCursor % aiNamingQueues.length;
+  aiNamingLaneCursor += 1;
+  const job = aiNamingQueues[lane].then(async () => {
     try {
       await runAiNamingJob(noteUid);
       queueNoteEnrichment(noteUid);
@@ -1612,8 +1803,667 @@ function queueAiNamingJob(noteUid) {
     }
   });
   aiNamingJobs.set(noteUid, job);
-  aiNamingQueue = job.catch(() => undefined);
+  aiNamingQueues[lane] = job.catch(() => undefined);
   void job.finally(() => aiNamingJobs.delete(noteUid)).catch(() => undefined);
+  return true;
+}
+
+function pruneManualAiJobs() {
+  if (manualAiJobs.size <= 160) return;
+  const removable = [...manualAiJobs.values()]
+    .filter((job) => !['queued', 'processing'].includes(job.status))
+    .sort((left, right) => String(left.updatedAt).localeCompare(String(right.updatedAt)));
+  while (manualAiJobs.size > 140 && removable.length > 0) {
+    manualAiJobs.delete(removable.shift().id);
+  }
+}
+
+function updateManualAiJob(jobId, patch) {
+  const current = manualAiJobs.get(jobId);
+  if (!current) return null;
+  const job = {
+    ...current,
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  };
+  manualAiJobs.set(jobId, job);
+  return job;
+}
+
+function enqueueManualAiRename(noteUid) {
+  const existing = [...manualAiJobs.values()].find((job) => (
+    job.noteUid === noteUid
+    && job.type === 'note-rename'
+    && ['queued', 'processing'].includes(job.status)
+  ));
+  if (existing) return { job: existing, replayed: true };
+
+  const saved = findSavedNote(noteUid);
+  if (!saved) {
+    const materialReceipt = readMaterialReceipt(noteUid);
+    const materialNote = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+    if (materialReceipt && materialNote) {
+      const stagedAt = new Date().toISOString();
+      const job = {
+        id: `job-${crypto.randomUUID()}`,
+        type: 'note-rename',
+        noteUid,
+        status: 'queued',
+        progress: 0,
+        message: '已加入多资料 AI 命名队列',
+        error: '',
+        createdAt: stagedAt,
+        updatedAt: stagedAt,
+        completedAt: '',
+        result: null,
+      };
+      manualAiJobs.set(job.id, job);
+      pruneManualAiJobs();
+      queueMaterialNamingJob(noteUid, { forceTitle: true, manualJobId: job.id });
+      return { job, replayed: false };
+    }
+    throw makeReviewError(`Durable note metadata not found: ${noteUid}`, 'NOTE_FILE_METADATA_NOT_FOUND');
+  }
+  const extension = path.extname(saved.filePath).toLowerCase();
+  const mime = saved.metadata.mime || MATERIAL_MIME_BY_EXT.get(extension) || 'image/png';
+  if (!String(mime).startsWith('image/')) {
+    throw makeReviewError('AI 重命名目前只处理有原图的学习记录', 'AI_RENAME_NOT_ALLOWED');
+  }
+
+  const stagedAt = new Date().toISOString();
+  const metadata = {
+    ...saved.metadata,
+    filePath: saved.filePath,
+    fileName: path.basename(saved.filePath),
+    mime,
+    updatedAt: stagedAt,
+    naming: {
+      ...(saved.metadata.naming || {}),
+      status: 'pending',
+      reason: 'manual_retry',
+      error: null,
+      completedAt: null,
+    },
+    learning: {
+      ...(saved.metadata.learning || {}),
+      pendingAiOrganization: true,
+    },
+  };
+  atomicWriteJson(saved.receipt.sidecarPath, metadata);
+  appendMetadata(path.dirname(saved.filePath), metadata);
+  const learningSyncError = syncLearningMetadata(metadata);
+  writeSaveReceipt(noteUid, metadata, learningSyncError);
+
+  const job = {
+    id: `job-${crypto.randomUUID()}`,
+    type: 'note-rename',
+    noteUid,
+    status: 'queued',
+    progress: 0,
+    message: '已加入本机 AI 命名队列',
+    error: '',
+    createdAt: stagedAt,
+    updatedAt: stagedAt,
+    completedAt: '',
+    result: null,
+  };
+  manualAiJobs.set(job.id, job);
+  pruneManualAiJobs();
+  queueAiNamingJob(noteUid);
+  updateManualAiJob(job.id, {
+    status: 'processing',
+    progress: 15,
+    message: 'AI 正在读取原图并按本地规则命名、分类',
+  });
+  const running = aiNamingJobs.get(noteUid);
+  void Promise.resolve(running).then(() => {
+    const latest = findSavedNote(noteUid);
+    const naming = latest?.metadata?.naming || {};
+    const completed = naming.status === 'complete';
+    const completedAt = new Date().toISOString();
+    updateManualAiJob(job.id, {
+      status: completed ? 'completed' : 'failed',
+      progress: completed ? 100 : 0,
+      message: completed ? 'AI 命名与分类已完成' : 'AI 命名失败，可稍后重试',
+      error: completed ? '' : String(naming.error || 'AI 命名未能完成'),
+      completedAt,
+      result: completed ? {
+        applied: true,
+        title: String(latest?.metadata?.title || ''),
+        revision: Number(learningData.getSnapshot().revision) || 0,
+      } : null,
+    });
+  }).catch((error) => {
+    updateManualAiJob(job.id, {
+      status: 'failed',
+      progress: 0,
+      message: 'AI 命名失败，可稍后重试',
+      error: error instanceof Error ? error.message : String(error),
+      completedAt: new Date().toISOString(),
+    });
+  });
+  return { job: manualAiJobs.get(job.id), replayed: false };
+}
+
+function searchTokens(value) {
+  const normalized = String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
+  const tokens = new Set(normalized.match(/[\p{L}\p{N}]{2,}/gu) || []);
+  const chinese = normalized.replace(/[^\p{Script=Han}]/gu, '');
+  for (let index = 0; index < chinese.length - 1; index += 1) tokens.add(chinese.slice(index, index + 2));
+  return [...tokens].slice(0, 80);
+}
+
+function fallbackSearchDocuments() {
+  const documents = [];
+  for (const [date, day] of Object.entries(learningData.getSnapshot()?.days || {})) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      documents.push({
+        noteUid: note.noteUid,
+        capturedDate: note.capturedDate || date,
+        updatedAt: note.updatedAt || '',
+        title: note.title || '',
+        subject: note.subject || '',
+        facets: note.facets || [],
+        tags: note.tags || [],
+        attachmentNames: (note.attachments || []).map((attachment) => attachment?.name || ''),
+        content: [
+          note.title,
+          note.remark,
+          note.subject,
+          ...(note.tags || []),
+          ...(note.facets || []),
+          ...(note.knowledgePath || []),
+          ...(note.questions || []),
+          ...(note.items || []).flatMap((item) => [item?.title, item?.question, item?.answer, item?.remark]),
+        ].filter(Boolean).join('\n'),
+      });
+    }
+  }
+  return documents;
+}
+
+async function expandSemanticSearchQuery(query) {
+  const cacheKey = query.normalize('NFKC').trim().toLowerCase();
+  if (semanticQueryCache.has(cacheKey)) return semanticQueryCache.get(cacheKey);
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const response = await router.complete({
+    task: 'semantic_search',
+    messages: [{
+      role: 'user',
+      content: [
+        '你只负责扩展学习资料搜索词，不回答问题，不总结资料。',
+        '根据用户表达的含义，给出可能出现在考研笔记里的同义词、相关概念、公式名称、常见中文说法。',
+        '只输出 JSON，terms 为 3 到 12 个简短检索词，不能编造结论。',
+        `查询：${query}`,
+      ].join('\n'),
+    }],
+    responseSchema: {
+      type: 'object',
+      required: ['terms'],
+      properties: {
+        terms: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+      },
+    },
+    temperature: 0.1,
+    maxTokens: Number(router.getTaskOptions?.('semantic_search')?.maxTokens) || 360,
+  });
+  const terms = [...new Set((response.json?.terms || [])
+    .map((item) => String(item || '').normalize('NFKC').trim().slice(0, 80))
+    .filter(Boolean))]
+    .slice(0, 12);
+  semanticQueryCache.set(cacheKey, terms);
+  if (semanticQueryCache.size > 120) semanticQueryCache.delete(semanticQueryCache.keys().next().value);
+  return terms;
+}
+
+async function searchLearningDocuments(payload) {
+  const query = String(payload?.query || '').normalize('NFKC').trim().slice(0, 500);
+  const mode = payload?.mode === 'ai' ? 'ai' : 'normal';
+  const limit = Math.max(1, Math.min(200, Number(payload?.limit) || 80));
+  if (!query) return { ok: true, mode, query, terms: [], results: [] };
+  const index = readJson(SEARCH_INDEX_PATH, null);
+  const documents = Array.isArray(index?.documents) ? index.documents : fallbackSearchDocuments();
+  let expandedTerms = [];
+  let degraded = false;
+  if (mode === 'ai') {
+    try {
+      expandedTerms = await expandSemanticSearchQuery(query);
+    } catch {
+      degraded = true;
+    }
+  }
+  const directTerms = searchTokens(query);
+  const semanticTerms = searchTokens(expandedTerms.join(' '));
+  const results = documents.map((document, originalIndex) => {
+    const title = String(document.title || '').normalize('NFKC').toLowerCase();
+    const haystack = [
+      document.title,
+      document.subject,
+      ...(document.tags || []),
+      ...(document.facets || []),
+      ...(document.attachmentNames || []),
+      document.content,
+    ].join(' ').normalize('NFKC').toLowerCase();
+    let score = haystack.includes(query.toLowerCase()) ? 80 : 0;
+    const matchedTerms = [];
+    for (const term of directTerms) {
+      if (!haystack.includes(term)) continue;
+      score += title.includes(term) ? 18 : 7;
+      matchedTerms.push(term);
+    }
+    for (const term of semanticTerms) {
+      if (!haystack.includes(term)) continue;
+      score += title.includes(term) ? 12 : 5;
+      matchedTerms.push(term);
+    }
+    return { document, originalIndex, score, matchedTerms: [...new Set(matchedTerms)].slice(0, 8) };
+  }).filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.originalIndex - right.originalIndex)
+    .slice(0, limit)
+    .map(({ document, score, matchedTerms }) => ({
+      noteUid: document.noteUid,
+      title: document.title || '',
+      subject: document.subject || '',
+      capturedDate: document.capturedDate || '',
+      score,
+      matchedTerms,
+      reason: matchedTerms.length ? `匹配：${matchedTerms.join('、')}` : '匹配原始记录内容',
+    }));
+  return {
+    ok: true,
+    mode,
+    query,
+    terms: expandedTerms,
+    results,
+    degraded,
+    sourceRevision: Number(index?.sourceRevision) || Number(learningData.getSnapshot().revision) || 0,
+  };
+}
+
+function taxonomyLabel(value, maxLength = 80) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function collectTaxonomyCandidates(snapshot) {
+  const knowledge = new Map();
+  const wrongReasons = new Map();
+  for (const day of Object.values(snapshot?.days || {})) {
+    for (const note of Array.isArray(day?.autoNotes) ? day.autoNotes : []) {
+      const subject = normalizeStoredSubject(note.subject);
+      const manualKnowledge = note.classificationSource === 'manual'
+        || (Array.isArray(note.userEditedFields) && note.userEditedFields.includes('knowledgePath'));
+      if (!manualKnowledge) {
+        const values = [
+          ...(Array.isArray(note.knowledgePath) ? note.knowledgePath : []).filter((item) => item !== subject),
+          ...(Array.isArray(note.items) ? note.items.map((item) => item?.knowledgePoint) : []),
+        ];
+        for (const value of values) {
+          const label = taxonomyLabel(value);
+          if (!label) continue;
+          const key = `${subject}\u0000${label}`;
+          const previous = knowledge.get(key);
+          knowledge.set(key, {
+            subject,
+            label,
+            count: (previous?.count || 0) + 1,
+          });
+        }
+      }
+      const reasons = [
+        note.wrongReason,
+        ...(Array.isArray(note.items) ? note.items.map((item) => item?.wrongReason) : []),
+        ...(Array.isArray(note.tags) ? note.tags
+          .filter((tag) => /^错因[:：]/u.test(tag))
+          .map((tag) => tag.replace(/^错因[:：]\s*/u, '')) : []),
+      ];
+      for (const value of reasons) {
+        const label = taxonomyLabel(value, 300);
+        if (!label) continue;
+        wrongReasons.set(label, (wrongReasons.get(label) || 0) + 1);
+      }
+    }
+  }
+  return {
+    knowledge: [...knowledge.values()].sort((left, right) => (
+      left.subject.localeCompare(right.subject, 'zh-CN')
+      || right.count - left.count
+      || left.label.localeCompare(right.label, 'zh-CN')
+    )),
+    wrongReasons: [...wrongReasons].map(([label, count]) => ({ label, count }))
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label, 'zh-CN')),
+  };
+}
+
+function taxonomyCandidateFingerprint(candidates) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(candidates || { knowledge: [], wrongReasons: [] }))
+    .digest('hex');
+}
+
+function taxonomyNeedsConsolidation(snapshot) {
+  const candidates = collectTaxonomyCandidates(snapshot);
+  const bySubject = new Map();
+  for (const candidate of candidates.knowledge) {
+    bySubject.set(candidate.subject, (bySubject.get(candidate.subject) || 0) + 1);
+  }
+  return candidates.wrongReasons.length > 12
+    || candidates.knowledge.filter((candidate) => (
+      candidate.label.length > 32 || /[。！？；\n]/u.test(candidate.label)
+    )).length > 3
+    || [...bySubject.values()].some((count) => count > 20);
+}
+
+function validateTaxonomyGroups(result, candidates, options) {
+  const knowledgeInputs = new Map(candidates.knowledge.map((item) => [`${item.subject}\u0000${item.label}`, item]));
+  const wrongInputs = new Set(candidates.wrongReasons.map((item) => item.label));
+  const knowledgeMap = new Map();
+  const wrongMap = new Map();
+  const groupsBySubject = new Map();
+
+  for (const group of Array.isArray(result?.knowledgeGroups) ? result.knowledgeGroups : []) {
+    const subject = normalizeStoredSubject(group?.subject);
+    if (subject !== taxonomyLabel(group?.subject)) continue;
+    const canonical = taxonomyLabel(group?.canonical, 32);
+    if (!canonical || /[。！？；\n]/u.test(canonical)) continue;
+    for (const rawAlias of Array.isArray(group?.aliases) ? group.aliases : []) {
+      const alias = taxonomyLabel(rawAlias);
+      const key = `${subject}\u0000${alias}`;
+      if (!knowledgeInputs.has(key) || knowledgeMap.has(key)) continue;
+      knowledgeMap.set(key, canonical);
+    }
+    if ([...knowledgeMap].some(([key, value]) => key.startsWith(`${subject}\u0000`) && value === canonical)) {
+      const subjectGroups = groupsBySubject.get(subject) || new Set();
+      subjectGroups.add(canonical);
+      groupsBySubject.set(subject, subjectGroups);
+    }
+  }
+
+  for (const group of Array.isArray(result?.wrongReasonGroups) ? result.wrongReasonGroups : []) {
+    const category = taxonomyLabel(group?.category, 20);
+    if (!category || /[。！？；\n]/u.test(category)) continue;
+    for (const rawAlias of Array.isArray(group?.aliases) ? group.aliases : []) {
+      const alias = taxonomyLabel(rawAlias, 300);
+      if (!wrongInputs.has(alias) || wrongMap.has(alias)) continue;
+      wrongMap.set(alias, category);
+    }
+  }
+
+  const totalInputs = knowledgeInputs.size + wrongInputs.size;
+  const coveredInputs = knowledgeMap.size + wrongMap.size;
+  const coverage = totalInputs === 0 ? 1 : coveredInputs / totalInputs;
+  const minimumCoverage = Math.max(0.6, Math.min(1, Number(options.minimumCoverage) || 0.8));
+  if (coverage < minimumCoverage) {
+    throw new Error(`分类整理覆盖率 ${(coverage * 100).toFixed(1)}% 低于安全阈值 ${(minimumCoverage * 100).toFixed(0)}%，本次未写入`);
+  }
+
+  const minGroups = Math.max(2, Math.min(12, Number(options.minKnowledgeGroupsPerSubject) || 5));
+  const maxGroups = Math.max(8, Math.min(40, Number(options.maxKnowledgeGroupsPerSubject) || 18));
+  for (const [subject, inputs] of [...knowledgeInputs.values()].reduce((map, item) => {
+    const list = map.get(item.subject) || [];
+    list.push(item);
+    map.set(item.subject, list);
+    return map;
+  }, new Map())) {
+    const coveredForSubject = inputs.filter((item) => knowledgeMap.has(`${subject}\u0000${item.label}`)).length;
+    if (coveredForSubject === 0) continue;
+    const count = groupsBySubject.get(subject)?.size || 0;
+    const effectiveMinimum = Math.min(minGroups, coveredForSubject);
+    const effectiveMaximum = Math.min(maxGroups, coveredForSubject);
+    if (count < effectiveMinimum || count > effectiveMaximum) {
+      throw new Error(`${subject} 归并为 ${count} 组，不在安全范围 ${effectiveMinimum}-${effectiveMaximum} 内，本次未写入`);
+    }
+  }
+  return { knowledgeMap, wrongMap, groupsBySubject, coverage };
+}
+
+function applyTaxonomyConsolidation(snapshot, mappings) {
+  const next = JSON.parse(JSON.stringify(snapshot));
+  let changedNotes = 0;
+  for (const day of Object.values(next.days || {})) {
+    day.autoNotes = (day.autoNotes || []).map((note) => {
+      const subject = normalizeStoredSubject(note.subject);
+      const locksKnowledge = note.classificationSource === 'manual'
+        || (Array.isArray(note.userEditedFields) && note.userEditedFields.includes('knowledgePath'));
+      let changed = false;
+      let knowledgePath = Array.isArray(note.knowledgePath) ? [...note.knowledgePath] : [];
+      let items = Array.isArray(note.items) ? note.items.map((item) => ({ ...item })) : [];
+      if (!locksKnowledge) {
+        knowledgePath = knowledgePath.map((item) => {
+          if (item === note.subject || item === subject) return subject;
+          const mapped = mappings.knowledgeMap.get(`${subject}\u0000${taxonomyLabel(item)}`);
+          if (mapped && mapped !== item) changed = true;
+          return mapped || item;
+        });
+        knowledgePath = [...new Set([subject, ...knowledgePath.filter((item) => item !== subject && item !== note.subject)])].slice(0, 3);
+        items = items.map((item) => {
+          const mapped = mappings.knowledgeMap.get(`${subject}\u0000${taxonomyLabel(item.knowledgePoint)}`);
+          if (!mapped || mapped === item.knowledgePoint) return item;
+          changed = true;
+          return { ...item, knowledgePoint: mapped };
+        });
+      }
+      const reasons = [
+        note.wrongReason,
+        ...items.map((item) => item?.wrongReason),
+      ].map((value) => taxonomyLabel(value, 300)).filter(Boolean);
+      const categories = [...new Set(reasons.map((reason) => mappings.wrongMap.get(reason)).filter(Boolean))];
+      const previousTags = Array.isArray(note.tags) ? note.tags : [];
+      const tags = [
+        ...previousTags.filter((tag) => !/^错因(?:分类|类别)[:：]/u.test(tag)),
+        ...categories.map((category) => `错因分类:${category}`),
+      ];
+      if (JSON.stringify(tags) !== JSON.stringify(previousTags)) changed = true;
+      if (!changed) return note;
+      changedNotes += 1;
+      return {
+        ...note,
+        knowledgePath,
+        items,
+        tags,
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  }
+  return { snapshot: next, changedNotes };
+}
+
+function persistConsolidatedNoteMetadata(note) {
+  const saved = findSavedNote(note.noteUid);
+  if (!saved) return false;
+  const metadata = {
+    ...saved.metadata,
+    updatedAt: note.updatedAt || new Date().toISOString(),
+    learning: {
+      ...(saved.metadata.learning || {}),
+      knowledgePath: note.knowledgePath,
+      items: note.items,
+      tags: note.tags,
+    },
+  };
+  atomicWriteJson(saved.receipt.sidecarPath, metadata);
+  appendMetadata(path.dirname(saved.filePath), metadata);
+  writeSaveReceipt(note.noteUid, metadata, saved.receipt.learningSyncError);
+  return true;
+}
+
+async function runTaxonomyConsolidation(jobId) {
+  const sourceSnapshot = learningData.getSnapshot();
+  const candidates = collectTaxonomyCandidates(sourceSnapshot);
+  if (candidates.knowledge.length === 0 && candidates.wrongReasons.length === 0) {
+    updateManualAiJob(jobId, {
+      status: 'completed',
+      progress: 100,
+      message: '当前没有需要整理的分类',
+      completedAt: new Date().toISOString(),
+      result: { changedNotes: 0, coverage: 1 },
+    });
+    return;
+  }
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const options = router.getTaskOptions?.('taxonomy') || {};
+  updateManualAiJob(jobId, {
+    status: 'processing',
+    progress: 20,
+    message: 'AI 正在全库比较知识点与错因，原始详情不会删除',
+  });
+  const response = await router.complete({
+    task: 'taxonomy',
+    messages: [{
+      role: 'user',
+      content: [
+        '请全局整理以下考研笔记分类候选。只输出 JSON。',
+        `归并策略：${options.mergeStrategy || 'balanced'}`,
+        `每个资料充分的科目保持 ${Number(options.minKnowledgeGroupsPerSubject) || 5} 到 ${Number(options.maxKnowledgeGroupsPerSubject) || 18} 个知识组。`,
+        `错因类别目标约 ${Number(options.wrongReasonGroupCount) || 9} 个。`,
+        'aliases 必须逐字复制输入 label，每个输入只出现一次；禁止跨 subject 合并。',
+        `知识点候选：${JSON.stringify(candidates.knowledge)}`,
+        `错因候选：${JSON.stringify(candidates.wrongReasons)}`,
+      ].join('\n'),
+    }],
+    responseSchema: {
+      type: 'object',
+      required: ['knowledgeGroups', 'wrongReasonGroups'],
+      properties: {
+        knowledgeGroups: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['subject', 'canonical', 'aliases'],
+            properties: {
+              subject: { type: 'string' },
+              canonical: { type: 'string' },
+              aliases: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+        wrongReasonGroups: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['category', 'aliases'],
+            properties: {
+              category: { type: 'string' },
+              aliases: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    },
+    temperature: 0.05,
+    maxTokens: Number(options.maxTokens) || 6000,
+  });
+  const mappings = validateTaxonomyGroups(response.json, candidates, options);
+  updateManualAiJob(jobId, {
+    progress: 72,
+    message: '归并结果已通过覆盖率与科目边界校验，正在原子写入',
+  });
+  const sourceCandidateFingerprint = taxonomyCandidateFingerprint(candidates);
+  let applied = null;
+  let appliedSourceSnapshot = null;
+  let nextSnapshot = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const currentSnapshot = learningData.getSnapshot();
+    const currentFingerprint = taxonomyCandidateFingerprint(collectTaxonomyCandidates(currentSnapshot));
+    if (currentFingerprint !== sourceCandidateFingerprint) {
+      throw new Error('整理期间分类候选发生变化，本轮未写入；稍后将基于最新资料重新整理');
+    }
+    const currentApplied = applyTaxonomyConsolidation(currentSnapshot, mappings);
+    try {
+      nextSnapshot = learningData.restoreSnapshot(currentApplied.snapshot, {
+        expectedRevision: currentSnapshot.revision,
+      });
+      applied = currentApplied;
+      appliedSourceSnapshot = currentSnapshot;
+      break;
+    } catch (error) {
+      if (!/revision conflict/i.test(error instanceof Error ? error.message : String(error)) || attempt >= 3) {
+        throw error;
+      }
+    }
+  }
+  if (!nextSnapshot || !applied || !appliedSourceSnapshot) {
+    throw new Error('学习数据持续更新，本轮未写入；稍后将自动重试');
+  }
+
+  const taxonomy = loadTaxonomy(NOTE_TAXONOMY_PATH);
+  for (const [subject, groups] of mappings.groupsBySubject) {
+    const subjectNode = ensureSubject(taxonomy, subject, { createdBy: 'ai' });
+    for (const canonical of groups) {
+      const aliases = [...mappings.knowledgeMap]
+        .filter(([key, value]) => key.startsWith(`${subject}\u0000`) && value === canonical)
+        .map(([key]) => key.slice(subject.length + 1));
+      ensureKnowledgePoint(taxonomy, subjectNode, canonical, { aliases, createdBy: 'ai' });
+    }
+  }
+  saveTaxonomyAtomic(NOTE_TAXONOMY_PATH, taxonomy);
+  let durableNotes = 0;
+  for (const day of Object.values(nextSnapshot.days || {})) {
+    for (const note of day.autoNotes || []) {
+      if (persistConsolidatedNoteMetadata(note)) durableNotes += 1;
+    }
+  }
+  broadcastLearningData(nextSnapshot);
+  atomicWriteJson(TAXONOMY_CONSOLIDATION_STATE_PATH, {
+    completedAt: new Date().toISOString(),
+    sourceRevision: appliedSourceSnapshot.revision,
+    resultRevision: nextSnapshot.revision,
+    coverage: mappings.coverage,
+    changedNotes: applied.changedNotes,
+    provider: response.provider || '',
+    model: response.model || '',
+  });
+  updateManualAiJob(jobId, {
+    status: 'completed',
+    progress: 100,
+    message: `分类整理完成：更新 ${applied.changedNotes} 条记录`,
+    completedAt: new Date().toISOString(),
+    result: {
+      changedNotes: applied.changedNotes,
+      durableNotes,
+      coverage: mappings.coverage,
+      revision: nextSnapshot.revision,
+    },
+  });
+}
+
+function enqueueTaxonomyConsolidation(options = {}) {
+  const existing = [...manualAiJobs.values()].find((job) => (
+    job.type === 'taxonomy-consolidation' && ['queued', 'processing'].includes(job.status)
+  ));
+  if (existing) return { job: existing, replayed: true };
+  const stagedAt = new Date().toISOString();
+  const job = {
+    id: `job-${crypto.randomUUID()}`,
+    type: 'taxonomy-consolidation',
+    status: 'queued',
+    progress: 0,
+    message: options.automatic ? '检测到分类过细，已加入后台整理队列' : '已加入全局分类整理队列',
+    error: '',
+    createdAt: stagedAt,
+    updatedAt: stagedAt,
+    completedAt: '',
+    result: null,
+  };
+  manualAiJobs.set(job.id, job);
+  pruneManualAiJobs();
+  void runTaxonomyConsolidation(job.id).catch((error) => {
+    updateManualAiJob(job.id, {
+      status: 'failed',
+      progress: 0,
+      message: '分类整理未通过安全校验，原数据未被覆盖',
+      error: error instanceof Error ? error.message : String(error),
+      completedAt: new Date().toISOString(),
+    });
+  });
+  return { job, replayed: false };
 }
 
 function resumePendingAiNamingJobs() {
@@ -1624,15 +2474,12 @@ function resumePendingAiNamingJobs() {
     const receipt = readJson(path.join(NOTE_SAVE_RECEIPTS_ROOT, name), null);
     if (!receipt || receipt.aiStatus !== 'pending' || typeof receipt.noteUid !== 'string') continue;
     if (!readSaveReceipt(receipt.noteUid)) continue;
-    queueAiNamingJob(receipt.noteUid);
-    resumed += 1;
+    if (queueAiNamingJob(receipt.noteUid)) resumed += 1;
   }
   return resumed;
 }
 
-async function handleSave(req, res) {
-  const raw = await readBody(req);
-  const payload = JSON.parse(raw || '{}');
+function saveNotePayload(payload) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const existing = readSaveReceipt(noteUid);
   if (existing) {
@@ -1640,14 +2487,14 @@ async function handleSave(req, res) {
     if (response.aiStatus === 'complete' && aiNamingJobs.has(noteUid)) {
       response.aiStatus = 'pending';
     }
-    sendJson(res, 200, response);
     if (existing.metadata.naming?.status === 'pending') queueAiNamingJob(noteUid);
-    return;
+    return { status: 200, body: response };
   }
 
-  const requestedSubject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 24);
+  const requestedSubject = normalizeStoredSubject(payload.subject);
   const kind = payload.kind === 'canvas' ? 'canvas' : 'single';
   const remark = typeof payload.remark === 'string' ? payload.remark : '';
+  const isCaptureOriginal = payload.sourceType === 'multi-capture-original';
   const canvasProjectId = kind === 'canvas' && typeof payload.canvasProjectId === 'string'
     ? assertCanvasId(payload.canvasProjectId)
     : null;
@@ -1655,9 +2502,9 @@ async function handleSave(req, res) {
   const fallback = makeFallbackName({
     kind,
     remark,
-    subject: requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : guessSubjectFromText(remark),
+    subject: isCaptureOriginal || requestedSubject !== DEFAULT_SUBJECT ? requestedSubject : guessSubjectFromText(remark),
   });
-  const subject = sanitizeSegment(fallback.subject, DEFAULT_SUBJECT, 24);
+  const subject = normalizeStoredSubject(fallback.subject);
   const subjectDir = path.join(NOTES_ROOT, subject);
   fs.mkdirSync(subjectDir, { recursive: true });
 
@@ -1684,6 +2531,12 @@ async function handleSave(req, res) {
     fileName: filename,
     filePath,
     mime: image.mime,
+    sourceType: typeof payload.sourceType === 'string' ? payload.sourceType.slice(0, 80) : '',
+    sourceBatchId: typeof payload.sourceBatchId === 'string' ? payload.sourceBatchId.slice(0, 128) : '',
+    sourceSplitIndex: Number.isInteger(payload.sourceSplitIndex) ? payload.sourceSplitIndex : null,
+    tags: Array.isArray(payload.tags)
+      ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))].slice(0, 24)
+      : [],
     extracted,
     learning: {
       noteUid,
@@ -1695,15 +2548,15 @@ async function handleSave(req, res) {
       }),
     },
     naming: {
-      status: 'pending',
+      status: isCaptureOriginal ? 'complete' : 'pending',
       provider: null,
       model: null,
-      reason: 'local_first',
+      reason: isCaptureOriginal ? 'capture_batch_original' : 'local_first',
       error: null,
       requestedAt: createdAt,
     },
     classifier: {
-      status: 'saved_pending_ai',
+      status: isCaptureOriginal ? 'pending_capture_processing' : 'saved_pending_ai',
       provider: null,
       scheduledAt: 'every_72_hours',
     },
@@ -1731,8 +2584,194 @@ async function handleSave(req, res) {
     filePath,
     fileName: filename,
   };
-  sendJson(res, 202, makeSaveResponse(saved, { learningSyncError }));
-  queueAiNamingJob(noteUid);
+  if (!isCaptureOriginal) queueAiNamingJob(noteUid);
+  return { status: 202, body: makeSaveResponse(saved, { learningSyncError }) };
+}
+
+async function handleSave(req, res) {
+  const raw = await readBody(req);
+  const payload = JSON.parse(raw || '{}');
+  const result = saveNotePayload(payload);
+  sendJson(res, result.status, result.body);
+}
+
+async function handleSaveBatch(req, res) {
+  const raw = await readBody(req, 32 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  if (!Array.isArray(payload.notes) || payload.notes.length < 1 || payload.notes.length > 40) {
+    throw new SyntaxError('notes 必须包含 1 到 40 条图片记录');
+  }
+  const results = payload.notes.map((note) => saveNotePayload(note));
+  sendJson(res, 202, {
+    ok: true,
+    notes: results.map((result) => result.body),
+    learningData: learningData.getSnapshot(),
+    idempotentReplay: results.every((result) => result.body.idempotentReplay === true),
+  });
+}
+
+function cleanMaterialPreviewItem(value) {
+  const input = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const kind = ['image', 'pdf', 'word', 'html', 'file'].includes(input.kind) ? input.kind : 'file';
+  const clean = (field, limit = 2_000) => String(input[field] || '').trim().slice(0, limit);
+  return {
+    id: clean('id', 200),
+    kind,
+    name: clean('name', 240) || '学习资料',
+    mimeType: clean('mimeType', 180),
+    filePath: clean('filePath'),
+    fallbackPath: clean('fallbackPath'),
+    url: clean('url', 4_000),
+    fallbackUrl: clean('fallbackUrl', 4_000),
+    posterUrl: clean('posterUrl', 4_000),
+    label: clean('label', 80),
+    sizeLabel: clean('sizeLabel', 80),
+  };
+}
+
+async function openMaterialPreviewWindow(payload) {
+  const input = payload?.descriptor && typeof payload.descriptor === 'object' ? payload.descriptor : {};
+  const item = cleanMaterialPreviewItem(input.item);
+  if (!item.id || !item.url) {
+    const error = new Error('资料预览描述无效');
+    error.code = 'INVALID_MATERIAL_PREVIEW';
+    throw error;
+  }
+  const assets = (Array.isArray(input.assets) ? input.assets : [])
+    .slice(0, MAX_MATERIAL_FILES)
+    .map(cleanMaterialPreviewItem);
+  const descriptor = {
+    schemaVersion: 1,
+    item,
+    assets: assets.some((asset) => asset.id === item.id) ? assets : [item, ...assets],
+    screenPoint: {
+      x: Number(input.screenPoint?.x) || 0,
+      y: Number(input.screenPoint?.y) || 0,
+    },
+    createdAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(MATERIAL_WINDOW_REQUEST_ROOT, { recursive: true });
+  const requestPath = path.join(MATERIAL_WINDOW_REQUEST_ROOT, `${crypto.randomUUID()}.json`);
+  fs.writeFileSync(requestPath, JSON.stringify(descriptor), { encoding: 'utf8', flag: 'wx' });
+  try {
+    const pid = await launchNoteApp(`--material-preview=${requestPath}`);
+    return { ok: true, pid };
+  } catch (error) {
+    unlinkFileIfExists(requestPath);
+    throw error;
+  }
+}
+
+function captureJobPath(jobId) {
+  return path.join(CAPTURE_JOBS_ROOT, `${jobId}.json`);
+}
+
+function readCaptureJob(jobId) {
+  const job = readJson(captureJobPath(jobId), null);
+  return job?.jobId === jobId ? job : null;
+}
+
+function writeCaptureJob(job) {
+  fs.mkdirSync(CAPTURE_JOBS_ROOT, { recursive: true });
+  atomicWriteJson(captureJobPath(job.jobId), job);
+  return job;
+}
+
+function captureRuntimeHashes() {
+  const configuration = fs.existsSync(AI_PROVIDER_CONFIG_PATH)
+    ? fs.readFileSync(AI_PROVIDER_CONFIG_PATH)
+    : Buffer.from('{}');
+  const workflowPath = path.join(__dirname, 'agent-workflow-contracts.cjs');
+  const workflow = fs.existsSync(workflowPath) ? fs.readFileSync(workflowPath) : Buffer.from('');
+  return {
+    configurationHash: crypto.createHash('sha256').update(configuration).digest('hex'),
+    workflowHash: crypto.createHash('sha256').update(workflow).digest('hex'),
+  };
+}
+
+async function handleLocalCaptureBatch(req, res) {
+  const raw = await readBody(req, 16 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  const batchId = String(payload.batchId || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$/.test(batchId)) {
+    throw new SyntaxError('batchId 格式无效');
+  }
+  const image = decodeDataUrl(payload.imageDataUrl);
+  const imageHash = crypto.createHash('sha256').update(image.buffer).digest('hex');
+  const jobId = `local-${crypto.createHash('sha256').update(`${batchId}\0${imageHash}`).digest('hex').slice(0, 40)}`;
+  const existing = readCaptureJob(jobId);
+  if (existing) {
+    sendJson(res, 200, {
+      ok: true,
+      accepted: false,
+      jobId,
+      entryId: existing.entryId,
+      job: existing,
+    });
+    return;
+  }
+
+  const entryId = `capture-${imageHash.slice(0, 32)}`;
+  const saved = saveNotePayload({
+    imageDataUrl: payload.imageDataUrl,
+    noteUid: entryId,
+    kind: 'single',
+    subject: normalizeStoredSubject(payload.subject),
+    remark: typeof payload.remark === 'string' ? payload.remark : '',
+    sourceType: 'multi-capture-original',
+    sourceBatchId: batchId,
+    tags: ['AI多题原图', '待处理'],
+  });
+  const now = new Date().toISOString();
+  const hashes = captureRuntimeHashes();
+  const job = writeCaptureJob({
+    jobId,
+    batchId,
+    entryId,
+    assetHash: imageHash,
+    status: 'needs_review',
+    progress: 10,
+    message: '整页原图已可靠写入本地；局域网模式保留为待处理，可在桌面端手工框选或同步后由公网后台处理',
+    error: '',
+    resultEntryIds: [],
+    configurationHash: hashes.configurationHash,
+    workflowHash: hashes.workflowHash,
+    createdAt: now,
+    updatedAt: now,
+    saveStatus: saved.status,
+  });
+  sendJson(res, 202, { ok: true, accepted: true, jobId, entryId, job });
+}
+
+function handleLocalCaptureJob(req, res, pathname) {
+  const retryMatch = /^\/jobs\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/retry$/.exec(pathname);
+  const readMatch = /^\/jobs\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(pathname);
+  const match = retryMatch || readMatch;
+  if (!match) return false;
+  const job = readCaptureJob(match[1]);
+  if (!job) {
+    sendJson(res, 404, { ok: false, error: '多题任务不存在' });
+    return true;
+  }
+  if (retryMatch && req.method === 'POST') {
+    const hashes = captureRuntimeHashes();
+    const next = writeCaptureJob({
+      ...job,
+      status: 'needs_review',
+      message: '原图仍安全保留；局域网自动裁剪不可用，请手工框选或等待同步到公网后台',
+      error: '',
+      configurationHash: hashes.configurationHash,
+      workflowHash: hashes.workflowHash,
+      updatedAt: new Date().toISOString(),
+    });
+    sendJson(res, 202, { ok: true, accepted: true, job: next });
+    return true;
+  }
+  if (readMatch && req.method === 'GET') {
+    sendJson(res, 200, { ok: true, job });
+    return true;
+  }
+  return false;
 }
 
 function materialReceiptPath(noteUid) {
@@ -1810,6 +2849,212 @@ function writeMaterialReceipt(receipt) {
   atomicWriteJson(materialReceiptPath(receipt.noteUid), receipt);
 }
 
+async function extractMaterialNamingText(attachment) {
+  const filePath = String(attachment?.filePath || '');
+  const extension = path.extname(filePath).toLowerCase();
+  try {
+    const buffer = fs.readFileSync(filePath);
+    if (['.txt', '.md', '.css', '.js', '.mjs', '.json', '.svg'].includes(extension)) {
+      return buffer.toString('utf8').slice(0, 6_000);
+    }
+    if (extension === '.html' || extension === '.htm') {
+      return buffer.toString('utf8')
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&(?:nbsp|amp|lt|gt|quot);/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 8_000);
+    }
+    if (extension === '.docx') {
+      const imported = await import('mammoth');
+      const mammoth = imported.default || imported;
+      const result = await mammoth.extractRawText({ buffer });
+      return String(result.value || '').replace(/\s+/g, ' ').trim().slice(0, 8_000);
+    }
+    if (extension === '.pdf') {
+      const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const document = await getDocument({ data: new Uint8Array(buffer) }).promise;
+      const pages = [];
+      for (let pageNumber = 1; pageNumber <= Math.min(3, document.numPages); pageNumber += 1) {
+        const page = await document.getPage(pageNumber);
+        const content = await page.getTextContent();
+        pages.push(content.items.map((item) => typeof item?.str === 'string' ? item.str : '').join(' '));
+      }
+      await document.destroy();
+      return pages.join(' ').replace(/\s+/g, ' ').trim().slice(0, 8_000);
+    }
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function safeAiMaterialStem(value, fallback, maxLength) {
+  return String(value || fallback)
+    .normalize('NFKC')
+    .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, maxLength) || fallback;
+}
+
+async function runMaterialNamingJob(noteUid, options = {}) {
+  const receipt = readMaterialReceipt(noteUid);
+  const note = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+  if (!receipt || !note || receipt.attachments.length === 0) return null;
+  const router = getAiRouter();
+  if (!router) throw new Error(aiRouterInitError || 'AI router is unavailable');
+  const taskOptions = router.getTaskOptions?.('material_naming') || {};
+  const maxLength = Math.max(8, Math.min(60, Number(taskOptions.titleMaxLength) || 26));
+  const noteTitleMaxLength = Math.max(8, Math.min(32, Number(taskOptions.noteTitleMaxLength) || 18));
+  const fileContexts = [];
+  const content = [];
+  for (let index = 0; index < receipt.attachments.length; index += 1) {
+    const attachment = receipt.attachments[index];
+    const extractedText = await extractMaterialNamingText(attachment);
+    fileContexts.push({
+      index,
+      originalName: attachment.name,
+      mimeType: attachment.mimeType,
+      extractedText,
+    });
+  }
+  content.push({
+    type: 'text',
+    text: [
+      '你只负责为一条考研速记及其附件命名，不回答问题，不总结资料。',
+      '命名前必须先完整理解正文与全部附件的共同主题、顺序和互补关系；禁止逐个孤立判断。',
+      '速记标题只写共同主题，不得机械拼接附件名，且必须控制在很短的长度内。',
+      '每个附件名要体现它在本条速记中的作用，例如概念原文、例题解析、我的批注、动态演示、总结图或补充证明。',
+      '同组附件名称要彼此区分并保持统一主题，不能使用资料一、资料二。',
+      '每份资料都必须返回同一个 index；名称不含扩展名、日期、随机数和路径。',
+      '禁止使用“资料、图片、截图、文档、未命名”等空泛名称。',
+      `速记正文：${String(note.remark || '').slice(0, 4_000) || '无'}`,
+      `附件信息：${JSON.stringify(fileContexts)}`,
+    ].join('\n'),
+  });
+  for (let index = 0; index < receipt.attachments.length; index += 1) {
+    const attachment = receipt.attachments[index];
+    if (!String(attachment.mimeType || '').startsWith('image/')) continue;
+    try {
+      const buffer = fs.readFileSync(attachment.filePath);
+      if (buffer.length > MAX_MATERIAL_FILE_BYTES) continue;
+      content.push({ type: 'text', text: `下面是 index=${index} 的图片内容：` });
+      content.push({
+        type: 'image_url',
+        image_url: { url: `data:${attachment.mimeType};base64,${buffer.toString('base64')}` },
+      });
+    } catch {}
+  }
+  const response = await router.complete({
+    task: 'material_naming',
+    messages: [{ role: 'user', content }],
+    responseSchema: {
+      type: 'object',
+      required: ['noteTitle', 'files'],
+      properties: {
+        noteTitle: { type: 'string' },
+        files: {
+          type: 'array',
+          maxItems: receipt.attachments.length,
+          items: {
+            type: 'object',
+            required: ['index', 'name'],
+            properties: {
+              index: { type: 'number' },
+              name: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    temperature: 0.1,
+    maxTokens: Number(taskOptions.maxTokens) || 1200,
+  });
+  const names = new Map((Array.isArray(response.json?.files) ? response.json.files : [])
+    .map((item) => [Number(item?.index), safeAiMaterialStem(item?.name, '', maxLength)])
+    .filter(([index, name]) => Number.isInteger(index) && index >= 0 && name));
+  const renamed = receipt.attachments.map((attachment, index) => {
+    const extension = path.extname(attachment.filePath) || path.extname(attachment.name);
+    const fallbackStem = path.basename(attachment.name, path.extname(attachment.name)) || `资料-${index + 1}`;
+    const stem = names.get(index) || fallbackStem;
+    const storedPrefix = `${String(index + 1).padStart(2, '0')}-`;
+    const targetPath = path.join(path.dirname(attachment.filePath), `${storedPrefix}${stem}${extension.toLowerCase()}`);
+    let finalPath = targetPath;
+    let suffix = 2;
+    while (path.resolve(finalPath) !== path.resolve(attachment.filePath) && fs.existsSync(finalPath)) {
+      finalPath = path.join(path.dirname(targetPath), `${storedPrefix}${stem}-${suffix}${extension.toLowerCase()}`);
+      suffix += 1;
+    }
+    if (path.resolve(finalPath) !== path.resolve(attachment.filePath)) fs.renameSync(attachment.filePath, finalPath);
+    return {
+      ...attachment,
+      name: `${path.basename(finalPath, path.extname(finalPath)).replace(/^\d{2}-/, '')}${path.extname(finalPath)}`,
+      filePath: finalPath,
+    };
+  });
+  const shouldRenameTitle = options.forceTitle === true
+    || (taskOptions.renameNoteTitle !== false && !options.userTitle);
+  const nextTitle = shouldRenameTitle
+    ? safeAiMaterialStem(response.json?.noteTitle, note.title || renamed[0]?.name || '快速记录', noteTitleMaxLength)
+    : note.title;
+  const snapshot = learningData.updateNote(noteUid, {
+    title: nextTitle,
+    attachments: renamed,
+  });
+  writeMaterialReceipt({
+    ...receipt,
+    attachments: renamed,
+    aiNaming: {
+      status: 'complete',
+      provider: response.provider || '',
+      model: response.model || '',
+      completedAt: new Date().toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
+  });
+  broadcastLearningData(snapshot);
+  return { title: nextTitle, attachments: renamed, snapshot };
+}
+
+function queueMaterialNamingJob(noteUid, options = {}) {
+  if (materialNamingJobs.has(noteUid)) return false;
+  if (options.manualJobId) {
+    updateManualAiJob(options.manualJobId, {
+      status: 'processing',
+      progress: 15,
+      message: 'AI 正在读取速记文字和各份资料',
+    });
+  }
+  const job = Promise.resolve().then(() => runMaterialNamingJob(noteUid, options));
+  materialNamingJobs.set(noteUid, job);
+  void job.then((result) => {
+    if (options.manualJobId) {
+      updateManualAiJob(options.manualJobId, {
+        status: result ? 'completed' : 'failed',
+        progress: result ? 100 : 0,
+        message: result ? '速记标题与资料命名完成' : '没有找到可命名的速记资料',
+        error: result ? '' : 'MATERIAL_NOTE_NOT_FOUND',
+        completedAt: new Date().toISOString(),
+        result: result ? { applied: true, title: result.title, revision: result.snapshot.revision } : null,
+      });
+    }
+  }).catch((error) => {
+    if (options.manualJobId) {
+      updateManualAiJob(options.manualJobId, {
+        status: 'failed',
+        progress: 0,
+        message: '多资料 AI 命名失败，原文件名已保留',
+        error: error instanceof Error ? error.message : String(error),
+        completedAt: new Date().toISOString(),
+      });
+    }
+  }).finally(() => materialNamingJobs.delete(noteUid));
+  return true;
+}
+
 async function handleSaveMaterial(req, res) {
   const raw = await readBody(req, 24 * 1024 * 1024);
   const payload = JSON.parse(raw || '{}');
@@ -1834,9 +3079,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -1934,6 +3179,7 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
@@ -2040,9 +3286,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -2140,6 +3386,7 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
@@ -2246,9 +3493,9 @@ async function handleSaveMaterial(req, res) {
     error.code = 'INVALID_MATERIAL_NOTE';
     throw error;
   }
-  const subject = sanitizeSegment(payload.subject || DEFAULT_SUBJECT, DEFAULT_SUBJECT, 60);
+  const subject = normalizeStoredSubject(payload.subject);
   const facets = Array.isArray(payload.facets)
-    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge'].includes(item)))]
+    ? [...new Set(payload.facets.filter((item) => ['quick', 'mistake', 'good', 'memory', 'knowledge', 'method'].includes(item)))]
     : ['quick'];
   const tags = Array.isArray(payload.tags)
     ? [...new Set(payload.tags.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
@@ -2346,9 +3593,126 @@ async function handleSaveMaterial(req, res) {
       learningData: snapshot,
       idempotentReplay: false,
     });
+    queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
     fs.rmSync(stagingDir, { recursive: true, force: true });
     if (!snapshot) fs.rmSync(finalDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function handleAppendMaterial(req, res) {
+  const raw = await readBody(req, 24 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  const noteUid = normalizeNoteUid(payload.noteUid);
+  const files = (Array.isArray(payload.files) ? payload.files : []).map(decodeMaterialFile);
+  if (files.length < 1 || files.length > MAX_MATERIAL_FILES) {
+    const error = new Error('请选择 1 到 8 个要加入的资料文件');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
+  if (totalBytes > MAX_MATERIAL_TOTAL_BYTES) {
+    const error = new Error('资料文件合计超过 16 MB');
+    error.code = 'PAYLOAD_TOO_LARGE';
+    throw error;
+  }
+  const snapshot = learningData.getSnapshot();
+  const note = findMaterialLearningNote(snapshot, noteUid);
+  if (!note) {
+    const error = new Error('没有找到要追加资料的速记');
+    error.code = 'NOTE_NOT_FOUND';
+    throw error;
+  }
+  const currentAttachments = Array.isArray(note.attachments) ? note.attachments : [];
+  const existingHashes = new Set();
+  for (const attachment of currentAttachments) {
+    const declared = typeof attachment?.checksum === 'string'
+      ? attachment.checksum.replace(/^sha256:/i, '').toLowerCase()
+      : '';
+    if (/^[a-f0-9]{64}$/.test(declared)) {
+      existingHashes.add(declared);
+      continue;
+    }
+    if (typeof attachment?.filePath === 'string' && fs.existsSync(attachment.filePath)) {
+      try {
+        existingHashes.add(crypto.createHash('sha256').update(fs.readFileSync(attachment.filePath)).digest('hex'));
+      } catch {
+        // A temporarily unavailable old attachment must not block adding a new one.
+      }
+    }
+  }
+  const additions = files
+    .map((file) => ({ file, hash: crypto.createHash('sha256').update(file.buffer).digest('hex') }))
+    .filter(({ hash }, index, source) => !existingHashes.has(hash) && source.findIndex((item) => item.hash === hash) === index);
+  if (currentAttachments.length + additions.length > MAX_MATERIAL_FILES) {
+    const error = new Error(`每条速记最多保留 ${MAX_MATERIAL_FILES} 份资料，请先移除不需要的附件`);
+    error.code = 'TOO_MANY_NOTE_FILES';
+    throw error;
+  }
+  if (additions.length === 0) {
+    sendJson(res, 200, {
+      ok: true,
+      noteUid,
+      attachments: currentAttachments,
+      learningData: snapshot,
+      idempotentReplay: true,
+    });
+    return;
+  }
+
+  const finalDir = path.join(MATERIAL_FILES_ROOT, noteUid);
+  fs.mkdirSync(finalDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  const createdPaths = [];
+  try {
+    const appended = additions.map(({ file, hash }, index) => {
+      const storedName = `${String(currentAttachments.length + index + 1).padStart(2, '0')}-${hash.slice(0, 10)}-${file.fileName}`;
+      const finalPath = path.join(finalDir, storedName);
+      const temporaryPath = `${finalPath}.tmp-${crypto.randomUUID()}`;
+      fs.writeFileSync(temporaryPath, file.buffer, { flag: 'wx' });
+      fs.renameSync(temporaryPath, finalPath);
+      createdPaths.push(finalPath);
+      return {
+        id: `material-${hash.slice(0, 24)}`,
+        kind: file.kind,
+        name: file.fileName,
+        mimeType: file.mime,
+        size: file.buffer.length,
+        filePath: finalPath,
+        previewPath: '',
+        posterPath: '',
+        checksum: `sha256:${hash}`,
+        createdAt,
+      };
+    });
+    const attachments = [...currentAttachments, ...appended];
+    const nextSnapshot = learningData.updateNote(noteUid, { attachments });
+    const receipt = readJson(materialReceiptPath(noteUid), null);
+    if (receipt && receipt.noteUid === noteUid) {
+      writeMaterialReceipt({
+        ...receipt,
+        attachments,
+        updatedAt: createdAt,
+      });
+    }
+    broadcastLearningData(nextSnapshot);
+    sendJson(res, 200, {
+      ok: true,
+      noteUid,
+      attachments,
+      learningData: nextSnapshot,
+      idempotentReplay: false,
+    });
+    queueMaterialNamingJob(noteUid, { userTitle: false });
+  } catch (error) {
+    for (const filePath of createdPaths) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch {
+        // Keep the original failure as the actionable error.
+      }
+    }
     throw error;
   }
 }
@@ -2717,6 +4081,30 @@ async function handleCanvasProjectRoute(req, res, pathname) {
 }
 
 async function handleLearningDataRoute(req, res, pathname) {
+  if (req.method === 'POST' && pathname === '/search') {
+    sendJson(res, 200, await searchLearningDocuments(JSON.parse((await readBody(req, 64 * 1024)) || '{}')));
+    return true;
+  }
+  if (req.method === 'POST' && pathname === '/ai/taxonomy/consolidate') {
+    if (!canControlNoteApp(req)) {
+      sendJson(res, 403, { ok: false, error: '全局分类整理只能由运行服务的本机发起' });
+      return true;
+    }
+    const result = enqueueTaxonomyConsolidation();
+    sendJson(res, 202, { ok: true, accepted: true, ...result });
+    return true;
+  }
+  const aiJobMatch = /^\/ai\/jobs\/([^/]+)$/.exec(pathname);
+  if (req.method === 'GET' && aiJobMatch) {
+    const job = manualAiJobs.get(decodeURIComponent(aiJobMatch[1]));
+    if (!job) {
+      sendJson(res, 404, { ok: false, code: 'JOB_NOT_FOUND', error: '找不到这个 AI 任务' });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, job });
+    return true;
+  }
+
   if (req.method === 'GET' && pathname === '/learning-data/events') {
     handleLearningEvents(req, res);
     return true;
@@ -2857,6 +4245,12 @@ async function handleLearningDataRoute(req, res, pathname) {
 
   const cardMatch = /^\/learning-data\/cards\/([^/]+)$/.exec(pathname);
   const noteMatch = /^\/learning-data\/notes\/([^/]+)$/.exec(pathname);
+  const noteRenameMatch = /^\/learning-data\/notes\/([^/]+)\/rename$/.exec(pathname);
+  if (noteRenameMatch && req.method === 'POST') {
+    const result = enqueueManualAiRename(decodeURIComponent(noteRenameMatch[1]));
+    sendJson(res, 202, { ok: true, accepted: true, ...result });
+    return true;
+  }
   const noteAnalyzeMatch = /^\/learning-data\/notes\/([^/]+)\/analyze-wrong-reason$/.exec(pathname);
   if (noteAnalyzeMatch && req.method === 'POST') {
     const noteUid = decodeURIComponent(noteAnalyzeMatch[1]);
@@ -3099,6 +4493,7 @@ const server = http.createServer(async (req, res) => {
     if (await handleCanvasProjectRoute(req, res, pathname)) return;
     if (await handleLearningDataRoute(req, res, pathname)) return;
     if (await handleOrganizerRoute(req, res, pathname)) return;
+    if (handleLocalCaptureJob(req, res, pathname)) return;
 
     if (req.method === 'GET' && pathname === '/note-file') {
       const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));
@@ -3111,7 +4506,10 @@ const server = http.createServer(async (req, res) => {
         'Content-Disposition': noteFileContentDisposition(file, fileName, preview),
         'Cache-Control': 'private, no-store',
         'X-Content-Type-Options': 'nosniff',
-        'Cross-Origin-Resource-Policy': 'same-origin',
+        // The desktop UI is served from :5173 while note files are served from
+        // :5174. Keep path access restricted by resolveNoteFile and CORS, but
+        // allow the image response itself to be embedded by that local UI.
+        'Cross-Origin-Resource-Policy': 'cross-origin',
       });
       fs.createReadStream(file.filePath).pipe(res);
       return;
@@ -3207,6 +4605,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'PUT' && pathname === '/ai/providers') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'AI 厂家密钥只能在运行服务的 Windows 主机上修改。' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 32 * 1024)) || '{}');
+      sendJson(res, 200, saveAiProviderCredential(payload));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/note-app-status') {
       sendJson(res, 200, { ok: true, readyAt: noteAppReadyAt });
       return;
@@ -3235,6 +4643,31 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/save-material-note') {
       await handleSaveMaterial(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/append-material-note') {
+      await handleAppendMaterial(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/material-window') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'Only the local Kaoyan desktop page can open floating material windows.' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 256 * 1024)) || '{}');
+      sendJson(res, 202, await openMaterialPreviewWindow(payload));
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/capture-batches') {
+      await handleLocalCaptureBatch(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/save-note-batch') {
+      await handleSaveBatch(req, res);
       return;
     }
 
@@ -3309,4 +4742,37 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`AI router providers: ${currentRouter ? currentRouter.getStatus().providers.filter((provider) => provider.enabled).map((provider) => provider.id).join(', ') || 'none' : `unavailable (${aiRouterInitError})`}`);
   const resumedJobs = resumePendingAiNamingJobs();
   if (resumedJobs > 0) console.log(`Resumed ${resumedJobs} pending AI naming job(s).`);
+  pendingAiNamingResumeTimer = setInterval(() => {
+    resumePendingAiNamingJobs();
+  }, 30_000);
+  pendingAiNamingResumeTimer.unref?.();
+  taxonomyConsolidationTimer = setTimeout(() => {
+    const previous = readJson(TAXONOMY_CONSOLIDATION_STATE_PATH, null);
+    const completedAt = Date.parse(previous?.completedAt || '');
+    const weekElapsed = !Number.isFinite(completedAt) || Date.now() - completedAt >= 7 * 24 * 60 * 60 * 1000;
+    if (weekElapsed && taxonomyNeedsConsolidation(learningData.getSnapshot())) {
+      enqueueTaxonomyConsolidation({ automatic: true });
+    }
+  }, 20_000);
+  taxonomyConsolidationTimer.unref?.();
 });
+
+module.exports = {
+  server,
+  async close() {
+    reviewSync.stop();
+    if (pendingAiNamingResumeTimer) {
+      clearInterval(pendingAiNamingResumeTimer);
+      pendingAiNamingResumeTimer = null;
+    }
+    if (taxonomyConsolidationTimer) {
+      clearTimeout(taxonomyConsolidationTimer);
+      taxonomyConsolidationTimer = null;
+    }
+    server.closeAllConnections?.();
+    if (!server.listening) return;
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  },
+};

@@ -110,7 +110,7 @@
 
 .ai-provider-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 11px;
   margin-bottom: 16px;
 }
@@ -176,6 +176,132 @@
 .ai-provider-strip .ai-provider-empty {
   grid-column: 1 / -1;
   color: #9a5c35;
+}
+
+.ai-provider-tools {
+  width: min(1240px, 100%);
+  display: grid;
+  grid-template-columns: minmax(300px, .8fr) minmax(420px, 1.2fr);
+  gap: 12px;
+  margin: 0 auto 16px;
+}
+
+.ai-provider-tools > details,
+.ai-usage-summary {
+  border: 1px solid #e1e5e9;
+  border-radius: 14px;
+  background: rgba(255,255,255,.86);
+  box-shadow: 0 5px 20px rgba(24,33,47,.035);
+}
+
+.ai-provider-tools > details > summary,
+.ai-usage-summary > header {
+  min-height: 43px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 13px;
+  color: #56616e;
+  font-size: 12px;
+  font-weight: 820;
+  cursor: pointer;
+}
+
+.ai-provider-tools > details > div {
+  display: grid;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto;
+  gap: 9px;
+  border-top: 1px solid #e7eaed;
+  padding: 11px 13px 13px;
+}
+
+.ai-provider-tools label {
+  display: grid;
+  gap: 5px;
+  color: #737d89;
+  font-size: 10px;
+  font-weight: 720;
+}
+
+.ai-provider-tools input,
+.ai-provider-tools select {
+  min-width: 0;
+  height: 35px;
+  border: 1px solid #dce1e6;
+  border-radius: 8px;
+  background: #fff;
+  padding: 0 9px;
+  color: #35404d;
+  font: inherit;
+}
+
+.ai-provider-tools details button {
+  min-height: 35px;
+  align-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  background: #855631;
+  color: #fff;
+  padding: 0 11px;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ai-provider-tools details button:disabled {
+  opacity: .45;
+}
+
+.ai-usage-summary > header {
+  cursor: default;
+}
+
+.ai-usage-summary > header small {
+  margin-left: auto;
+  color: #929aa4;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.ai-usage-summary > div {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  border-top: 1px solid #e7eaed;
+  padding: 9px 12px 12px;
+}
+
+.ai-usage-summary article {
+  min-width: 118px;
+  display: grid;
+  gap: 2px;
+  border-radius: 9px;
+  background: #f5f6f7;
+  padding: 8px 9px;
+}
+
+.ai-usage-summary article strong,
+.ai-usage-summary article span,
+.ai-usage-summary article small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-usage-summary article strong { font-size: 11px; }
+.ai-usage-summary article span { color: #8a582f; font-size: 12px; font-weight: 830; }
+.ai-usage-summary article small { color: #89919b; font-size: 9px; }
+.ai-usage-summary p { margin: 0; color: #8a929d; font-size: 11px; }
+
+@media (max-width: 880px) {
+  .ai-provider-tools {
+    grid-template-columns: 1fr;
+  }
+  .ai-provider-tools > details > div {
+    grid-template-columns: 1fr;
+  }
 }
 
 .ai-config-workspace {

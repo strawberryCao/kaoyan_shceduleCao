@@ -22,17 +22,27 @@ const hostnameFromHostHeader = (hostHeader = '') => {
 const isAllowedLanApiRoute = (method, requestUrl) => {
   const url = new URL(requestUrl || '/', 'http://127.0.0.1:5173');
   if (method === 'GET' && url.pathname === '/api/note-file') {
+    const allowedKeys = new Set(['path', 'preview']);
     const keys = [...url.searchParams.keys()];
-    return keys.length === 1 && keys[0] === 'path' && Boolean(url.searchParams.get('path'));
+    return keys.every((key) => allowedKeys.has(key))
+      && Boolean(url.searchParams.get('path'))
+      && (url.searchParams.get('preview') === null || url.searchParams.get('preview') === '1');
   }
   if (url.search) return false;
   if (method === 'GET' && url.pathname === '/api/canvas-projects') return true;
   if (method === 'GET' && url.pathname === '/api/canvas-projects/events') return true;
   if (method === 'POST' && url.pathname === '/api/canvas-projects/active') return true;
   if (method === 'POST' && /^\/api\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(url.pathname)) return true;
-  if (method === 'POST' && url.pathname === '/api/save-note') return true;
+  if ((method === 'GET' || method === 'POST') && /^\/api\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(url.pathname)) return true;
+  if (method === 'POST' && ['/api/save-note', '/api/save-note-batch', '/api/save-material-note', '/api/append-material-note', '/api/capture-batches'].includes(url.pathname)) return true;
+  if (method === 'GET' && /^\/api\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(url.pathname)) return true;
+  if (method === 'POST' && /^\/api\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(url.pathname)) return true;
   if (method === 'GET' && (url.pathname === '/api/learning-data' || url.pathname === '/api/learning-data/events')) return true;
+  if (method === 'GET' && /^\/api\/ai\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(url.pathname)) return true;
+  if (method === 'POST' && url.pathname === '/api/search') return true;
   if (method === 'POST' && (url.pathname === '/api/learning-data/notes' || url.pathname === '/api/learning-data/cards')) return true;
+  if (method === 'POST' && /^\/api\/learning-data\/notes\/[^/]+\/rename$/.test(url.pathname)) return true;
+  if (method === 'POST' && url.pathname === '/api/learning-data/note-review-actions') return true;
   if (method === 'PATCH' && url.pathname === '/api/learning-data/day') return true;
   if (method === 'PUT' && url.pathname === '/api/learning-data/manual-records') return true;
   if (method === 'POST' && /^\/api\/learning-data\/notes\/[^/]+\/restore$/.test(url.pathname)) return true;

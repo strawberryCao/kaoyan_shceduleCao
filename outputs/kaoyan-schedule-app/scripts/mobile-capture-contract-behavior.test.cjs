@@ -48,8 +48,12 @@ test('mobile multi-question capture persists batch context before any AI or netw
   assert.match(block, /subject: batchSubject/);
   assert.match(block, /remark: batchRemark/);
   assert.match(block, /await enqueueMultiQuestionJob/);
-  assert.match(block, /整页原图已安全保存在本机/);
+  assert.match(block, /setStatus\(job\.message/);
   assert.match(jobs, /await putJob\(job\)/);
-  assert.match(jobs, /window\.setTimeout\(\(\) => \{ void processJob\(id\); \}, 0\)/);
+  assert.match(jobs, /window\.setTimeout\(\(\) => \{ void resumeOne\(job\.id\); \}, 0\)/);
+  assert.match(jobs, /if \(IS_CLOUD_RUNTIME\)/);
+  assert.match(jobs, /await resumeOne\(job\.id\)/);
+  assert.match(jobs, /createCaptureBatch/);
+  assert.doesNotMatch(jobs, /detectQuestionRegions|cropManyImages/);
   assert.match(queue, /重新打开页面会自动续传/);
 });

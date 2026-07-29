@@ -172,6 +172,10 @@ function mergeObjectFields(localValue, remoteValue, previousValue, localUpdatedA
 function mergeKeyedRecords(localItems, remoteItems, previousItems, key, localUpdatedAt, remoteUpdatedAt, strategies = {}) {
   if (!Array.isArray(localItems)) return clone(Array.isArray(remoteItems) ? remoteItems : []);
   if (!Array.isArray(remoteItems)) return clone(localItems);
+  // Attachment order is presentation data. When both sides already agree,
+  // keep that order instead of re-sorting by timestamps/IDs and fighting the
+  // V2 adapter on every synchronization cycle.
+  if (equal(localItems, remoteItems)) return clone(localItems);
   const local = indexBy(localItems, key);
   const remote = indexBy(remoteItems, key);
   const previous = indexBy(previousItems, key);
@@ -386,16 +390,19 @@ function mergeSnapshots(localInput, remoteInput, previousInput) {
     const localDeleted = local.deletedNotes[noteUid];
     const remoteDeleted = remote.deletedNotes[noteUid];
     const previousDeleted = previous.deletedNotes[noteUid];
-    const chosen = chooseSide(
-      localDeleted,
+    // A deletion created by the Windows host is authoritative. Remote
+    // enrichment or a stale cloud copy may have a newer updatedAt, but that is
+    // not an explicit restore and must never resurrect the record.
+    const chosen = localDeleted || chooseSide(
       remoteDeleted,
+      null,
       previousDeleted,
-      localDeleted?.deletedAt || local.updatedAt,
       remoteDeleted?.deletedAt || remote.updatedAt,
+      previous.updatedAt,
     ).value;
     if (!chosen) continue;
     const live = flattenNotes(merged).get(noteUid)?.note;
-    if (live && time(live.updatedAt) > time(chosen.deletedAt)) continue;
+    if (!localDeleted && live && time(live.updatedAt) > time(chosen.deletedAt)) continue;
     merged.deletedNotes[noteUid] = clone(chosen);
     for (const day of Object.values(merged.days)) {
       day.autoNotes = day.autoNotes.filter((note) => note.noteUid !== noteUid);

@@ -11,10 +11,209 @@
 @media(max-width:819px){.lrp-root{height:auto;min-height:100vh;overflow:auto}.lrp-topbar{position:sticky;top:8px;margin:8px;inset:auto;grid-template-columns:auto minmax(0,1fr) auto}.lrp-topbar>button{width:36px;padding:0;font-size:0}.lrp-action-error{position:sticky;top:66px;margin:0 10px}.lrp-workspace{position:relative;inset:auto;min-height:calc(100vh - 78px);display:block;margin:0 8px 8px;border-radius:14px}.lrp-record-panel{display:block;border:0;border-bottom:1px solid var(--lrp-line)}.lrp-record-copy{padding:16px 14px 13px}.lrp-record-copy p{max-height:none}.lrp-asset-list{display:flex;gap:6px;overflow-x:auto;padding:8px 10px 11px}.lrp-asset-list>header{display:none}.lrp-asset-list>p{padding:4px}.lrp-asset-list>button{flex:0 0 170px;min-height:50px}.lrp-reading-panel{height:600px;padding:11px}.lrp-reading-panel>section{min-height:460px}.lrp-hint{display:none}.lrp-file-preview{width:90%;padding:24px 20px}}
 @media(max-width:520px){.lrp-topbar{grid-template-columns:auto minmax(0,1fr) auto;gap:7px}.lrp-topbar-actions>button:nth-child(2){display:none}.lrp-reading-panel{height:540px}.lrp-reading-panel>header>a{font-size:0;padding:8px}.lrp-file-preview h2{font-size:16px}}
 
-.lrp-html-preview { width: 100%; height: 100%; min-height: 260px; display: flex; flex-direction: column; }
-.lrp-html-mode { display: flex; gap: 6px; align-items: center; padding: 7px 10px; border-bottom: 1px solid rgba(99, 86, 69, .16); background: rgba(248, 245, 240, .94); }
-.lrp-html-mode button { border: 1px solid rgba(99, 86, 69, .2); border-radius: 8px; padding: 5px 9px; background: #fff; color: #51483e; font: inherit; cursor: pointer; }
-.lrp-html-mode button.active { background: #2f3742; color: #fff; border-color: #2f3742; }
-.lrp-html-mode span { margin-left: auto; color: #746a5e; font-size: 12px; }
-.lrp-html-preview .lrp-document-frame { flex: 1; min-height: 240px; }
+.lrp-html-preview { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #fff; }
+.lrp-html-preview .lrp-document-frame { width: 100%; height: 100%; min-width: 0; min-height: 0; }
 .lrp-text-preview { box-sizing: border-box; width: 100%; height: 100%; min-height: 260px; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fbfaf7; color: #25282d; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.lrp-pdf-preview{width:100%;height:100%;min-width:0;min-height:0;display:grid;grid-template-rows:34px minmax(0,1fr);overflow:hidden;background:#d8d8d5}
+.lrp-pdf-toolbar{z-index:2;display:flex;align-items:center;gap:4px;padding:4px 7px;border-bottom:1px solid rgba(36,39,44,.12);background:rgba(255,255,255,.96);box-shadow:0 2px 10px rgba(30,31,33,.08)}
+.lrp-pdf-toolbar button{height:25px;min-width:27px;display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:0 6px;border:0;border-radius:6px;color:#555a60;background:transparent;font-size:9px;font-weight:700}
+.lrp-pdf-toolbar button:hover{background:#ecebe7}.lrp-pdf-toolbar em{margin-left:auto;color:#777d84;font-size:9px;font-style:normal}
+.lrp-pdf-scroll{min-width:0;min-height:0;overflow:auto;cursor:grab;overscroll-behavior:contain;touch-action:pan-x pan-y;scrollbar-width:thin;scrollbar-color:#9c9c98 transparent}
+.lrp-pdf-scroll.is-panning{cursor:grabbing;user-select:none}
+.lrp-pdf-pages{width:max-content;min-width:100%;min-height:100%;display:flex;flex-direction:column;align-items:center;gap:12px;padding:12px}
+.lrp-pdf-page{position:relative;flex:none;overflow:hidden;background:#fff;box-shadow:0 3px 14px rgba(25,25,25,.18)}
+.lrp-pdf-page canvas{display:block;max-width:none}.lrp-pdf-page>span{position:absolute;inset:0;display:grid;place-items:center;padding:18px;color:#8e2f25;background:#fff6f4;font-size:10px}
+
+.lrp-drag-ghost {
+  position: fixed;
+  z-index: 900;
+  pointer-events: none;
+  max-width: 260px;
+  padding: 8px 11px;
+  overflow: hidden;
+  border: 1px solid rgba(143, 96, 54, .2);
+  border-radius: 10px;
+  color: #5d5145;
+  background: rgba(255, 253, 249, .96);
+  box-shadow: 0 14px 36px rgba(31, 27, 23, .18);
+  font-size: 10px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+  animation: lrp-ghost-in .12s ease-out both;
+}
+.lrp-snap-guide {
+  position: absolute;
+  z-index: 179;
+  display: block;
+  pointer-events: none;
+  background: rgba(143, 96, 54, .46);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .52);
+}
+.lrp-snap-guide.is-vertical {
+  top: 72px;
+  bottom: 14px;
+  width: 1px;
+}
+.lrp-snap-guide.is-horizontal {
+  left: 14px;
+  right: 14px;
+  height: 1px;
+}
+.lrp-float.is-interacting {
+  transition: none;
+  will-change: left, top, width, height;
+}
+.lrp-float.is-snapping {
+  filter: drop-shadow(0 19px 36px rgba(143, 96, 54, .3));
+}
+.lrp-float.is-snapping > div {
+  outline: 2px solid rgba(143, 96, 54, .28);
+}
+.lrp-float.is-spawning {
+  animation: lrp-float-spawn .24s cubic-bezier(.2, .82, .2, 1) both;
+}
+@keyframes lrp-ghost-in {
+  from { opacity: 0; transform: translate(-50%, -43%) scale(.94); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes lrp-float-spawn {
+  from { opacity: .18; transform: scale(.72); }
+  to { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lrp-drag-ghost,
+  .lrp-float.is-spawning {
+    animation: none;
+  }
+}
+
+/* Responsive, content-first previews. Detached documents float without a card frame. */
+.lrp-image-viewer {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: block;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: #f7f7f4;
+  cursor: default;
+  touch-action: pan-x pan-y;
+  outline: 0;
+}
+.lrp-image-viewer.is-zoom-active:not(.is-zoomed) {
+  cursor: zoom-in;
+}
+.lrp-image-viewer.is-zoom-active::after {
+  content: "Ctrl + 滚轮缩放";
+  position: absolute;
+  z-index: 1;
+  left: 9px;
+  bottom: 9px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: rgba(255,255,255,.92);
+  background: rgba(24,26,29,.55);
+  font-size: 9px;
+  font-weight: 700;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity .14s ease, transform .14s ease;
+}
+.lrp-image-viewer.is-zoom-active:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+.lrp-image-viewer.is-zoomed {
+  cursor: grab;
+}
+.lrp-image-viewer.is-panning {
+  cursor: grabbing;
+}
+.lrp-image-viewer .lrp-real-image {
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-width: none;
+  display: block;
+  margin: 0 auto;
+  object-fit: contain;
+  user-select: none;
+  background: transparent;
+  transform-origin: 0 0;
+  will-change: width;
+}
+.lrp-image-zoom-level {
+  position: absolute;
+  right: 9px;
+  bottom: 9px;
+  padding: 4px 7px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(24, 26, 29, .7);
+  font-size: 9px;
+  font-weight: 720;
+  pointer-events: none;
+}
+.lrp-image-zoom-controls {
+  position: sticky;
+  z-index: 2;
+  bottom: 9px;
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 5px 18px rgba(25, 27, 30, .16);
+  backdrop-filter: blur(8px);
+  margin: -39px 9px 9px auto;
+}
+.lrp-image-zoom-controls button {
+  min-width: 27px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  color: #555a60;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 700;
+}
+.lrp-image-zoom-controls button:hover {
+  background: #ecebe7;
+}
+.lrp-document-frame {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  overscroll-behavior: contain;
+}
+.lrp-float {
+  filter: drop-shadow(0 18px 38px rgba(28, 25, 22, .24));
+  overscroll-behavior: contain;
+}
+.lrp-float > div {
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  overscroll-behavior: contain;
+}
+.lrp-float.is-locked > div,
+.lrp-float.is-snapping > div {
+  outline: 0;
+}
+.lrp-float .lrp-file-preview {
+  border-radius: 15px;
+}

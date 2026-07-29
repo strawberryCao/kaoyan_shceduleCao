@@ -135,20 +135,27 @@ export async function readFileMetadata(env, path, options = {}) {
   return result;
 }
 
-function rawFileUrl(env, path, ref) {
-  const { owner, repo, branch } = repositoryConfig(env);
+async function readAuthenticatedBytes(env, path, ref, maxBytes) {
+  const { owner, repo, branch, token } = repositoryConfig(env);
   const revision = text(ref, branch);
-  return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(revision)}/${encodeRepoPath(path)}`;
-}
-
-async function readRawBytes(env, path, ref, maxBytes) {
-  const response = await fetch(rawFileUrl(env, path, ref), {
-    headers: { 'User-Agent': 'kaoyan-study-center-worker' },
-    redirect: 'follow',
-  });
+  const response = await fetch(
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(revision)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github.raw+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': GITHUB_API_VERSION,
+        'User-Agent': 'kaoyan-study-center-worker',
+      },
+      redirect: 'follow',
+    },
+  );
   if (!response.ok) {
     if (response.status === 404) throw new HttpError(404, 'GitHub repository file was not found.', 'GITHUB_OBJECT_NOT_FOUND');
-    throw new HttpError(502, 'GitHub raw file could not be loaded.', 'GITHUB_RAW_READ_FAILED');
+    if (response.status === 401 || response.status === 403) {
+      throw new HttpError(503, 'GitHub authentication or repository permission failed.', 'GITHUB_AUTH_FAILED');
+    }
+    throw new HttpError(502, 'GitHub repository file could not be loaded.', 'GITHUB_RAW_READ_FAILED');
   }
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
@@ -169,7 +176,10 @@ export async function readFile(env, path, options = {}) {
     bytes = base64ToBytes(metadata.content);
     if (bytes.byteLength > maxBytes) throw new HttpError(413, 'GitHub repository file is too large.', 'GITHUB_FILE_TOO_LARGE');
   } else {
-    bytes = await readRawBytes(env, path, ref, maxBytes);
+    // Private repositories deliberately return 404 from raw.githubusercontent.com
+    // without authentication. Always use the authenticated Contents API for
+    // large binary files that are omitted from the metadata response.
+    bytes = await readAuthenticatedBytes(env, path, ref, maxBytes);
   }
   return { path: assertRepoPath(path), sha: metadata.sha, size: Number(metadata.size) || bytes.byteLength, bytes };
 }
@@ -279,10 +289,19 @@ export async function writeBinaryFile(env, path, bytes, options = {}) {
 
 export async function publicFileResponse(env, path, options = {}) {
   path = assertRepoPath(path, options.prefix || '');
-  const response = await fetch(rawFileUrl(env, path), {
-    headers: { 'User-Agent': 'kaoyan-study-center-worker' },
-    redirect: 'follow',
-  });
+  const { owner, repo, branch, token } = repositoryConfig(env);
+  const response = await fetch(
+    `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeRepoPath(path)}?ref=${encodeURIComponent(branch)}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github.raw+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': GITHUB_API_VERSION,
+        'User-Agent': 'kaoyan-study-center-worker',
+      },
+      redirect: 'follow',
+    },
+  );
   if (!response.ok || !response.body) {
     if (response.status === 404) throw new HttpError(404, 'Repository file was not found.', 'GITHUB_OBJECT_NOT_FOUND');
     throw new HttpError(502, 'Repository file could not be loaded.', 'GITHUB_RAW_READ_FAILED');

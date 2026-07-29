@@ -543,6 +543,43 @@ test('manual move to the default bucket is not reverted from the previous file f
   assert.deepEqual(note.knowledgePath, ['默认文件夹', '图像噪声']);
 });
 
+test('AI file rename keeps the primary image attachment on the new path', (t) => {
+  const store = makeFixture(t);
+  const originalPath = path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '默认文件夹', '默认文件夹_正在识别题目内容.png');
+  const renamedPath = path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '高等数学', '高等数学_拉格朗日中值定理.png');
+  store.syncNote({
+    noteUid: 'note-ai-path-rebase',
+    title: '正在识别题目内容',
+    subject: '默认文件夹',
+    filePath: originalPath,
+    createdAt: '2026-07-28T01:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-28',
+      subject: '默认文件夹',
+      attachments: [{ id: 'original', kind: 'image', name: '原图', filePath: originalPath }],
+    },
+  });
+
+  const snapshot = store.syncNote({
+    noteUid: 'note-ai-path-rebase',
+    title: '拉格朗日中值定理',
+    subject: '高等数学',
+    filePath: renamedPath,
+    createdAt: '2026-07-28T01:00:00.000Z',
+  }, {
+    enrichment: {
+      capturedDate: '2026-07-28',
+      subject: '高等数学',
+      knowledgePath: ['高等数学', '中值定理'],
+    },
+  });
+
+  const note = snapshot.days['2026-07-28'].autoNotes[0];
+  assert.equal(note.filePath, renamedPath);
+  assert.equal(note.attachments[0].filePath, renamedPath);
+});
+
 test('repairs a stale inbox subject from the existing subject folder', (t) => {
   const store = makeFixture(t);
   const snapshot = store.syncNote({

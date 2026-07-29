@@ -91,6 +91,50 @@ test('loads the existing Qwen configuration and optional Gemini/Kimi environment
   assert.ok(config.providers[2].models[0].capabilities.includes('longContext'));
 });
 
+test('loads DeepSeek as an OpenAI-compatible long-context provider', () => {
+  const config = loadAiProviderConfigs({
+    env: {
+      DEEPSEEK_API_KEY: 'deepseek-secret',
+      DEEPSEEK_MODEL: 'deepseek-v4-flash',
+    },
+    localConfig: {},
+    legacyQwenConfig: {
+      apiKey: '',
+      model: '',
+      baseUrl: '',
+      assistantRoot: 'C:\\private-config',
+    },
+  });
+
+  const deepseek = config.providers.find((item) => item.id === 'deepseek');
+  assert.ok(deepseek);
+  assert.equal(deepseek.baseUrl, 'https://api.deepseek.com/chat/completions');
+  assert.equal(deepseek.models[0].id, 'deepseek-v4-flash');
+  assert.ok(deepseek.models[0].capabilities.includes('longContext'));
+});
+
+test('reports provider token usage after a successful request', async () => {
+  const events = [];
+  const router = makeRouter(
+    [provider('deepseek', { model: 'deepseek-v4-flash' })],
+    async () => fakeResponse(200, '{"ok":true}', {
+      prompt_tokens: 120,
+      completion_tokens: 35,
+      total_tokens: 155,
+    }),
+    { onUsage: (event) => events.push(event) },
+  );
+  await router.complete({
+    task: 'semantic_search',
+    messages: [{ role: 'user', content: 'find related records' }],
+    json: true,
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].provider, 'deepseek');
+  assert.equal(events[0].usage.total_tokens, 155);
+});
+
 test('an environment model selection overrides a local multi-model list', () => {
   const config = loadAiProviderConfigs({
     env: {

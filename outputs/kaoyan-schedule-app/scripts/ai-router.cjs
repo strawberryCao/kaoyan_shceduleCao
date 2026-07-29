@@ -5,6 +5,7 @@ const { loadQwenConfig } = require('./qwen-config.cjs');
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 60_000;
+const DEFAULT_NETWORK_RETRIES = 2;
 
 const PROVIDER_MODEL_CATALOG = Object.freeze({
   qwen: Object.freeze([
@@ -33,10 +34,18 @@ const PROVIDER_MODEL_CATALOG = Object.freeze({
     'kimi-k2.5',
     'kimi-k2-thinking',
   ]),
+  deepseek: Object.freeze([
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+    'deepseek-chat',
+    'deepseek-reasoner',
+  ]),
 });
 
 const TASK_PROFILES = Object.freeze({
   note_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
+  material_naming: Object.freeze({ difficulty: 'low', capabilities: ['text', 'vision', 'json'] }),
+  semantic_search: Object.freeze({ difficulty: 'low', capabilities: ['text', 'json'] }),
   question_splitting: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
@@ -62,6 +71,18 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'preferSpecificSubject', group: '识别依据', type: 'boolean', label: '优先具体科目', description: '内容可判断时尽量归入具体科目，确实无法判断才进入默认文件夹。', default: true }),
     Object.freeze({ id: 'rejectGenericTitle', group: '质量控制', type: 'boolean', label: '拒绝空泛标题', description: '阻止“待识别、图片笔记、截图”等无信息量标题落盘。', default: true }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '命名只需要短输出，调高通常不会提升识别质量。', default: 900, min: 300, max: 2400, step: 100, unit: 'tokens' }),
+  ]),
+  material_naming: Object.freeze([
+    Object.freeze({ id: 'renameNoteTitle', group: '命名范围', type: 'boolean', label: '同时命名速记标题', description: '先理解整组资料之间的关系，再为整条速记生成一个简短主题。', default: true }),
+    Object.freeze({ id: 'renameAttachments', group: '命名范围', type: 'boolean', label: '关联命名全部资料', description: '在同一轮分析中看完全部资料，再按每份资料在本条速记中的作用命名。', default: true }),
+    Object.freeze({ id: 'noteTitleMaxLength', group: '质量控制', type: 'number', label: '速记标题最多字数', description: '只概括整组资料的共同主题，避免标题过长。', default: 18, min: 8, max: 32, step: 1, unit: '字' }),
+    Object.freeze({ id: 'titleMaxLength', group: '质量控制', type: 'number', label: '资料名称最多字数', description: '不含扩展名；程序仍会过滤 Windows 非法字符。', default: 26, min: 8, max: 60, step: 1, unit: '字' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '多资料只返回短名称列表，不生成总结。', default: 1200, min: 400, max: 3000, step: 100, unit: 'tokens' }),
+  ]),
+  semantic_search: Object.freeze([
+    Object.freeze({ id: 'maxExpandedTerms', group: '搜索范围', type: 'number', label: '最多语义扩展词', description: '只扩展同义词、公式名和相关概念，不生成答案或总结。', default: 10, min: 3, max: 20, step: 1, unit: '个' }),
+    Object.freeze({ id: 'candidateLimit', group: '搜索范围', type: 'number', label: '候选资料数量', description: '进入语义排序前最多保留多少条候选资料。', default: 80, min: 20, max: 200, step: 10, unit: '条' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '语义搜索仅生成短检索词，不生成总结。', default: 360, min: 160, max: 900, step: 40, unit: 'tokens' }),
   ]),
   question_splitting: Object.freeze([
     Object.freeze({ id: 'maxQuestions', group: '识别范围', type: 'number', label: '最多识别题目数', description: '一张整页图片最多拆分出的题目数量。', default: 24, min: 1, max: 24, step: 1, unit: '道' }),
@@ -155,12 +176,17 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'preferExistingTaxonomy', group: '分类策略', type: 'boolean', label: '优先已有目录', description: '优先匹配已经存在的科目和知识点名称。', default: true }),
   ]),
   taxonomy: Object.freeze([
-    Object.freeze({ id: 'mergeStrategy', group: '目录策略', type: 'select', label: '同义知识点处理', description: '控制近义名称是自动归并还是保持独立。', default: 'conservative', options: [
+    Object.freeze({ id: 'mergeStrategy', group: '目录策略', type: 'select', label: '同义知识点处理', description: '控制近义名称是自动归并还是保持独立。', default: 'balanced', options: [
       { value: 'conservative', label: '保守归并' },
       { value: 'balanced', label: '平衡归并' },
       { value: 'aggressive', label: '积极归并' },
     ] }),
     Object.freeze({ id: 'allowNewKnowledgePoints', group: '目录策略', type: 'boolean', label: '允许新建知识点', description: '一级科目仍受程序白名单约束。', default: true }),
+    Object.freeze({ id: 'minKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最少知识组', description: '资料足够多时避免把整门课压成少数大类。', default: 5, min: 2, max: 12, step: 1, unit: '组' }),
+    Object.freeze({ id: 'maxKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最多知识组', description: '避免为每一道题生成一个新的知识点分类。', default: 18, min: 8, max: 40, step: 1, unit: '组' }),
+    Object.freeze({ id: 'wrongReasonGroupCount', group: '目录规模', type: 'number', label: '错因类别目标数', description: '推荐保持 7 到 10 个稳定类别，具体错误仍保留为详情。', default: 9, min: 4, max: 12, step: 1, unit: '类' }),
+    Object.freeze({ id: 'minimumCoverage', group: '安全校验', type: 'number', label: '最低归并覆盖率', description: 'AI 未覆盖足够旧分类时整批拒绝写入，避免静默丢失。', default: 0.8, min: 0.6, max: 1, step: 0.05 }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大完成 Token', description: '全局分类整理需要同时理解大量已有名称和错因。', default: 6000, min: 2000, max: 12000, step: 500, unit: 'tokens' }),
   ]),
   flashcard_generation: Object.freeze([
     Object.freeze({ id: 'maxCards', group: '卡片策略', type: 'number', label: '最多生成卡片', description: '独立卡片任务的一次生成硬上限。', default: 3, min: 1, max: 10, step: 1, unit: '张' }),
@@ -204,6 +230,16 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     description: '识别截图或画布内容，并生成科目与文件名。',
     active: true,
   }),
+  material_naming: Object.freeze({
+    label: '速记资料命名',
+    description: '综合理解一条速记中的全部文字、图片和文档，再按共同主题及每份资料的作用关联命名。',
+    active: true,
+  }),
+  semantic_search: Object.freeze({
+    label: '语义搜索',
+    description: '理解模糊表达并扩展资料检索词；只返回匹配资料，不生成内容总结。',
+    active: true,
+  }),
   question_splitting: Object.freeze({
     label: '多题识别与自动裁剪',
     description: '对预裁剪后的整页题目识别多个完整题目区域，并交给后台批量保存。',
@@ -238,9 +274,10 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     active: false,
   }),
   taxonomy: Object.freeze({
-    label: '知识目录整理',
-    description: '供知识目录归并与层级调整任务使用。',
-    active: false,
+    label: '全局分类体系整理',
+    description: '跨全部笔记归并同义知识点与错因类别，在分类过多和过少之间保持稳定粒度。',
+    active: true,
+    defaultTimeoutMs: 120_000,
   }),
   flashcard_generation: Object.freeze({
     label: '独立卡片生成',
@@ -270,6 +307,7 @@ class AiRouterError extends Error {
     this.provider = options.provider || null;
     this.model = options.model || null;
     this.attempts = Array.isArray(options.attempts) ? options.attempts : [];
+    this.retryAfterMs = Number.isFinite(options.retryAfterMs) ? options.retryAfterMs : null;
     if (options.cause) this.cause = options.cause;
   }
 }
@@ -438,7 +476,12 @@ function inferCapabilities(providerId, modelId) {
   ) {
     capabilities.push('vision');
   }
-  if (providerId === 'gemini' || /(?:long|128k|256k|k2)/i.test(model)) {
+  if (providerId === 'deepseek') capabilities.push('longContext');
+  if (
+    providerId === 'gemini'
+    || /(?:long|128k|256k|k2)/i.test(model)
+    || /^qwen(?:3)?-(?:max|plus)$/i.test(model)
+  ) {
     capabilities.push('longContext');
   }
   if (/(?:pro|max|thinking|reason|k2\.[56])/i.test(model)) {
@@ -579,6 +622,18 @@ function envProviderConfig(env, id) {
       supportsResponseFormat: env.GEMINI_SUPPORTS_RESPONSE_FORMAT,
     };
   }
+  if (id === 'deepseek') {
+    return {
+      apiKey: env.DEEPSEEK_API_KEY,
+      model: env.DEEPSEEK_MODEL,
+      baseUrl: env.DEEPSEEK_BASE_URL,
+      capabilities: env.DEEPSEEK_CAPABILITIES,
+      costTier: env.DEEPSEEK_COST_TIER,
+      qualityTier: env.DEEPSEEK_QUALITY_TIER,
+      priority: env.DEEPSEEK_PRIORITY,
+      supportsResponseFormat: env.DEEPSEEK_SUPPORTS_RESPONSE_FORMAT,
+    };
+  }
   return {
     apiKey: env.KIMI_API_KEY || env.MOONSHOT_API_KEY,
     model: env.KIMI_MODEL || env.MOONSHOT_MODEL,
@@ -612,9 +667,10 @@ function loadAiProviderConfigs(options = {}) {
     // the standard OpenAI-compatible endpoints are safe defaults.
     gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
     kimi: { baseUrl: 'https://api.moonshot.cn/v1' },
+    deepseek: { baseUrl: 'https://api.deepseek.com' },
   };
 
-  const providers = ['qwen', 'gemini', 'kimi']
+  const providers = ['qwen', 'gemini', 'kimi', 'deepseek']
     .map((id) => {
       const environment = envProviderConfig(env, id);
       const localProvider = getLocalProvider(localConfig, id);
@@ -662,7 +718,7 @@ function loadAiProviderConfigs(options = {}) {
       ),
       networkRetries: toFiniteNumber(
         env.AI_NETWORK_RETRIES || routing.networkRetries,
-        1,
+        DEFAULT_NETWORK_RETRIES,
         0,
         3,
       ),
@@ -944,7 +1000,7 @@ function createAiRouter(options = {}) {
       100,
       86_400_000,
     ),
-    networkRetries: toFiniteNumber(options.networkRetries ?? loaded.routing.networkRetries, 1, 0, 3),
+    networkRetries: toFiniteNumber(options.networkRetries ?? loaded.routing.networkRetries, DEFAULT_NETWORK_RETRIES, 0, 3),
     jsonRepairRetries: toFiniteNumber(options.jsonRepairRetries ?? loaded.routing.jsonRepairRetries, 1, 0, 2),
   };
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -953,6 +1009,7 @@ function createAiRouter(options = {}) {
   }
   const now = options.now || (() => Date.now());
   const sleep = options.sleep || sleepDefault;
+  const onUsage = typeof options.onUsage === 'function' ? options.onUsage : null;
   const circuits = new Map();
 
   function getCircuit(providerId) {
@@ -1105,10 +1162,14 @@ function createAiRouter(options = {}) {
       const status = response.status;
       const retryable = status === 408 || status === 409 || status === 429 || status >= 500;
       const providerMessage = await readProviderErrorMessage(response);
+      const retryAfterSeconds = Number(response.headers?.get?.('retry-after'));
       throw new AiRouterError(`AI 服务请求失败（HTTP ${status}）${providerMessage ? `：${providerMessage}` : ''}`, {
         code: status === 401 || status === 403 ? 'AI_AUTH_ERROR' : 'AI_HTTP_ERROR',
         retryable,
         status,
+        retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? retryAfterSeconds * 1000
+          : null,
       });
     }
 
@@ -1320,6 +1381,19 @@ function createAiRouter(options = {}) {
             const validated = validateResult(raw, effectiveRequest);
             recordSuccess(provider.id);
             attempts.push(safeAttempt(provider.id, model.id, repairAttempt > 0 ? 'repair' : 'request', 'success'));
+            if (onUsage) {
+              try {
+                onUsage({
+                  at: new Date(now()).toISOString(),
+                  task: effectiveRequest.task || 'custom',
+                  provider: provider.id,
+                  model: model.id,
+                  usage: validated.usage || null,
+                });
+              } catch {
+                // Usage accounting must never interrupt a completed AI task.
+              }
+            }
             return {
               ...validated,
               provider: provider.id,
@@ -1344,7 +1418,10 @@ function createAiRouter(options = {}) {
           attempts.push(safeAttempt(provider.id, model.id, 'request', 'failed', safeError));
           if (safeError.retryable && networkAttempt < requestNetworkRetries) {
             networkAttempt += 1;
-            await sleep(Math.min(2_000, 200 * (2 ** (networkAttempt - 1))));
+            const providerFloor = provider.id === 'gemini' ? 1_000 : 500;
+            const exponential = Math.min(30_000, providerFloor * (2 ** (networkAttempt - 1)));
+            const jitter = Math.round(exponential * (.15 + Math.random() * .2));
+            await sleep(Math.max(Number(safeError.retryAfterMs) || 0, exponential + jitter));
             continue;
           }
           recordFailure(provider.id, safeError);

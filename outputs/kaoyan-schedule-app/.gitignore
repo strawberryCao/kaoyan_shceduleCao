@@ -7,3 +7,6 @@ diagnostics/
 cloudflare/.seed/
 .dev.vars*
 .wrangler/
+.e2e-runtime/
+test-results/
+playwright-report/
