@@ -7,9 +7,9 @@ const scriptsRoot = path.resolve(__dirname, '..');
 const installer = fs.readFileSync(path.join(scriptsRoot, 'install-note-folder-sync.ps1'), 'utf8');
 const runtime = fs.readFileSync(path.join(scriptsRoot, 'windows-note-folder-sync.ps1'), 'utf8');
 
-test('v13 installer deploys the source-complete V2 synchronization runtime', () => {
-  assert.match(installer, /20260727-entry-v2-v13/);
-  assert.match(installer, /version = 13/);
+test('v14 installer deploys the source-complete V2 synchronization runtime', () => {
+  assert.match(installer, /20260729-entry-v2-v14/);
+  assert.match(installer, /version = 14/);
   assert.match(installer, /v2-local-adapter\.cjs/);
   assert.match(runtime, /V2 local data adapter/);
   assert.match(installer, /optionalGitPathsAreFiltered = \$true/);

@@ -104,6 +104,10 @@ function assetCandidates(note) {
 function resolveAsset(candidate, context) {
   const normalized = String(candidate.path || '').trim().replaceAll('\\', '/');
   const possible = [];
+  // On Linux/macOS, absolute paths start with "/". The old resolver only
+  // admitted Windows drive paths, so CI treated valid temporary assets as
+  // unresolved and produced empty V2 attachment records.
+  if (path.isAbsolute(normalized)) possible.push(normalized);
   if (/^[A-Za-z]:\//.test(normalized)) possible.push(normalized);
   if (normalized.startsWith('github://')) possible.push(path.join(context.repoRoot, normalized.slice('github://'.length)));
   if (normalized.startsWith('data/') || normalized.startsWith('source-notes/')) possible.push(path.join(context.repoRoot, normalized));
