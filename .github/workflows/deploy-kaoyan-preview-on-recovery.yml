@@ -1,0 +1,103 @@
+name: Deploy recovery branch to preview Worker
+
+on:
+  push:
+    branches:
+      - codex/recovery-architecture-v2
+    paths:
+      - .github/workflows/deploy-kaoyan-preview-on-recovery.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaoyan-recovery-preview
+  cancel-in-progress: false
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: cloudflare-preview
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      KAOYAN_APP_PASSWORD: ${{ secrets.KAOYAN_APP_PASSWORD }}
+      KAOYAN_SESSION_SECRET: ${{ secrets.KAOYAN_SESSION_SECRET }}
+      CAOBIJI_GITHUB_TOKEN: ${{ secrets.CAOBIJI_GITHUB_TOKEN }}
+      QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+    defaults:
+      run:
+        working-directory: outputs/kaoyan-schedule-app
+    steps:
+      - name: Check out immutable recovery commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: outputs/kaoyan-schedule-app/package-lock.json
+
+      - name: Verify protected deployment inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID KAOYAN_APP_PASSWORD KAOYAN_SESSION_SECRET CAOBIJI_GITHUB_TOKEN GEMINI_API_KEY; do
+            [[ -n "${!name:-}" ]] || { echo "$name is missing" >&2; exit 2; }
+          done
+
+      - name: Validate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          mapfile -d '' test_files < <(find cloudflare scripts -type f \( -name '*.test.cjs' -o -name '*.test.mjs' \) -print0 | sort -z)
+          node --test "${test_files[@]}"
+          npm run build
+
+      - name: Create preview Worker
+        run: npx wrangler deploy --env preview
+
+      - name: Configure preview secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$KAOYAN_APP_PASSWORD" | npx wrangler secret put APP_PASSWORD --env preview
+          printf '%s' "$KAOYAN_SESSION_SECRET" | npx wrangler secret put SESSION_SECRET --env preview
+          printf '%s' "$CAOBIJI_GITHUB_TOKEN" | npx wrangler secret put GITHUB_TOKEN --env preview
+          for name in QWEN_API_KEY GEMINI_API_KEY KIMI_API_KEY DEEPSEEK_API_KEY; do
+            value="${!name:-}"
+            if [[ -n "$value" ]]; then printf '%s' "$value" | npx wrangler secret put "$name" --env preview; fi
+          done
+
+      - name: Deploy validated preview Worker
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx wrangler deploy --env preview 2>&1 | tee "$RUNNER_TEMP/wrangler-deploy.log"
+          worker_url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/wrangler-deploy.log" | tail -n 1 || true)"
+          [[ -n "$worker_url" ]] || exit 3
+          echo "worker_url=$worker_url" >> "$GITHUB_OUTPUT"
+
+      - name: Verify preview health
+        shell: bash
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.worker_url }}
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            status="$(curl --silent --show-error -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$WORKER_URL/api/health" || true)"
+            [[ "$status" == 200 ]] && break
+            sleep 5
+          done
+          node -e "const v=require(process.argv[1]); if(!v.ok||!v.githubConfigured||v.publicRead||v.cloudDeleteEnabled) process.exit(1)" "$RUNNER_TEMP/health.json"
+          echo "Preview: $WORKER_URL" >> "$GITHUB_STEP_SUMMARY"
