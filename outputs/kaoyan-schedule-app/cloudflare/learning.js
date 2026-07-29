@@ -466,7 +466,7 @@ export async function patchNote(env, noteUid, payload) {
       studyNotes: Object.hasOwn(patch, 'thoughtAction') ? updateThoughts(note, patch.thoughtAction, timestamp) : note.studyNotes,
       updatedAt: timestamp,
 
-      ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments, note), filePath: primaryAttachmentPath(patch.attachments) || note.filePath } : {}),
+      ...(Object.hasOwn(patch, 'attachments') ? { attachments: normalizeAttachments(patch.attachments, note), filePath: primaryAttachmentPath(patch.attachments) } : {}),
       ...(Object.hasOwn(patch, 'facets') ? { facets: normalizeFacets(patch.facets, { ...note, ...patch }) } : {}),
     };
     entry.day.autoNotes[entry.index] = updated;

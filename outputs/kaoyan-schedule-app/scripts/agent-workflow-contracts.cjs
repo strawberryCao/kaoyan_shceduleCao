@@ -1,5 +1,7 @@
 'use strict';
 
+const { mathOneQuestionTypePrompt } = require('./math-one-question-types.cjs');
+
 const NOTE_ANALYSIS_INSTRUCTIONS = Object.freeze([
   '你是考研笔记的语义整理器。请同时阅读图片与备注，输出严格 JSON。',
   '目标不是机械匹配关键词，而是判断图片实际知识内容、题目类型、用户为何记录它，以及它是否值得记忆或重做。',
@@ -12,6 +14,7 @@ const NOTE_ANALYSIS_INSTRUCTIONS = Object.freeze([
   '2.1 knowledgePoint 必须是可长期复用的简短分类标签，优先复用 existingTaxonomy 中已有名称或别名；禁止把本题的完整描述、解题结论或一句长话当作新知识点。',
   '2.2 只有现有分类确实无法容纳且新主题会被多条资料复用时才创建知识点；单题细节写入 title、summary、tags 或 items。',
   '3. questionType 概括题型；不是题目则为 null。',
+  `3.1 对高等数学、线性代数、概率论，questionType 必须优先从下面的数学一标准叶子题型中选择，不能只写“选择题、填空题、计算题、证明题、综合题”等试卷形式；证据不足时返回 null，不要编造。\n${mathOneQuestionTypePrompt()}`,
   '4. 错因按证据优先级处理：备注明确写出时标记 explicit_remark；图片划改或订正能直接证明时标记 explicit_image；只有可见步骤足以支持时才允许 ai_inferred；证据不足必须为 null/none。',
   '4.1 wrongReason 最多一句话，只描述具体错误动作，不写完整解法。',
   '5. {summaryRule}',

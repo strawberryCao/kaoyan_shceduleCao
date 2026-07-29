@@ -47,6 +47,10 @@ function inferModelCapabilities(modelId) {
     result.add('longContext');
     result.add('reasoning');
   }
+  if (/^deepseek/.test(id)) {
+    result.add('longContext');
+    if (/(?:reasoner|pro)/.test(id)) result.add('reasoning');
+  }
   if (/(?:thinking|reasoning|k3|max)/.test(id)) result.add('reasoning');
   return [...result];
 }
@@ -260,7 +264,19 @@ async function requestCandidate(candidate, task, request) {
     }
     const status = response.status;
     const code = status === 401 || status === 403 ? 'AI_AUTH_ERROR' : 'AI_HTTP_ERROR';
-    throw new HttpError(status >= 500 ? 502 : status, `AI 服务请求失败（HTTP ${status}）${detail ? `：${detail}` : ''}`, code);
+    const retryAfterSeconds = Number(response.headers?.get?.('retry-after'));
+    throw new HttpError(
+      status >= 500 ? 502 : status,
+      `AI 服务请求失败（HTTP ${status}）${detail ? `：${detail}` : ''}`,
+      code,
+      {
+        providerStatus: status,
+        retryable: status === 408 || status === 409 || status === 429 || status >= 500,
+        retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? retryAfterSeconds * 1000
+          : 0,
+      },
+    );
   }
   let data;
   try { data = await response.json(); } catch {
@@ -286,24 +302,46 @@ export async function runLocalAgentTask(env, taskId, request = {}) {
   const attempts = [];
   const maxAttempts = route.allowFallback ? route.candidates.length : Math.min(1, route.candidates.length);
   for (const candidate of route.candidates.slice(0, maxAttempts)) {
-    try {
-      const result = await requestCandidate(candidate, task, request);
-      return {
-        ...result,
-        taskId,
-        configurationHash: runtime.source.configurationHash,
-        workflowHash: runtime.source.workflowHash,
-        attempts: [...attempts, { provider: candidate.providerId, model: candidate.model.id, outcome: 'success' }],
-      };
-    } catch (error) {
-      attempts.push({
-        provider: candidate.providerId,
-        model: candidate.model.id,
-        outcome: 'failed',
-        code: error?.code || 'AI_PROVIDER_ERROR',
-        message: safeProviderMessage(error instanceof Error ? error.message : String(error)),
-      });
-      if (!route.allowFallback) throw error;
+    const configuredRetries = Number(runtime.routing?.networkRetries);
+    const retryLimit = Math.max(0, Math.min(3, Number.isFinite(configuredRetries) ? configuredRetries : 2));
+    for (let retry = 0; retry <= retryLimit; retry += 1) {
+      try {
+        const result = await requestCandidate(candidate, task, request);
+        return {
+          ...result,
+          taskId,
+          configurationHash: runtime.source.configurationHash,
+          workflowHash: runtime.source.workflowHash,
+          attempts: [...attempts, {
+            provider: candidate.providerId,
+            model: candidate.model.id,
+            outcome: 'success',
+            retry,
+          }],
+        };
+      } catch (error) {
+        attempts.push({
+          provider: candidate.providerId,
+          model: candidate.model.id,
+          outcome: 'failed',
+          retry,
+          code: error?.code || 'AI_PROVIDER_ERROR',
+          message: safeProviderMessage(error instanceof Error ? error.message : String(error)),
+        });
+        const retryable = error?.details?.retryable === true
+          || ['AI_TIMEOUT', 'AI_NETWORK_ERROR'].includes(error?.code);
+        if (!retryable || retry >= retryLimit) {
+          if (!route.allowFallback) throw error;
+          break;
+        }
+        const floor = candidate.providerId === 'gemini' ? 1_000 : 500;
+        const exponential = Math.min(30_000, floor * (2 ** retry));
+        const jitter = Math.round(exponential * (.15 + Math.random() * .2));
+        await new Promise((resolve) => setTimeout(
+          resolve,
+          Math.max(Number(error?.details?.retryAfterMs) || 0, exponential + jitter),
+        ));
+      }
     }
   }
   const final = attempts.at(-1);

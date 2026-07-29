@@ -45,6 +45,16 @@ export interface SaveMaterialResult {
   error?: string;
 }
 
+export interface AppendMaterialPayload {
+  noteUid: string;
+  title?: string;
+  remark?: string;
+  subject?: string;
+  tags?: string[];
+  facets?: LearningRecordFacet[];
+  files: File[];
+}
+
 export interface SaveNoteResult {
   ok: boolean;
   noteUid?: string;
@@ -265,6 +275,65 @@ export const saveLearningMaterial = async (payload: SaveMaterialPayload): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, files, noteUid }),
   }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
+};
+
+export const appendLearningMaterials = async (payload: AppendMaterialPayload): Promise<SaveMaterialResult> => {
+  if (!payload.noteUid.trim()) throw new Error('没有可追加资料的速记。');
+  if (!payload.files.length) throw new Error('请选择要加入的资料。');
+  const files: MaterialFilePayload[] = [];
+  for (const file of payload.files) {
+    files.push({
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      size: file.size,
+      dataUrl: await fileToDataUrl(file),
+    });
+  }
+  return fetchJsonWithTimeout<SaveMaterialResult>(`${NOTE_SERVER_URL}/append-material-note`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, files }),
+  }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
+};
+
+export const updateCloudEntryAssets = async (
+  noteUid: string,
+  assetIds: string[],
+): Promise<SaveMaterialResult | null> => {
+  if (!IS_CLOUD_RUNTIME) return null;
+  const result = await fetchJsonWithTimeout<{
+    ok: boolean;
+    entry: {
+      entryId: string;
+      assets: Array<{
+        assetId: string;
+        kind: string;
+        originalFileName: string;
+        mime: string;
+        size: number | null;
+        path: string;
+        createdAt: string;
+      }>;
+    };
+    learningData?: LearningDataSnapshot;
+  }>(`${NOTE_SERVER_URL}/entries/${encodeURIComponent(noteUid)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assetIds }),
+  }, Math.max(NOTE_SAVE_TIMEOUT_MS, 30_000));
+  return {
+    ok: result.ok,
+    noteUid: result.entry.entryId,
+    learningData: result.learningData,
+    attachments: result.entry.assets.map((asset) => ({
+      id: asset.assetId,
+      kind: asset.kind,
+      name: asset.originalFileName,
+      mimeType: asset.mime,
+      size: asset.size,
+      filePath: `github://${asset.path}`,
+    })),
+  };
 };
 
 export const createCaptureBatch = async (

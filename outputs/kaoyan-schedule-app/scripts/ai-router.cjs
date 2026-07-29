@@ -5,6 +5,7 @@ const { loadQwenConfig } = require('./qwen-config.cjs');
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 60_000;
+const DEFAULT_NETWORK_RETRIES = 2;
 
 const PROVIDER_MODEL_CATALOG = Object.freeze({
   qwen: Object.freeze([
@@ -32,6 +33,12 @@ const PROVIDER_MODEL_CATALOG = Object.freeze({
     'kimi-k2.6',
     'kimi-k2.5',
     'kimi-k2-thinking',
+  ]),
+  deepseek: Object.freeze([
+    'deepseek-v4-flash',
+    'deepseek-v4-pro',
+    'deepseek-chat',
+    'deepseek-reasoner',
   ]),
 });
 
@@ -300,6 +307,7 @@ class AiRouterError extends Error {
     this.provider = options.provider || null;
     this.model = options.model || null;
     this.attempts = Array.isArray(options.attempts) ? options.attempts : [];
+    this.retryAfterMs = Number.isFinite(options.retryAfterMs) ? options.retryAfterMs : null;
     if (options.cause) this.cause = options.cause;
   }
 }
@@ -468,6 +476,7 @@ function inferCapabilities(providerId, modelId) {
   ) {
     capabilities.push('vision');
   }
+  if (providerId === 'deepseek') capabilities.push('longContext');
   if (
     providerId === 'gemini'
     || /(?:long|128k|256k|k2)/i.test(model)
@@ -613,6 +622,18 @@ function envProviderConfig(env, id) {
       supportsResponseFormat: env.GEMINI_SUPPORTS_RESPONSE_FORMAT,
     };
   }
+  if (id === 'deepseek') {
+    return {
+      apiKey: env.DEEPSEEK_API_KEY,
+      model: env.DEEPSEEK_MODEL,
+      baseUrl: env.DEEPSEEK_BASE_URL,
+      capabilities: env.DEEPSEEK_CAPABILITIES,
+      costTier: env.DEEPSEEK_COST_TIER,
+      qualityTier: env.DEEPSEEK_QUALITY_TIER,
+      priority: env.DEEPSEEK_PRIORITY,
+      supportsResponseFormat: env.DEEPSEEK_SUPPORTS_RESPONSE_FORMAT,
+    };
+  }
   return {
     apiKey: env.KIMI_API_KEY || env.MOONSHOT_API_KEY,
     model: env.KIMI_MODEL || env.MOONSHOT_MODEL,
@@ -646,9 +667,10 @@ function loadAiProviderConfigs(options = {}) {
     // the standard OpenAI-compatible endpoints are safe defaults.
     gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai' },
     kimi: { baseUrl: 'https://api.moonshot.cn/v1' },
+    deepseek: { baseUrl: 'https://api.deepseek.com' },
   };
 
-  const providers = ['qwen', 'gemini', 'kimi']
+  const providers = ['qwen', 'gemini', 'kimi', 'deepseek']
     .map((id) => {
       const environment = envProviderConfig(env, id);
       const localProvider = getLocalProvider(localConfig, id);
@@ -696,7 +718,7 @@ function loadAiProviderConfigs(options = {}) {
       ),
       networkRetries: toFiniteNumber(
         env.AI_NETWORK_RETRIES || routing.networkRetries,
-        1,
+        DEFAULT_NETWORK_RETRIES,
         0,
         3,
       ),
@@ -978,7 +1000,7 @@ function createAiRouter(options = {}) {
       100,
       86_400_000,
     ),
-    networkRetries: toFiniteNumber(options.networkRetries ?? loaded.routing.networkRetries, 1, 0, 3),
+    networkRetries: toFiniteNumber(options.networkRetries ?? loaded.routing.networkRetries, DEFAULT_NETWORK_RETRIES, 0, 3),
     jsonRepairRetries: toFiniteNumber(options.jsonRepairRetries ?? loaded.routing.jsonRepairRetries, 1, 0, 2),
   };
   const fetchImpl = options.fetchImpl || globalThis.fetch;
@@ -987,6 +1009,7 @@ function createAiRouter(options = {}) {
   }
   const now = options.now || (() => Date.now());
   const sleep = options.sleep || sleepDefault;
+  const onUsage = typeof options.onUsage === 'function' ? options.onUsage : null;
   const circuits = new Map();
 
   function getCircuit(providerId) {
@@ -1139,10 +1162,14 @@ function createAiRouter(options = {}) {
       const status = response.status;
       const retryable = status === 408 || status === 409 || status === 429 || status >= 500;
       const providerMessage = await readProviderErrorMessage(response);
+      const retryAfterSeconds = Number(response.headers?.get?.('retry-after'));
       throw new AiRouterError(`AI 服务请求失败（HTTP ${status}）${providerMessage ? `：${providerMessage}` : ''}`, {
         code: status === 401 || status === 403 ? 'AI_AUTH_ERROR' : 'AI_HTTP_ERROR',
         retryable,
         status,
+        retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? retryAfterSeconds * 1000
+          : null,
       });
     }
 
@@ -1354,6 +1381,19 @@ function createAiRouter(options = {}) {
             const validated = validateResult(raw, effectiveRequest);
             recordSuccess(provider.id);
             attempts.push(safeAttempt(provider.id, model.id, repairAttempt > 0 ? 'repair' : 'request', 'success'));
+            if (onUsage) {
+              try {
+                onUsage({
+                  at: new Date(now()).toISOString(),
+                  task: effectiveRequest.task || 'custom',
+                  provider: provider.id,
+                  model: model.id,
+                  usage: validated.usage || null,
+                });
+              } catch {
+                // Usage accounting must never interrupt a completed AI task.
+              }
+            }
             return {
               ...validated,
               provider: provider.id,
@@ -1378,7 +1418,10 @@ function createAiRouter(options = {}) {
           attempts.push(safeAttempt(provider.id, model.id, 'request', 'failed', safeError));
           if (safeError.retryable && networkAttempt < requestNetworkRetries) {
             networkAttempt += 1;
-            await sleep(Math.min(2_000, 200 * (2 ** (networkAttempt - 1))));
+            const providerFloor = provider.id === 'gemini' ? 1_000 : 500;
+            const exponential = Math.min(30_000, providerFloor * (2 ** (networkAttempt - 1)));
+            const jitter = Math.round(exponential * (.15 + Math.random() * .2));
+            await sleep(Math.max(Number(safeError.retryAfterMs) || 0, exponential + jitter));
             continue;
           }
           recordFailure(provider.id, safeError);

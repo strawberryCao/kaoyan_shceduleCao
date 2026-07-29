@@ -33,9 +33,10 @@ test('quick notes without an image render a warm mascot instead of a generic fil
 
   assert.match(learningCenter, /function QuickNoteMascot/);
   assert.match(learningCenter, /const QUICK_NOTE_MASCOTS = \[/);
-  assert.equal((learningCenter.match(/\{ kind: '/g) || []).length, 12);
+  assert.equal((learningCenter.match(/\{ src: mascot/g) || []).length, 12);
   assert.match(learningCenter, /context === 'quick' \? <QuickNoteMascot noteUid=\{note\.noteUid\} \/>/);
-  assert.match(stylesheet, /\.lc-quick-mascot-body/);
+  assert.match(learningCenter, /className="lc-quick-mascot"/);
+  assert.match(stylesheet, /\.lc-quick-mascot/);
 });
 
 test('taxonomy consolidation is an active guarded global workflow', () => {

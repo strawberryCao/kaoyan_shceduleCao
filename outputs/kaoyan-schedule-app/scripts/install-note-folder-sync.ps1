@@ -110,7 +110,7 @@ Remove-Item -LiteralPath $startupLauncherPath -Force -ErrorAction SilentlyContin
 if ($legacyRoot -ne $installRoot -and (Test-Path -LiteralPath $legacyRoot)) { Remove-Item -LiteralPath $legacyRoot -Recurse -Force }
 
 $codeRoot = 'https://raw.githubusercontent.com/strawberryCao/kaoyan_shceduleCao/main/outputs/kaoyan-schedule-app/scripts'
-$version = '20260727-entry-v2-v13'
+$version = '20260729-entry-v2-v14'
 Install-ScriptFile 'windows-note-folder-sync.ps1' $runtimePath "$codeRoot/windows-note-folder-sync.ps1?v=$version"
 Install-ScriptFile 'windows-assistant-config-sync.ps1' $configSyncPath "$codeRoot/windows-assistant-config-sync.ps1?v=$version"
 Install-ScriptFile 'export-agent-runtime.cjs' $exporterPath "$codeRoot/export-agent-runtime.cjs?v=$version"
@@ -119,7 +119,7 @@ Install-ScriptFile 'v2-local-adapter.cjs' $v2AdapterPath "$codeRoot/v2-local-ada
 Install-ScriptFile 'migrate-learning-data-v2.cjs' $v2MigrationPath "$codeRoot/migrate-learning-data-v2.cjs?v=$version"
 Install-ScriptFile 'build-search-index.cjs' $searchIndexPath "$codeRoot/build-search-index.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
-foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
+foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'math-one-question-types.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 
@@ -139,7 +139,7 @@ if (-not (Test-Path -LiteralPath $tokenPath)) {
 }
 
 $config = [ordered]@{
-  version = 13
+  version = 14
   localPath = $LocalPath
   assistantRoot = $AssistantRoot
   repository = $Repository

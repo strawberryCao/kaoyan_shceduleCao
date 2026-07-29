@@ -6,10 +6,13 @@ import {
   GlobalWorkerOptions,
   type PDFDocumentProxy,
 } from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
 import '../learning-record-workspace-preview.css';
 
-GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// Keep PDF rendering independent from the static server's asset hashes and MIME
+// table. A bundled worker also survives rebuilding `dist` while the LAN page is
+// still open, instead of leaving that page pointed at a deleted hashed module.
+GlobalWorkerOptions.workerPort = new PdfWorker();
 
 export type WorkspacePreviewKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
 
@@ -107,42 +110,87 @@ function RecoverableImage({
   const usingFallback = Boolean(item.fallbackUrl) && src === item.fallbackUrl;
   const [failed, setFailed] = useState(false);
   const [scale, setScale] = useState(1);
-  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [zoomActive, setZoomActive] = useState(false);
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+
+  const updateScale = useCallback((next: number | ((current: number) => number)) => {
+    setScale((current) => {
+      const resolved = Math.max(.5, Math.min(6, typeof next === 'function' ? next(current) : next));
+      return Math.round(resolved * 100) / 100;
+    });
+  }, []);
 
   useEffect(() => {
     setSrc(item.url);
     setFailed(false);
     setScale(1);
-    setOffset({ x: 0, y: 0 });
+    setZoomActive(false);
+    viewerRef.current?.scrollTo({ left: 0, top: 0 });
   }, [item.url]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!viewer) return undefined;
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setZoomActive(true);
+      const nextScale = Math.round(Math.max(.5, Math.min(6, scale * Math.exp(-event.deltaY * .0022))) * 100) / 100;
+      const rect = viewer.getBoundingClientRect();
+      const localX = event.clientX - rect.left;
+      const localY = event.clientY - rect.top;
+      const contentX = (viewer.scrollLeft + localX) / scale;
+      const contentY = (viewer.scrollTop + localY) / scale;
+      setScale(nextScale);
+      requestAnimationFrame(() => {
+        viewer.scrollLeft = Math.max(0, contentX * nextScale - localX);
+        viewer.scrollTop = Math.max(0, contentY * nextScale - localY);
+      });
+    };
+    viewer.addEventListener('wheel', handleWheel, { passive: false });
+    return () => viewer.removeEventListener('wheel', handleWheel);
+  }, [scale]);
 
   if (failed) return <ErrorPreview item={item} message="图片文件不存在或无法读取" />;
   return (
     <div
-      className={`lrp-image-viewer${scale > 1 ? ' is-zoomed' : ''}`}
-      title="用右下角按钮缩放；放大后按住拖动，双击恢复"
-      onDoubleClick={() => {
-        setScale((value) => value > 1 ? 1 : 2);
-        setOffset({ x: 0, y: 0 });
+      ref={viewerRef}
+      className={`lrp-image-viewer${scale > 1 ? ' is-zoomed' : ''}${zoomActive ? ' is-zoom-active' : ''}`}
+      title={zoomActive
+        ? '滚轮上下查看；Ctrl + 滚轮缩放；放大后可按住拖动'
+        : '点击图片启用 Ctrl + 滚轮缩放'}
+      tabIndex={0}
+      onClick={() => setZoomActive(true)}
+      onFocus={() => setZoomActive(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setZoomActive(false);
+      }}
+      onDoubleClick={(event) => {
+        updateScale((value) => value > 1 ? 1 : 2);
+        event.currentTarget.scrollTo({ left: 0, top: 0 });
       }}
       onPointerDown={(event) => {
-        if (event.button !== 0 || scale <= 1) return;
-        const start = { x: offset.x, y: offset.y };
+        const viewer = event.currentTarget;
+        if (
+          event.button !== 0
+          || (viewer.scrollWidth <= viewer.clientWidth && viewer.scrollHeight <= viewer.clientHeight)
+        ) return;
         const clientX = event.clientX;
         const clientY = event.clientY;
-        event.currentTarget.setPointerCapture(event.pointerId);
-        event.currentTarget.classList.add('is-panning');
+        const startLeft = viewer.scrollLeft;
+        const startTop = viewer.scrollTop;
+        viewer.setPointerCapture(event.pointerId);
+        viewer.classList.add('is-panning');
         const move = (next: PointerEvent) => {
-          setOffset({
-            x: start.x + next.clientX - clientX,
-            y: start.y + next.clientY - clientY,
-          });
+          viewer.scrollLeft = startLeft - (next.clientX - clientX);
+          viewer.scrollTop = startTop - (next.clientY - clientY);
         };
         const stop = () => {
           window.removeEventListener('pointermove', move);
           window.removeEventListener('pointerup', stop);
           window.removeEventListener('pointercancel', stop);
-          event.currentTarget.classList.remove('is-panning');
+          viewer.classList.remove('is-panning');
         };
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', stop, { once: true });
@@ -154,7 +202,7 @@ function RecoverableImage({
         src={src}
         alt={item.name}
         draggable={false}
-        style={{ transform: `translate3d(${offset.x}px,${offset.y}px,0) scale(${scale})` }}
+        style={{ width: `${scale * 100}%` }}
         onError={() => {
           if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
           else setFailed(true);
@@ -170,7 +218,7 @@ function RecoverableImage({
       <div className="lrp-image-zoom-controls" onDoubleClick={(event) => event.stopPropagation()}>
         <button
           type="button"
-          onClick={() => setScale((value) => Math.max(.5, Math.round((value - .25) * 100) / 100))}
+          onClick={() => updateScale((value) => value - .25)}
           aria-label="缩小图片"
         >
           <ZoomOut size={14} />
@@ -179,7 +227,7 @@ function RecoverableImage({
           type="button"
           onClick={() => {
             setScale(1);
-            setOffset({ x: 0, y: 0 });
+            viewerRef.current?.scrollTo({ left: 0, top: 0 });
           }}
           title="适合窗口"
         >
@@ -187,7 +235,7 @@ function RecoverableImage({
         </button>
         <button
           type="button"
-          onClick={() => setScale((value) => Math.min(6, Math.round((value + .25) * 100) / 100))}
+          onClick={() => updateScale((value) => value + .25)}
           aria-label="放大图片"
         >
           <ZoomIn size={14} />
@@ -306,6 +354,18 @@ function PdfPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetP
     };
   }, [document, onIntrinsicSize]);
 
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    const preventBrowserZoom = (event: WheelEvent) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    viewport.addEventListener('wheel', preventBrowserZoom, { passive: false });
+    return () => viewport.removeEventListener('wheel', preventBrowserZoom);
+  }, [document]);
+
   const beginPan = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !viewportRef.current) return;
     const viewport = viewportRef.current;
@@ -397,7 +457,7 @@ function WordPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAsset
           td,th{border:1px solid #bbb;padding:6px}p{white-space:normal}
           pre,code{max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}
         </style></head><body>${result.value}${warningHtml}<script>
-          (()=>{const send=()=>parent.postMessage({type:'kaoyan-preview-intrinsic-size',token:${JSON.stringify(token)},width:Math.min(760,Math.max(320,document.documentElement.scrollWidth)),height:Math.min(700,Math.max(180,document.documentElement.scrollHeight))},'*');addEventListener('load',()=>setTimeout(send,180),{once:true});setTimeout(send,600)})()
+          (()=>{addEventListener('wheel',(event)=>{if(event.ctrlKey)event.preventDefault()},{passive:false});const send=()=>parent.postMessage({type:'kaoyan-preview-intrinsic-size',token:${JSON.stringify(token)},width:Math.min(760,Math.max(320,document.documentElement.scrollWidth)),height:Math.min(700,Math.max(180,document.documentElement.scrollHeight))},'*');addEventListener('load',()=>setTimeout(send,180),{once:true});setTimeout(send,600)})()
         </script></body></html>`);
       })
       .catch((reason: unknown) => {
@@ -501,6 +561,9 @@ async function loadHtmlProject(
     (() => {
       const root = document.getElementById('kaoyan-fit-root');
       if (!root) return;
+      addEventListener('wheel', (event) => {
+        if (event.ctrlKey) event.preventDefault();
+      }, { passive: false });
       const sizeToken = ${JSON.stringify(sizeToken)};
       let fitting = false;
       const fit = () => {

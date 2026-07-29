@@ -30,7 +30,7 @@ import {
   processBackgroundJob,
 } from './background-jobs.js';
 import { getNoteFile, saveNote, saveNoteBatch } from './media.js';
-import { createEntry, getAssetRecord, getEntry, listEntries, patchEntry } from './entries.js';
+import { appendEntryAssets, createEntry, getAssetRecord, getEntry, listEntries, patchEntry } from './entries.js';
 import { createCaptureBatch, getCaptureJob, retryCaptureJob } from './capture-batches.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
@@ -322,6 +322,31 @@ async function handleApi(request, env, pathname, url, ctx) {
         filePath: `github://${asset.path}`,
       })),
     }, result.idempotentReplay ? 200 : 201);
+  }
+  if (request.method === 'POST' && pathname === '/append-material-note') {
+    const payload = await readJson(request, 24 * 1024 * 1024);
+    const result = await appendEntryAssets(env, payload.noteUid, payload);
+    if (!result.idempotentReplay) {
+      ctx?.waitUntil?.(runConfiguredMaterialNaming(env, result.entry.entryId, {
+        userTitle: false,
+      }).catch(() => undefined));
+    }
+    return json({
+      ...result,
+      noteUid: result.entry.entryId,
+      attachments: result.entry.assets.map((asset) => ({
+        id: asset.assetId,
+        assetId: asset.assetId,
+        kind: asset.kind,
+        name: asset.originalFileName,
+        mimeType: asset.mime,
+        size: asset.size,
+        filePath: `github://${asset.path}`,
+        previewPath: '',
+        posterPath: '',
+        createdAt: asset.createdAt,
+      })),
+    });
   }
   if (request.method === 'GET' && pathname === '/note-file') {
     return getNoteFile(env, url.searchParams.get('path'), { preview: url.searchParams.get('preview') === '1' });

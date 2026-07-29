@@ -85,6 +85,25 @@ export interface AiConfigurationSnapshot {
     networkRetries: number;
     jsonRepairRetries: number;
   };
+  usage: {
+    schemaVersion: number;
+    updatedAt: string | null;
+    providers: Record<string, {
+      calls: number;
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      lastUsedAt?: string;
+      models?: Record<string, {
+        calls: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        lastUsedAt?: string;
+      }>;
+    }>;
+    daily: Record<string, { providers: Record<string, { calls: number; totalTokens: number }> }>;
+  };
   error: string | null;
 }
 
@@ -108,6 +127,19 @@ export async function saveAiConfiguration(
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tasks }),
+  });
+  return readResponse(response);
+}
+
+export async function saveAiProviderCredential(input: {
+  providerId: 'qwen' | 'gemini' | 'kimi' | 'deepseek';
+  apiKey: string;
+  model?: string;
+}): Promise<AiConfigurationSnapshot> {
+  const response = await fetch(`${NOTE_SERVER_URL}/ai/providers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
   });
   return readResponse(response);
 }

@@ -403,6 +403,9 @@ export async function patchEntry(env, entryId, payload) {
       throw new HttpError(409, 'Entry version conflict.', 'ENTRY_VERSION_CONFLICT', { actualVersion: current.version });
     }
     const timestamp = new Date().toISOString();
+    const selectedAssets = Array.isArray(payload.assetIds)
+      ? current.assets.filter((asset) => payload.assetIds.includes(asset.assetId))
+      : current.assets;
     const entry = {
       ...current,
       title: payload.title === undefined ? current.title : text(payload.title, 240) || current.title,
@@ -410,7 +413,7 @@ export async function patchEntry(env, entryId, payload) {
       subject: payload.subject === undefined ? current.subject : normalizeSubject(payload.subject),
       facets: payload.facets === undefined ? current.facets : normalizeFacets(payload.facets),
       tags: payload.tags === undefined ? current.tags : [...new Set((Array.isArray(payload.tags) ? payload.tags : []).map((tag) => text(tag, 80)).filter(Boolean))],
-      assets: renamedEntryAssets(current.assets, payload.assetNames),
+      assets: renamedEntryAssets(selectedAssets, payload.assetNames),
       version: Number(current.version) + 1,
       updatedAt: timestamp,
     };
@@ -435,6 +438,78 @@ export async function patchEntry(env, entryId, payload) {
     }
   }
   throw new HttpError(409, 'Entry changed while saving; retry.', 'ENTRY_REVISION_CONFLICT');
+}
+
+export async function appendEntryAssets(env, entryId, payload) {
+  entryId = normalizeEntryId(entryId);
+  const timestamp = new Date().toISOString();
+  const decodedAssets = await decodeAssets(Array.isArray(payload.files) ? payload.files : [], timestamp);
+  if (decodedAssets.length < 1) throw new HttpError(400, 'At least one file is required.', 'EMPTY_ASSET_APPEND');
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const head = await getBranchHead(env);
+    const [entryFile, indexFile, legacyFile] = await Promise.all([
+      readJsonFile(env, entryPath(entryId), { ref: head, allowMissing: true, maxBytes: 2 * 1024 * 1024 }),
+      readJsonFile(env, INDEX_PATH, { ref: head, allowMissing: true, maxBytes: 8 * 1024 * 1024 }),
+      readJsonFile(env, LEGACY_PATH, { ref: head, allowMissing: true, maxBytes: 24 * 1024 * 1024 }),
+    ]);
+    if (!entryFile) throw new HttpError(404, 'Entry not found.', 'ENTRY_NOT_FOUND');
+    const current = entryFile.value;
+    const knownIds = new Set(current.assets.map((asset) => asset.assetId));
+    const additions = decodedAssets.filter((asset, index, source) => (
+      !knownIds.has(asset.record.assetId)
+      && source.findIndex((candidate) => candidate.record.assetId === asset.record.assetId) === index
+    ));
+    if (current.assets.length + additions.length > MAX_FILES) {
+      throw new HttpError(400, `Each entry supports at most ${MAX_FILES} files.`, 'TOO_MANY_NOTE_FILES');
+    }
+    if (additions.length === 0) {
+      return { ok: true, entry: current, learningData: normalizeLegacy(legacyFile?.value), idempotentReplay: true };
+    }
+
+    const files = [];
+    for (const asset of additions) {
+      const [binaryExists, recordExists] = await Promise.all([
+        readFileMetadata(env, asset.record.path, { ref: head, allowMissing: true }),
+        readFileMetadata(env, assetRecordPath(asset.record.assetId), { ref: head, allowMissing: true }),
+      ]);
+      if (!binaryExists) files.push({ path: asset.record.path, content: asset.bytes });
+      if (!recordExists) files.push(jsonFile(assetRecordPath(asset.record.assetId), asset.record));
+    }
+    const entry = {
+      ...current,
+      assets: [...current.assets, ...additions.map((asset) => asset.record)],
+      version: Number(current.version) + 1,
+      updatedAt: timestamp,
+    };
+    const index = normalizeIndex(indexFile?.value);
+    index.revision += 1;
+    index.updatedAt = timestamp;
+    index.entries = index.entries.map((item) => item.entryId === entryId ? entrySummary(entry) : item);
+    const learningData = upsertLegacyNote(normalizeLegacy(legacyFile?.value), entry, timestamp);
+    files.push(
+      jsonFile(entryPath(entryId), entry),
+      jsonFile(INDEX_PATH, index),
+      jsonFile(LEGACY_PATH, learningData),
+    );
+    try {
+      const commit = await commitFiles(env, {
+        expectedHeadSha: head,
+        message: `data: append assets to entry ${entryId}`,
+        files,
+      });
+      return {
+        ok: true,
+        entry,
+        learningData,
+        commitSha: commit.commitSha,
+        idempotentReplay: false,
+      };
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.code !== 'GITHUB_REVISION_CONFLICT' || attempt === 3) throw error;
+    }
+  }
+  throw new HttpError(409, 'Entry changed while appending assets; retry.', 'ENTRY_REVISION_CONFLICT');
 }
 
 export async function commitCaptureResults(env, input) {

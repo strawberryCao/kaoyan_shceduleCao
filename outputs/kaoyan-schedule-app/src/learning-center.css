@@ -372,38 +372,9 @@
 .lc-quick-mascot {
   width: 100%;
   height: 100%;
-  overflow: visible;
-}
-
-.lc-quick-mascot-body {
-  fill: #f3dfbd;
-  stroke: #b67b3d;
-  stroke-width: 1.35;
-}
-
-.lc-quick-mascot-ear,
-.lc-quick-mascot-smile,
-.lc-quick-mascot-eye-line {
-  fill: none;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.45;
-}
-
-.lc-quick-mascot-ear-fill {
-  stroke-width: 1.35;
-}
-
-.lc-quick-mascot-eye {
-}
-
-.lc-quick-mascot-blush {
-  opacity: 0.7;
-}
-
-.lc-quick-mascot-deco {
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgb(63 47 32 / 14%));
+  transform: scale(1.13);
 }
 
 .lc-note-button-copy {
@@ -2753,6 +2724,39 @@
   touch-action: none;
   user-select: none;
 }
+.lc-quick-asset-chip-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.lc-quick-asset-chip-wrap .lc-quick-asset-chip {
+  padding-right: 28px;
+}
+.lc-quick-asset-remove {
+  position: absolute;
+  z-index: 2;
+  right: 5px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #817970;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .84);
+  cursor: pointer;
+}
+.lc-quick-asset-remove:hover {
+  color: #9a4f46;
+  background: #fff1ee;
+}
+.lc-quick-asset-remove:disabled {
+  opacity: .45;
+  cursor: wait;
+}
 .lc-quick-asset-chip:active {
   cursor: grabbing;
 }
@@ -2785,7 +2789,7 @@
 .lc-quick-expanded-asset {
   min-width: 0;
 }
-.lc-quick-expanded-asset > .lc-quick-asset-chip {
+.lc-quick-expanded-asset > .lc-quick-asset-chip-wrap {
   margin-bottom: 7px;
 }
 .lc-quick-active-preview {
@@ -2800,14 +2804,14 @@
   background: #f7f6f2;
 }
 .lc-quick-expanded-asset.is-image .lc-quick-active-preview {
-  height: auto;
-  min-height: 100px;
-  max-height: none;
+  height: min(58vh, 520px);
+  min-height: 280px;
+  max-height: 520px;
 }
 .lc-quick-expanded-asset.is-image .lrp-real-image {
   width: 100%;
   height: auto;
-  max-height: 580px;
+  max-height: none;
   object-fit: contain;
 }
 
@@ -3086,7 +3090,8 @@
   gap: 6px;
 }
 .lc-quick-record-actions > button,
-.lc-quick-facet-trigger {
+.lc-quick-facet-trigger,
+.lc-quick-attach {
   min-height: 31px;
   display: inline-flex;
   align-items: center;
@@ -3099,14 +3104,24 @@
   font: 650 10px/1 Inter, "Microsoft YaHei", sans-serif;
   cursor: pointer;
 }
+.lc-quick-attach input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .lc-quick-record-actions > button:hover,
 .lc-quick-facet-trigger:hover,
+.lc-quick-attach:hover,
 .lc-quick-facet-picker.is-open .lc-quick-facet-trigger {
   border-color: rgba(147, 96, 46, .35);
   background: #f8f3ed;
 }
 .lc-quick-record-actions > button:disabled,
-.lc-quick-facet-trigger:disabled {
+.lc-quick-facet-trigger:disabled,
+.lc-quick-attach.is-busy {
   cursor: wait;
   opacity: .55;
 }
@@ -3181,10 +3196,13 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
 }
-.lc-quick-record .lc-quick-expanded-asset > .lc-quick-asset-chip {
+.lc-quick-record .lc-quick-expanded-asset > .lc-quick-asset-chip-wrap {
   width: max-content;
   max-width: min(240px, 100%);
   margin: 0 0 6px;
+}
+.lc-quick-record .lc-quick-expanded-asset > .lc-quick-asset-chip-wrap .lc-quick-asset-chip {
+  max-width: 100%;
 }
 .lc-quick-record .lc-quick-all-assets .lc-quick-active-preview {
   height: 100%;
@@ -3213,7 +3231,7 @@
 }
 .lc-quick-record .lc-quick-all-assets .lc-quick-expanded-asset.is-image .lrp-real-image {
   width: 100%;
-  height: 100%;
+  height: auto;
   max-height: none;
   object-fit: contain;
 }

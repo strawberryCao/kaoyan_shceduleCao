@@ -13,10 +13,23 @@ const {
 } = require('./ai-router.cjs');
 const { buildPublicWorkflowContracts } = require('./agent-workflow-contracts.cjs');
 
-const SECRET_REFS = Object.freeze({ qwen: 'QWEN_API_KEY', gemini: 'GEMINI_API_KEY', kimi: 'KIMI_API_KEY' });
+const SECRET_REFS = Object.freeze({
+  qwen: 'QWEN_API_KEY',
+  gemini: 'GEMINI_API_KEY',
+  kimi: 'KIMI_API_KEY',
+  deepseek: 'DEEPSEEK_API_KEY',
+});
 const CONFIG_FILES = new Set(['ai-providers.json', 'qwen-config.json', 'agent-workflows.json', 'note-taxonomy.json', 'desktop-layout.json']);
 const DATA_PATTERNS = [/^learning-data\.json$/i, /^canvas-projects\//i];
-const RUNTIME_PATTERNS = [/^note-save-receipts\//i, /^review-github-sync\//i, /^note-organizer-state\.json$/i];
+const RUNTIME_PATTERNS = [
+  /^note-save-receipts\//i,
+  /^review-github-sync\//i,
+  /^note-organizer-state\.json$/i,
+  /^ai-usage\.json$/i,
+  /^search-index\.json$/i,
+  /^search-extraction-cache\.json$/i,
+  /^taxonomy-consolidation-state\.json$/i,
+];
 const BACKUP_PATTERNS = [/^repair-backups\//i, /(?:^|\.)pre-rebuild-/i, /^canvas-projects\/\.trash\//i];
 const SENSITIVE_NAME = /(?:^|[_-])(?:api.?key|token|secret|password|passwd|authorization|cookie|private.?key|client.?secret|credential)(?:$|[_-])/i;
 const ABSOLUTE_WINDOWS_PATH = /^[A-Za-z]:\\/;
@@ -190,7 +203,10 @@ function main() {
   const assistantRoot = path.resolve(String(args['assistant-root'] || process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手')));
   const outputRoot = path.resolve(String(args['output-root'] || path.join(assistantRoot, '.agent-runtime-export')));
   const allJson = listJsonFiles(assistantRoot);
-  const includedClasses = new Set(['agent-config', 'ui-setting', 'unclassified-root-config']);
+  // Only files that actually control AI behavior participate in the runtime hash.
+  // Usage counters, search indexes, UI layout and unknown root JSON files are
+  // deliberately excluded so ordinary app activity cannot invalidate a job.
+  const includedClasses = new Set(['agent-config']);
   const report = { redactedFields: 0, redactedValues: 0, localPaths: 0, localUrls: 0 };
   const safeFilesRoot = path.join(outputRoot, 'files');
   const includedFiles = [];
@@ -270,7 +286,7 @@ function main() {
     schemaVersion: 2,
     sourceRoot: '__LOCAL_PATH__',
     includedFiles: includedFiles.length,
-    excludedByRule: ['backup', 'runtime-state', 'user-data', 'unclassified'],
+    excludedByRule: ['backup', 'runtime-state', 'user-data', 'ui-setting', 'unclassified-root-config', 'unclassified'],
     redaction: report,
     configurationHash,
     workflowHash,

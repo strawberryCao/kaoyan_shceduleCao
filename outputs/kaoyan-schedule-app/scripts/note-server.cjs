@@ -50,6 +50,7 @@ const ORGANIZER_STATE_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-state.jso
 const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
 const ORGANIZER_MOVE_LOG_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-moves.jsonl');
 const AI_PROVIDER_CONFIG_PATH = process.env.KAOYAN_AI_CONFIG_PATH || path.join(ASSISTANT_ROOT, 'ai-providers.json');
+const AI_USAGE_PATH = path.join(ASSISTANT_ROOT, 'ai-usage.json');
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
 const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
 const ACTIVE_CANVAS_MAX_BODY_BYTES = 16 * 1024;
@@ -130,6 +131,63 @@ function getNoteTitlePolicy() {
 let canvasOrganizationQueue = Promise.resolve();
 const canvasOrganizationJobs = new Map();
 
+function emptyAiUsage() {
+  return { schemaVersion: 1, updatedAt: null, providers: {}, daily: {} };
+}
+
+function readAiUsage() {
+  if (!fs.existsSync(AI_USAGE_PATH)) return emptyAiUsage();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(AI_USAGE_PATH, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? { ...emptyAiUsage(), ...parsed, providers: parsed.providers || {}, daily: parsed.daily || {} }
+      : emptyAiUsage();
+  } catch {
+    return emptyAiUsage();
+  }
+}
+
+function usageCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+}
+
+function addUsage(target, event) {
+  const usage = event.usage && typeof event.usage === 'object' ? event.usage : {};
+  const promptTokens = usageCount(usage.prompt_tokens ?? usage.input_tokens);
+  const completionTokens = usageCount(usage.completion_tokens ?? usage.output_tokens);
+  const totalTokens = usageCount(usage.total_tokens) || promptTokens + completionTokens;
+  target.calls = usageCount(target.calls) + 1;
+  target.promptTokens = usageCount(target.promptTokens) + promptTokens;
+  target.completionTokens = usageCount(target.completionTokens) + completionTokens;
+  target.totalTokens = usageCount(target.totalTokens) + totalTokens;
+  target.lastUsedAt = event.at;
+}
+
+function recordAiUsage(event) {
+  const providerId = String(event.provider || 'unknown').trim().slice(0, 60) || 'unknown';
+  const modelId = String(event.model || 'unknown').trim().slice(0, 160) || 'unknown';
+  const date = String(event.at || new Date().toISOString()).slice(0, 10);
+  const snapshot = readAiUsage();
+  const provider = snapshot.providers[providerId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, models: {} };
+  addUsage(provider, event);
+  const model = provider.models[modelId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  addUsage(model, event);
+  provider.models[modelId] = model;
+  snapshot.providers[providerId] = provider;
+  const day = snapshot.daily[date] || { providers: {} };
+  const dayProvider = day.providers[providerId] || { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  addUsage(dayProvider, event);
+  day.providers[providerId] = dayProvider;
+  snapshot.daily[date] = day;
+  const cutoff = new Date(Date.now() - 35 * 86_400_000).toISOString().slice(0, 10);
+  for (const dayKey of Object.keys(snapshot.daily)) {
+    if (dayKey < cutoff) delete snapshot.daily[dayKey];
+  }
+  snapshot.updatedAt = event.at;
+  atomicWriteJson(AI_USAGE_PATH, snapshot);
+}
+
 function getFileStamp(filePath) {
   try {
     const stat = fs.statSync(filePath);
@@ -145,7 +203,7 @@ function getAiRouter() {
   if (aiRouterConfigStamp === stamp && aiRouterInitError) return null;
   aiRouterConfigStamp = stamp;
   try {
-    aiRouter = createAiRouter({ configPath: AI_PROVIDER_CONFIG_PATH });
+    aiRouter = createAiRouter({ configPath: AI_PROVIDER_CONFIG_PATH, onUsage: recordAiUsage });
     aiRouterInitError = null;
   } catch (error) {
     aiRouterInitError = error instanceof Error ? error.message : String(error);
@@ -205,6 +263,7 @@ function getAiConfigurationSnapshot() {
     tasks: normalizeTaskConfigurations(loaded.tasks),
     providers: status.providers || [],
     routing: loaded.routing,
+    usage: readAiUsage(),
     error: currentRouter ? null : aiRouterInitError,
   };
 }
@@ -255,6 +314,65 @@ function saveAiTaskConfigurations(input) {
   return getAiConfigurationSnapshot();
 }
 
+function saveAiProviderCredential(input) {
+  const providerId = String(input?.providerId || '').trim().toLowerCase();
+  const supported = {
+    qwen: { baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3-vl-plus' },
+    gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+    kimi: { baseUrl: 'https://api.moonshot.cn/v1', model: 'kimi-k3' },
+    deepseek: { baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' },
+  };
+  if (!supported[providerId]) throw new SyntaxError('不支持这个 AI 厂家');
+  const apiKey = String(input?.apiKey || '').replace(/[\r\n\t ]+/g, '').trim();
+  if (apiKey.length < 10 || apiKey.length > 10000) throw new SyntaxError('API Key 格式不正确');
+  const model = String(input?.model || supported[providerId].model).trim().slice(0, 160) || supported[providerId].model;
+  const current = readAiConfigFile();
+  const existingProviders = Array.isArray(current.providers)
+    ? Object.fromEntries(current.providers.map((provider) => [provider?.id, provider]).filter(([id]) => id))
+    : current.providers && typeof current.providers === 'object' ? current.providers : {};
+  const existing = existingProviders[providerId] && typeof existingProviders[providerId] === 'object'
+    ? existingProviders[providerId]
+    : {};
+  const next = {
+    ...current,
+    providers: {
+      ...existingProviders,
+      [providerId]: {
+        ...existing,
+        enabled: true,
+        apiKey,
+        baseUrl: supported[providerId].baseUrl,
+        model,
+      },
+    },
+    ...(providerId === 'deepseek' ? {
+      tasks: {
+        ...(current.tasks || {}),
+        semantic_search: {
+          ...(current.tasks?.semantic_search || {}),
+          providerId: 'deepseek',
+          modelId: 'deepseek-v4-flash',
+          fallback: true,
+        },
+        taxonomy: {
+          ...(current.tasks?.taxonomy || {}),
+          providerId: 'deepseek',
+          modelId: 'deepseek-v4-pro',
+          fallback: true,
+        },
+      },
+    } : {}),
+  };
+  loadAiProviderConfigs({ configPath: AI_PROVIDER_CONFIG_PATH, localConfig: next, legacyQwenConfig: qwen });
+  fs.mkdirSync(path.dirname(AI_PROVIDER_CONFIG_PATH), { recursive: true });
+  atomicWriteJson(AI_PROVIDER_CONFIG_PATH, next);
+  aiRouter = null;
+  aiRouterInitError = null;
+  aiRouterConfigStamp = null;
+  getAiRouter();
+  return getAiConfigurationSnapshot();
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
   res.writeHead(status, {
@@ -285,7 +403,7 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if (method === 'POST' && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
-  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/capture-batches' || pathname === '/material-window')) return true;
+  if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/append-material-note' || pathname === '/capture-batches' || pathname === '/material-window')) return true;
   if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
   if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
@@ -3483,6 +3601,122 @@ async function handleSaveMaterial(req, res) {
   }
 }
 
+async function handleAppendMaterial(req, res) {
+  const raw = await readBody(req, 24 * 1024 * 1024);
+  const payload = JSON.parse(raw || '{}');
+  const noteUid = normalizeNoteUid(payload.noteUid);
+  const files = (Array.isArray(payload.files) ? payload.files : []).map(decodeMaterialFile);
+  if (files.length < 1 || files.length > MAX_MATERIAL_FILES) {
+    const error = new Error('请选择 1 到 8 个要加入的资料文件');
+    error.code = 'INVALID_MATERIAL_NOTE';
+    throw error;
+  }
+  const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
+  if (totalBytes > MAX_MATERIAL_TOTAL_BYTES) {
+    const error = new Error('资料文件合计超过 16 MB');
+    error.code = 'PAYLOAD_TOO_LARGE';
+    throw error;
+  }
+  const snapshot = learningData.getSnapshot();
+  const note = findMaterialLearningNote(snapshot, noteUid);
+  if (!note) {
+    const error = new Error('没有找到要追加资料的速记');
+    error.code = 'NOTE_NOT_FOUND';
+    throw error;
+  }
+  const currentAttachments = Array.isArray(note.attachments) ? note.attachments : [];
+  const existingHashes = new Set();
+  for (const attachment of currentAttachments) {
+    const declared = typeof attachment?.checksum === 'string'
+      ? attachment.checksum.replace(/^sha256:/i, '').toLowerCase()
+      : '';
+    if (/^[a-f0-9]{64}$/.test(declared)) {
+      existingHashes.add(declared);
+      continue;
+    }
+    if (typeof attachment?.filePath === 'string' && fs.existsSync(attachment.filePath)) {
+      try {
+        existingHashes.add(crypto.createHash('sha256').update(fs.readFileSync(attachment.filePath)).digest('hex'));
+      } catch {
+        // A temporarily unavailable old attachment must not block adding a new one.
+      }
+    }
+  }
+  const additions = files
+    .map((file) => ({ file, hash: crypto.createHash('sha256').update(file.buffer).digest('hex') }))
+    .filter(({ hash }, index, source) => !existingHashes.has(hash) && source.findIndex((item) => item.hash === hash) === index);
+  if (currentAttachments.length + additions.length > MAX_MATERIAL_FILES) {
+    const error = new Error(`每条速记最多保留 ${MAX_MATERIAL_FILES} 份资料，请先移除不需要的附件`);
+    error.code = 'TOO_MANY_NOTE_FILES';
+    throw error;
+  }
+  if (additions.length === 0) {
+    sendJson(res, 200, {
+      ok: true,
+      noteUid,
+      attachments: currentAttachments,
+      learningData: snapshot,
+      idempotentReplay: true,
+    });
+    return;
+  }
+
+  const finalDir = path.join(MATERIAL_FILES_ROOT, noteUid);
+  fs.mkdirSync(finalDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  const createdPaths = [];
+  try {
+    const appended = additions.map(({ file, hash }, index) => {
+      const storedName = `${String(currentAttachments.length + index + 1).padStart(2, '0')}-${hash.slice(0, 10)}-${file.fileName}`;
+      const finalPath = path.join(finalDir, storedName);
+      const temporaryPath = `${finalPath}.tmp-${crypto.randomUUID()}`;
+      fs.writeFileSync(temporaryPath, file.buffer, { flag: 'wx' });
+      fs.renameSync(temporaryPath, finalPath);
+      createdPaths.push(finalPath);
+      return {
+        id: `material-${hash.slice(0, 24)}`,
+        kind: file.kind,
+        name: file.fileName,
+        mimeType: file.mime,
+        size: file.buffer.length,
+        filePath: finalPath,
+        previewPath: '',
+        posterPath: '',
+        checksum: `sha256:${hash}`,
+        createdAt,
+      };
+    });
+    const attachments = [...currentAttachments, ...appended];
+    const nextSnapshot = learningData.updateNote(noteUid, { attachments });
+    const receipt = readJson(materialReceiptPath(noteUid), null);
+    if (receipt && receipt.noteUid === noteUid) {
+      writeMaterialReceipt({
+        ...receipt,
+        attachments,
+        updatedAt: createdAt,
+      });
+    }
+    broadcastLearningData(nextSnapshot);
+    sendJson(res, 200, {
+      ok: true,
+      noteUid,
+      attachments,
+      learningData: nextSnapshot,
+      idempotentReplay: false,
+    });
+    queueMaterialNamingJob(noteUid, { userTitle: false });
+  } catch (error) {
+    for (const filePath of createdPaths) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch {
+        // Keep the original failure as the actionable error.
+      }
+    }
+    throw error;
+  }
+}
+
 function publicCanvasOrganizationJob(job) {
   if (!job) return null;
   const { previewDataUrl: _previewDataUrl, ...safe } = job;
@@ -4371,6 +4605,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'PUT' && pathname === '/ai/providers') {
+      if (!canControlNoteApp(req)) {
+        sendJson(res, 403, { ok: false, error: 'AI 厂家密钥只能在运行服务的 Windows 主机上修改。' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 32 * 1024)) || '{}');
+      sendJson(res, 200, saveAiProviderCredential(payload));
+      return;
+    }
+
     if (req.method === 'GET' && pathname === '/note-app-status') {
       sendJson(res, 200, { ok: true, readyAt: noteAppReadyAt });
       return;
@@ -4399,6 +4643,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && pathname === '/save-material-note') {
       await handleSaveMaterial(req, res);
+      return;
+    }
+
+    if (req.method === 'POST' && pathname === '/append-material-note') {
+      await handleAppendMaterial(req, res);
       return;
     }
 

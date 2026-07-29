@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
   Archive,
   BookOpenText,
@@ -14,6 +14,7 @@ import {
   FileText,
   FolderOpen,
   Inbox,
+  Paperclip,
   Pencil,
   Plus,
   RotateCcw,
@@ -40,11 +41,13 @@ import type {
 } from '../utils/learningData';
 import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
 import {
+  appendLearningMaterials,
   enqueueLearningNoteRename,
   getAiBackgroundJob,
   IS_CLOUD_RUNTIME,
   NOTE_SERVER_URL,
   searchLearningRecords,
+  updateCloudEntryAssets,
   type LearningSearchResult,
 } from '../utils/notes';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
@@ -66,21 +69,33 @@ import {
   shiftWeek,
   weeklyReviewFilename,
 } from '../utils/weeklyReview';
+import mascot01 from '../assets/quick-mascots/mascot-01.png';
+import mascot02 from '../assets/quick-mascots/mascot-02.png';
+import mascot03 from '../assets/quick-mascots/mascot-03.png';
+import mascot04 from '../assets/quick-mascots/mascot-04.png';
+import mascot05 from '../assets/quick-mascots/mascot-05.png';
+import mascot06 from '../assets/quick-mascots/mascot-06.png';
+import mascot07 from '../assets/quick-mascots/mascot-07.png';
+import mascot08 from '../assets/quick-mascots/mascot-08.png';
+import mascot09 from '../assets/quick-mascots/mascot-09.png';
+import mascot10 from '../assets/quick-mascots/mascot-10.png';
+import mascot11 from '../assets/quick-mascots/mascot-11.png';
+import mascot12 from '../assets/quick-mascots/mascot-12.png';
 import '../learning-center.css';
 
 const QUICK_NOTE_MASCOTS = [
-  { kind: 'cat', body: '#f3dfbd', line: '#8e5b2e', blush: '#e8a690', accent: '#d69a42', face: 'smile', deco: 'spark' },
-  { kind: 'bunny', body: '#f7dce2', line: '#935b69', blush: '#e99aaa', accent: '#d8758a', face: 'smile', deco: 'heart' },
-  { kind: 'bear', body: '#dfc4a8', line: '#76513a', blush: '#dc927e', accent: '#b77a45', face: 'w', deco: 'dot' },
-  { kind: 'blob', body: '#dcebc9', line: '#61754c', blush: '#e3a38f', accent: '#8cab64', face: 'wink', deco: 'leaf' },
-  { kind: 'cat', body: '#dce8f4', line: '#526f88', blush: '#e3a5a4', accent: '#79a4ca', face: 'w', deco: 'star' },
-  { kind: 'bunny', body: '#eadff5', line: '#735f8d', blush: '#daa0b9', accent: '#a781cc', face: 'wink', deco: 'flower' },
-  { kind: 'bear', body: '#f3e5ae', line: '#827039', blush: '#e5a27d', accent: '#d1a638', face: 'smile', deco: 'spark' },
-  { kind: 'blob', body: '#cfe9e4', line: '#47776f', blush: '#e9a29b', accent: '#60aaa0', face: 'w', deco: 'heart' },
-  { kind: 'cat', body: '#efd3bd', line: '#885c42', blush: '#e28c80', accent: '#c87e50', face: 'wink', deco: 'leaf' },
-  { kind: 'bunny', body: '#e4e4f4', line: '#62648a', blush: '#d998aa', accent: '#898bc3', face: 'w', deco: 'star' },
-  { kind: 'bear', body: '#d9e4bc', line: '#637044', blush: '#dfa08c', accent: '#94a85d', face: 'wink', deco: 'flower' },
-  { kind: 'blob', body: '#f1d8cb', line: '#875f51', blush: '#db8e85', accent: '#c77c6c', face: 'smile', deco: 'dot' },
+  { src: mascot01, name: '星盘猫头鹰' },
+  { src: mascot02, name: '书签狐狸' },
+  { src: mascot03, name: '手账熊猫' },
+  { src: mascot04, name: '竹节机器人' },
+  { src: mascot05, name: '图书水豚' },
+  { src: mascot06, name: '云朵精灵' },
+  { src: mascot07, name: '实验六角龙' },
+  { src: mascot08, name: '冲刺火焰鸟' },
+  { src: mascot09, name: '纸鹤学者' },
+  { src: mascot10, name: '地图陆龟' },
+  { src: mascot11, name: '夜读飞蛾' },
+  { src: mascot12, name: '侦探石龙' },
 ] as const;
 
 function quickMascotIndex(noteUid: string): number {
@@ -92,44 +107,30 @@ function quickMascotIndex(noteUid: string): number {
 function QuickNoteMascot({ noteUid }: { noteUid: string }) {
   const mascot = QUICK_NOTE_MASCOTS[quickMascotIndex(noteUid)];
   return (
-    <svg className="lc-quick-mascot" viewBox="0 0 52 44" focusable="false" aria-hidden="true">
-      {mascot.kind === 'cat' && <path className="lc-quick-mascot-ear" style={{ stroke: mascot.line }} d="M15.7 15.2 14 7.8l6.5 3.1m15.8 4.3L38 7.8l-6.5 3.1" />}
-      {mascot.kind === 'bunny' && <path className="lc-quick-mascot-ear" style={{ stroke: mascot.line }} d="M18.9 13.1C15.5 7.4 17 3.7 19.4 4.2c2.7.5 2.4 5.7 2.2 8m11.5.9C36.5 7.4 35 3.7 32.6 4.2c-2.7.5-2.4 5.7-2.2 8" />}
-      {mascot.kind === 'bear' && (
-        <>
-          <circle className="lc-quick-mascot-ear-fill" style={{ fill: mascot.body, stroke: mascot.line }} cx="17.4" cy="12.2" r="4.1" />
-          <circle className="lc-quick-mascot-ear-fill" style={{ fill: mascot.body, stroke: mascot.line }} cx="34.6" cy="12.2" r="4.1" />
-        </>
-      )}
-      <path className="lc-quick-mascot-body" style={{ fill: mascot.body, stroke: mascot.line }} d="M13.5 20.5c0-8 5.6-13 12.5-13s12.5 5 12.5 13v8.2c0 5.1-4.7 8.8-12.5 8.8s-12.5-3.7-12.5-8.8z" />
-      {mascot.face === 'wink'
-        ? <path className="lc-quick-mascot-eye-line" style={{ stroke: mascot.line }} d="m19.3 23.2 1.8 1.2 1.8-1.2" />
-        : <circle className="lc-quick-mascot-eye" style={{ fill: mascot.line }} cx="21.2" cy="23.1" r="1.45" />}
-      <circle className="lc-quick-mascot-eye" style={{ fill: mascot.line }} cx="30.8" cy="23.1" r="1.45" />
-      <path
-        className="lc-quick-mascot-smile"
-        style={{ stroke: mascot.line }}
-        d={mascot.face === 'w' ? 'm22.7 27.1 2.2 1.6 1.1-1.3 1.1 1.3 2.2-1.6' : 'M23.1 27.2c1.8 1.7 4 1.7 5.8 0'}
-      />
-      <circle className="lc-quick-mascot-blush" style={{ fill: mascot.blush }} cx="18.2" cy="27.3" r="2.05" />
-      <circle className="lc-quick-mascot-blush" style={{ fill: mascot.blush }} cx="33.8" cy="27.3" r="2.05" />
-      {mascot.deco === 'spark' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="m42.2 8 .7 2.1 2.1.7-2.1.8-.7 2.1-.8-2.1-2.1-.8 2.1-.7z" />}
-      {mascot.deco === 'heart' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="M42.2 13.6c-4-2.3-4-6.4-.8-6.4 1 0 1.7.6 2.1 1.4.5-.8 1.2-1.4 2.2-1.4 3.1 0 3.1 4.1-.9 6.4l-1.3.8z" />}
-      {mascot.deco === 'leaf' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="M39.2 13.3c.3-4.5 3.2-7.1 7.1-6.8-.3 4.2-2.9 6.8-7.1 6.8m.4-.3 5-4.3" />}
-      {mascot.deco === 'star' && <path className="lc-quick-mascot-deco" style={{ fill: mascot.accent }} d="m43 6.4 1.2 2.8 3 .3-2.3 2  .7 2.9-2.6-1.6-2.6 1.6.7-2.9-2.3-2 3-.3z" />}
-      {mascot.deco === 'flower' && (
-        <g className="lc-quick-mascot-deco" style={{ fill: mascot.accent }}>
-          <circle cx="43" cy="7.8" r="2" /><circle cx="46" cy="10.5" r="2" /><circle cx="43" cy="13.2" r="2" /><circle cx="40" cy="10.5" r="2" />
-          <circle cx="43" cy="10.5" r="1.55" fill="#fff4cf" />
-        </g>
-      )}
-      {mascot.deco === 'dot' && (
-        <g className="lc-quick-mascot-deco" style={{ fill: mascot.accent }}>
-          <circle cx="41" cy="8" r="1.25" /><circle cx="45" cy="11" r="1.65" /><circle cx="40.5" cy="14" r=".85" />
-        </g>
-      )}
-    </svg>
+    <img className="lc-quick-mascot" src={mascot.src} alt="" title={mascot.name} aria-hidden="true" />
   );
+}
+
+function WheelIsolatedScroller({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || element.scrollWidth <= element.clientWidth) return;
+      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+      if (!delta) return;
+      const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth);
+      const canConsume = delta < 0 ? element.scrollLeft > 0 : element.scrollLeft < maxScroll - 1;
+      if (!canConsume) return;
+      event.preventDefault();
+      event.stopPropagation();
+      element.scrollLeft = Math.max(0, Math.min(maxScroll, element.scrollLeft + delta));
+    };
+    element.addEventListener('wheel', handleWheel, { passive: false });
+    return () => element.removeEventListener('wheel', handleWheel);
+  }, []);
+  return <div ref={ref}>{children}</div>;
 }
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -172,7 +173,7 @@ interface ClassificationDraft {
   wrongReason: string;
 }
 
-type LearningItemKind = 'knowledge' | 'mistake' | 'memory';
+type LearningItemKind = 'quick' | 'knowledge' | 'mistake' | 'memory';
 
 const QUICK_FACET_OPTIONS: Array<{
   facet: Exclude<LearningRecordFacet, 'quick'>;
@@ -1199,7 +1200,13 @@ export function LearningCenter({
   };
 
   const beginEditNote = (note: LearningAutoNote) => {
-    const kind: LearningItemKind = isMistakeNote(note) ? 'mistake' : isMemoryNote(note) ? 'memory' : 'knowledge';
+    const kind: LearningItemKind = isQuickNote(note)
+      ? 'quick'
+      : isMistakeNote(note)
+        ? 'mistake'
+        : isMemoryNote(note)
+          ? 'memory'
+          : 'knowledge';
     setNoteEditor({
       mode: 'edit',
       noteUid: note.noteUid,
@@ -1220,7 +1227,8 @@ export function LearningCenter({
 
   const saveNoteEditor = async () => {
     if (!noteEditor || editorSaving) return;
-    const title = noteEditor.title.trim();
+    const title = noteEditor.title.trim()
+      || (noteEditor.kind === 'quick' ? noteEditor.remark.split(/\r?\n/u).map((line) => line.trim()).find(Boolean)?.slice(0, 36) || '' : '');
     const subject = noteEditor.subject.trim();
     if (!title) {
       setFeedback('请填写标题。');
@@ -1236,7 +1244,7 @@ export function LearningCenter({
     if (noteEditor.kind === 'mistake' && !tags.includes('错题')) tags.push('错题');
     if (noteEditor.kind === 'memory' && !tags.includes('背诵')) tags.push('背诵');
     if (noteEditor.isGood) tags.push('好题');
-    const noteType = noteEditor.kind === 'knowledge' ? 'knowledge' : noteEditor.kind;
+    const noteType = noteEditor.kind;
     const common = {
       title,
       remark: noteEditor.remark.trim(),
@@ -1387,6 +1395,58 @@ export function LearningCenter({
       : attachment);
     void Promise.resolve(onPatchNote(note.noteUid, { attachments })).catch(() => undefined);
   }, [onPatchNote]);
+
+  const appendQuickAttachments = async (note: LearningAutoNote, files: File[]) => {
+    if (files.length === 0 || pendingNoteUid) return;
+    try {
+      setPendingNoteUid(note.noteUid);
+      setFeedback('正在加入资料…');
+      const result = await appendLearningMaterials({
+        noteUid: note.noteUid,
+        title: note.title,
+        remark: note.remark,
+        subject: note.subject,
+        tags: note.tags,
+        facets: note.facets,
+        files,
+      });
+      if (result.attachments) {
+        await onPatchNote(note.noteUid, { attachments: result.attachments as LearningAttachment[] });
+      }
+      setFeedback(result.idempotentReplay ? '这些资料已经在速记里' : `已加入 ${files.length} 份资料，AI 正在统一整理命名`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '资料没有加入，请稍后重试');
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
+
+  const removeQuickAttachment = async (note: LearningAutoNote, attachmentId: string) => {
+    const attachments = note.attachments.filter((attachment) => attachment.id !== attachmentId);
+    if (attachments.length === note.attachments.length || pendingNoteUid) return;
+    if (!window.confirm('从这条速记中移除这份资料吗？原文件会保留，避免误删。')) return;
+    try {
+      setPendingNoteUid(note.noteUid);
+      setFeedback('');
+      if (IS_CLOUD_RUNTIME) {
+        await updateCloudEntryAssets(
+          note.noteUid,
+          attachments.map((attachment) => attachment.assetId || attachment.id),
+        );
+      }
+      await onPatchNote(note.noteUid, { attachments });
+      setActiveQuickAssets((current) => {
+        if (current[note.noteUid] !== attachmentId) return current;
+        const { [note.noteUid]: _removed, ...rest } = current;
+        return rest;
+      });
+      setFeedback('资料已从这条速记移除，原文件仍保留');
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '资料没有移除，请稍后重试');
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
 
   const beginInlineDetach = (
     event: ReactPointerEvent<HTMLElement>,
@@ -2134,6 +2194,27 @@ export function LearningCenter({
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                disabled={editorSaving || pendingNoteUid === note.noteUid}
+                onClick={() => beginEditNote(note)}
+              >
+                <Pencil size={14} />编辑
+              </button>
+              <label className={`lc-quick-attach${pendingNoteUid === note.noteUid ? ' is-busy' : ''}`}>
+                <Paperclip size={14} />添加资料
+                <input
+                  type="file"
+                  multiple
+                  accept="image/*,.pdf,.doc,.docx,.html,.htm,.txt,.md"
+                  disabled={pendingNoteUid === note.noteUid}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files || []);
+                    event.currentTarget.value = '';
+                    void appendQuickAttachments(note, files);
+                  }}
+                />
+              </label>
               {!IS_CLOUD_RUNTIME && (
                 <button
                   className="lc-quick-delete"
@@ -2159,34 +2240,52 @@ export function LearningCenter({
             {!showAllAssets && (
               <div className="lc-quick-asset-row">
                 <strong>资料</strong>
-                <div onWheel={(event) => {
-                  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
-                  event.currentTarget.scrollLeft += event.deltaY;
-                }}>
+                <WheelIsolatedScroller>
                   {assets.map((asset) => (
-                    <button
-                      className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}
-                      type="button"
-                      key={asset.id}
-                      title="点击查看；按住资料直接拖出显示"
-                      onPointerDown={(event) => beginInlineDetach(event, note, asset.id, () => {
-                        setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
-                      })}
-                    ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                    <span className="lc-quick-asset-chip-wrap" key={asset.id}>
+                      <button
+                        className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}
+                        type="button"
+                        title="点击查看；按住资料直接拖出显示"
+                        onPointerDown={(event) => beginInlineDetach(event, note, asset.id, () => {
+                          setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
+                        })}
+                      ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                      <button
+                        className="lc-quick-asset-remove"
+                        type="button"
+                        aria-label="移除附件"
+                        title={`从速记移除 ${asset.name}`}
+                        disabled={pendingNoteUid === note.noteUid}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => void removeQuickAttachment(note, asset.id)}
+                      ><X size={12} /></button>
+                    </span>
                   ))}
-                </div>
+                </WheelIsolatedScroller>
               </div>
             )}
             {showAllAssets ? (
               <div className={`lc-quick-all-assets has-${assets.length}`}>
                 {assets.map((asset) => (
                   <article className={`lc-quick-expanded-asset is-${asset.kind}`} key={asset.id}>
-                    <button
-                      className="lc-quick-asset-chip active"
-                      type="button"
-                      title="按住资料直接拖出显示"
-                      onPointerDown={(event) => beginInlineDetach(event, note, asset.id)}
-                    ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                    <span className="lc-quick-asset-chip-wrap">
+                      <button
+                        className="lc-quick-asset-chip active"
+                        type="button"
+                        title="按住资料直接拖出显示"
+                        onPointerDown={(event) => beginInlineDetach(event, note, asset.id)}
+                      ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                      <button
+                        className="lc-quick-asset-remove"
+                        type="button"
+                        aria-label="移除附件"
+                        title={`从速记移除 ${asset.name}`}
+                        disabled={pendingNoteUid === note.noteUid}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() => void removeQuickAttachment(note, asset.id)}
+                      ><X size={12} /></button>
+                    </span>
                     <div className="lc-quick-active-preview">
                       <WorkspaceAssetPreview
                         item={asset}
@@ -2421,13 +2520,14 @@ export function LearningCenter({
         <div className="lc-editor-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget && !editorSaving) setNoteEditor(null);
         }}>
-          <form className="lc-content-editor" role="dialog" aria-modal="true" aria-label={noteEditor.mode === 'create' ? '新增学习内容' : '编辑学习内容'} onSubmit={(event) => { event.preventDefault(); void saveNoteEditor(); }}>
+          <form className={`lc-content-editor${noteEditor.kind === 'quick' ? ' is-quick-editor' : ''}`} role="dialog" aria-modal="true" aria-label={noteEditor.mode === 'create' ? '新增学习内容' : '编辑学习内容'} onSubmit={(event) => { event.preventDefault(); void saveNoteEditor(); }}>
             <header>
               <h2>{noteEditor.mode === 'create' ? '新增学习内容' : '编辑学习内容'}</h2>
               <button type="button" aria-label="关闭编辑器" disabled={editorSaving} onClick={() => setNoteEditor(null)}><X size={18} /></button>
             </header>
             <div className="lc-editor-grid">
               <label>类型<select value={noteEditor.kind} onChange={(event) => setNoteEditor((current) => current ? { ...current, kind: event.target.value as LearningItemKind, createCard: event.target.value !== 'knowledge' && current.createCard } : current)}>
+                <option value="quick">速记</option>
                 <option value="knowledge">知识</option>
                 <option value="mistake">错题</option>
                 <option value="memory">背诵</option>
@@ -2436,13 +2536,13 @@ export function LearningCenter({
                 <option value="">请选择</option>
                 {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
               </select></label>
-              <label className="wide">标题<input value={noteEditor.title} maxLength={120} autoFocus onChange={(event) => setNoteEditor((current) => current ? { ...current, title: event.target.value } : current)} placeholder="例如：进程与线程的区别" /></label>
-              <label>知识点<input list="lc-knowledge-options" value={noteEditor.knowledgePoint} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>
-              <label>题型<input value={noteEditor.questionType} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>
+              <label className="wide">标题<input value={noteEditor.title} maxLength={120} autoFocus onChange={(event) => setNoteEditor((current) => current ? { ...current, title: event.target.value } : current)} placeholder={noteEditor.kind === 'quick' ? '留空时会从正文自动生成短标题' : '例如：进程与线程的区别'} /></label>
+              {noteEditor.kind !== 'quick' && <label>知识点<input list="lc-knowledge-options" value={noteEditor.knowledgePoint} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>}
+              {noteEditor.kind !== 'quick' && <label>题型<input value={noteEditor.questionType} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>}
               {noteEditor.kind === 'mistake' && <label className="wide">错因<input value={noteEditor.wrongReason} maxLength={500} onChange={(event) => setNoteEditor((current) => current ? { ...current, wrongReason: event.target.value } : current)} placeholder="例如：混淆阻塞与就绪状态" /></label>}
-              <label className="wide">内容<textarea value={noteEditor.remark} maxLength={4000} onChange={(event) => setNoteEditor((current) => current ? { ...current, remark: event.target.value } : current)} placeholder="写下题目、结论、易错点或需要记住的内容" /></label>
-              <label className="wide">标签<input value={noteEditor.tags} onChange={(event) => setNoteEditor((current) => current ? { ...current, tags: event.target.value } : current)} placeholder="用逗号分隔" /></label>
-              <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.isGood} onChange={(event) => setNoteEditor((current) => current ? { ...current, isGood: event.target.checked } : current)} />收藏到“好题”（可同时保留为错题）</label>
+              <label className="wide">内容<textarea value={noteEditor.remark} maxLength={8000} onChange={(event) => setNoteEditor((current) => current ? { ...current, remark: event.target.value } : current)} placeholder={noteEditor.kind === 'quick' ? '直接修改这条速记；空行会保留为自然分段' : '写下题目、结论、易错点或需要记住的内容'} /></label>
+              {noteEditor.kind !== 'quick' && <label className="wide">标签<input value={noteEditor.tags} onChange={(event) => setNoteEditor((current) => current ? { ...current, tags: event.target.value } : current)} placeholder="用逗号分隔" /></label>}
+              {noteEditor.kind !== 'quick' && <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.isGood} onChange={(event) => setNoteEditor((current) => current ? { ...current, isGood: event.target.checked } : current)} />收藏到“好题”（可同时保留为错题）</label>}
               {noteEditor.mode === 'create' && noteEditor.kind !== 'knowledge' && (
                 <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.createCard} onChange={(event) => setNoteEditor((current) => current ? { ...current, createCard: event.target.checked } : current)} />同时建立一张今日复习卡</label>
               )}

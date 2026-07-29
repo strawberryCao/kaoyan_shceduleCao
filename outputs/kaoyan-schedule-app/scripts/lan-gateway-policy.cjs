@@ -34,7 +34,7 @@ const isAllowedLanApiRoute = (method, requestUrl) => {
   if (method === 'POST' && url.pathname === '/api/canvas-projects/active') return true;
   if (method === 'POST' && /^\/api\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/live-stroke$/.test(url.pathname)) return true;
   if ((method === 'GET' || method === 'POST') && /^\/api\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(url.pathname)) return true;
-  if (method === 'POST' && ['/api/save-note', '/api/save-note-batch', '/api/save-material-note', '/api/capture-batches'].includes(url.pathname)) return true;
+  if (method === 'POST' && ['/api/save-note', '/api/save-note-batch', '/api/save-material-note', '/api/append-material-note', '/api/capture-batches'].includes(url.pathname)) return true;
   if (method === 'GET' && /^\/api\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(url.pathname)) return true;
   if (method === 'POST' && /^\/api\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(url.pathname)) return true;
   if (method === 'GET' && (url.pathname === '/api/learning-data' || url.pathname === '/api/learning-data/events')) return true;

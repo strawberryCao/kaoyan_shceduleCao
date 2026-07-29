@@ -160,6 +160,10 @@ log(`started pid=${process.pid} root=${assistantRoot} debounceMs=${debounceMs} i
 try {
   const watcher = fs.watch(assistantRoot, { recursive: true }, (_event, filename) => {
     if (!relevant(filename)) return;
+    // The structured merge writes learning-data.json itself. Do not enqueue a
+    // second full sync for that internal write; genuine edits are still caught
+    // immediately while idle and by the periodic safety sync.
+    if (running && requiresFullSync(filename)) return;
     schedule({ full: requiresFullSync(filename) });
   });
   watcher.on('error', (error) => log(`watch-error=${error.message}`));

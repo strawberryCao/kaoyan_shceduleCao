@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Document, Packer, Paragraph } from 'docx';
+import sharp from 'sharp';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const notesRoot = path.join(projectRoot, '.e2e-runtime', 'notes');
@@ -130,10 +131,68 @@ test('mobile quick note needs one text field and one save action', async ({ page
   expect(note.facets).toContain('quick');
 });
 
+test('an existing quick note can edit its text and add or remove attachments', async ({ page, request }) => {
+  const noteUid = 'e2e_quick_edit_001';
+  const createResponse = await request.post(`${noteOrigin}/save-material-note`, {
+    headers: { 'x-kaoyan-lan-proxy': '1' },
+    data: {
+      noteUid,
+      title: '待修改速记',
+      remark: '原始正文',
+      subject: '默认文件夹',
+      facets: ['quick'],
+      files: [],
+    },
+  });
+  expect(createResponse.status()).toBe(201);
+
+  await page.goto('/?panel=learning&view=quick');
+  await page.getByText('待修改速记', { exact: true }).first().click();
+  const record = page.locator('.lc-quick-record');
+  await record.getByRole('button', { name: '编辑' }).click();
+  const editor = page.getByRole('dialog', { name: '编辑学习内容' });
+  await editor.getByLabel('标题').fill('已经修改的速记');
+  await editor.getByLabel('内容').fill('修改后的第一段\n\n修改后的第二段');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(record.getByRole('heading', { name: '已经修改的速记' })).toBeVisible();
+  await expect(record).toContainText('修改后的第二段');
+
+  await record.locator('.lc-quick-attach input[type="file"]').setInputFiles({
+    name: '后续补充.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('后续补充资料', 'utf8'),
+  });
+  await expect(record.getByRole('button', { name: /后续补充\.txt/ })).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await record.getByRole('button', { name: '移除附件' }).click();
+  await expect(record.getByRole('button', { name: /后续补充\.txt/ })).toHaveCount(0);
+
+  const snapshotResponse = await request.get(`${noteOrigin}/learning-data`);
+  const snapshot = await snapshotResponse.json();
+  const stored = Object.values(snapshot.days as Record<string, { autoNotes?: Array<{
+    noteUid: string;
+    title: string;
+    remark: string;
+    attachments: unknown[];
+  }> }>).flatMap((day) => day.autoNotes || []).find((note) => note.noteUid === noteUid);
+  expect(stored?.title).toBe('已经修改的速记');
+  expect(stored?.remark).toContain('修改后的第二段');
+  expect(stored?.attachments).toHaveLength(0);
+});
+
 test('all common formats adapt, scroll and detach as borderless floating material', async ({ page }) => {
   const docx = await Packer.toBuffer(new Document({
     sections: [{ children: [new Paragraph('Playwright Word 预览正文')] }],
   }));
+  const longPng = await sharp({
+    create: {
+      width: 420,
+      height: 2400,
+      channels: 4,
+      background: { r: 248, g: 246, b: 241, alpha: 1 },
+    },
+  }).png().toBuffer();
   await page.goto('/?noteApp=1');
   await page.getByRole('button', { name: '速记' }).click();
   await page.getByPlaceholder('例如：拉格朗日中值定理的构造思路').fill('三种文档浏览器验收');
@@ -166,7 +225,7 @@ test('all common formats adapt, scroll and detach as borderless floating materia
     {
       name: 'e2e-image.png',
       mimeType: 'image/png',
-      buffer: Buffer.from(tinyPngBase64, 'base64'),
+      buffer: longPng,
     },
     {
       name: 'e2e-text.txt',
@@ -227,6 +286,17 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   const inlineImage = record.locator('.lrp-image-viewer img');
   await expect(inlineImage).toBeVisible();
   await expect.poll(() => inlineImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  const imageViewer = record.locator('.lrp-image-viewer');
+  await imageViewer.hover();
+  expect(await imageViewer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  const initialImageWidth = await inlineImage.evaluate((image) => image.getBoundingClientRect().width);
+  await page.mouse.wheel(0, 320);
+  await expect.poll(() => imageViewer.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await imageViewer.click();
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -260);
+  await page.keyboard.up('Control');
+  await expect.poll(() => inlineImage.evaluate((image) => image.getBoundingClientRect().width)).toBeGreaterThan(initialImageWidth);
 
   await record.getByRole('button', { name: /e2e-text\.txt/ }).click();
   await expect(record.locator('.lrp-text-preview')).toContainText('Playwright 文本资料预览');

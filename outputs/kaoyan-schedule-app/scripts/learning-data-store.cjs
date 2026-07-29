@@ -1353,7 +1353,7 @@ function createLearningDataStore(options = {}) {
             studyNotes,
             updatedAt: timestamp,
 
-            ...(Object.hasOwn(patch, 'attachments') ? { attachments: patch.attachments, filePath: primaryAttachmentPath(patch.attachments) || note.filePath } : {}),
+            ...(Object.hasOwn(patch, 'attachments') ? { attachments: patch.attachments, filePath: primaryAttachmentPath(patch.attachments) } : {}),
             ...(Object.hasOwn(patch, 'facets') ? { facets: patch.facets } : {}),
           });
         });

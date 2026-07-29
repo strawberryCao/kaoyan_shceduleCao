@@ -40,7 +40,7 @@ function inferCapabilities(providerId, modelId) {
     || /qwen.*vl/i.test(model)
     || /kimi-(?:k2\.(?:5|6)|k3)(?:[-_.]|$)/i.test(model)
   ) result.push('vision');
-  if (providerId === 'gemini' || /(?:long|128k|256k|k2)/i.test(model)) result.push('longContext');
+  if (providerId === 'gemini' || providerId === 'deepseek' || /(?:long|128k|256k|k2)/i.test(model)) result.push('longContext');
   if (/(?:pro|max|thinking|reason|k2\.[56])/i.test(model)) result.push('reasoning');
   return [...new Set(result)];
 }
