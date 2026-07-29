@@ -104,6 +104,8 @@ function assetCandidates(note) {
 function resolveAsset(candidate, context) {
   const normalized = String(candidate.path || '').trim().replaceAll('\\', '/');
   const possible = [];
+  // POSIX absolute paths are used by CI and local Linux/macOS adapters.
+  if (path.isAbsolute(normalized)) possible.push(normalized);
   if (/^[A-Za-z]:\//.test(normalized)) possible.push(normalized);
   if (normalized.startsWith('github://')) possible.push(path.join(context.repoRoot, normalized.slice('github://'.length)));
   if (normalized.startsWith('data/') || normalized.startsWith('source-notes/')) possible.push(path.join(context.repoRoot, normalized));
