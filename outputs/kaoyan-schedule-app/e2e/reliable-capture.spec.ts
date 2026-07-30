@@ -266,25 +266,38 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   await page.getByText('三种文档浏览器验收', { exact: true }).first().click();
   const record = page.locator('.lc-quick-record').filter({ hasText: '三种文档浏览器验收' });
   await expect(record).toBeVisible();
-  const chipScroller = record.locator('.lc-quick-asset-row > div');
+  const materialWorkspace = record.locator('.lc-quick-material-workspace');
+  const assetRail = record.locator('.lc-quick-asset-rail');
+  const chipScroller = record.locator('.lc-quick-asset-list');
+  const activePreview = record.locator('.lc-quick-active-preview');
+  await expect(materialWorkspace).toHaveClass(/is-vertical/);
   await expect(chipScroller).toBeVisible();
-  expect(await chipScroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
-  expect(await record.locator('.lc-quick-asset-row').evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(470);
+  const verticalLayout = await Promise.all([assetRail.boundingBox(), activePreview.boundingBox()]);
+  expect(verticalLayout[0] && verticalLayout[1]).toBeTruthy();
+  expect(verticalLayout[0]!.x + verticalLayout[0]!.width).toBeLessThanOrEqual(verticalLayout[1]!.x);
+  expect(verticalLayout[0]!.width).toBeLessThan(230);
   expect(await record.locator('.lc-quick-asset-chip').first().evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(32);
+  await record.getByRole('button', { name: '切换为横向资料标签' }).click();
+  await expect(materialWorkspace).toHaveClass(/is-horizontal/);
+  const horizontalLayout = await Promise.all([assetRail.boundingBox(), activePreview.boundingBox()]);
+  expect(horizontalLayout[0] && horizontalLayout[1]).toBeTruthy();
+  expect(horizontalLayout[0]!.y + horizontalLayout[0]!.height).toBeLessThanOrEqual(horizontalLayout[1]!.y);
+  await record.getByRole('button', { name: '切换为纵向资料标签' }).click();
+  await expect(materialWorkspace).toHaveClass(/is-vertical/);
 
-  await record.getByRole('button', { name: /e2e\.docx/ }).click();
+  await record.getByRole('tab', { name: /e2e\.docx/ }).click();
   const wordFrame = page.frameLocator('iframe[title="e2e.docx"]');
   await expect(wordFrame.getByText('Playwright Word 预览正文')).toBeVisible();
   expect(await wordFrame.locator('html').evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
 
-  await record.getByRole('button', { name: /e2e\.html/ }).click();
+  await record.getByRole('tab', { name: /e2e\.html/ }).click();
   const htmlFrame = page.locator('iframe[title="e2e.html"]');
   const htmlFrameContent = page.frameLocator('iframe[title="e2e.html"]');
   await expect(htmlFrameContent.getByText('HTML 自适应预览')).toBeVisible();
   await expect(htmlFrame).toHaveAttribute('sandbox', /allow-scripts/);
   expect(await htmlFrameContent.locator('html').evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
 
-  await record.getByRole('button', { name: /e2e-image\.png/ }).click();
+  await record.getByRole('tab', { name: /e2e-image\.png/ }).click();
   const inlineImage = record.locator('.lrp-image-viewer img');
   await expect(inlineImage).toBeVisible();
   await expect.poll(() => inlineImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
@@ -300,10 +313,10 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   await page.keyboard.up('Control');
   await expect.poll(() => inlineImage.evaluate((image) => image.getBoundingClientRect().width)).toBeGreaterThan(initialImageWidth);
 
-  await record.getByRole('button', { name: /e2e-text\.txt/ }).click();
+  await record.getByRole('tab', { name: /e2e-text\.txt/ }).click();
   await expect(record.locator('.lrp-text-preview')).toContainText('Playwright 文本资料预览');
 
-  const pdfChip = record.getByRole('button', { name: /e2e\.pdf/ });
+  const pdfChip = record.getByRole('tab', { name: /e2e\.pdf/ });
   const relayDescriptor = await pdfChip.evaluate((element) => {
     const dataTransfer = new DataTransfer();
     element.dispatchEvent(new DragEvent('dragstart', {
@@ -311,10 +324,16 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
       cancelable: true,
       dataTransfer,
     }));
-    return {
+    const result = {
       types: [...dataTransfer.types],
       payload: JSON.parse(dataTransfer.getData('application/x-kaoyan-material-v1')),
     };
+    element.dispatchEvent(new DragEvent('dragend', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer,
+    }));
+    return result;
   });
   expect(relayDescriptor.types).toContain('application/x-kaoyan-material-v1');
   expect(relayDescriptor.payload.protocol).toBe('kaoyan-material-v1');
@@ -332,6 +351,19 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   await record.locator('.lrp-pdf-scroll').hover();
   await page.mouse.wheel(0, 480);
   await expect(pdfZoomLabel).toContainText('100%');
+
+  const chipBox = await pdfChip.boundingBox();
+  const previewBox = await activePreview.boundingBox();
+  expect(chipBox && previewBox).toBeTruthy();
+  await page.mouse.move(chipBox!.x + chipBox!.width / 2, chipBox!.y + chipBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(previewBox!.x + previewBox!.width * .72, previewBox!.y + 90, { steps: 10 });
+  await page.mouse.up();
+  const detached = page.locator('.lc-detached-material.is-pdf').last();
+  await expect(detached).toBeVisible();
+  await expect(detached.locator('.lrp-pdf-page canvas')).toBeVisible();
+  await detached.locator(':scope > header button').last().click();
+  await expect(detached).toHaveCount(0);
 });
 
 test('cloud session cookie protects APIs and cloud delete stays disabled', async ({ request }) => {

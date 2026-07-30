@@ -35,6 +35,15 @@ export interface LearningInlineDetachLayerHandle {
       onRecovered?: (item: WorkspaceAssetPreviewItem) => void;
     },
   ) => void;
+  spawnAt: (
+    asset: WorkspaceAssetPreviewItem,
+    assets: WorkspaceAssetPreviewItem[],
+    clientX: number,
+    clientY: number,
+    options?: {
+      onRecovered?: (item: WorkspaceAssetPreviewItem) => void;
+    },
+  ) => void;
 }
 
 const GAP = 10;
@@ -226,6 +235,9 @@ export const LearningInlineDetachLayer = forwardRef<
   };
 
   useImperativeHandle(ref, () => ({
+    spawnAt(asset, assets, clientX, clientY, options = {}) {
+      spawn(asset, assets, clientX, clientY, options.onRecovered || (() => undefined));
+    },
     begin(event, asset, assets, options = {}) {
       if (event.button !== 0) return;
       event.preventDefault();

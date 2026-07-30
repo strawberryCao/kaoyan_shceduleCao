@@ -11,8 +11,10 @@ test('quick notes render one selected record with adaptive attachment previews',
   assert.match(center, /lc-quick-single-reader/);
   assert.match(center, /renderQuickEntry\(selectedNote\)/);
   assert.doesNotMatch(center, /visibleQuick\.map\(renderQuickEntry\)/);
-  assert.match(center, /showAllAssets = assets\.length <= 3/);
-  assert.match(center, /lc-quick-all-assets has-\$\{assets\.length\}/);
+  assert.match(center, /lc-quick-material-workspace is-\$\{quickAssetLayout\}/);
+  assert.match(center, /setQuickAssetLayout/);
+  assert.match(center, /切换为横向资料标签/);
+  assert.match(center, /lc-quick-asset-rail/);
   assert.match(center, /lc-quick-active-preview/);
   assert.match(center, /加入分栏/);
   assert.match(center, /void deleteNote\(note\)/);
@@ -24,8 +26,12 @@ test('attachment chips directly detach inside the current learning center', () =
   const center = read('src/components/LearningCenter.tsx');
   const layer = read('src/components/LearningInlineDetachLayer.tsx');
   const css = read('src/learning-center.css');
-  assert.match(center, /onPointerDown=\{\(event\) => beginInlineDetach/);
+  assert.match(center, /onDragStart=\{\(event\) => beginQuickAssetDrag/);
+  assert.match(center, /document\.addEventListener\('drop', handleSourceDrop, true\)/);
+  assert.match(center, /detachLayerRef\.current\?\.spawnAt/);
+  assert.match(center, /event\.pointerType !== 'mouse'/);
   assert.match(center, /<LearningInlineDetachLayer ref=\{detachLayerRef\}/);
+  assert.match(layer, /spawnAt\(asset, assets, clientX, clientY/);
   assert.match(layer, /Math\.hypot\(next\.clientX - startX, next\.clientY - startY\) > 7/);
   assert.match(layer, /WorkspaceAssetPreview/);
   assert.match(layer, /tryX\(other\.x \+ other\.width \+ GAP/);

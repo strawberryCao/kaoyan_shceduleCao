@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent as ReactDragEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react';
 import {
   Archive,
   BookOpenText,
@@ -8,6 +17,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
+  Columns2,
   Copy,
   FileImage,
   FileDown,
@@ -18,6 +28,7 @@ import {
   Pencil,
   Plus,
   RotateCcw,
+  Rows3,
   Save,
   Search,
   Star,
@@ -112,25 +123,37 @@ function QuickNoteMascot({ noteUid }: { noteUid: string }) {
   );
 }
 
-function VerticalAssetScroller({ children }: { children: ReactNode }) {
+function AssetScroller({
+  children,
+  layout,
+}: {
+  children: ReactNode;
+  layout: QuickAssetLayout;
+}) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const element = ref.current;
     if (!element) return undefined;
     const handleWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || element.scrollHeight <= element.clientHeight) return;
-      const delta = event.deltaY;
+      if (event.ctrlKey) return;
+      const vertical = layout === 'vertical';
+      const scrollSize = vertical ? element.scrollHeight : element.scrollWidth;
+      const clientSize = vertical ? element.clientHeight : element.clientWidth;
+      if (scrollSize <= clientSize) return;
+      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
       if (!delta) return;
-      const maxScroll = Math.max(0, element.scrollHeight - element.clientHeight);
-      const canConsume = delta < 0 ? element.scrollTop > 0 : element.scrollTop < maxScroll - 1;
+      const position = vertical ? element.scrollTop : element.scrollLeft;
+      const maxScroll = Math.max(0, scrollSize - clientSize);
+      const canConsume = delta < 0 ? position > 0 : position < maxScroll - 1;
       if (!canConsume) return;
       event.preventDefault();
       event.stopPropagation();
-      element.scrollTop = Math.max(0, Math.min(maxScroll, element.scrollTop + delta));
+      if (vertical) element.scrollTop = Math.max(0, Math.min(maxScroll, position + delta));
+      else element.scrollLeft = Math.max(0, Math.min(maxScroll, position + delta));
     };
     element.addEventListener('wheel', handleWheel, { passive: false });
     return () => element.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, [layout]);
   return <div ref={ref} className="lc-quick-asset-list">{children}</div>;
 }
 
@@ -153,6 +176,9 @@ export interface LearningCenterProps {
 
 type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'quick' | 'library' | 'uncategorized' | 'inbox' | 'weekly';
 type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'untracked';
+type QuickAssetLayout = 'vertical' | 'horizontal';
+
+const QUICK_ASSET_LAYOUT_STORAGE_KEY = 'kaoyan:quick-asset-layout';
 
 interface IndexedNote {
   date: string;
@@ -667,9 +693,29 @@ export function LearningCenter({
   const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
   const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
   const [activeQuickAssets, setActiveQuickAssets] = useState<Record<string, string>>({});
+  const [quickAssetLayout, setQuickAssetLayout] = useState<QuickAssetLayout>(() => {
+    try {
+      return window.localStorage.getItem(QUICK_ASSET_LAYOUT_STORAGE_KEY) === 'horizontal'
+        ? 'horizontal'
+        : 'vertical';
+    } catch {
+      return 'vertical';
+    }
+  });
   const [quickExporting, setQuickExporting] = useState(false);
   const [quickFacetMenuNoteUid, setQuickFacetMenuNoteUid] = useState<string | null>(null);
   const detachLayerRef = useRef<LearningInlineDetachLayerHandle | null>(null);
+  const quickDragCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(QUICK_ASSET_LAYOUT_STORAGE_KEY, quickAssetLayout);
+    } catch {
+      // The layout still works for the current session when storage is unavailable.
+    }
+  }, [quickAssetLayout]);
+
+  useEffect(() => () => quickDragCleanupRef.current?.(), []);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -1464,6 +1510,48 @@ export function LearningCenter({
     });
   };
 
+  const beginQuickAssetDrag = (
+    event: ReactDragEvent<HTMLButtonElement>,
+    note: LearningAutoNote,
+    asset: WorkspaceAssetPreviewItem,
+    assets: WorkspaceAssetPreviewItem[],
+  ) => {
+    quickDragCleanupRef.current?.();
+    setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
+    beginCrossBrowserRelayDrag(event.dataTransfer, asset);
+
+    const recognizesCurrentDrag = (dataTransfer: DataTransfer | null) => (
+      Array.from(dataTransfer?.types || [], (type) => String(type).toLowerCase())
+        .includes('application/x-kaoyan-material-v1')
+    );
+    const cleanup = () => {
+      document.removeEventListener('dragover', handleSourceDragOver, true);
+      document.removeEventListener('drop', handleSourceDrop, true);
+      if (quickDragCleanupRef.current === cleanup) quickDragCleanupRef.current = null;
+    };
+    const handleSourceDragOver = (next: DragEvent) => {
+      if (!recognizesCurrentDrag(next.dataTransfer)) return;
+      next.preventDefault();
+      if (next.dataTransfer) next.dataTransfer.dropEffect = 'copy';
+    };
+    const handleSourceDrop = (next: DragEvent) => {
+      if (!recognizesCurrentDrag(next.dataTransfer)) return;
+      next.preventDefault();
+      next.stopPropagation();
+      cleanup();
+      detachLayerRef.current?.spawnAt(asset, assets, next.clientX, next.clientY, {
+        onRecovered: (item) => recoverQuickAsset(note, item),
+      });
+    };
+    document.addEventListener('dragover', handleSourceDragOver, true);
+    document.addEventListener('drop', handleSourceDrop, true);
+    quickDragCleanupRef.current = cleanup;
+  };
+
+  const finishQuickAssetDrag = () => {
+    quickDragCleanupRef.current?.();
+  };
+
   const exportQuickJournal = async () => {
     if (quickExporting || visibleQuick.length === 0) return;
     try {
@@ -2153,7 +2241,6 @@ export function LearningCenter({
     const { date, note } = entry;
     const assets = quickPreviewAssets(note);
     const activeAsset = assets.find((asset) => asset.id === activeQuickAssets[note.noteUid]) || assets[0] || null;
-    const showAllAssets = assets.length <= 3;
     const paragraphs = note.remark.split(/\r?\n\s*\r?\n/u).map((item) => item.trim()).filter(Boolean);
     return (
       <article className="lc-quick-record" key={note.noteUid}>
@@ -2238,21 +2325,43 @@ export function LearningCenter({
 
         {assets.length > 0 && (
           <div className="lc-quick-entry-assets" aria-label="速记相关资料">
-            {!showAllAssets && (
-              <div className="lc-quick-asset-row">
-                <strong>资料</strong>
-                <VerticalAssetScroller>
+            <div className={`lc-quick-material-workspace is-${quickAssetLayout}`}>
+              <aside className="lc-quick-asset-rail" aria-label="资料标签">
+                <header>
+                  <strong>资料</strong>
+                  <span>{assets.length}</span>
+                  <button
+                    className="lc-quick-asset-layout-toggle"
+                    type="button"
+                    aria-label={quickAssetLayout === 'vertical' ? '切换为横向资料标签' : '切换为纵向资料标签'}
+                    title={quickAssetLayout === 'vertical' ? '切换为横向排列' : '切换为纵向排列'}
+                    onClick={() => setQuickAssetLayout((current) => current === 'vertical' ? 'horizontal' : 'vertical')}
+                  >
+                    {quickAssetLayout === 'vertical' ? <Rows3 size={12} /> : <Columns2 size={12} />}
+                  </button>
+                </header>
+                <AssetScroller layout={quickAssetLayout}>
                   {assets.map((asset) => (
                     <span className="lc-quick-asset-chip-wrap" key={asset.id}>
                       <button
                         className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}
                         type="button"
-                        title="点击查看；拖到另一个 Edge 窗口接力"
+                        role="tab"
+                        aria-selected={activeAsset?.id === asset.id}
+                        title="点击查看；拖到本页空白处浮动，或拖入另一个 Edge 窗口接力"
                         draggable
                         onClick={() => {
                           setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
                         }}
-                        onDragStart={(event) => beginCrossBrowserRelayDrag(event.dataTransfer, asset)}
+                        onPointerDown={(event) => {
+                          if (event.pointerType !== 'mouse') {
+                            beginInlineDetach(event, note, asset.id, () => {
+                              setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
+                            });
+                          }
+                        }}
+                        onDragStart={(event) => beginQuickAssetDrag(event, note, asset, assets)}
+                        onDragEnd={finishQuickAssetDrag}
                       ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
                       <button
                         className="lc-quick-asset-remove"
@@ -2265,50 +2374,18 @@ export function LearningCenter({
                       ><X size={12} /></button>
                     </span>
                   ))}
-                </VerticalAssetScroller>
-              </div>
-            )}
-            {showAllAssets ? (
-              <div className={`lc-quick-all-assets has-${assets.length}`}>
-                {assets.map((asset) => (
-                  <article className={`lc-quick-expanded-asset is-${asset.kind}`} key={asset.id}>
-                    <span className="lc-quick-asset-chip-wrap">
-                      <button
-                        className="lc-quick-asset-chip active"
-                        type="button"
-                        title="拖到另一个 Edge 窗口接力"
-                        draggable
-                        onDragStart={(event) => beginCrossBrowserRelayDrag(event.dataTransfer, asset)}
-                      ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
-                      <button
-                        className="lc-quick-asset-remove"
-                        type="button"
-                        aria-label="移除附件"
-                        title={`从速记移除 ${asset.name}`}
-                        disabled={pendingNoteUid === note.noteUid}
-                        onPointerDown={(event) => event.stopPropagation()}
-                        onClick={() => void removeQuickAttachment(note, asset.id)}
-                      ><X size={12} /></button>
-                    </span>
-                    <div className="lc-quick-active-preview">
-                      <WorkspaceAssetPreview
-                        item={asset}
-                        assets={assets}
-                        onRecovered={(item) => recoverQuickAsset(note, item)}
-                      />
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : activeAsset && (
-              <div className={`lc-quick-active-preview is-${activeAsset.kind}`}>
-                <WorkspaceAssetPreview
-                  item={activeAsset}
-                  assets={assets}
-                  onRecovered={(item) => recoverQuickAsset(note, item)}
-                />
-              </div>
-            )}
+                </AssetScroller>
+              </aside>
+              {activeAsset && (
+                <div className={`lc-quick-active-preview is-${activeAsset.kind}`}>
+                  <WorkspaceAssetPreview
+                    item={activeAsset}
+                    assets={assets}
+                    onRecovered={(item) => recoverQuickAsset(note, item)}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
       </article>
