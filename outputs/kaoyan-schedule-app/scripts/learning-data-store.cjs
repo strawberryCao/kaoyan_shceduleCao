@@ -294,11 +294,14 @@ function normalizeAutoNote(value) {
   const isRemoteAssetPath = normalizedFilePath.startsWith('github://data/assets/')
     || normalizedFilePath.startsWith('data/assets/')
     || normalizedFilePath.startsWith('r2://note-assets/');
+  const isInternalAssetPath = normalizedFilePath.includes('/.assets/')
+    || normalizedFilePath.includes('/.materials/');
   const storedSubject = asString(value.subject, '默认文件夹');
   const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;
   const fileSubject = filePath ? path.basename(path.dirname(filePath)).trim() : '';
   const inferredFromFile = value.classificationSource !== 'manual'
     && !isRemoteAssetPath
+    && !isInternalAssetPath
     && DEFAULT_SUBJECT_NAMES.has(rawSubject)
     && fileSubject
     && !DEFAULT_SUBJECT_NAMES.has(fileSubject)

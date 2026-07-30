@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const {
   SUBJECTS,
   atomicJson,
@@ -27,6 +28,22 @@ function readJson(filePath, fallback = null) {
 function safeId(value) {
   const candidate = String(value || '').trim();
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(candidate) ? candidate : '';
+}
+
+const hiddenDirectoryCache = new Set();
+
+function ensureHiddenDirectory(directoryPath, apply) {
+  if (!apply) return;
+  fs.mkdirSync(directoryPath, { recursive: true });
+  const resolved = path.resolve(directoryPath);
+  if (hiddenDirectoryCache.has(resolved)) return;
+  hiddenDirectoryCache.add(resolved);
+  if (process.platform === 'win32') {
+    spawnSync('attrib.exe', ['+H', resolved], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+  }
 }
 
 function canonicalSubject(value) {
@@ -186,6 +203,7 @@ function materializeRemoteEntries({ repoRoot, notesRoot, learningNotes, apply, r
     }
     const subject = canonicalSubject(entry.subject);
     const metadataRoot = path.join(notesRoot, subject, '.metadata');
+    ensureHiddenDirectory(metadataRoot, apply);
     const canonicalSidecarPath = path.join(metadataRoot, `${entryId}.note.json`);
     const existingPaths = (existingByEntryId.get(entryId) || [])
       .filter((filePath) => path.resolve(path.dirname(filePath)) === path.resolve(metadataRoot));
@@ -212,6 +230,7 @@ function materializeRemoteEntries({ repoRoot, notesRoot, learningNotes, apply, r
       const extension = path.extname(source) || '.bin';
       const localRelative = path.join(subject, '.assets', `${asset.assetId}${extension}`);
       const destination = path.join(notesRoot, localRelative);
+      ensureHiddenDirectory(path.join(notesRoot, subject, '.assets'), apply);
       if (!fs.existsSync(source)) {
         report.manual.push({ path: path.relative(repoRoot, entryPath).replaceAll('\\', '/'), reason: `missing-asset:${asset.assetId}` });
         continue;

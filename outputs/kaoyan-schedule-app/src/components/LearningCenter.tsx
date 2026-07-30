@@ -4,7 +4,9 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
@@ -179,6 +181,17 @@ type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'unt
 type QuickAssetLayout = 'vertical' | 'horizontal';
 
 const QUICK_ASSET_LAYOUT_STORAGE_KEY = 'kaoyan:quick-asset-layout';
+const QUICK_ASSET_RAIL_WIDTH_STORAGE_KEY = 'kaoyan:quick-asset-rail-width';
+const QUICK_ASSET_RAIL_DEFAULT_WIDTH = 196;
+const QUICK_ASSET_RAIL_MIN_WIDTH = 132;
+const QUICK_ASSET_RAIL_MAX_WIDTH = 360;
+
+const clampQuickAssetRailWidth = (value: number, workspaceWidth = Number.POSITIVE_INFINITY): number => {
+  const responsiveMaximum = Number.isFinite(workspaceWidth)
+    ? Math.max(QUICK_ASSET_RAIL_MIN_WIDTH, Math.min(QUICK_ASSET_RAIL_MAX_WIDTH, workspaceWidth * .46))
+    : QUICK_ASSET_RAIL_MAX_WIDTH;
+  return Math.round(Math.max(QUICK_ASSET_RAIL_MIN_WIDTH, Math.min(responsiveMaximum, value)));
+};
 
 interface IndexedNote {
   date: string;
@@ -702,10 +715,23 @@ export function LearningCenter({
       return 'vertical';
     }
   });
+  const [quickAssetRailWidth, setQuickAssetRailWidth] = useState(() => {
+    try {
+      return clampQuickAssetRailWidth(Number(window.localStorage.getItem(QUICK_ASSET_RAIL_WIDTH_STORAGE_KEY))
+        || QUICK_ASSET_RAIL_DEFAULT_WIDTH);
+    } catch {
+      return QUICK_ASSET_RAIL_DEFAULT_WIDTH;
+    }
+  });
+  const [quickAssetIntrinsicSizes, setQuickAssetIntrinsicSizes] = useState<Record<string, {
+    width: number;
+    height: number;
+  }>>({});
   const [quickExporting, setQuickExporting] = useState(false);
   const [quickFacetMenuNoteUid, setQuickFacetMenuNoteUid] = useState<string | null>(null);
   const detachLayerRef = useRef<LearningInlineDetachLayerHandle | null>(null);
   const quickDragCleanupRef = useRef<(() => void) | null>(null);
+  const quickRailResizeCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     try {
@@ -715,7 +741,18 @@ export function LearningCenter({
     }
   }, [quickAssetLayout]);
 
-  useEffect(() => () => quickDragCleanupRef.current?.(), []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(QUICK_ASSET_RAIL_WIDTH_STORAGE_KEY, String(quickAssetRailWidth));
+    } catch {
+      // Resizing still works for the current session when storage is unavailable.
+    }
+  }, [quickAssetRailWidth]);
+
+  useEffect(() => () => {
+    quickDragCleanupRef.current?.();
+    quickRailResizeCleanupRef.current?.();
+  }, []);
 
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
@@ -1552,6 +1589,54 @@ export function LearningCenter({
     quickDragCleanupRef.current?.();
   };
 
+  const beginQuickAssetRailResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const divider = event.currentTarget;
+    const workspace = divider.closest<HTMLElement>('.lc-quick-material-workspace');
+    if (!workspace) return;
+    quickRailResizeCleanupRef.current?.();
+    const startX = event.clientX;
+    const startWidth = quickAssetRailWidth;
+    const workspaceWidth = workspace.getBoundingClientRect().width;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    workspace.classList.add('is-resizing-rail');
+    divider.setPointerCapture?.(event.pointerId);
+
+    const move = (next: PointerEvent) => {
+      setQuickAssetRailWidth(clampQuickAssetRailWidth(startWidth + next.clientX - startX, workspaceWidth));
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', cleanup);
+      window.removeEventListener('pointercancel', cleanup);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      workspace.classList.remove('is-resizing-rail');
+      if (quickRailResizeCleanupRef.current === cleanup) quickRailResizeCleanupRef.current = null;
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', cleanup, { once: true });
+    window.addEventListener('pointercancel', cleanup, { once: true });
+    quickRailResizeCleanupRef.current = cleanup;
+  };
+
+  const resizeQuickAssetRailFromKeyboard = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    let nextWidth: number | null = null;
+    if (event.key === 'ArrowLeft') nextWidth = quickAssetRailWidth - (event.shiftKey ? 32 : 12);
+    if (event.key === 'ArrowRight') nextWidth = quickAssetRailWidth + (event.shiftKey ? 32 : 12);
+    if (event.key === 'Home') nextWidth = QUICK_ASSET_RAIL_MIN_WIDTH;
+    if (event.key === 'End') nextWidth = QUICK_ASSET_RAIL_MAX_WIDTH;
+    if (nextWidth === null) return;
+    event.preventDefault();
+    const workspaceWidth = event.currentTarget.closest<HTMLElement>('.lc-quick-material-workspace')
+      ?.getBoundingClientRect().width;
+    setQuickAssetRailWidth(clampQuickAssetRailWidth(nextWidth, workspaceWidth));
+  };
+
   const exportQuickJournal = async () => {
     if (quickExporting || visibleQuick.length === 0) return;
     try {
@@ -2241,6 +2326,11 @@ export function LearningCenter({
     const { date, note } = entry;
     const assets = quickPreviewAssets(note);
     const activeAsset = assets.find((asset) => asset.id === activeQuickAssets[note.noteUid]) || assets[0] || null;
+    const activeAssetSizeKey = activeAsset ? `${note.noteUid}:${activeAsset.id}` : '';
+    const activeAssetSize = activeAssetSizeKey ? quickAssetIntrinsicSizes[activeAssetSizeKey] : null;
+    const activeImageNeedsScroll = activeAsset?.kind === 'image'
+      && activeAssetSize
+      && activeAssetSize.height / activeAssetSize.width > .8;
     const paragraphs = note.remark.split(/\r?\n\s*\r?\n/u).map((item) => item.trim()).filter(Boolean);
     return (
       <article className="lc-quick-record" key={note.noteUid}>
@@ -2325,7 +2415,10 @@ export function LearningCenter({
 
         {assets.length > 0 && (
           <div className="lc-quick-entry-assets" aria-label="速记相关资料">
-            <div className={`lc-quick-material-workspace is-${quickAssetLayout}`}>
+            <div
+              className={`lc-quick-material-workspace is-${quickAssetLayout}`}
+              style={{ '--lc-quick-asset-rail-width': `${quickAssetRailWidth}px` } as CSSProperties}
+            >
               <aside className="lc-quick-asset-rail" aria-label="资料标签">
                 <header>
                   <strong>资料</strong>
@@ -2376,12 +2469,34 @@ export function LearningCenter({
                   ))}
                 </AssetScroller>
               </aside>
+              <button
+                className="lc-quick-asset-divider"
+                type="button"
+                role="separator"
+                aria-label="调整资料分栏宽度"
+                aria-orientation="vertical"
+                aria-valuemin={QUICK_ASSET_RAIL_MIN_WIDTH}
+                aria-valuemax={QUICK_ASSET_RAIL_MAX_WIDTH}
+                aria-valuenow={quickAssetRailWidth}
+                title="拖动调整分栏宽度；双击恢复默认"
+                onPointerDown={beginQuickAssetRailResize}
+                onKeyDown={resizeQuickAssetRailFromKeyboard}
+                onDoubleClick={() => setQuickAssetRailWidth(QUICK_ASSET_RAIL_DEFAULT_WIDTH)}
+              ><span /></button>
               {activeAsset && (
-                <div className={`lc-quick-active-preview is-${activeAsset.kind}`}>
+                <div className={`lc-quick-active-preview is-${activeAsset.kind}${activeAssetSize ? ' has-intrinsic-size' : ''}${activeImageNeedsScroll ? ' is-scroll-image' : ''}`}>
                   <WorkspaceAssetPreview
                     item={activeAsset}
                     assets={assets}
                     onRecovered={(item) => recoverQuickAsset(note, item)}
+                    onIntrinsicSize={(width, height) => {
+                      if (width <= 0 || height <= 0 || !activeAssetSizeKey) return;
+                      setQuickAssetIntrinsicSizes((current) => {
+                        const existing = current[activeAssetSizeKey];
+                        if (existing?.width === width && existing.height === height) return current;
+                        return { ...current, [activeAssetSizeKey]: { width, height } };
+                      });
+                    }}
                   />
                 </div>
               )}

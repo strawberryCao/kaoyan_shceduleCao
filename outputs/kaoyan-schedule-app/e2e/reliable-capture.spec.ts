@@ -276,6 +276,16 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   expect(verticalLayout[0] && verticalLayout[1]).toBeTruthy();
   expect(verticalLayout[0]!.x + verticalLayout[0]!.width).toBeLessThanOrEqual(verticalLayout[1]!.x);
   expect(verticalLayout[0]!.width).toBeLessThan(230);
+  const divider = record.locator('.lc-quick-asset-divider');
+  const dividerBox = await divider.boundingBox();
+  expect(dividerBox).toBeTruthy();
+  const initialRailWidth = verticalLayout[0]!.width;
+  await page.mouse.move(dividerBox!.x + dividerBox!.width / 2, dividerBox!.y + 50);
+  await page.mouse.down();
+  await page.mouse.move(dividerBox!.x + 58, dividerBox!.y + 50);
+  await page.mouse.up();
+  await expect.poll(() => assetRail.evaluate((element) => element.getBoundingClientRect().width))
+    .toBeGreaterThan(initialRailWidth + 30);
   expect(await record.locator('.lc-quick-asset-chip').first().evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(32);
   await record.getByRole('button', { name: '切换为横向资料标签' }).click();
   await expect(materialWorkspace).toHaveClass(/is-horizontal/);
@@ -303,6 +313,7 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   await expect.poll(() => inlineImage.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
   const imageViewer = record.locator('.lrp-image-viewer');
   await imageViewer.hover();
+  expect(await record.locator('.lrp-image-zoom-controls').evaluate((element) => getComputedStyle(element).position)).toBe('static');
   expect(await imageViewer.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
   const initialImageWidth = await inlineImage.evaluate((image) => image.getBoundingClientRect().width);
   await page.mouse.wheel(0, 320);

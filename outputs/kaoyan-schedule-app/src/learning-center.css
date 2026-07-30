@@ -2681,13 +2681,14 @@
 }
 .lc-quick-material-workspace {
   --lc-quick-preview-height: clamp(340px, 58vh, 560px);
+  --lc-quick-asset-rail-width: 196px;
   min-width: 0;
 }
 .lc-quick-material-workspace.is-vertical {
   display: grid;
-  grid-template-columns: clamp(168px, 17vw, 210px) minmax(0, 1fr);
+  grid-template-columns: var(--lc-quick-asset-rail-width) 8px minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px;
+  gap: 0;
 }
 .lc-quick-asset-rail {
   min-width: 0;
@@ -2697,9 +2698,62 @@
   background: #f7f5f2;
 }
 .lc-quick-material-workspace.is-vertical .lc-quick-asset-rail {
-  height: var(--lc-quick-preview-height);
+  height: auto;
+  min-height: 0;
   display: grid;
   grid-template-rows: 31px minmax(0, 1fr);
+}
+.lc-quick-asset-divider {
+  position: relative;
+  z-index: 1;
+  width: 8px;
+  min-width: 8px;
+  height: 100%;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+}
+.lc-quick-asset-divider::before {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 999px;
+  background: #ded8cf;
+  opacity: .58;
+  transition: inset 120ms ease, opacity 120ms ease, background-color 120ms ease;
+}
+.lc-quick-asset-divider span {
+  position: relative;
+  width: 3px;
+  height: 34px;
+  border-radius: 999px;
+  background: #aaa095;
+  opacity: 0;
+  transform: scaleY(.72);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.lc-quick-asset-divider:hover::before,
+.lc-quick-asset-divider:focus-visible::before,
+.lc-quick-material-workspace.is-resizing-rail .lc-quick-asset-divider::before {
+  inset: 0 2px;
+  opacity: .9;
+  background: #d2c8bd;
+}
+.lc-quick-asset-divider:hover span,
+.lc-quick-asset-divider:focus-visible span,
+.lc-quick-material-workspace.is-resizing-rail .lc-quick-asset-divider span {
+  opacity: .95;
+  transform: scaleY(1);
+}
+.lc-quick-asset-divider:focus-visible {
+  outline: 2px solid rgba(149, 97, 47, .32);
+  outline-offset: -2px;
+  border-radius: 999px;
 }
 .lc-quick-asset-rail > header {
   min-width: 0;
@@ -2794,6 +2848,9 @@
   display: grid;
   gap: 8px;
 }
+.lc-quick-material-workspace.is-horizontal .lc-quick-asset-divider {
+  display: none;
+}
 .lc-quick-material-workspace.is-horizontal .lc-quick-asset-rail {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2816,8 +2873,38 @@
   width: min(190px, 32vw);
 }
 .lc-quick-material-workspace .lc-quick-active-preview {
-  height: var(--lc-quick-preview-height);
   min-height: 0;
+}
+.lc-quick-material-workspace .lc-quick-active-preview:not(.is-image) {
+  height: var(--lc-quick-preview-height);
+}
+.lc-quick-material-workspace .lc-quick-active-preview.is-image {
+  width: 100%;
+  height: 220px;
+  min-height: 0;
+  align-self: start;
+  justify-self: start;
+}
+.lc-quick-material-workspace .lc-quick-active-preview.is-image.has-intrinsic-size {
+  height: auto;
+}
+.lc-quick-material-workspace .lc-quick-active-preview.is-image.is-scroll-image {
+  height: var(--lc-quick-preview-height);
+}
+.lc-quick-active-preview.is-image .lrp-image-viewer {
+  height: auto;
+  overflow: hidden;
+}
+.lc-quick-active-preview.is-image.is-scroll-image .lrp-image-viewer {
+  height: 100%;
+  overflow: auto;
+}
+.lc-quick-active-preview.is-image .lrp-image-zoom-controls {
+  position: static;
+  bottom: auto;
+  margin: 0 7px 7px auto;
+  border: 1px solid rgba(36, 39, 44, .09);
+  box-shadow: none;
 }
 @media (hover: none) {
   .lc-quick-asset-rail .lc-quick-asset-remove {
@@ -3102,6 +3189,9 @@
   to { opacity: 1; transform: scale(1); }
 }
 @media(max-width:819px) {
+  .lc-quick-material-workspace {
+    --lc-quick-preview-height: 430px;
+  }
   .lc-quick-ledger {
     padding: 26px 18px 38px;
   }
@@ -3117,12 +3207,11 @@
   .lc-quick-log-copy {
     font-size: 15px;
   }
-  .lc-quick-active-preview {
-    height: 430px;
-    min-height: 240px;
-  }
   .lc-quick-material-workspace.is-vertical {
     grid-template-columns: 1fr;
+  }
+  .lc-quick-material-workspace.is-vertical .lc-quick-asset-divider {
+    display: none;
   }
   .lc-quick-material-workspace.is-vertical .lc-quick-asset-rail {
     height: auto;

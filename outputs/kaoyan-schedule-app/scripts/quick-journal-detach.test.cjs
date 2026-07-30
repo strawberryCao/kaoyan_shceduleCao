@@ -15,11 +15,26 @@ test('quick notes render one selected record with adaptive attachment previews',
   assert.match(center, /setQuickAssetLayout/);
   assert.match(center, /切换为横向资料标签/);
   assert.match(center, /lc-quick-asset-rail/);
+  assert.match(center, /lc-quick-asset-divider/);
+  assert.match(center, /beginQuickAssetRailResize/);
+  assert.match(center, /QUICK_ASSET_RAIL_WIDTH_STORAGE_KEY/);
   assert.match(center, /lc-quick-active-preview/);
+  assert.match(center, /onIntrinsicSize=/);
+  assert.match(center, /is-scroll-image/);
   assert.match(center, /加入分栏/);
   assert.match(center, /void deleteNote\(note\)/);
   assert.match(center, /facet: 'method', label: '方法'/);
   assert.doesNotMatch(center, /Windows 桌面|openDetachedLearning|beginDesktopDetach/);
+});
+
+test('quick attachment sizing keeps wide images compact and places zoom tools outside the image', () => {
+  const center = read('src/components/LearningCenter.tsx');
+  const css = read('src/learning-center.css');
+  assert.match(center, /activeAssetSize\.height \/ activeAssetSize\.width > \.8/);
+  assert.match(css, /\.lc-quick-active-preview\.is-image \.lrp-image-zoom-controls[\s\S]*position: static/);
+  assert.match(css, /\.lc-quick-material-workspace \.lc-quick-active-preview\.is-image\.has-intrinsic-size[\s\S]*height: auto/);
+  assert.match(css, /\.lc-quick-material-workspace\.is-vertical[\s\S]*var\(--lc-quick-asset-rail-width\)/);
+  assert.match(css, /\.lc-quick-asset-divider[\s\S]*cursor: col-resize/);
 });
 
 test('attachment chips directly detach inside the current learning center', () => {

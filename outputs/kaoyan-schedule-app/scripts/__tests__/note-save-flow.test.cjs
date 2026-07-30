@@ -130,6 +130,18 @@ test('saves locally before a slow AI response and replays the same noteUid witho
     assert.equal(first.idempotentReplay, false);
     assert.ok(elapsedMs < 2_000, `local save took ${elapsedMs}ms`);
     assert.ok(fs.existsSync(first.filePath));
+    assert.ok(
+      path.relative(notesRoot, first.filePath).split(path.sep).includes('.assets'),
+      `provisional image should be private: ${first.filePath}`,
+    );
+    assert.ok(
+      path.relative(notesRoot, first.filePath).split(path.sep).includes('pending'),
+      `provisional image should stay in the pending asset store: ${first.filePath}`,
+    );
+    const subjectDir = path.join(notesRoot, path.relative(notesRoot, first.filePath).split(path.sep)[0]);
+    const visibleRootImages = fs.readdirSync(subjectDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && /\.(?:png|jpe?g|webp)$/i.test(entry.name));
+    assert.equal(visibleRootImages.length, 0);
 
     const replayResponse = await fetch(`${baseUrl}/save-note`, {
       method: 'POST',

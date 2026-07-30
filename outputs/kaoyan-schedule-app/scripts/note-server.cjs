@@ -1,6 +1,6 @@
 const http = require('http');
 const crypto = require('crypto');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -672,6 +672,49 @@ function metadataDir(subjectDir) {
   return path.join(subjectDir, '.metadata');
 }
 
+const preparedInternalDirectories = new Set();
+
+function ensureInternalDirectory(directoryPath) {
+  fs.mkdirSync(directoryPath, { recursive: true });
+  const resolved = path.resolve(directoryPath);
+  if (preparedInternalDirectories.has(resolved)) return resolved;
+  preparedInternalDirectories.add(resolved);
+  if (process.platform === 'win32') {
+    spawnSync('attrib.exe', ['+H', resolved], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+  }
+  return resolved;
+}
+
+function subjectDirForMetadata(metadata) {
+  return path.join(NOTES_ROOT, normalizeStoredSubject(metadata?.subject));
+}
+
+function provisionalAssetDir(subjectDir, captureOriginal = false) {
+  const assetRoot = ensureInternalDirectory(path.join(subjectDir, '.assets'));
+  const directoryPath = path.join(assetRoot, captureOriginal ? 'capture-originals' : 'pending');
+  fs.mkdirSync(directoryPath, { recursive: true });
+  return directoryPath;
+}
+
+function concealExistingInternalDirectories() {
+  if (!fs.existsSync(NOTES_ROOT)) return;
+  const rootInternalDirectories = [MATERIAL_FILES_ROOT];
+  for (const directoryPath of rootInternalDirectories) {
+    if (fs.existsSync(directoryPath)) ensureInternalDirectory(directoryPath);
+  }
+  for (const entry of fs.readdirSync(NOTES_ROOT, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    const subjectDir = path.join(NOTES_ROOT, entry.name);
+    for (const name of ['.assets', '.metadata']) {
+      const directoryPath = path.join(subjectDir, name);
+      if (fs.existsSync(directoryPath)) ensureInternalDirectory(directoryPath);
+    }
+  }
+}
+
 function metadataIndexPath(subjectDir) {
   return path.join(metadataDir(subjectDir), 'metadata.json');
 }
@@ -708,12 +751,13 @@ function saveReceiptPath(noteUid) {
 
 function writeSaveReceipt(noteUid, metadata, learningSyncError = null) {
   fs.mkdirSync(NOTE_SAVE_RECEIPTS_ROOT, { recursive: true });
+  const subjectDir = subjectDirForMetadata(metadata);
   const receipt = {
     schemaVersion: 1,
     noteUid,
     filePath: metadata.filePath,
     fileName: metadata.fileName,
-    sidecarPath: sidecarPathForId(path.dirname(metadata.filePath), metadata.id),
+    sidecarPath: sidecarPathForId(subjectDir, metadata.id),
     subject: metadata.subject,
     aiStatus: metadata.naming?.status || 'pending',
     learningSyncError,
@@ -983,9 +1027,9 @@ function persistNoteReviewAction(action, snapshot) {
     finalSidecarPath = movement.sidecarPath;
   } else {
     atomicWriteJson(finalSidecarPath, metadata);
-    rebuildMetadataIndex(path.dirname(saved.filePath));
+    rebuildMetadataIndex(subjectDirForMetadata(saved.metadata));
   }
-  appendMetadata(path.dirname(finalMetadata.filePath), finalMetadata);
+  appendMetadata(subjectDirForMetadata(finalMetadata), finalMetadata);
   writeSaveReceipt(noteUid, finalMetadata, saved.receipt.learningSyncError);
   return { metadata: finalMetadata, sidecarPath: finalSidecarPath, durable: true, replayed: false };
 }
@@ -1029,7 +1073,7 @@ function makeSaveResponse(saved, options = {}) {
 
 function appendMetadata(subjectDir, metadata) {
   const metaDir = metadataDir(subjectDir);
-  fs.mkdirSync(metaDir, { recursive: true });
+  ensureInternalDirectory(metaDir);
   const indexPath = metadataIndexPath(subjectDir);
   const legacyIndexPath = path.join(subjectDir, 'metadata.json');
   const existing = readJson(indexPath, readJson(legacyIndexPath, []));
@@ -1565,7 +1609,7 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
 
 function persistBackgroundMetadata(saved, metadata) {
   atomicWriteJson(saved.receipt.sidecarPath, metadata);
-  appendMetadata(path.dirname(metadata.filePath), metadata);
+  appendMetadata(subjectDirForMetadata(metadata), metadata);
   const learningSyncError = syncLearningMetadata(metadata);
   writeSaveReceipt(metadata.noteUid, metadata, learningSyncError);
 }
@@ -1737,7 +1781,7 @@ async function runAiNamingJob(noteUid) {
 
   const originalPath = latest.filePath;
   const originalSidecarPath = latest.receipt.sidecarPath;
-  const originalSubjectDir = path.dirname(originalPath);
+  const originalSubjectDir = subjectDirForMetadata(latest.metadata);
   const moved = path.resolve(target.filePath) !== path.resolve(originalPath);
   let receiptUpdated = false;
   const stagedMetadata = {
@@ -1756,7 +1800,7 @@ async function runAiNamingJob(noteUid) {
     receiptUpdated = true;
     appendMetadata(subjectDir, stagedMetadata);
   } else {
-    fs.mkdirSync(metadataDir(subjectDir), { recursive: true });
+    ensureInternalDirectory(metadataDir(subjectDir));
     fs.renameSync(originalPath, target.filePath);
     try {
       atomicWriteJson(targetSidecarPath, stagedMetadata);
@@ -1946,7 +1990,7 @@ function enqueueManualAiRename(noteUid) {
     },
   };
   atomicWriteJson(saved.receipt.sidecarPath, metadata);
-  appendMetadata(path.dirname(saved.filePath), metadata);
+  appendMetadata(subjectDirForMetadata(metadata), metadata);
   const learningSyncError = syncLearningMetadata(metadata);
   writeSaveReceipt(noteUid, metadata, learningSyncError);
 
@@ -2344,7 +2388,7 @@ function persistConsolidatedNoteMetadata(note) {
     },
   };
   atomicWriteJson(saved.receipt.sidecarPath, metadata);
-  appendMetadata(path.dirname(saved.filePath), metadata);
+  appendMetadata(subjectDirForMetadata(metadata), metadata);
   writeSaveReceipt(note.noteUid, metadata, saved.receipt.learningSyncError);
   return true;
 }
@@ -2568,7 +2612,8 @@ function saveNotePayload(payload) {
   const createdStamp = timestamp(new Date(createdAt));
   const safeTitle = sanitizeSegment(fallback.title, kind === 'canvas' ? '画布拼接笔记' : '图片笔记', 42);
   const baseName = sanitizeSegment(`${subject}_${safeTitle}_${createdStamp}`, `${subject}_图片笔记_${createdStamp}`, 110);
-  const { filename, filePath } = ensureUniquePath(subjectDir, baseName, image.ext);
+  const storageDir = provisionalAssetDir(subjectDir, isCaptureOriginal);
+  const { filename, filePath } = ensureUniquePath(storageDir, baseName, image.ext);
   const id = path.basename(filename, path.extname(filename));
   const sidecarPath = sidecarPathForId(subjectDir, id);
   const extracted = parseRemark(remark);
@@ -2620,7 +2665,7 @@ function saveNotePayload(payload) {
 
   try {
     fs.writeFileSync(filePath, image.buffer);
-    fs.mkdirSync(metadataDir(subjectDir), { recursive: true });
+    ensureInternalDirectory(metadataDir(subjectDir));
     fs.writeFileSync(sidecarPath, JSON.stringify(metadata, null, 2), 'utf8');
     appendMetadata(subjectDir, metadata);
     writeSaveReceipt(noteUid, metadata);
@@ -4827,6 +4872,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '127.0.0.1', () => {
+  concealExistingInternalDirectories();
   reviewSync.start();
   console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);
   console.log(`Notes root: ${NOTES_ROOT}`);
