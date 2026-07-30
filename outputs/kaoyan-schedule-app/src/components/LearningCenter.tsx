@@ -50,6 +50,7 @@ import {
   updateCloudEntryAssets,
   type LearningSearchResult,
 } from '../utils/notes';
+import { beginCrossBrowserRelayDrag } from '../utils/crossBrowserRelay';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import {
@@ -111,26 +112,26 @@ function QuickNoteMascot({ noteUid }: { noteUid: string }) {
   );
 }
 
-function WheelIsolatedScroller({ children }: { children: ReactNode }) {
+function VerticalAssetScroller({ children }: { children: ReactNode }) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const element = ref.current;
     if (!element) return undefined;
     const handleWheel = (event: WheelEvent) => {
-      if (event.ctrlKey || element.scrollWidth <= element.clientWidth) return;
-      const delta = Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+      if (event.ctrlKey || element.scrollHeight <= element.clientHeight) return;
+      const delta = event.deltaY;
       if (!delta) return;
-      const maxScroll = Math.max(0, element.scrollWidth - element.clientWidth);
-      const canConsume = delta < 0 ? element.scrollLeft > 0 : element.scrollLeft < maxScroll - 1;
+      const maxScroll = Math.max(0, element.scrollHeight - element.clientHeight);
+      const canConsume = delta < 0 ? element.scrollTop > 0 : element.scrollTop < maxScroll - 1;
       if (!canConsume) return;
       event.preventDefault();
       event.stopPropagation();
-      element.scrollLeft = Math.max(0, Math.min(maxScroll, element.scrollLeft + delta));
+      element.scrollTop = Math.max(0, Math.min(maxScroll, element.scrollTop + delta));
     };
     element.addEventListener('wheel', handleWheel, { passive: false });
     return () => element.removeEventListener('wheel', handleWheel);
   }, []);
-  return <div ref={ref}>{children}</div>;
+  return <div ref={ref} className="lc-quick-asset-list">{children}</div>;
 }
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
@@ -2240,16 +2241,18 @@ export function LearningCenter({
             {!showAllAssets && (
               <div className="lc-quick-asset-row">
                 <strong>资料</strong>
-                <WheelIsolatedScroller>
+                <VerticalAssetScroller>
                   {assets.map((asset) => (
                     <span className="lc-quick-asset-chip-wrap" key={asset.id}>
                       <button
                         className={`lc-quick-asset-chip${activeAsset?.id === asset.id ? ' active' : ''}`}
                         type="button"
-                        title="点击查看；按住资料直接拖出显示"
-                        onPointerDown={(event) => beginInlineDetach(event, note, asset.id, () => {
+                        title="点击查看；拖到另一个 Edge 窗口接力"
+                        draggable
+                        onClick={() => {
                           setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
-                        })}
+                        }}
+                        onDragStart={(event) => beginCrossBrowserRelayDrag(event.dataTransfer, asset)}
                       ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
                       <button
                         className="lc-quick-asset-remove"
@@ -2262,7 +2265,7 @@ export function LearningCenter({
                       ><X size={12} /></button>
                     </span>
                   ))}
-                </WheelIsolatedScroller>
+                </VerticalAssetScroller>
               </div>
             )}
             {showAllAssets ? (
@@ -2273,8 +2276,9 @@ export function LearningCenter({
                       <button
                         className="lc-quick-asset-chip active"
                         type="button"
-                        title="按住资料直接拖出显示"
-                        onPointerDown={(event) => beginInlineDetach(event, note, asset.id)}
+                        title="拖到另一个 Edge 窗口接力"
+                        draggable
+                        onDragStart={(event) => beginCrossBrowserRelayDrag(event.dataTransfer, asset)}
                       ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
                       <button
                         className="lc-quick-asset-remove"

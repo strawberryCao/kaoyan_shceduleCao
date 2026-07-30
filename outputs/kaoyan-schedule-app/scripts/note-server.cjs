@@ -63,6 +63,9 @@ const CAPTURE_JOBS_ROOT = path.join(ASSISTANT_ROOT, 'capture-jobs');
 const SEARCH_INDEX_PATH = path.join(ASSISTANT_ROOT, 'search-index.json');
 const TAXONOMY_CONSOLIDATION_STATE_PATH = path.join(ASSISTANT_ROOT, 'taxonomy-consolidation-state.json');
 const MATERIAL_WINDOW_REQUEST_ROOT = path.join(os.tmpdir(), 'kaoyan-material-previews');
+const RELAY_TRANSFER_TTL_MS = 2 * 60 * 1000;
+const RELAY_TRANSFER_ID_PATTERN = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|relay_[A-Za-z0-9_-]{20,64})$/i;
+const relayTransfers = new Map();
 const MATERIAL_FILES_ROOT = path.join(NOTES_ROOT, '.materials');
 const MAX_MATERIAL_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
@@ -384,6 +387,57 @@ function sendJson(res, status, data) {
   res.end(body);
 }
 
+function cleanRelayTransfers(now = Date.now()) {
+  for (const [transferId, transfer] of relayTransfers) {
+    if (!transfer || transfer.expiresAt <= now) relayTransfers.delete(transferId);
+  }
+}
+
+function normalizeRelayUrl(value) {
+  const candidate = String(value || '').trim();
+  if (!candidate || candidate.length > 4096) return '';
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function normalizeRelayAsset(input) {
+  if (!isPlainJsonObject(input)) throw new Error('Relay asset must be an object');
+  const kind = ['image', 'pdf', 'word', 'html', 'file'].includes(input.kind) ? input.kind : 'file';
+  const url = normalizeRelayUrl(input.url);
+  const fallbackUrl = normalizeRelayUrl(input.fallbackUrl);
+  const posterUrl = normalizeRelayUrl(input.posterUrl);
+  if (!url && !fallbackUrl) throw new Error('Relay asset URL is required');
+  return {
+    id: String(input.id || '').slice(0, 180),
+    kind,
+    name: String(input.name || '未命名资料').replace(/[\r\n\t]+/g, ' ').slice(0, 240),
+    mimeType: String(input.mimeType || 'application/octet-stream').slice(0, 160),
+    url,
+    fallbackUrl,
+    posterUrl,
+    label: String(input.label || '资料').slice(0, 80),
+    sizeLabel: String(input.sizeLabel || '').slice(0, 80),
+  };
+}
+
+function sendRelayJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Cache-Control': 'no-store',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(body);
+}
+
 function isLanProxyRequest(req) {
   return String(req.headers[LAN_PROXY_HEADER] || '') === '1';
 }
@@ -404,6 +458,8 @@ function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchPa
   if ((method === 'GET' || method === 'POST') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}\/ai-organize$/.test(pathname)) return true;
   if ((method === 'GET' || method === 'PUT' || method === 'DELETE') && /^\/canvas-projects\/[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(pathname)) return true;
   if (method === 'POST' && (pathname === '/save-note' || pathname === '/save-note-batch' || pathname === '/save-material-note' || pathname === '/append-material-note' || pathname === '/capture-batches' || pathname === '/material-window')) return true;
+  if (method === 'POST' && pathname === '/relay-transfers') return true;
+  if (method === 'GET' && /^\/relay-transfers\/[A-Za-z0-9_-]{20,80}$/.test(pathname)) return true;
   if (method === 'GET' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pathname)) return true;
   if (method === 'POST' && /^\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(pathname)) return true;
   if (method === 'GET' && (pathname === '/learning-data' || pathname === '/learning-data/events')) return true;
@@ -4451,6 +4507,33 @@ async function handleOrganizerRoute(req, res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const earlyRequestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
+  const earlyRelayMatch = /^\/relay-transfers\/([A-Za-z0-9_-]{20,80})$/.exec(earlyRequestUrl.pathname);
+  if (earlyRelayMatch && (req.method === 'GET' || req.method === 'OPTIONS')) {
+    if (req.method === 'OPTIONS') {
+      sendRelayJson(res, 200, { ok: true });
+      return;
+    }
+    cleanRelayTransfers();
+    const transfer = relayTransfers.get(earlyRelayMatch[1]);
+    if (!transfer) {
+      sendRelayJson(res, 404, {
+        ok: false,
+        code: 'RELAY_TRANSFER_NOT_FOUND',
+        error: '资料接力已过期或尚未登记。',
+      });
+      return;
+    }
+    sendRelayJson(res, 200, {
+      ok: true,
+      protocol: 'kaoyan-material-v1',
+      transferId: earlyRelayMatch[1],
+      expiresAt: transfer.expiresAt,
+      asset: transfer.asset,
+    });
+    return;
+  }
+
   const lanProxyRequest = isLanProxyRequest(req);
   if (lanProxyRequest) {
     const lanRequestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
@@ -4494,6 +4577,27 @@ const server = http.createServer(async (req, res) => {
     if (await handleLearningDataRoute(req, res, pathname)) return;
     if (await handleOrganizerRoute(req, res, pathname)) return;
     if (handleLocalCaptureJob(req, res, pathname)) return;
+
+    if (req.method === 'POST' && pathname === '/relay-transfers') {
+      const payload = JSON.parse((await readBody(req, 32 * 1024)) || '{}');
+      const transferId = String(payload.transferId || '');
+      if (!RELAY_TRANSFER_ID_PATTERN.test(transferId)) {
+        sendJson(res, 400, { ok: false, error: 'Invalid relay transfer ID' });
+        return;
+      }
+      const now = Date.now();
+      cleanRelayTransfers(now);
+      const asset = normalizeRelayAsset(payload.asset);
+      const expiresAt = now + RELAY_TRANSFER_TTL_MS;
+      relayTransfers.set(transferId, { asset, createdAt: now, expiresAt });
+      sendJson(res, 201, {
+        ok: true,
+        protocol: 'kaoyan-material-v1',
+        transferId,
+        expiresAt,
+      });
+      return;
+    }
 
     if (req.method === 'GET' && pathname === '/note-file') {
       const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));

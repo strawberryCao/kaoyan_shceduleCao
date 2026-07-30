@@ -181,7 +181,7 @@ test('an existing quick note can edit its text and add or remove attachments', a
   expect(stored?.attachments).toHaveLength(0);
 });
 
-test('all common formats adapt, scroll and detach as borderless floating material', async ({ page }) => {
+test('all common formats adapt, scroll and expose a cross-browser relay payload', async ({ page }) => {
   const docx = await Packer.toBuffer(new Document({
     sections: [{ children: [new Paragraph('Playwright Word 预览正文')] }],
   }));
@@ -268,7 +268,9 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   await expect(record).toBeVisible();
   const chipScroller = record.locator('.lc-quick-asset-row > div');
   await expect(chipScroller).toBeVisible();
-  expect(await chipScroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await chipScroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await record.locator('.lc-quick-asset-row').evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(470);
+  expect(await record.locator('.lc-quick-asset-chip').first().evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(32);
 
   await record.getByRole('button', { name: /e2e\.docx/ }).click();
   const wordFrame = page.frameLocator('iframe[title="e2e.docx"]');
@@ -302,6 +304,25 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   await expect(record.locator('.lrp-text-preview')).toContainText('Playwright 文本资料预览');
 
   const pdfChip = record.getByRole('button', { name: /e2e\.pdf/ });
+  const relayDescriptor = await pdfChip.evaluate((element) => {
+    const dataTransfer = new DataTransfer();
+    element.dispatchEvent(new DragEvent('dragstart', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer,
+    }));
+    return {
+      types: [...dataTransfer.types],
+      payload: JSON.parse(dataTransfer.getData('application/x-kaoyan-material-v1')),
+    };
+  });
+  expect(relayDescriptor.types).toContain('application/x-kaoyan-material-v1');
+  expect(relayDescriptor.payload.protocol).toBe('kaoyan-material-v1');
+  expect(relayDescriptor.payload.name).toBe('e2e.pdf');
+  await expect.poll(async () => {
+    const relayResponse = await page.request.get(relayDescriptor.payload.relayUrl);
+    return relayResponse.status();
+  }).toBe(200);
   await pdfChip.click();
   await expect(record.locator('.lrp-pdf-preview')).toBeVisible();
   await expect(record.locator('.lrp-pdf-page canvas')).toBeVisible();
@@ -311,66 +332,6 @@ test('all common formats adapt, scroll and detach as borderless floating materia
   await record.locator('.lrp-pdf-scroll').hover();
   await page.mouse.wheel(0, 480);
   await expect(pdfZoomLabel).toContainText('100%');
-
-  const chipBox = await pdfChip.boundingBox();
-  expect(chipBox).toBeTruthy();
-  await page.mouse.move(chipBox!.x + chipBox!.width / 2, chipBox!.y + chipBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(1180, 250, { steps: 8 });
-  await page.mouse.up();
-
-  const detached = page.locator('.lc-detached-material.is-pdf').last();
-  await expect(detached).toBeVisible();
-  await expect(detached.locator('.lrp-pdf-page canvas')).toBeVisible();
-  const detachedContent = detached.locator(':scope > div');
-  expect(await detachedContent.evaluate((element) => {
-    const style = getComputedStyle(element);
-    return {
-      border: style.borderTopWidth,
-      radius: style.borderRadius,
-      background: style.backgroundColor,
-    };
-  })).toEqual({
-    border: '0px',
-    radius: '15px',
-    background: 'rgba(0, 0, 0, 0)',
-  });
-
-  const beforeMove = await detached.boundingBox();
-  const headerTitle = detached.locator(':scope > header strong');
-  const headerBox = await headerTitle.boundingBox();
-  expect(beforeMove && headerBox).toBeTruthy();
-  await page.mouse.move(headerBox!.x + headerBox!.width / 2, headerBox!.y + headerBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(headerBox!.x - 80, headerBox!.y + 70, { steps: 6 });
-  await page.mouse.up();
-  const afterMove = await detached.boundingBox();
-  expect(Math.abs(afterMove!.x - beforeMove!.x) + Math.abs(afterMove!.y - beforeMove!.y)).toBeGreaterThan(50);
-  await detached.locator(':scope > header button').last().click();
-  await expect(detached).toHaveCount(0);
-
-  const htmlChip = record.getByRole('button', { name: /e2e\.html/ });
-  await htmlChip.evaluate((element) => element.scrollIntoView({ block: 'nearest', inline: 'center' }));
-  const htmlChipBox = await htmlChip.boundingBox();
-  expect(htmlChipBox).toBeTruthy();
-  await page.mouse.move(htmlChipBox!.x + htmlChipBox!.width / 2, htmlChipBox!.y + htmlChipBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(690, 300, { steps: 8 });
-  await page.mouse.up();
-
-  const detachedHtml = page.locator('.lc-detached-material.is-html').last();
-  await expect(detachedHtml).toBeVisible();
-  const detachedHtmlFrame = detachedHtml.frameLocator('iframe[title="e2e.html"]');
-  await expect(detachedHtmlFrame.getByText('HTML 自适应预览')).toBeVisible();
-  await expect.poll(async () => {
-    const box = await detachedHtml.boundingBox();
-    return box?.width || 0;
-  }).toBeLessThan(500);
-  const floatingBox = await detachedHtml.boundingBox();
-  const wrapBox = await detachedHtmlFrame.locator('.wrap').boundingBox();
-  expect(floatingBox && wrapBox).toBeTruthy();
-  expect(wrapBox!.width).toBeGreaterThan(410);
-  expect(floatingBox!.height / wrapBox!.height).toBeLessThan(1.5);
 });
 
 test('cloud session cookie protects APIs and cloud delete stays disabled', async ({ request }) => {

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "考研资料磁吸接力",
+  "description": "接收从考研学习中心拖出的资料，并在当前 Edge 网页中以浮动预览落地。",
+  "version": "0.1.0",
+  "minimum_chrome_version": "120",
+  "permissions": [],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "考研资料磁吸接力已启用"
+  }
+}

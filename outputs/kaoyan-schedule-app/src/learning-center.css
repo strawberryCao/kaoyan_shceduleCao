@@ -2680,31 +2680,77 @@
   margin-top: 20px;
 }
 .lc-quick-asset-row {
+  width: min(448px, 100%);
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: start;
+  gap: 5px;
   margin-bottom: 11px;
-  padding: 8px 9px;
+  padding: 6px;
   border: 1px solid #ded8cf;
-  border-radius: 11px;
+  border-radius: 9px;
   background: #faf9f6;
 }
 .lc-quick-asset-row > strong {
   flex: none;
+  padding-top: 8px;
   color: #62605d;
-  font-size: 10px;
+  font-size: 9px;
 }
-.lc-quick-asset-row > div {
+.lc-quick-asset-row > .lc-quick-asset-list {
   min-width: 0;
-  flex: 1 1 auto;
-  display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-inline: contain;
+  max-height: min(25vh, 132px);
+  display: grid;
+  gap: 2px;
+  padding-right: 2px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   scrollbar-width: thin;
   scrollbar-color: #c9c0b5 transparent;
+}
+.lc-quick-asset-row .lc-quick-asset-chip-wrap {
+  width: 100%;
+  display: flex;
+}
+.lc-quick-asset-row .lc-quick-asset-chip {
+  width: 100%;
+  max-width: none;
+  min-height: 30px;
+  height: 30px;
+  gap: 6px;
+  padding: 0 28px 0 6px;
+  border-color: transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: grab;
+}
+.lc-quick-asset-row .lc-quick-asset-chip span {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1;
+  text-align: left;
+}
+.lc-quick-asset-row .lc-quick-asset-remove {
+  top: 50%;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 100ms ease, background-color 100ms ease, color 100ms ease;
+}
+.lc-quick-asset-row .lc-quick-asset-chip-wrap:hover .lc-quick-asset-remove,
+.lc-quick-asset-row .lc-quick-asset-remove:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .lc-quick-asset-row .lc-quick-asset-remove {
+    opacity: 1;
+  }
 }
 .lc-quick-asset-chip {
   flex: 0 0 auto;
@@ -2767,8 +2813,8 @@
 }
 .lc-quick-asset-chip b {
   flex: none;
-  min-width: 30px;
-  height: 20px;
+  min-width: 28px;
+  height: 19px;
   display: grid;
   place-items: center;
   border-radius: 5px;
@@ -3025,8 +3071,9 @@
     height: 430px;
     min-height: 240px;
   }
-  .lc-quick-asset-row > div {
-    overflow-x: auto;
+  .lc-quick-asset-row > .lc-quick-asset-list {
+    overflow-x: hidden;
+    overflow-y: auto;
   }
   .lc-detach-layer,
   .lc-detach-guide {
