@@ -331,6 +331,48 @@ body:has(.note-drop-app),
   box-shadow: 0 0 0 3px rgba(230, 195, 142, 0.09);
 }
 
+.note-ai-selection {
+  display: grid;
+  gap: 6px;
+}
+
+.note-ai-selection > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.note-ai-selection > span small {
+  color: var(--dh-faint);
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.note-ai-selection select {
+  width: 100%;
+  min-height: 40px;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 247, 226, 0.18);
+  border-radius: 12px;
+  outline: none;
+  background: rgba(255, 248, 232, 0.1);
+  color: var(--dh-text);
+  font: 750 12px/1.4 "Microsoft YaHei", system-ui, sans-serif;
+  padding: 8px 10px;
+}
+
+.note-ai-selection select:focus {
+  border-color: rgba(230, 195, 142, 0.62);
+  box-shadow: 0 0 0 3px rgba(230, 195, 142, 0.09);
+}
+
+.note-ai-selection select option {
+  background: #44372e;
+  color: #fff8e8;
+}
+
 .note-remark-error {
   margin: 0;
   border: 1px solid rgba(239, 137, 137, 0.28);

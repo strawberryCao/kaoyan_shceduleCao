@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   Clipboard,
   FolderOpen,
@@ -115,6 +115,23 @@ const formatProjectTime = (value: string): string => {
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
+};
+
+const getCanvasProjectContentCount = (project: CanvasProjectSummary): number => (
+  project.imageCount
+  + project.textCount
+  + project.annotationCount
+  + project.relationCount
+  + (project.strokeCount ?? 0)
+);
+
+const formatCanvasProjectTitle = (project: CanvasProjectSummary): string => {
+  const title = project.title.trim();
+  if (title && title !== '未命名画布') return title;
+  if ((project.strokeCount ?? 0) > 0) return '手写画布';
+  if (project.imageCount > 0) return '图片画布';
+  if (project.textCount + project.annotationCount + project.relationCount > 0) return '知识画布';
+  return '空白画布';
 };
 
 export function NoteCapturePage() {
@@ -446,7 +463,7 @@ export function NoteCapturePage() {
         setSyncConflict((current) => ({
           actualRevision: Math.max(current?.actualRevision ?? 0, remoteDocument.syncRevision),
         }));
-        setCanvasMessage('检测到另一台设备的新版本；请先抬起 Apple Pencil 或结束文字编辑，再选择同步版本。');
+        setCanvasMessage('检测到另一台设备的新版本；请先结束当前书写或文字编辑，再选择同步版本。');
         return false;
       }
 
@@ -657,15 +674,6 @@ export function NoteCapturePage() {
     return document;
   };
 
-  const syncBlankCanvas = (document: CanvasDocument) => {
-    const expectedSequence = changeSequenceRef.current;
-    void persistCanvasDocument(document, false, { expectedSequence, remark: '' }).catch(() => {
-      if (activeCanvasIdRef.current === document.id) {
-        setCanvasMessage('空白画布已在本机创建；网络恢复后会继续同步到其他设备。');
-      }
-    });
-  };
-
   const createNewCanvas = () => {
     if (persistInFlightRef.current) {
       setCanvasMessage('当前笔迹正在同步，请稍候再新建画布。');
@@ -674,8 +682,7 @@ export function NoteCapturePage() {
     if (canvasDirty && !window.confirm('当前画布有未保存修改。建议先按 Ctrl+S 保存工程；仍要新建并离开这些修改吗？')) {
       return;
     }
-    const document = resetToBlankCanvas('已新建空白画布，并正在同步到其他设备。');
-    syncBlankCanvas(document);
+    resetToBlankCanvas('已新建本机空白画布；首次添加有效内容后才会创建云端工程。');
   };
 
   const deleteCurrentCanvas = async () => {
@@ -694,10 +701,9 @@ export function NoteCapturePage() {
         setCanvasDirty(false);
         await deleteCanvasProject(selectedProjectId, syncedRevisionRef.current, canvasClientIdRef.current);
         removeLocalCanvasData(selectedProjectId);
-        const blank = resetToBlankCanvas(IS_CLOUD_RUNTIME
+        resetToBlankCanvas(IS_CLOUD_RUNTIME
           ? `已永久删除“${label}”。`
           : `已删除“${label}”。工程已移到本机回收目录，需要时仍可恢复。`);
-        syncBlankCanvas(blank);
         await refreshProjects();
       } catch (error) {
         canvasDirtyRef.current = wasDirty;
@@ -710,8 +716,7 @@ export function NoteCapturePage() {
     }
     if (!window.confirm(`确定删除未保存画布“${label}”吗？这会清除这台设备上的草稿。`)) return;
     removeLocalCanvasData(document.id);
-    const blank = resetToBlankCanvas(`已删除未保存画布“${label}”。`);
-    syncBlankCanvas(blank);
+    resetToBlankCanvas(`已删除未保存画布“${label}”。`);
   };
 
   const publishCanvas = async () => {
@@ -756,6 +761,8 @@ export function NoteCapturePage() {
         noteUid: publishNoteUid,
         remark: publishRemark,
         canvasProjectId: savedDocument.id,
+        sourceType: 'canvas-publish',
+        aiSelection: { mode: 'auto-advanced' },
       });
       lastPublishedFingerprintRef.current = fingerprint;
       publishOperationRef.current = null;
@@ -800,6 +807,14 @@ export function NoteCapturePage() {
   };
 
   const selectedMissingFromList = selectedProjectId && !projects.some((project) => project.id === selectedProjectId);
+  const populatedProjects = useMemo(
+    () => projects.filter((project) => getCanvasProjectContentCount(project) > 0),
+    [projects],
+  );
+  const emptyProjects = useMemo(
+    () => projects.filter((project) => getCanvasProjectContentCount(project) === 0),
+    [projects],
+  );
   const visibleMessage = projectsError || canvasMessage;
   const showCanvasProjectState = Boolean(
     (selectedProjectId && (canvasSavingVisible || syncConflict || canvasDirty))
@@ -833,11 +848,24 @@ export function NoteCapturePage() {
                 >
                   <option value="">我的画布：当前未保存</option>
                   {selectedMissingFromList && <option value={selectedProjectId}>当前工程</option>}
-                  {projects.map((project) => (
-                    <option key={project.id} value={project.id}>
-                      {project.title || '未命名画布'} · {project.strokeCount ?? 0} 笔 · {project.imageCount} 图 · {formatProjectTime(project.updatedAt)}
-                    </option>
-                  ))}
+                  {populatedProjects.length > 0 && (
+                    <optgroup label={`有内容的画布（${populatedProjects.length}）`}>
+                      {populatedProjects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {formatCanvasProjectTitle(project)} · {project.strokeCount ?? 0} 笔 · {project.imageCount} 图 · {formatProjectTime(project.updatedAt)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {emptyProjects.length > 0 && (
+                    <optgroup label={`空白历史（保留可恢复，${emptyProjects.length}）`}>
+                      {emptyProjects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {formatCanvasProjectTitle(project)} · {formatProjectTime(project.updatedAt)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
               <button type="button" onClick={() => void refreshProjects()} disabled={projectsLoading} title="刷新我的画布">

@@ -543,6 +543,34 @@ test('manual move to the default bucket is not reverted from the previous file f
   assert.deepEqual(note.knowledgePath, ['默认文件夹', '图像噪声']);
 });
 
+test('creates default-folder material notes as pending AI work without locking generated fields', (t) => {
+  const store = makeFixture(t);
+  const snapshot = store.createNote({
+    noteUid: 'material-auto-classify',
+    title: '题目原图.png',
+    subject: '默认文件夹',
+    noteType: 'quick',
+    autoClassify: true,
+    sourceType: 'material-note',
+    userEditedFields: ['remark'],
+    remark: '我的法二不错',
+    attachments: [{ id: 'one', kind: 'image', name: '题目原图.png', filePath: 'C:/notes/.materials/one.png' }],
+  });
+  const note = snapshot.days['2026-07-17'].autoNotes[0];
+  assert.equal(note.organizationStatus, 'pending');
+  assert.equal(note.reviewStatus, 'pending');
+  assert.equal(note.classificationSource, 'ai');
+  assert.equal(note.decisionRevision, 0);
+  assert.equal(note.sourceType, 'material-note');
+  assert.deepEqual(note.userEditedFields, ['remark']);
+
+  const renamed = store.updateNote(note.noteUid, { title: '函数差分关系与积分平均值' }, {
+    expectedRevision: snapshot.revision,
+    trackUserEdits: false,
+  });
+  assert.deepEqual(renamed.days['2026-07-17'].autoNotes[0].userEditedFields, ['remark']);
+});
+
 test('AI file rename keeps the primary image attachment on the new path', (t) => {
   const store = makeFixture(t);
   const originalPath = path.join('C:', 'Users', 'ASUS', 'Desktop', '笔记', '默认文件夹', '默认文件夹_正在识别题目内容.png');
@@ -623,7 +651,7 @@ test('restoreSnapshot restores a normalized recovery payload without lowering th
   assert.equal(restored.days['2026-07-18'], undefined);
 });
 
-test('auto-activates cards and retires a card after three consecutive correct reviews', (t) => {
+test('keeps mastered cards scheduled and supports four review ratings', (t) => {
   const store = makeFixture(t);
   const metadata = {
     noteUid: 'note-review',
@@ -641,19 +669,19 @@ test('auto-activates cards and retires a card after three consecutive correct re
   });
   assert.equal(snapshot.cards[0].status, 'active');
 
-  const expectedDates = ['2026-07-18', '2026-07-20'];
-  for (const expectedDate of expectedDates) {
-    snapshot = store.updateCard(cardId, { reviewResult: 'remembered' });
-    assert.equal(snapshot.cards[0].dueDate, expectedDate);
-    assert.equal(snapshot.cards[0].status, 'active');
-  }
-  snapshot = store.updateCard(cardId, { reviewResult: 'remembered' });
-  assert.equal(snapshot.cards[0].dueDate, '');
-  assert.equal(snapshot.cards[0].status, 'archived');
+  snapshot = store.updateCard(cardId, { reviewRating: 'hard' });
+  assert.equal(snapshot.cards[0].dueDate, '2026-07-18');
+  assert.equal(snapshot.cards[0].reviewStep, 0);
+  snapshot = store.updateCard(cardId, { reviewRating: 'good' });
+  assert.equal(snapshot.cards[0].status, 'active');
+  snapshot = store.updateCard(cardId, { reviewRating: 'easy' });
+  assert.notEqual(snapshot.cards[0].dueDate, '');
+  assert.equal(snapshot.cards[0].status, 'active');
   assert.equal(snapshot.cards[0].reviewCount, 3);
   assert.equal(snapshot.cards[0].correctStreak, 3);
+  assert.equal(snapshot.cards[0].reviewHistory[2].rating, 'easy');
 
-  snapshot = store.updateCard(cardId, { reviewResult: 'forgotten' });
+  snapshot = store.updateCard(cardId, { reviewRating: 'again' });
   assert.equal(snapshot.cards[0].dueDate, '2026-07-18');
   assert.equal(snapshot.cards[0].status, 'active');
   assert.equal(snapshot.cards[0].reviewStep, 0);

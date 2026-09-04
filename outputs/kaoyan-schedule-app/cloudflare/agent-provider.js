@@ -114,14 +114,18 @@ function scoreModel(provider, model, difficulty) {
 
 function routeCandidates(env, runtime, task, request) {
   const settings = task.settings || {};
-  const preferredProvider = text(settings.providerId, 80).toLowerCase();
-  const preferredModel = text(settings.modelId, 160);
+  const preferredProvider = text(request.preferredProvider, 80).toLowerCase()
+    || (request.ignoreTaskModelPreference === true ? '' : text(settings.providerId, 80).toLowerCase());
+  const preferredModel = text(request.preferredModel, 160)
+    || (request.ignoreTaskModelPreference === true ? '' : text(settings.modelId, 160));
   const hasPreference = Boolean(preferredProvider || preferredModel);
-  const allowFallback = settings.fallback !== false;
+  const allowFallback = typeof request.allowFallback === 'boolean' ? request.allowFallback : settings.fallback !== false;
   const required = requiredCapabilities(task, request);
-  const difficulty = ['low', 'medium', 'high'].includes(settings.difficulty)
-    ? settings.difficulty
-    : text(task.profile?.difficulty, 20) || 'medium';
+  const difficulty = ['low', 'medium', 'high'].includes(request.difficulty)
+    ? request.difficulty
+    : ['low', 'medium', 'high'].includes(settings.difficulty)
+      ? settings.difficulty
+      : text(task.profile?.difficulty, 20) || 'medium';
   const candidates = [];
   const unavailable = [];
 
@@ -143,6 +147,7 @@ function routeCandidates(env, runtime, task, request) {
         && (!preferredProvider || providerId === preferredProvider)
         && (!preferredModel || model.id === preferredModel);
       if (hasPreference && !allowFallback && !preferred) continue;
+      if (Number.isFinite(Number(request.maxCostTier)) && model.costTier > Number(request.maxCostTier)) continue;
       if (!required.every((capability) => model.capabilities.includes(capability))) continue;
       candidates.push({
         providerId,
@@ -228,7 +233,9 @@ function requestPayload(candidate, task, request) {
   const maxTokens = number(request.maxTokens ?? options.maxTokens, 1600, 64, 16000);
   if (isKimiThinking) payload.max_completion_tokens = maxTokens;
   else payload.max_tokens = maxTokens;
-  if (request.json !== false && candidate.model.supportsResponseFormat) payload.response_format = { type: 'json_object' };
+  if (request.json !== false && candidate.model.supportsResponseFormat && options.structuredOutputMode !== 'prompt_only') {
+    payload.response_format = { type: 'json_object' };
+  }
   const reasoningMode = options.reasoningMode;
   if (candidate.providerId === 'kimi' && ['fast', 'balanced', 'deep'].includes(reasoningMode)) {
     if (/kimi-k2\.(?:5|6)/i.test(candidate.model.id)) payload.thinking = { type: reasoningMode === 'fast' ? 'disabled' : 'enabled' };
@@ -248,7 +255,10 @@ async function requestCandidate(candidate, task, request) {
       if (!/^(?:authorization|cookie)$/i.test(key) && typeof value === 'string' && !value.includes('__SECRET')) headers[key] = value;
     }
   }
-  const timeoutMs = number(task.settings?.timeoutMs ?? request.timeoutMs, 45000, 1000, 300000);
+  const configuredTimeoutMs = number(task.settings?.timeoutMs ?? request.timeoutMs, 45000, 1000, 300000);
+  const timeoutMs = Number.isFinite(Number(request.attemptTimeoutMs))
+    ? Math.max(1, Math.min(configuredTimeoutMs, Number(request.attemptTimeoutMs)))
+    : configuredTimeoutMs;
   const response = await fetchWithTimeout(candidate.baseUrl, {
     method: 'POST',
     headers,
@@ -286,7 +296,12 @@ async function requestCandidate(candidate, task, request) {
   const output = contentText(choice?.message?.content);
   if (!output) throw new HttpError(502, 'AI 服务返回了空内容。', 'AI_EMPTY_RESPONSE');
   const json = request.json === false ? null : parseJsonText(output);
-  if (request.json !== false && json === null) throw new HttpError(502, 'AI 没有返回可解析的 JSON。', 'AI_JSON_INVALID');
+  if (request.json !== false && json === null) {
+    throw new HttpError(502, 'AI 没有返回可解析的 JSON。', 'AI_JSON_INVALID', {
+      validationFailure: true,
+      rawText: output.slice(0, 16_000),
+    });
+  }
   return {
     provider: candidate.providerId,
     model: candidate.model.id,
@@ -296,17 +311,100 @@ async function requestCandidate(candidate, task, request) {
   };
 }
 
+async function validateCandidateJson(request, result, candidate) {
+  if (typeof request.validateJson !== 'function') return result;
+  await request.validateJson(result.json, {
+    provider: candidate.providerId,
+    model: candidate.model.id,
+  });
+  return result;
+}
+
+function repairedJsonRequest(request, error, rawText) {
+  return {
+    ...request,
+    messages: [
+      ...(Array.isArray(request.messages) ? request.messages : []),
+      ...(rawText ? [{ role: 'assistant', content: String(rawText).slice(0, 16_000) }] : []),
+      {
+        role: 'user',
+        content: [
+          '上一条输出未通过程序校验。请只返回修正后的 JSON，不要使用 Markdown，也不要解释。',
+          `校验问题：${safeProviderMessage(error instanceof Error ? error.message : String(error)).slice(0, 500)}`,
+        ].join('\n'),
+      },
+    ],
+  };
+}
+
 export async function runLocalAgentTask(env, taskId, request = {}) {
   const { runtime, task } = await getAgentTask(env, taskId);
   const route = routeCandidates(env, runtime, task, request);
   const attempts = [];
-  const maxAttempts = route.allowFallback ? route.candidates.length : Math.min(1, route.candidates.length);
+  const requestedCandidateCount = Math.max(1, Math.min(
+    route.candidates.length,
+    Number.isFinite(Number(request.maxCandidateCount)) ? Math.round(Number(request.maxCandidateCount)) : route.candidates.length,
+  ));
+  const maxAttempts = route.allowFallback ? requestedCandidateCount : Math.min(1, route.candidates.length);
+  const overallTimeoutMs = Number(request.overallTimeoutMs);
+  const deadlineAt = Number.isFinite(overallTimeoutMs) && overallTimeoutMs > 0
+    ? Date.now() + Math.min(30 * 60 * 1000, Math.max(1_000, overallTimeoutMs))
+    : null;
   for (const candidate of route.candidates.slice(0, maxAttempts)) {
-    const configuredRetries = Number(runtime.routing?.networkRetries);
+    const configuredRetries = Number(task.settings?.options?.networkRetries ?? runtime.routing?.networkRetries);
     const retryLimit = Math.max(0, Math.min(3, Number.isFinite(configuredRetries) ? configuredRetries : 2));
-    for (let retry = 0; retry <= retryLimit; retry += 1) {
+    const configuredRepairs = Number(task.settings?.options?.jsonRepairRetries ?? runtime.routing?.jsonRepairRetries);
+    const repairLimit = Math.max(0, Math.min(2, Number.isFinite(configuredRepairs) ? configuredRepairs : 0));
+    let retry = 0;
+    let repair = 0;
+    let candidateRequest = request;
+    while (true) {
+      if (deadlineAt !== null && Date.now() >= deadlineAt) {
+        throw new HttpError(504, 'AI 任务已到总等待时间上限。', 'AI_OVERALL_TIMEOUT');
+      }
       try {
-        const result = await requestCandidate(candidate, task, request);
+        let rawResult;
+        try {
+          rawResult = await requestCandidate(candidate, task, deadlineAt === null
+            ? candidateRequest
+            : { ...candidateRequest, attemptTimeoutMs: Math.max(1, deadlineAt - Date.now()) });
+        } catch (error) {
+          if (error?.details?.validationFailure === true && repair < repairLimit) {
+            attempts.push({
+              provider: candidate.providerId,
+              model: candidate.model.id,
+              outcome: 'failed',
+              phase: 'validation',
+              repair,
+              code: error?.code || 'AI_JSON_INVALID',
+              message: safeProviderMessage(error instanceof Error ? error.message : String(error)),
+            });
+            repair += 1;
+            candidateRequest = repairedJsonRequest(request, error, error?.details?.rawText || '');
+            continue;
+          }
+          throw error;
+        }
+        let result;
+        try {
+          result = await validateCandidateJson(candidateRequest, rawResult, candidate);
+        } catch (error) {
+          if (repair < repairLimit) {
+            attempts.push({
+              provider: candidate.providerId,
+              model: candidate.model.id,
+              outcome: 'failed',
+              phase: 'validation',
+              repair,
+              code: error?.code || 'AI_SCHEMA_INVALID',
+              message: safeProviderMessage(error instanceof Error ? error.message : String(error)),
+            });
+            repair += 1;
+            candidateRequest = repairedJsonRequest(request, error, rawResult.text);
+            continue;
+          }
+          throw error;
+        }
         return {
           ...result,
           taskId,
@@ -317,6 +415,7 @@ export async function runLocalAgentTask(env, taskId, request = {}) {
             model: candidate.model.id,
             outcome: 'success',
             retry,
+            repair,
           }],
         };
       } catch (error) {
@@ -325,17 +424,22 @@ export async function runLocalAgentTask(env, taskId, request = {}) {
           model: candidate.model.id,
           outcome: 'failed',
           retry,
+          repair,
           code: error?.code || 'AI_PROVIDER_ERROR',
           message: safeProviderMessage(error instanceof Error ? error.message : String(error)),
         });
+        if (deadlineAt !== null && Date.now() >= deadlineAt) {
+          throw new HttpError(504, 'AI 任务已到总等待时间上限。', 'AI_OVERALL_TIMEOUT');
+        }
         const retryable = error?.details?.retryable === true
           || ['AI_TIMEOUT', 'AI_NETWORK_ERROR'].includes(error?.code);
         if (!retryable || retry >= retryLimit) {
           if (!route.allowFallback) throw error;
           break;
         }
+        retry += 1;
         const floor = candidate.providerId === 'gemini' ? 1_000 : 500;
-        const exponential = Math.min(30_000, floor * (2 ** retry));
+        const exponential = Math.min(30_000, floor * (2 ** (retry - 1)));
         const jitter = Math.round(exponential * (.15 + Math.random() * .2));
         await new Promise((resolve) => setTimeout(
           resolve,
@@ -353,5 +457,7 @@ export const agentProviderInternals = Object.freeze({
   modelEntries,
   normalizeUrl,
   parseJsonText,
+  repairedJsonRequest,
   routeCandidates,
+  validateCandidateJson,
 });

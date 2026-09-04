@@ -138,6 +138,10 @@ test('saves locally before a slow AI response and replays the same noteUid witho
       path.relative(notesRoot, first.filePath).split(path.sep).includes('pending'),
       `provisional image should stay in the pending asset store: ${first.filePath}`,
     );
+    assert.equal(first.metadata.subjectLocked, false);
+    assert.equal(first.metadata.attachments.length, 1);
+    assert.equal(first.metadata.attachments[0].filePath, first.filePath);
+    assert.equal(first.metadata.attachments[0].name, first.fileName);
     const subjectDir = path.join(notesRoot, path.relative(notesRoot, first.filePath).split(path.sep)[0]);
     const visibleRootImages = fs.readdirSync(subjectDir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /\.(?:png|jpe?g|webp)$/i.test(entry.name));
@@ -166,7 +170,7 @@ test('saves locally before a slow AI response and replays the same noteUid witho
   }
 });
 
-test('finishes AI naming in the background and keeps the idempotency receipt on the renamed file', { timeout: 15_000 }, async () => {
+test('runs naming once after a new save, never on replay, and keeps manual retry explicit', { timeout: 15_000 }, async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-note-naming-'));
   const assistantRoot = path.join(tempRoot, 'assistant');
   const notesRoot = path.join(tempRoot, 'notes');
@@ -174,7 +178,9 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
 
   const aiPort = await reservePort();
   const notePort = await reservePort();
+  let fakeAiRequests = 0;
   const fakeAi = http.createServer((request, response) => {
+    fakeAiRequests += 1;
     request.resume();
     request.on('end', () => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -188,6 +194,11 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
               ruleId: 'tank-number',
               ruleValue: '250626-088',
               ruleEvidence: '缸号字段右侧',
+              knowledgePoint: '导数与切线',
+              wrongReason: '漏看切线条件',
+              wrongReasonPath: ['粗心大意', '审题疏漏', '看漏条件'],
+              wrongReasonSource: 'explicit_image',
+              wrongReasonEvidence: '图片右侧手写批注“切线条件漏了”',
             }),
           },
         }],
@@ -253,11 +264,25 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
     noteUid: 'note_test_background_name_001',
     imageDataUrl: tinyPng,
     kind: 'single',
-    remark: '高数 p108 3.1题 错因：切线条件遗漏',
+    remark: '高数 p108 3.1题 错题',
   };
 
   try {
     await waitForHealth(baseUrl, child);
+    const preflightResponse = await fetch(`${baseUrl}/search`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://127.0.0.1:5173',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type,x-kaoyan-ai-action',
+      },
+    });
+    assert.equal(preflightResponse.status, 204);
+    assert.match(
+      preflightResponse.headers.get('access-control-allow-headers') || '',
+      /X-Kaoyan-AI-Action/i,
+      'browser preflight must allow the explicit AI action header',
+    );
     const firstResponse = await fetch(`${baseUrl}/save-note`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -267,32 +292,75 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
     assert.equal(firstResponse.status, 202);
     assert.equal(first.aiStatus, 'pending');
 
-    let completed = null;
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const replayResponse = await fetch(`${baseUrl}/save-note`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const replay = await replayResponse.json();
-      if (replay.aiStatus === 'complete') {
-        completed = replay;
-        break;
-      }
+    const automaticDeadline = Date.now() + 5_000;
+    while (Date.now() < automaticDeadline && fakeAiRequests < 1) {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    assert.equal(fakeAiRequests, 1, 'a newly saved note must run exactly one naming/classification request');
 
-    assert.ok(completed, 'background naming did not complete');
+    const replayResponse = await fetch(`${baseUrl}/save-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const replay = await replayResponse.json();
+    assert.equal(replayResponse.status, 200);
+    assert.equal(replay.idempotentReplay, true);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(fakeAiRequests, 1, 'an idempotent save replay must not enqueue AI again');
+
+    const blockedRenameResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(blockedRenameResponse.status, 409);
+    assert.equal(fakeAiRequests, 1, 'a request without an explicit user action marker must be blocked before AI');
+
+    const renameResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Kaoyan-AI-Action': 'user' },
+      body: '{}',
+    });
+    const renameBody = await renameResponse.json();
+    assert.equal(renameResponse.status, 202, JSON.stringify(renameBody));
+    let renameJob = renameBody.job;
+    const renameDeadline = Date.now() + 5_000;
+    while (Date.now() < renameDeadline && ['queued', 'processing'].includes(renameJob.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      renameJob = await fetch(`${baseUrl}/ai/jobs/${renameJob.id}`)
+        .then((response) => response.json())
+        .then((body) => body.job);
+    }
+    assert.equal(renameJob.status, 'completed', renameJob.error || renameJob.message);
+    assert.equal(fakeAiRequests, 2, 'one explicit rename must make exactly one additional AI request');
+
+    const completedResponse = await fetch(`${baseUrl}/save-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Kaoyan-AI-Action': 'user' },
+      body: JSON.stringify(payload),
+    });
+    const completed = await completedResponse.json();
+    assert.equal(completedResponse.status, 200);
     assert.equal(completed.idempotentReplay, true);
     assert.equal(completed.metadata.naming.model, 'successful-test-model');
     assert.equal(completed.metadata.naming.ruleId, 'tank-number');
     assert.equal(completed.metadata.naming.ruleValue, '250626-088');
     assert.equal(completed.metadata.title, '250626-088');
+    assert.deepEqual(completed.metadata.learning.knowledgePath, ['高等数学', '导数与切线']);
+    assert.equal(completed.metadata.learning.wrongReason, '漏看切线条件');
+    assert.deepEqual(completed.metadata.learning.wrongReasonPath, ['粗心大意', '审题疏漏', '看漏条件']);
+    assert.equal(completed.metadata.learning.wrongReasonSource, 'explicit_image');
+    assert.match(completed.metadata.learning.visualEvidence.wrongReasonEvidence, /切线条件漏了/);
     assert.match(path.basename(completed.filePath), /250626-088/);
     assert.notEqual(completed.filePath, first.filePath);
     assert.ok(fs.existsSync(completed.filePath));
     assert.equal(fs.existsSync(first.filePath), false);
+    assert.equal(completed.metadata.attachments.length, 1);
+    assert.equal(completed.metadata.attachments[0].filePath, completed.filePath);
+    assert.equal(completed.metadata.attachments[0].name, completed.fileName);
+    assert.equal(completed.metadata.learning.filePath, completed.filePath);
+    assert.equal(completed.metadata.learning.attachments[0].filePath, completed.filePath);
 
     const subjectDir = path.dirname(completed.filePath);
     const imageFiles = fs.readdirSync(subjectDir, { withFileTypes: true })
@@ -302,6 +370,39 @@ test('finishes AI naming in the background and keeps the idempotency receipt on 
     assert.equal(metadataIndex.filter((item) => item.noteUid === payload.noteUid).length, 1);
     const learningData = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'learning-data.json'), 'utf8'));
     assert.equal(learningData.cards.filter((card) => card.noteUid === payload.noteUid && card.kind === 'mistake').length, 1);
+
+    // Migrated notes may keep a descriptive sidecar filename while metadata.id
+    // is already the stable noteUid. A manual retry must keep the actual path
+    // in the receipt; otherwise the background worker exits before calling AI.
+    const receiptPath = path.join(assistantRoot, 'note-save-receipts', `${payload.noteUid}.json`);
+    const migratedReceipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    const migratedSidecarPath = path.join(path.dirname(migratedReceipt.sidecarPath), 'legacy-descriptive-name.note.json');
+    const migratedMetadata = JSON.parse(fs.readFileSync(migratedReceipt.sidecarPath, 'utf8'));
+    migratedMetadata.id = payload.noteUid;
+    fs.renameSync(migratedReceipt.sidecarPath, migratedSidecarPath);
+    fs.writeFileSync(migratedSidecarPath, JSON.stringify(migratedMetadata, null, 2), 'utf8');
+    migratedReceipt.sidecarPath = migratedSidecarPath;
+    fs.writeFileSync(receiptPath, JSON.stringify(migratedReceipt, null, 2), 'utf8');
+
+    const retryResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Kaoyan-AI-Action': 'user' },
+      body: '{}',
+    });
+    const retryBody = await retryResponse.json();
+    assert.equal(retryResponse.status, 202, JSON.stringify(retryBody));
+    let retryJob = retryBody.job;
+    const retryDeadline = Date.now() + 5_000;
+    while (Date.now() < retryDeadline && ['queued', 'processing'].includes(retryJob.status)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      retryJob = await fetch(`${baseUrl}/ai/jobs/${retryJob.id}`)
+        .then((response) => response.json())
+        .then((body) => body.job);
+    }
+    assert.equal(retryJob.status, 'completed', retryJob.error || retryJob.message);
+    const repairedReceipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    assert.equal(repairedReceipt.sidecarPath, migratedSidecarPath);
+    assert.ok(fs.existsSync(repairedReceipt.sidecarPath));
 
     const correctionResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}`, {
       method: 'PATCH',
@@ -495,6 +596,87 @@ test('review API is durable, idempotent, conflict guarded, and never reports fil
   } finally {
     await stopChild(child);
     await new Promise((resolve) => slowAi.close(resolve));
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('legacy text notes without local sidecars remain manually editable', { timeout: 15_000 }, async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-legacy-text-edit-'));
+  const assistantRoot = path.join(tempRoot, 'assistant');
+  const notesRoot = path.join(tempRoot, 'notes');
+  const notePort = await reservePort();
+  const noteUid = 'legacy_text_without_sidecar_001';
+  fs.mkdirSync(assistantRoot, { recursive: true });
+  fs.writeFileSync(path.join(assistantRoot, 'ai-providers.json'), JSON.stringify({ providers: {} }), 'utf8');
+  fs.writeFileSync(path.join(assistantRoot, 'learning-data.json'), JSON.stringify({
+    version: 1,
+    revision: 1,
+    updatedAt: '2026-08-05T00:00:00.000Z',
+    days: {
+      '2026-08-05': {
+        manual: { completedTaskIds: [], note: '', debt: '', mistakes: '' },
+        autoNotes: [{
+          noteUid,
+          capturedDate: '2026-08-05',
+          title: '旧标题',
+          subject: '默认文件夹',
+          remark: '只有文字，没有本地图片 sidecar。',
+          filePath: '',
+          tags: [],
+          knowledgePath: [],
+          organizationStatus: 'pending',
+          classificationSource: 'ai',
+          reviewStatus: 'pending',
+          decisionRevision: 0,
+          manualCreated: false,
+        }],
+      },
+    },
+    cards: [],
+    deletedNotes: {},
+  }, null, 2), 'utf8');
+
+  const child = spawn(process.execPath, [serverScript], {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      KAOYAN_NOTE_PORT: String(notePort),
+      KAOYAN_NOTES_ROOT: notesRoot,
+      KAOYAN_ASSISTANT_ROOT: assistantRoot,
+      KAOYAN_AI_CONFIG_PATH: path.join(assistantRoot, 'ai-providers.json'),
+      QWEN_API_KEY: '',
+      DASHSCOPE_API_KEY: '',
+      GEMINI_API_KEY: '',
+      KIMI_API_KEY: '',
+      MOONSHOT_API_KEY: '',
+    },
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  const baseUrl = `http://127.0.0.1:${notePort}`;
+  try {
+    await waitForHealth(baseUrl, child);
+    const response = await fetch(`${baseUrl}/learning-data/notes/${noteUid}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        patch: {
+          title: '手动修改后的标题',
+          subject: '高等数学',
+          knowledgePath: ['高等数学', '函数性质'],
+        },
+      }),
+    });
+    const snapshot = await response.json();
+    assert.equal(response.status, 200);
+    const note = Object.values(snapshot.days).flatMap((day) => day.autoNotes)
+      .find((item) => item.noteUid === noteUid);
+    assert.equal(note.title, '手动修改后的标题');
+    assert.equal(note.subject, '高等数学');
+    assert.deepEqual(note.knowledgePath, ['高等数学', '函数性质']);
+    assert.equal(note.reviewStatus, 'corrected');
+  } finally {
+    await stopChild(child);
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });

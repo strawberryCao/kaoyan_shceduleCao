@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { acquireOrganizerLock, organizeNotes, recoverMoves } = require('./organize-notes.cjs');
+const { acquireOrganizerLock, discoverNotes, organizeNotes, recoverMoves } = require('./organize-notes.cjs');
 const { ensureKnowledgePoint, ensureSubject, loadTaxonomy, saveTaxonomyAtomic } = require('./note-taxonomy.cjs');
 
 function makeFixture(prefix = 'kaoyan-organizer-') {
@@ -47,6 +47,102 @@ function moveFixtureToSubject(fixture, subject, learning = null) {
   }, null, 2));
   return { subjectDir, imagePath, sidecarPath };
 }
+
+test('ignores hidden and root-level content-addressed V2 assets', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-organizer-v2-assets-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const subjectDir = path.join(notesRoot, 'Mathematics');
+  const metadataDir = path.join(subjectDir, '.metadata');
+  const assetDir = path.join(subjectDir, '.assets');
+  fs.mkdirSync(metadataDir, { recursive: true });
+  fs.mkdirSync(assetDir, { recursive: true });
+  const digest = 'a'.repeat(64);
+  const hiddenAsset = path.join(assetDir, `${digest}.png`);
+  const strayAsset = path.join(subjectDir, `${digest}_2.png`);
+  const namedImage = path.join(subjectDir, 'Mathematics_limits_20260812.png');
+  fs.writeFileSync(hiddenAsset, 'same-image');
+  fs.writeFileSync(strayAsset, 'same-image');
+  fs.writeFileSync(namedImage, 'same-image');
+  fs.writeFileSync(path.join(metadataDir, 'stable-entry.note.json'), JSON.stringify({
+    schemaVersion: 2, entryId: 'stable-entry', noteUid: 'stable-entry', kind: 'note',
+    fileName: `${digest}.png`, filePath: hiddenAsset,
+  }));
+  fs.writeFileSync(path.join(metadataDir, `${digest}_2.note.json`), JSON.stringify({
+    schemaVersion: 2, entryId: 'stable-entry', noteUid: 'stable-entry', kind: 'note',
+    fileName: path.basename(strayAsset), filePath: strayAsset,
+  }));
+  fs.writeFileSync(path.join(metadataDir, 'Mathematics_limits_20260812.note.json'), JSON.stringify({
+    schemaVersion: 2, entryId: 'stable-entry', noteUid: 'stable-entry', kind: 'single',
+    fileName: path.basename(namedImage), filePath: namedImage,
+  }));
+
+  const notes = discoverNotes(notesRoot);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].imagePath, namedImage);
+});
+
+test('analyzes a multi-image material note once, keeps assets in place, and preserves standard subject folders', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-organizer-material-group-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const assistantRoot = path.join(root, 'assistant');
+  const noteUid = 'material-group-note';
+  const materialDir = path.join(notesRoot, '.materials', noteUid);
+  const defaultMetadataDir = path.join(notesRoot, '默认文件夹', '.metadata');
+  fs.mkdirSync(materialDir, { recursive: true });
+  fs.mkdirSync(defaultMetadataDir, { recursive: true });
+  const questionPath = path.join(materialDir, '01-question.png');
+  const solutionPath = path.join(materialDir, '02-solution.jpg');
+  fs.writeFileSync(questionPath, 'question');
+  fs.writeFileSync(solutionPath, 'solution');
+  const sidecarPath = path.join(defaultMetadataDir, `${noteUid}.note.json`);
+  fs.writeFileSync(sidecarPath, JSON.stringify({
+    schemaVersion: 2,
+    entryId: noteUid,
+    id: noteUid,
+    noteUid,
+    kind: 'quick',
+    sourceType: 'material-note',
+    subject: '默认文件夹',
+    title: '待整理',
+    fileName: '题目.png',
+    filePath: questionPath,
+    attachments: [
+      { id: 'question', kind: 'image', name: '题目.png', mimeType: 'image/png', filePath: questionPath },
+      { id: 'solution', kind: 'image', name: '解答.jpg', mimeType: 'image/jpeg', filePath: solutionPath },
+    ],
+    learning: { organizationStatus: 'pending', reviewStatus: 'pending', classificationSource: 'ai' },
+  }, null, 2));
+  let analyzerCalls = 0;
+  const report = await organizeNotes({
+    notesRoot,
+    assistantRoot,
+    cadenceMs: 0,
+    syncNote: false,
+    analyzeNote: async (context) => {
+      analyzerCalls += 1;
+      assert.deepEqual(context.imagePaths, [questionPath, solutionPath]);
+      return {
+        subject: '高等数学',
+        knowledgePoint: '定积分性质',
+        title: '函数差分关系与定积分平均值',
+        confidence: 0.98,
+        intent: { isQuestion: true, isMistake: false, isGood: false, shouldMemorize: false },
+      };
+    },
+  });
+
+  assert.equal(analyzerCalls, 1);
+  assert.equal(report.processed, 1);
+  assert.equal(fs.existsSync(questionPath), true);
+  assert.equal(fs.existsSync(solutionPath), true);
+  assert.equal(fs.existsSync(sidecarPath), false);
+  const canonical = path.join(notesRoot, '高等数学', '.metadata', `${noteUid}.note.json`);
+  assert.equal(fs.existsSync(canonical), true);
+  assert.equal(JSON.parse(fs.readFileSync(canonical, 'utf8')).sourceType, 'material-note');
+  assert.equal(fs.existsSync(path.join(notesRoot, '概率论')), true);
+});
 
 test('enriches metadata but keeps physical storage at subject depth', async (t) => {
   const fixture = makeFixture();
@@ -351,7 +447,7 @@ test('uses the learning data store when available and skips a successful run for
   let calls = 0;
   const analyzer = async (context) => {
     calls += 1;
-    return { subject: context.currentCategory.subject, confidence: 1, summary: '极限题复盘' };
+    return { subject: '\u9ad8\u7b49\u6570\u5b66', confidence: 1, summary: '极限题复盘' };
   };
   const first = await organizeNotes({
     notesRoot: fixture.notesRoot,
@@ -386,7 +482,7 @@ test('persists AI items and combines semantic AI intent with local flags', async
     syncNote: false,
     cadenceMs: 0,
     analyzeNote: async () => ({
-      subject: '默认文件夹',
+      subject: '\u9ad8\u7b49\u6570\u5b66',
       title: '极限定义量词顺序',
       summary: '先任意给定 epsilon，再寻找 delta。',
       confidence: 0.95,

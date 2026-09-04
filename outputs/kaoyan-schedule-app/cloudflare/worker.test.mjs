@@ -150,6 +150,9 @@ class FakeGitHub {
       const next = new Map(base);
       for (const item of payload.tree || []) {
         if (item.sha === null) next.delete(item.path);
+        else if (typeof item.content === 'string') {
+          next.set(item.path, this.bytes(item.content));
+        }
         else {
           const bytes = this.blobs.get(item.sha);
           if (!bytes) return this.response({ message: 'Blob not found' }, 422);
@@ -230,12 +233,12 @@ async function sessionCookie(env) {
   return cookie;
 }
 
-async function call(env, path, init = {}) {
+async function call(env, path, init = {}, ctx = {}) {
   const cookie = await sessionCookie(env);
   return worker.fetch(request(path, {
     ...init,
     headers: { cookie, ...(init.headers ?? {}) },
-  }), env, {});
+  }), env, ctx);
 }
 
 async function body(response) {
@@ -608,4 +611,291 @@ test('canvas save/load uses an atomic GitHub commit and rejects stale revisions'
     body: JSON.stringify({ projectId: 'canvas-1', clientId: 'client-1' }),
   });
   assert.equal(active.status, 200);
+});
+
+test('append material migrates a legacy quick note atomically and replays by operation id', async (t) => {
+  const { env, repository } = makeContext(t);
+  repository.seed('data/assets/legacy-reference.txt', 'legacy');
+  repository.seed('data/cloud/learning-data.json', {
+    version: 1,
+    revision: 7,
+    updatedAt: '2026-08-12T00:00:00.000Z',
+    cards: [],
+    deletedNotes: {},
+    days: {
+      '2026-08-12': {
+        manual: emptyManual(),
+        autoNotes: [{
+          noteUid: 'legacy-quick-1',
+          capturedDate: '2026-08-12',
+          title: '旧速记',
+          subject: '概率论',
+          remark: '旧速记只有学习快照，没有 V2 Entry。',
+          tags: ['速记'],
+          facets: ['quick'],
+          noteType: 'quick',
+          attachments: [{
+            id: 'legacy-file',
+            kind: 'file',
+            name: '旧资料.txt',
+            mimeType: 'text/plain',
+            size: 6,
+            filePath: 'github://data/assets/legacy-reference.txt',
+            createdAt: '2026-08-12T00:00:00.000Z',
+          }],
+          createdAt: '2026-08-12T00:00:00.000Z',
+          updatedAt: '2026-08-12T00:00:00.000Z',
+        }],
+      },
+    },
+  });
+  const payload = {
+    noteUid: 'legacy-quick-1',
+    operationId: 'append-operation-1',
+    files: [{
+      name: '新增资料.txt',
+      mimeType: 'text/plain',
+      dataUrl: 'data:text/plain;base64,aGVsbG8=',
+    }],
+  };
+  repository.failRefUpdates = 1;
+  const appendedResponse = await call(env, '/api/append-material-note', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  });
+  assert.equal(appendedResponse.status, 200);
+  const appended = await body(appendedResponse);
+  assert.equal(appended.operationId, payload.operationId);
+  assert.equal(appended.idempotentReplay, false);
+  assert.equal(appended.attachments.length, 2);
+  assert.equal(appended.learningData.days['2026-08-12'].autoNotes[0].subject, '概率论');
+  assert.ok(appended.commitSha);
+  assert.ok(repository.json('data/v2/entries/legacy-quick-1.json'));
+  assert.equal(repository.json('data/v2/index.json').entries[0].entryId, 'legacy-quick-1');
+  assert.ok(repository.json('data/v2/receipts/append-assets/legacy-quick-1/append-operation-1.json'));
+
+  const revision = appended.learningData.revision;
+  const replay = await body(await call(env, '/api/append-material-note', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+  }));
+  assert.equal(replay.idempotentReplay, true);
+  assert.equal(replay.operationId, payload.operationId);
+  assert.equal(replay.learningData.revision, revision);
+  assert.equal(replay.attachments.length, 2);
+
+  const reused = await call(env, '/api/append-material-note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...payload,
+      files: [{ name: '另一份.txt', mimeType: 'text/plain', dataUrl: 'data:text/plain;base64,d29ybGQ=' }],
+    }),
+  });
+  assert.equal(reused.status, 409);
+  assert.equal((await body(reused)).code, 'SAVE_OPERATION_REUSED');
+});
+
+test('material save and append automatically name the whole quick note; explicit rename still works', async (t) => {
+  const { env, repository } = makeContext(t);
+  env.QWEN_API_KEY = 'test-key';
+  repository.seed('data/config/local-assistant/agent-runtime.json', {
+    schemaVersion: 2,
+    strictMode: true,
+    failClosed: true,
+    allowBuiltInFallback: false,
+    requireLocalWorkflow: true,
+    source: { updatedAt: '2026-08-13T00:00:00.000Z', configurationHash: 'config-test', workflowHash: 'workflow-test' },
+    providers: {
+      qwen: {
+        enabled: true,
+        cloudUsable: true,
+        baseUrl: 'https://agent.example/v1',
+        secretRef: 'QWEN_API_KEY',
+        models: [{ id: 'test-model', capabilities: ['text', 'vision', 'json'] }],
+      },
+    },
+    routing: { networkRetries: 0, jsonRepairRetries: 0 },
+    tasks: {
+      material_naming: {
+        active: true,
+        label: '资料命名',
+        profile: { difficulty: 'low', capabilities: ['text', 'json'] },
+        settings: {
+          enabled: true,
+          providerId: 'qwen',
+          modelId: 'test-model',
+          fallback: false,
+          timeoutMs: 5_000,
+          options: { renameAttachments: true, renameNoteTitle: true },
+        },
+      },
+    },
+    workflows: {
+      material_naming: {
+        version: 'test-v1',
+        steps: ['read all material', 'return names'],
+        prompt: { instructions: ['Name each attachment specifically.'], outputFormat: 'Return JSON.' },
+      },
+    },
+  });
+  const githubFetch = globalThis.fetch;
+  let providerCalls = 0;
+  let providerRequest = null;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(typeof input === 'string' ? input : input.url);
+    if (url.hostname !== 'agent.example') return githubFetch(input, init);
+    providerCalls += 1;
+    providerRequest = JSON.parse(String(init?.body || '{}'));
+    const imageCount = providerRequest.messages?.[0]?.content?.filter((item) => item?.type === 'image_url').length || 0;
+    const names = ['核心公式表述', '例题推导过程', '边界条件批注', '图形辅助说明', '补充证明步骤'];
+    return Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        noteTitle: '分部积分资料整理',
+        files: names.slice(0, imageCount).map((name, index) => ({ index, name })),
+      }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 10 },
+    });
+  };
+  const pending = [];
+  const ctx = { waitUntil(promise) { pending.push(Promise.resolve(promise)); } };
+  const drain = async () => {
+    while (pending.length > 0) {
+      const results = await Promise.allSettled(pending.splice(0));
+      const rejected = results.find((result) => result.status === 'rejected');
+      if (rejected) throw rejected.reason;
+    }
+  };
+  const textFile = (name, value) => ({
+    name,
+    mimeType: 'text/plain',
+    dataUrl: `data:text/plain;base64,${Buffer.from(value).toString('base64')}`,
+  });
+  const imageFile = (name, marker) => ({
+    name,
+    mimeType: 'image/png',
+    dataUrl: `data:image/png;base64,${Buffer.concat([
+      Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64'),
+      Buffer.from([marker]),
+    ]).toString('base64')}`,
+  });
+
+  const savedResponse = await call(env, '/api/save-material-note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      noteUid: 'material-explicit-ai',
+      title: '原资料标题',
+      remark: '分部积分公式与例题。',
+      subject: '高等数学',
+      facets: ['quick'],
+      files: [
+        imageFile('公式.png', 1),
+        imageFile('例题.png', 2),
+        imageFile('批注.png', 3),
+        imageFile('图形.png', 4),
+      ],
+    }),
+  }, ctx);
+  assert.equal(savedResponse.status, 201);
+  await drain();
+  assert.equal(providerCalls, 1);
+  let entry = repository.json('data/v2/entries/material-explicit-ai.json');
+  assert.equal(entry.title, '原资料标题');
+  assert.deepEqual(entry.assets.map((asset) => asset.originalFileName), [
+    '核心公式表述.png',
+    '例题推导过程.png',
+    '边界条件批注.png',
+    '图形辅助说明.png',
+  ]);
+
+  const appendedResponse = await call(env, '/api/append-material-note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      noteUid: 'material-explicit-ai',
+      operationId: 'append-before-explicit-ai',
+      files: [imageFile('补充证明.png', 5)],
+    }),
+  }, ctx);
+  assert.equal(appendedResponse.status, 200);
+  await drain();
+  assert.equal(providerCalls, 2);
+
+  const blocked = await call(env, '/api/learning-data/notes/material-explicit-ai/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }, ctx);
+  assert.equal(blocked.status, 409);
+  assert.equal((await body(blocked)).code, 'AI_EXPLICIT_ACTION_REQUIRED');
+  await drain();
+  assert.equal(providerCalls, 2);
+
+  const accepted = await call(env, '/api/learning-data/notes/material-explicit-ai/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Kaoyan-AI-Action': 'user' },
+    body: JSON.stringify({ operationId: 'rename-material-explicit-ai' }),
+  }, ctx);
+  assert.equal(accepted.status, 202);
+  const acceptedBody = await body(accepted);
+  const duplicateWhileQueued = await call(env, '/api/learning-data/notes/material-explicit-ai/rename', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Kaoyan-AI-Action': 'user' },
+    body: JSON.stringify({ operationId: 'rename-material-explicit-ai' }),
+  }, ctx);
+  assert.equal(duplicateWhileQueued.status, 202);
+  assert.equal((await body(duplicateWhileQueued)).replayed, true);
+  await drain();
+  const completedJobResponse = await call(env, `/api/ai/jobs/${acceptedBody.job.id}`);
+  const completedJob = (await body(completedJobResponse)).job;
+  assert.equal(completedJob.status, 'completed', completedJob.error || completedJob.message);
+  assert.equal(providerCalls, 3);
+  const providerContent = providerRequest?.messages?.[0]?.content || [];
+  assert.equal(providerContent.filter((item) => item?.type === 'image_url').length, 5);
+  assert.match(providerContent.find((item) => item?.type === 'text')?.text || '', /分部积分公式与例题/);
+  entry = repository.json('data/v2/entries/material-explicit-ai.json');
+  assert.equal(entry.title, '分部积分资料整理');
+  assert.deepEqual(entry.assets.map((asset) => asset.originalFileName), [
+    '核心公式表述.png',
+    '例题推导过程.png',
+    '边界条件批注.png',
+    '图形辅助说明.png',
+    '补充证明步骤.png',
+  ]);
+});
+
+test('stale cloud AI jobs fail closed and never replay a paid provider call', async (t) => {
+  const { env, repository } = makeContext(t);
+  const statePath = `data/cloud/app-state/${Buffer.from('ai-background-jobs').toString('base64url')}.json`;
+  repository.seed(statePath, {
+    key: 'ai-background-jobs',
+    revision: 1,
+    updatedAt: '2026-08-13T00:00:00.000Z',
+    value: {
+      jobs: [{
+        id: 'job-stale-no-replay',
+        type: 'note-rename',
+        noteUid: 'note-stale-no-replay',
+        status: 'processing',
+        attempts: 1,
+        progress: 15,
+        message: 'processing',
+        error: '',
+        createdAt: '2026-08-13T00:00:00.000Z',
+        updatedAt: '2026-08-13T00:00:00.000Z',
+        completedAt: '',
+        request: {},
+        result: null,
+      }],
+    },
+  });
+  const pending = [];
+  const response = await call(env, '/api/ai/jobs', {}, {
+    waitUntil(promise) { pending.push(Promise.resolve(promise)); },
+  });
+  assert.equal(response.status, 200);
+  await Promise.all(pending);
+  const stored = repository.json(statePath);
+  assert.equal(stored.value.jobs[0].status, 'failed');
+  assert.equal(stored.value.jobs[0].errorCode, 'AI_JOB_INTERRUPTED');
+  assert.equal(stored.value.jobs[0].attempts, 1);
 });

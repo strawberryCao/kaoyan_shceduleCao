@@ -72,14 +72,14 @@ function normalizePublicPayload(value, seen = new WeakMap()) {
     }
     if (
       typeof normalized.subject === 'string'
-      && normalized.subject.trim().toLowerCase() === 'assets'
+      && ['assets', '.assets'].includes(normalized.subject.trim().toLowerCase())
       && normalized.classificationSource !== 'manual'
     ) {
       normalized.subject = '默认文件夹';
       if (Array.isArray(normalized.knowledgePath)) {
         normalized.knowledgePath = [
           '默认文件夹',
-          ...normalized.knowledgePath.filter((item) => typeof item === 'string' && item.trim().toLowerCase() !== 'assets' && item !== '默认文件夹'),
+          ...normalized.knowledgePath.filter((item) => typeof item === 'string' && !['assets', '.assets'].includes(item.trim().toLowerCase()) && item !== '默认文件夹'),
         ].slice(0, 3);
       }
       if (normalized.reviewStatus !== 'ignored') normalized.reviewStatus = 'pending';

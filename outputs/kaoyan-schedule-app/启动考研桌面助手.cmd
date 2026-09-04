@@ -49,13 +49,12 @@ echo Opening desktop console...
 start "" "http://127.0.0.1:5173/?console=1"
 
 :configure_schedule
-echo Checking smart note organizer in the background...
-schtasks /Query /TN "KaoyanNotesSmartOrganizer" >nul 2>nul
-if errorlevel 1 schtasks /Create /F /TN "KaoyanNotesSmartOrganizer" /TR "powershell.exe -NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File %~sdp0scripts\run-smart-note-organizer-hidden.ps1" /SC DAILY /ST 09:00 >nul 2>nul
-schtasks /Query /TN "KaoyanNotesAutoClassify" >nul 2>nul
-if not errorlevel 1 schtasks /Delete /F /TN "KaoyanNotesAutoClassify" >nul 2>nul
+rem AI is intentionally never started by Windows login, app startup, or a
+rem scheduled task. A newly saved note may run one naming/classification call;
+rem every other paid AI workflow must follow an explicit in-app action.
+schtasks /Change /TN "KaoyanNotesSmartOrganizer" /Disable >nul 2>nul
+schtasks /Change /TN "KaoyanNotesAutoClassify" /Disable >nul 2>nul
 if /I "%~1"=="--schedule-only" exit /b 0
-powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0scripts\run-smart-note-organizer-hidden.ps1"
 
 echo.
 echo Console:   http://127.0.0.1:5173/?console=1
@@ -70,8 +69,7 @@ if defined KAOYAN_LAN_IP (
   echo If iPad cannot connect, allow TCP 5173 for the local subnet in Windows Firewall.
 )
 echo.
-echo Smart organizer: checks daily at 09:00 and runs every 72 hours
-echo Task name: KaoyanNotesSmartOrganizer
+echo Startup AI scans: disabled; each new note may run one naming/classification call
 echo State: %USERPROFILE%\Desktop\考研桌面助手\note-organizer-state.json
 echo Move log: %USERPROFILE%\Desktop\考研桌面助手\note-organizer-moves.jsonl
 echo.

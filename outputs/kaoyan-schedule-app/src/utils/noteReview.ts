@@ -12,17 +12,39 @@ export type NoteReviewState = 'pending' | 'auto_applied' | 'accepted' | 'correct
 export interface NoteReviewFields {
   subject?: string | null;
   remark?: string | null;
+  facets?: readonly string[] | null;
   noteType?: string | null;
   reviewStatus?: string | null;
   reviewState?: string | null;
   organizationStatus?: string | null;
 }
 
+const normalizedRemark = (note: NoteReviewFields): string => (
+  typeof note.remark === 'string' ? note.remark.normalize('NFKC') : ''
+);
+
+export const hasExplicitMistakeIntent = (note: NoteReviewFields): boolean => {
+  if (Array.isArray(note.facets) && note.facets.includes('mistake')) return true;
+  return /(?:错题|易错|错因|错在|做错|算错|(?:计算|概念|审题|步骤|方法|符号|抄写|记忆|理解|判断|公式)(?:错误|错|失误|混淆)|漏看|漏掉|漏条件|粗心)/u.test(normalizedRemark(note));
+};
+
+export const hasExplicitMemoryIntent = (note: NoteReviewFields): boolean => {
+  if (Array.isArray(note.facets) && note.facets.includes('memory')) return true;
+  const remark = normalizedRemark(note);
+  return /(?:^|[\s#【\[，,。；;：:])(?:记|记住|记忆|背|背诵|要背)(?=$|[\s#】\]，,。；;：:])/u.test(remark)
+    || /(?:要记住|记下来|需要记|必须记|背下来|需要背|必须背|重点背|熟记)/u.test(remark);
+};
+
+export const isExplicitMistakeOnly = (note: NoteReviewFields): boolean => (
+  hasExplicitMistakeIntent(note) && !hasExplicitMemoryIntent(note)
+);
+
 const hasExplicitUserCategory = (note: NoteReviewFields): boolean => {
-  const remark = typeof note.remark === 'string' ? note.remark.normalize('NFKC') : '';
   const noteType = typeof note.noteType === 'string' ? note.noteType.trim().toLowerCase() : '';
   if (!['mistake', 'memory', 'good'].includes(noteType)) return false;
-  return /(?:^|[\s#【\[，,。；;：:])(?:错题|好题|背|背诵|记|记住)(?=$|[\s#】\]，,。；;：:])/u.test(remark);
+  if (noteType === 'mistake') return hasExplicitMistakeIntent(note);
+  if (noteType === 'memory') return hasExplicitMemoryIntent(note);
+  return /(?:^|[\s#【\[，,。；;：:])(?:好题|经典题|典型题|精品题)(?=$|[\s#】\]，,。；;：:])/u.test(normalizedRemark(note));
 };
 
 const DEFAULT_NOTE_BUCKET_NAMES = new Set<string>(DEFAULT_NOTE_BUCKET_ALIASES);

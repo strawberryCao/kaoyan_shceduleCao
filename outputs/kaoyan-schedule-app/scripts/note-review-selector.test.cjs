@@ -72,3 +72,16 @@ test('selects every pending note regardless of its current subject and excludes 
   assert.equal(noteReview.isKnowledgeEligibleNote(notes[0]), true);
   assert.equal(noteReview.isKnowledgeEligibleNote(notes[2]), false);
 });
+
+test('an explicit mistake remark does not also become a memory category', () => {
+  assert.equal(noteReview.isExplicitMistakeOnly({ remark: '错题' }), true);
+  assert.equal(noteReview.isExplicitMistakeOnly({
+    remark: '错题',
+    facets: ['quick'],
+    noteType: 'memory',
+  }), true, 'stale AI memory fields must not override the user remark');
+  assert.equal(noteReview.isExplicitMistakeOnly({ remark: '错题，需要背' }), false);
+  assert.equal(noteReview.isExplicitMistakeOnly({ remark: '错题 背诵' }), false);
+  assert.equal(noteReview.isExplicitMistakeOnly({ remark: '', facets: ['mistake'] }), true);
+  assert.equal(noteReview.isExplicitMistakeOnly({ remark: '', facets: ['mistake', 'memory'] }), false);
+});

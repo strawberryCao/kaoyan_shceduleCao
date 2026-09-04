@@ -1,9 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useEffect, useState, type ReactNode } from 'react';
 import {
   BookOpenCheck,
   BrainCircuit,
   CalendarDays,
-  Clipboard,
+  Camera,
   Home,
   PanelsTopLeft,
   LayoutDashboard,
@@ -11,12 +11,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Search,
+  Inbox,
 } from 'lucide-react';
-import { openNoteCaptureApp } from './NoteDock';
-import { LearningRenameAction } from './LearningRenameAction';
-import { IS_CLOUD_RUNTIME } from '../utils/notes';
+import { IS_CLOUD_RUNTIME } from '../utils/runtime';
+import { navigateApp } from '../utils/appNavigation';
+import type { ActivityTaskSummary } from '../utils/activityTasks';
 
-export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'notes' | 'console' | 'ai-config';
+export type WebAppDestination = 'hub' | 'schedule' | 'learning' | 'activity' | 'notes' | 'console' | 'ai-config';
 
 interface WebAppShellProps {
   active: WebAppDestination;
@@ -24,29 +25,68 @@ interface WebAppShellProps {
 }
 
 const COLLAPSE_KEY = 'kaoyan-web-nav-collapsed-v1';
+const LearningRenameAction = lazy(() => import('./LearningRenameAction').then((module) => ({ default: module.LearningRenameAction })));
 
 const go = (path: string) => {
-  window.location.assign(`${window.location.origin}/${path}`);
+  navigateApp(path);
 };
 
-const mainItems = [
-  { id: 'hub' as const, label: '首页', icon: Home, action: () => go('?hub=1') },
-  { id: 'schedule' as const, label: '今日课表', icon: CalendarDays, action: () => go('') },
-  { id: 'learning' as const, label: '学习中心', icon: BookOpenCheck, action: () => go('?panel=learning') },
-  { id: 'notes' as const, label: '画布', icon: PanelsTopLeft, action: () => go('?notes=1&mode=canvas') },
+const primaryItems = [
+  { id: 'hub' as const, label: '今天', icon: Home, action: () => go('?hub=1') },
+  { id: 'notes' as const, label: '画布', icon: PanelsTopLeft, action: () => go('?notes=1&mode=canvas'), emphasis: true },
+  { id: 'schedule' as const, label: '学习计划', icon: CalendarDays, action: () => go('') },
+  { id: 'learning' as const, label: '复习与资料', icon: BookOpenCheck, action: () => go('?panel=learning') },
+];
+
+const workspaceItems = [
+  { id: 'activity' as const, label: '任务动态', icon: Inbox, action: () => go('?activity=1') },
   { id: 'console' as const, label: '桌面控制台', icon: LayoutDashboard, action: () => go('?console=1') },
-  { id: 'ai-config' as const, label: 'AI 配置', icon: BrainCircuit, action: () => go('?aiConfig=1') },
+  { id: 'ai-config' as const, label: 'AI 自动化', icon: BrainCircuit, action: () => go('?aiConfig=1') },
 ];
 
 export function WebAppShell({ active, children }: WebAppShellProps) {
   const [collapsed, setCollapsed] = useState(() => window.localStorage.getItem(COLLAPSE_KEY) === '1');
-  const visibleMainItems = IS_CLOUD_RUNTIME
-    ? mainItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
-    : mainItems;
+  const [activity, setActivity] = useState<ActivityTaskSummary>({ failed: 0, needsReview: 0, active: 0 });
+  const [captureFeedback, setCaptureFeedback] = useState('');
+  const visibleWorkspaceItems = IS_CLOUD_RUNTIME
+    ? workspaceItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
+    : workspaceItems;
+  const locationParams = new URLSearchParams(window.location.search);
+  const learningView = locationParams.has('q') ? 'library' : locationParams.get('view') || 'review';
 
   useEffect(() => {
     window.localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0');
   }, [collapsed]);
+
+  useEffect(() => {
+    let dispose: () => void = () => undefined;
+    let activeEffect = true;
+    void import('../utils/activityTasks').then(({ getActivityTaskSummary, subscribeActivityTasks }) => {
+      const refresh = () => void getActivityTaskSummary().then((summary) => {
+        if (activeEffect) setActivity(summary);
+      }).catch(() => undefined);
+      refresh();
+      dispose = subscribeActivityTasks(refresh);
+    });
+    return () => { activeEffect = false; dispose(); };
+  }, []);
+
+  useEffect(() => {
+    if (!captureFeedback) return undefined;
+    const timer = window.setTimeout(() => setCaptureFeedback(''), 3200);
+    return () => window.clearTimeout(timer);
+  }, [captureFeedback]);
+
+  const openCapture = async () => {
+    setCaptureFeedback('正在打开速记…');
+    try {
+      const { openNoteCaptureApp } = await import('./NoteDock');
+      const opened = await openNoteCaptureApp();
+      setCaptureFeedback(opened ? '速记已打开，可以直接拖入或粘贴资料' : '速记没有打开，请检查桌面助手是否正在运行');
+    } catch {
+      setCaptureFeedback('速记没有打开，请稍后重试');
+    }
+  };
 
   const openSearch = () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
@@ -61,7 +101,25 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
         </button>
 
         <nav className="web-app-main-nav">
-          {visibleMainItems.map((item) => {
+          <span className="web-app-nav-section">学习主线</span>
+          {primaryItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                aria-current={active === item.id ? 'page' : undefined}
+                className={`${active === item.id ? 'is-active ' : ''}${item.emphasis ? 'is-canvas-entry' : ''}`}
+                key={item.id}
+                title={item.label}
+                type="button"
+                onClick={item.action}
+              >
+                <Icon aria-hidden="true" size={20} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+          <span className="web-app-nav-section is-workspace">工作台</span>
+          {visibleWorkspaceItems.map((item) => {
             const Icon = item.icon;
             return (
               <button
@@ -74,15 +132,16 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
               >
                 <Icon aria-hidden="true" size={20} />
                 <span>{item.label}</span>
+                {item.id === 'activity' && activity.failed + activity.needsReview > 0 && <b className="web-app-task-badge">{activity.failed + activity.needsReview}</b>}
               </button>
             );
           })}
         </nav>
 
         <div className="web-app-nav-tools">
-          <button type="button" onClick={() => void openNoteCaptureApp()} title="快速记图">
-            <Clipboard aria-hidden="true" size={20} />
-            <span>快速记图</span>
+          <button className="web-app-capture-action" type="button" onClick={() => void openCapture()} title="新建速记">
+            <Camera aria-hidden="true" size={20} />
+            <span>新建速记</span>
           </button>
           <button type="button" onClick={openSearch} title="搜索与快捷操作">
             <Search aria-hidden="true" size={20} />
@@ -108,21 +167,29 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       </aside>
 
       <div className="web-app-content">{children}</div>
-      {active === 'learning' && <LearningRenameAction />}
+      {active === 'learning' && <Suspense fallback={null}><LearningRenameAction /></Suspense>}
+      {captureFeedback && <div className="web-app-feedback" role="status" aria-live="polite">{captureFeedback}</div>}
 
       <nav className="web-app-mobile-nav" aria-label="移动端导航">
-        {visibleMainItems.filter((item) => item.id !== 'ai-config').map((item) => {
+        {[
+          { key: 'today', label: '今天', icon: Home, action: () => go('?hub=1'), active: active === 'hub' || active === 'schedule' },
+          { key: 'canvas', label: '画布', icon: PanelsTopLeft, action: () => go('?notes=1&mode=canvas'), active: active === 'notes' },
+          { key: 'capture', label: '捕获', icon: Camera, action: () => void openCapture(), active: false },
+          { key: 'review', label: '复习', icon: BookOpenCheck, action: () => go('?panel=learning&view=review'), active: active === 'learning' && learningView === 'review' },
+          { key: 'library', label: '资料', icon: CalendarDays, action: () => go('?panel=learning&view=library'), active: active === 'learning' && learningView !== 'review' },
+        ].map((item) => {
           const Icon = item.icon;
           return (
             <button
-              aria-current={active === item.id ? 'page' : undefined}
-              className={active === item.id ? 'is-active' : ''}
-              key={item.id}
+              aria-current={item.active ? 'page' : undefined}
+              aria-label={item.key === 'capture' ? '打开速记捕获' : undefined}
+              className={`${item.active ? 'is-active ' : ''}${item.key === 'capture' ? 'is-capture' : ''}`}
+              key={item.key}
               type="button"
               onClick={item.action}
             >
               <Icon aria-hidden="true" size={20} />
-              <span>{item.label === '今日课表' ? '课表' : item.label === '学习中心' ? '学习' : item.label === '桌面控制台' ? '控制台' : item.label}</span>
+              <span>{item.label}</span>
             </button>
           );
         })}

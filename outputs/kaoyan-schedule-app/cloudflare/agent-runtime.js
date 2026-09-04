@@ -5,6 +5,9 @@ export const LOCAL_AGENT_RUNTIME_PATH = 'data/config/local-assistant/agent-runti
 export const LEGACY_V11_WORKFLOW_COMPAT_PATH = 'control-plane/compatibility/legacy-v11-analysis-workflows.json';
 
 const LEGACY_V11_WORKFLOW_SOURCE_HASH = '511f580d975f781567f37c5bf7ad9410b50c420c6622340b821e8191c40c1c22';
+// Keep the two legacy analysis workflows as the global compatibility floor.
+// Canvas is validated only when that task is requested, so an older published
+// runtime cannot disable unrelated note AI while waiting for the next sync.
 const REQUIRED_COMPLETE_WORKFLOWS = Object.freeze(['note_enrichment', 'note_image_understanding']);
 
 function isObject(value) {
@@ -231,7 +234,7 @@ export async function getAgentTask(env, taskId) {
   if (task.active !== true) throw new HttpError(403, `Agent 任务已在局域网版本停用：${task.label}`, 'AI_TASK_DISABLED');
   if (task.settings.enabled === false) throw new HttpError(403, `Agent 任务已在局域网配置中心停用：${task.label}`, 'AI_TASK_DISABLED');
   const workflow = runtime.workflows?.[taskId] || null;
-  if (['note_naming', 'question_splitting', 'note_enrichment', 'note_image_understanding'].includes(taskId) && !workflow) {
+  if (['note_naming', 'question_splitting', 'note_enrichment', 'note_image_understanding', 'canvas_note_understanding'].includes(taskId) && !workflow) {
     throw new HttpError(503, `局域网运行时没有发布完整工作流：${taskId}`, 'LOCAL_AGENT_WORKFLOW_MISSING');
   }
   return { runtime, task, settings: task.settings, workflow };

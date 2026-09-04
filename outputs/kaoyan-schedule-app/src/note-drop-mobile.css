@@ -494,6 +494,31 @@ body:has(.mobile-crop-editor),
   font-weight: 650;
 }
 
+.mobile-single-review .note-ai-selection > span {
+  color: var(--mobile-ink);
+  font-size: 14px;
+}
+
+.mobile-single-review .note-ai-selection > span small {
+  color: var(--mobile-muted);
+  font-size: 12px;
+}
+
+.mobile-single-review .note-ai-selection select {
+  min-height: 46px;
+  border-color: var(--mobile-line);
+  border-radius: 14px;
+  background: var(--mobile-surface);
+  color: var(--mobile-ink);
+  font-size: 14px;
+  padding: 10px 12px;
+}
+
+.mobile-single-review .note-ai-selection select option {
+  background: #ffffff;
+  color: #202b38;
+}
+
 .mobile-single-review textarea {
   min-height: 92px;
   resize: vertical;

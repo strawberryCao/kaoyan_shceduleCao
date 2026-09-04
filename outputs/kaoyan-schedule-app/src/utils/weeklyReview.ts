@@ -1,6 +1,6 @@
 import type { ScheduleDay } from '../types';
 import type { LearningAutoNote, LearningCard, LearningDataSnapshot } from './learningData';
-import { isDefaultNoteBucket, isKnowledgeEligibleNote } from './noteReview';
+import { isDefaultNoteBucket, isExplicitMistakeOnly, isKnowledgeEligibleNote } from './noteReview';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -90,10 +90,12 @@ const isMistake = (note: LearningAutoNote): boolean => note.noteType === 'mistak
   || note.items.some((item) => item.intent.isMistake)
   || /错题|错因|做错|算错|不会|粗心/.test(note.remark);
 
-const isMemory = (note: LearningAutoNote): boolean => note.noteType === 'memory'
+const isMemory = (note: LearningAutoNote): boolean => !isExplicitMistakeOnly(note) && (
+  note.noteType === 'memory'
   || note.tags.some((tag) => /背诵|记忆|要背|记住/.test(tag))
   || note.items.some((item) => item.intent.shouldMemorize)
-  || /(?:要记住|需要记|必须记|背下来|需要背|必须背|熟记)/.test(note.remark);
+  || /(?:要记住|需要记|必须记|背下来|需要背|必须背|熟记)/.test(note.remark)
+);
 
 const isGood = (note: LearningAutoNote): boolean => note.noteType === 'good'
   || note.tags.some((tag) => /好题|经典题|典型题|精品题/.test(tag));

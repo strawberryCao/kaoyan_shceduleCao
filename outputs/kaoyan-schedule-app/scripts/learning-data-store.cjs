@@ -111,6 +111,10 @@ function uniqueStrings(value) {
   return [...new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))];
 }
 
+function classificationPath(value) {
+  return uniqueStrings(value).map((item) => item.slice(0, 60)).slice(0, 3);
+}
+
 function normalizeManualRecord(value, fallback = defaultManualRecord()) {
   const source = isPlainObject(value) ? value : {};
   return {
@@ -157,6 +161,9 @@ function normalizeReviewHistory(value) {
     id: (asOptionalString(item.id) || `review-${index}`).slice(0, 160),
     reviewedAt: asString(item.reviewedAt),
     result: item.result === 'forgotten' ? 'forgotten' : 'remembered',
+    rating: ['again', 'hard', 'good', 'easy'].includes(item.rating)
+      ? item.rating
+      : item.result === 'forgotten' ? 'again' : 'good',
     thought: asString(item.thought).slice(0, 4000),
   }));
 }
@@ -167,9 +174,12 @@ function normalizeLearningItems(value) {
     title: asString(item.title).slice(0, 120),
     knowledgePoint: asString(item.knowledgePoint).slice(0, 60),
     questionType: asString(item.questionType).slice(0, 60),
+    questionTypePath: classificationPath(item.questionTypePath),
     summary: asString(item.summary).slice(0, 1000),
     tags: uniqueStrings(item.tags),
     wrongReason: asString(item.wrongReason).slice(0, 500),
+    wrongReasonPath: classificationPath(item.wrongReasonPath),
+    learningTypePath: classificationPath(item.learningTypePath),
     intent: {
       isQuestion: item.intent?.isQuestion === true,
       isMistake: item.intent?.isMistake === true,
@@ -204,7 +214,7 @@ function attachmentMime(kind, name, value) {
 
 function normalizeAttachments(value, legacy = {}) {
   const source = Array.isArray(value) ? value : [];
-  const normalized = source.filter(isPlainObject).slice(0, 32).map((item, index) => {
+  const normalized = source.filter(isPlainObject).map((item, index) => {
     const filePath = asString(item.filePath ?? item.path ?? item.url).slice(0, 2000);
     const name = (asOptionalString(item.name) || (filePath ? path.basename(filePath.replaceAll('\\', '/')) : '') || `资料 ${index + 1}`).slice(0, 240);
     const inferred = attachmentKind(name, item.mimeType);
@@ -233,7 +243,7 @@ function normalizeAttachments(value, legacy = {}) {
       createdAt: asString(legacy.firstSyncedAt || legacy.createdAt),
     });
   }
-  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+  return [...new Map(normalized.map((item) => [item.id, item])).values()];
 }
 
 function normalizeFacets(value, note = {}) {
@@ -297,7 +307,10 @@ function normalizeAutoNote(value) {
   const isInternalAssetPath = normalizedFilePath.includes('/.assets/')
     || normalizedFilePath.includes('/.materials/');
   const storedSubject = asString(value.subject, '默认文件夹');
-  const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;
+  const storedSubjectKey = storedSubject.trim().toLowerCase();
+  const rawSubject = storedSubjectKey === 'assets' || storedSubjectKey === '.assets'
+    ? '默认文件夹'
+    : storedSubject;
   const fileSubject = filePath ? path.basename(path.dirname(filePath)).trim() : '';
   const inferredFromFile = value.classificationSource !== 'manual'
     && !isRemoteAssetPath
@@ -340,7 +353,10 @@ function normalizeAutoNote(value) {
     knowledgePath,
     noteType: asString(value.noteType),
     questionType: asString(value.questionType),
+    questionTypePath: classificationPath(value.questionTypePath),
     wrongReason: asString(value.wrongReason),
+    wrongReasonPath: classificationPath(value.wrongReasonPath),
+    learningTypePath: classificationPath(value.learningTypePath),
     organizationStatus: organizationStatusForReview(reviewStatus),
     classificationSource,
     reviewStatus,
@@ -354,6 +370,7 @@ function normalizeAutoNote(value) {
     manualCreated: value.manualCreated === true,
     userEditedFields: uniqueStrings(value.userEditedFields),
     goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
+    goodQuestionType: asString(value.goodQuestionType).trim().slice(0, 40),
     items: normalizeLearningItems(value.items),
     studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
@@ -613,7 +630,9 @@ function createLearningDataStore(options = {}) {
   function writeAtomic(snapshot) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-    const serialized = `${JSON.stringify(snapshot, null, 2)}\n`;
+    // This file is rewritten atomically on every mutation. Compact JSON keeps
+    // the critical section and backup copy short as the learning library grows.
+    const serialized = `${JSON.stringify(snapshot)}\n`;
     try {
       fs.writeFileSync(tempPath, serialized, 'utf8');
       if (fs.existsSync(filePath)) {
@@ -895,9 +914,20 @@ function createLearningDataStore(options = {}) {
       questionType: preservesExistingDecision
         ? existingNote.questionType
         : enrichment.questionType ?? existingNote?.questionType,
+      questionTypePath: preservesExistingDecision
+        ? existingNote.questionTypePath
+        : enrichment.questionTypePath ?? existingNote?.questionTypePath,
       wrongReason: preservesExistingDecision
         ? existingNote.wrongReason
         : enrichment.wrongReason ?? existingNote?.wrongReason,
+      wrongReasonPath: preservesExistingDecision
+        ? existingNote.wrongReasonPath
+        : enrichment.wrongReasonPath ?? existingNote?.wrongReasonPath,
+      learningTypePath: preservesExistingDecision
+        ? existingNote.learningTypePath
+        : enrichment.learningTypePath ?? existingNote?.learningTypePath,
+      goodQuestion: keepUserValue('goodQuestion', enrichment.goodQuestion ?? metadata.goodQuestion, existingNote?.goodQuestion),
+      goodQuestionType: keepUserValue('goodQuestionType', enrichment.goodQuestionType ?? metadata.goodQuestionType, existingNote?.goodQuestionType),
       organizationStatus: organizationStatusForReview(reviewStatus),
       classificationSource: reviewStatus === 'corrected' || existingNote?.classificationSource === 'manual'
         ? 'manual'
@@ -1047,6 +1077,10 @@ function createLearningDataStore(options = {}) {
       const normalizedPath = [subject, ...knowledgePath.filter((item) => item !== subject)].slice(0, 3);
       const noteType = asString(input.noteType, 'note').trim().slice(0, 40) || 'note';
       const tags = uniqueStrings(input.tags);
+      const autoClassify = input.autoClassify === true;
+      const requestedUserEditedFields = Array.isArray(input.userEditedFields)
+        ? uniqueStrings(input.userEditedFields)
+        : null;
       if (noteType === 'mistake' && !tags.includes('错题')) tags.push('错题');
       if (noteType === 'memory' && !tags.includes('背诵')) tags.push('背诵');
       let note = normalizeAutoNote({
@@ -1064,22 +1098,27 @@ function createLearningDataStore(options = {}) {
         knowledgePath: normalizedPath,
         noteType,
         questionType: asString(input.questionType).slice(0, 60),
+        questionTypePath: classificationPath(input.questionTypePath),
         wrongReason: asString(input.wrongReason).slice(0, 1000),
-        organizationStatus: 'confirmed',
-        classificationSource: 'manual',
-        reviewStatus: 'corrected',
-        decisionRevision: 1,
-        lastReviewOperationId: `create-${noteUid}`,
-        lastReviewAction: 'correct',
-        reviewedAt: timestamp,
+        wrongReasonPath: classificationPath(input.wrongReasonPath),
+        learningTypePath: classificationPath(input.learningTypePath),
+        goodQuestionType: asString(input.goodQuestionType).trim().slice(0, 40),
+        organizationStatus: autoClassify ? 'pending' : 'confirmed',
+        classificationSource: autoClassify ? 'ai' : 'manual',
+        reviewStatus: autoClassify ? 'pending' : 'corrected',
+        decisionRevision: autoClassify ? 0 : 1,
+        lastReviewOperationId: autoClassify ? '' : `create-${noteUid}`,
+        lastReviewAction: autoClassify ? '' : 'correct',
+        reviewedAt: autoClassify ? '' : timestamp,
         manualCreated: true,
-        userEditedFields: [
+        userEditedFields: requestedUserEditedFields || [
           'title',
           'remark',
           'tags',
           'noteType',
           ...(asString(input.wrongReason).trim() ? ['wrongReason'] : []),
           ...(typeof input.goodQuestion === 'boolean' ? ['goodQuestion'] : []),
+          ...(asString(input.goodQuestionType).trim() ? ['goodQuestionType'] : []),
         ],
         wrongReasonSource: asString(input.wrongReason).trim() ? 'manual' : '',
         wrongReasonConfidence: asString(input.wrongReason).trim() ? 1 : null,
@@ -1090,6 +1129,7 @@ function createLearningDataStore(options = {}) {
 
         attachments: input.attachments,
         facets: input.facets,
+        sourceType: asString(input.sourceType).slice(0, 80),
       });
       if (input.createCard === true && (noteType === 'mistake' || noteType === 'memory')) {
         const sourceKey = 'manual:create';
@@ -1178,9 +1218,11 @@ function createLearningDataStore(options = {}) {
       }
       const current = normalizeCard(snapshot.cards[index]);
       const timestamp = now().toISOString();
-      const reviewResult = ['remembered', 'forgotten'].includes(patch.reviewResult)
-        ? patch.reviewResult
-        : null;
+      const reviewRating = ['again', 'hard', 'good', 'easy'].includes(patch.reviewRating)
+        ? patch.reviewRating
+        : patch.reviewResult === 'forgotten' ? 'again'
+          : patch.reviewResult === 'remembered' ? 'good' : null;
+      const reviewResult = reviewRating === null ? null : reviewRating === 'again' ? 'forgotten' : 'remembered';
       const nextCorrectCount = current.correctCount + (reviewResult === 'remembered' ? 1 : 0);
       const nextIncorrectCount = current.incorrectCount + (reviewResult === 'forgotten' ? 1 : 0);
       const nextCorrectStreak = reviewResult === 'remembered' ? current.correctStreak + 1 : 0;
@@ -1189,14 +1231,20 @@ function createLearningDataStore(options = {}) {
       const knownAttempts = nextCorrectCount + nextIncorrectCount;
       const errorRate = knownAttempts > 0 ? nextIncorrectCount / knownAttempts : 0;
       const difficultyPenalty = 1 + Math.min(3, nextIncorrectCount) * 0.45 + errorRate * 0.8;
-      const intervalDays = reviewResult === 'remembered'
-        ? Math.max(1, Math.round(baseInterval / difficultyPenalty))
-        : 1;
+      const adjustedInterval = Math.max(1, Math.round(baseInterval / difficultyPenalty));
+      const intervalDays = reviewRating === 'again' ? 1
+        : reviewRating === 'hard' ? Math.max(1, Math.round(adjustedInterval * 0.72))
+          : reviewRating === 'easy' ? Math.max(2, Math.round(adjustedInterval * 1.65))
+            : adjustedInterval;
+      const nextReviewStep = reviewRating === 'again' ? 0
+        : reviewRating === 'hard' ? current.reviewStep
+          : reviewRating === 'easy' ? Math.min(5, current.reviewStep + 2)
+            : Math.min(5, current.reviewStep + 1);
       const reviewThought = asString(patch.reviewThought).trim().slice(0, 4000);
       const reviewPatch = reviewResult === null ? {} : {
-        status: mastered ? 'archived' : 'active',
-        dueDate: mastered ? '' : formatDateInTimeZone(new Date(now().getTime() + intervalDays * 86400000), timeZone),
-        reviewStep: reviewResult === 'forgotten' ? 0 : Math.min(5, current.reviewStep + 1),
+        status: 'active',
+        dueDate: formatDateInTimeZone(new Date(now().getTime() + intervalDays * 86400000), timeZone),
+        reviewStep: nextReviewStep,
         reviewCount: current.reviewCount + 1,
         lastReviewedAt: timestamp,
         lastReviewResult: reviewResult,
@@ -1208,6 +1256,7 @@ function createLearningDataStore(options = {}) {
           id: `review-${crypto.randomUUID()}`,
           reviewedAt: timestamp,
           result: reviewResult,
+          rating: reviewRating,
           thought: reviewThought,
         }].slice(-200),
       };
@@ -1236,8 +1285,8 @@ function createLearningDataStore(options = {}) {
     if (hasOrganizationStatus && !NOTE_ORGANIZATION_STATUSES.has(patch.organizationStatus)) {
       throw learningError('Invalid note organization status', 'INVALID_LEARNING_NOTE');
     }
-    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
-    const contentKeys = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'attachments', 'facets'];
+    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'questionTypePath', 'wrongReason', 'wrongReasonPath', 'learningTypePath'];
+    const contentKeys = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'goodQuestionType', 'attachments', 'facets'];
     const editableKeys = [...classificationKeys, ...contentKeys];
     const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
     const thoughtAction = isPlainObject(patch.thoughtAction) ? patch.thoughtAction : null;
@@ -1261,12 +1310,21 @@ function createLearningDataStore(options = {}) {
     if (Object.hasOwn(patch, 'knowledgePath') && !Array.isArray(patch.knowledgePath)) {
       throw learningError('Invalid note knowledge path', 'INVALID_LEARNING_NOTE');
     }
+    for (const key of ['questionTypePath', 'wrongReasonPath', 'learningTypePath']) {
+      if (Object.hasOwn(patch, key) && !Array.isArray(patch[key])) {
+        throw learningError(`Invalid note ${key}`, 'INVALID_LEARNING_NOTE');
+      }
+    }
     if (Object.hasOwn(patch, 'tags') && !Array.isArray(patch.tags)) {
       throw learningError('Invalid note tags', 'INVALID_LEARNING_NOTE');
     }
     if (Object.hasOwn(patch, 'goodQuestion') && typeof patch.goodQuestion !== 'boolean') {
       throw learningError('Invalid good question flag', 'INVALID_LEARNING_NOTE');
-    }    if (Object.hasOwn(patch, 'attachments') && !Array.isArray(patch.attachments)) {
+    }
+    if (Object.hasOwn(patch, 'goodQuestionType') && typeof patch.goodQuestionType !== 'string') {
+      throw learningError('Invalid good question type', 'INVALID_LEARNING_NOTE');
+    }
+    if (Object.hasOwn(patch, 'attachments') && !Array.isArray(patch.attachments)) {
       throw learningError('Invalid note attachments', 'INVALID_LEARNING_NOTE');
     }
     if (Object.hasOwn(patch, 'facets') && !Array.isArray(patch.facets)) {
@@ -1292,6 +1350,7 @@ function createLearningDataStore(options = {}) {
           const userEditedFields = new Set(note.userEditedFields);
           const normalizedPatchValue = (key) => {
             if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(uniqueStrings(patch[key]));
+            if (['questionTypePath', 'wrongReasonPath', 'learningTypePath'].includes(key)) return JSON.stringify(classificationPath(patch[key]));
             if (key === 'attachments') return JSON.stringify(normalizeAttachments(patch.attachments));
             if (key === 'facets') return JSON.stringify(normalizeFacets(patch.facets, { ...note, ...patch }));
             if (key === 'goodQuestion') return String(patch[key] === true);
@@ -1299,6 +1358,7 @@ function createLearningDataStore(options = {}) {
           };
           const normalizedNoteValue = (key) => {
             if (key === 'knowledgePath' || key === 'tags') return JSON.stringify(note[key] || []);
+            if (['questionTypePath', 'wrongReasonPath', 'learningTypePath'].includes(key)) return JSON.stringify(classificationPath(note[key]));
             if (key === 'attachments') return JSON.stringify(normalizeAttachments(note.attachments, note));
             if (key === 'facets') return JSON.stringify(normalizeFacets(note.facets, note));
             if (key === 'goodQuestion') return String(note[key] === true);
@@ -1307,7 +1367,9 @@ function createLearningDataStore(options = {}) {
           const changedEditableKeys = editableKeys.filter((key) => (
             Object.hasOwn(patch, key) && normalizedPatchValue(key) !== normalizedNoteValue(key)
           ));
-          changedEditableKeys.forEach((key) => userEditedFields.add(key));
+          if (mutationOptions.trackUserEdits !== false) {
+            changedEditableKeys.forEach((key) => userEditedFields.add(key));
+          }
           let studyNotes = normalizeStudyNotes(note.studyNotes);
           if (thoughtAction?.action === 'add') {
             studyNotes = [...studyNotes, {
@@ -1343,10 +1405,14 @@ function createLearningDataStore(options = {}) {
             ...(Object.hasOwn(patch, 'tags') ? { tags: uniqueStrings(patch.tags) } : {}),
             ...(Object.hasOwn(patch, 'noteType') ? { noteType: asString(patch.noteType).trim().slice(0, 40) || 'note' } : {}),
             ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),
+            ...(Object.hasOwn(patch, 'goodQuestionType') ? { goodQuestionType: asString(patch.goodQuestionType).trim().slice(0, 40) } : {}),
             ...(subject ? { subject } : {}),
             ...((subject || Object.hasOwn(patch, 'knowledgePath')) ? { knowledgePath: nextKnowledgePath } : {}),
             ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
+            ...(Object.hasOwn(patch, 'questionTypePath') ? { questionTypePath: classificationPath(patch.questionTypePath) } : {}),
             ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
+            ...(Object.hasOwn(patch, 'wrongReasonPath') ? { wrongReasonPath: classificationPath(patch.wrongReasonPath) } : {}),
+            ...(Object.hasOwn(patch, 'learningTypePath') ? { learningTypePath: classificationPath(patch.learningTypePath) } : {}),
             organizationStatus: organizationStatusForReview(reviewStatus),
             classificationSource: editsClassification ? 'manual' : note.classificationSource,
             reviewStatus,
@@ -1435,6 +1501,11 @@ function createLearningDataStore(options = {}) {
       if (Object.hasOwn(patch, 'knowledgePath') && !Array.isArray(patch.knowledgePath)) {
         throw learningError('Invalid reviewed note knowledge path', 'INVALID_NOTE_REVIEW_ACTION');
       }
+      for (const key of ['questionTypePath', 'wrongReasonPath', 'learningTypePath']) {
+        if (Object.hasOwn(patch, key) && !Array.isArray(patch[key])) {
+          throw learningError(`Invalid reviewed note ${key}`, 'INVALID_NOTE_REVIEW_ACTION');
+        }
+      }
       let knowledgePath = Object.hasOwn(patch, 'knowledgePath')
         ? uniqueStrings(patch.knowledgePath).slice(0, 3)
         : currentNote.knowledgePath;
@@ -1447,7 +1518,7 @@ function createLearningDataStore(options = {}) {
       const timestamp = now().toISOString();
       const userEditedFields = new Set(currentNote.userEditedFields);
       if (actionType === 'correct') {
-        for (const key of ['subject', 'knowledgePath', 'questionType', 'wrongReason']) {
+        for (const key of ['subject', 'knowledgePath', 'questionType', 'questionTypePath', 'wrongReason', 'wrongReasonPath', 'learningTypePath']) {
           if (Object.hasOwn(patch, key)) userEditedFields.add(key);
         }
       }
@@ -1456,7 +1527,10 @@ function createLearningDataStore(options = {}) {
         subject,
         knowledgePath,
         ...(Object.hasOwn(patch, 'questionType') ? { questionType: asString(patch.questionType).slice(0, 60) } : {}),
+        ...(Object.hasOwn(patch, 'questionTypePath') ? { questionTypePath: classificationPath(patch.questionTypePath) } : {}),
         ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: asString(patch.wrongReason).slice(0, 500) } : {}),
+        ...(Object.hasOwn(patch, 'wrongReasonPath') ? { wrongReasonPath: classificationPath(patch.wrongReasonPath) } : {}),
+        ...(Object.hasOwn(patch, 'learningTypePath') ? { learningTypePath: classificationPath(patch.learningTypePath) } : {}),
         reviewStatus,
         organizationStatus: organizationStatusForReview(reviewStatus),
         classificationSource: actionType === 'correct' ? 'manual' : currentNote.classificationSource,

@@ -1,18 +1,27 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Download, File, FileCode2, FileImage, FileText, Maximize2, ZoomIn, ZoomOut } from 'lucide-react';
-import * as mammoth from 'mammoth';
-import {
-  getDocument,
-  GlobalWorkerOptions,
-  type PDFDocumentProxy,
-} from 'pdfjs-dist';
-import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker&inline';
+import type { PDFDocumentProxy } from 'pdfjs-dist';
+import { NOTE_SERVER_URL } from '../utils/runtime';
+import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import '../learning-record-workspace-preview.css';
 
-// Keep PDF rendering independent from the static server's asset hashes and MIME
-// table. A bundled worker also survives rebuilding `dist` while the LAN page is
-// still open, instead of leaving that page pointed at a deleted hashed module.
-GlobalWorkerOptions.workerPort = new PdfWorker();
+let pdfRuntimePromise: Promise<typeof import('pdfjs-dist')> | null = null;
+const loadPdfRuntime = () => {
+  if (!pdfRuntimePromise) {
+    pdfRuntimePromise = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?worker&inline'),
+    ]).then(([pdf, workerModule]) => {
+      // Keep PDF rendering independent from static-server asset hashes. The
+      // inline worker is downloaded only when a PDF is actually opened.
+      if (!pdf.GlobalWorkerOptions.workerPort) {
+        pdf.GlobalWorkerOptions.workerPort = new workerModule.default();
+      }
+      return pdf;
+    });
+  }
+  return pdfRuntimePromise;
+};
 
 export type WorkspacePreviewKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
 
@@ -38,13 +47,10 @@ interface WorkspaceAssetPreviewProps {
 }
 
 const extensionOf = (name: string): string => name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
-const resourceKey = (value: string): string => value
-  .split('\\').join('/')
-  .replace(/^\.\//, '')
-  .split('/')
-  .filter(Boolean)
-  .at(-1)
-  ?.toLowerCase() || '';
+const resourceKey = (value: string): string => {
+  const parts = value.split('\\').join('/').replace(/^\.\//, '').split('/').filter(Boolean);
+  return parts[parts.length - 1]?.toLowerCase() || '';
+};
 
 function usePreviewSizeBridge(onIntrinsicSize?: (width: number, height: number) => void) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -99,11 +105,13 @@ function RecoverableImage({
   item,
   onRecovered,
   onIntrinsicSize,
+  onOpen,
   className = 'lrp-real-image',
 }: {
   item: WorkspaceAssetPreviewItem;
   onRecovered: (item: WorkspaceAssetPreviewItem) => void;
   onIntrinsicSize?: (width: number, height: number) => void;
+  onOpen?: (source: string) => void;
   className?: string;
 }) {
   const [src, setSrc] = useState(item.url);
@@ -112,6 +120,7 @@ function RecoverableImage({
   const [scale, setScale] = useState(1);
   const [zoomActive, setZoomActive] = useState(false);
   const viewerRef = useRef<HTMLDivElement | null>(null);
+  const pointerMovedRef = useRef(false);
 
   const updateScale = useCallback((next: number | ((current: number) => number)) => {
     setScale((current) => {
@@ -159,7 +168,7 @@ function RecoverableImage({
       className={`lrp-image-viewer${scale > 1 ? ' is-zoomed' : ''}${zoomActive ? ' is-zoom-active' : ''}`}
       title={zoomActive
         ? '滚轮上下查看；Ctrl + 滚轮缩放；放大后可按住拖动'
-        : '点击图片启用 Ctrl + 滚轮缩放'}
+        : onOpen ? '点击图片打开查看器；Ctrl + 滚轮缩放' : '点击图片启用 Ctrl + 滚轮缩放'}
       tabIndex={0}
       onClick={() => setZoomActive(true)}
       onFocus={() => setZoomActive(true)}
@@ -180,9 +189,13 @@ function RecoverableImage({
         const clientY = event.clientY;
         const startLeft = viewer.scrollLeft;
         const startTop = viewer.scrollTop;
+        pointerMovedRef.current = false;
         viewer.setPointerCapture(event.pointerId);
         viewer.classList.add('is-panning');
         const move = (next: PointerEvent) => {
+          if (Math.hypot(next.clientX - clientX, next.clientY - clientY) > 5) {
+            pointerMovedRef.current = true;
+          }
           viewer.scrollLeft = startLeft - (next.clientX - clientX);
           viewer.scrollTop = startTop - (next.clientY - clientY);
         };
@@ -197,24 +210,40 @@ function RecoverableImage({
         window.addEventListener('pointercancel', stop, { once: true });
       }}
     >
-      <img
-        className={className}
-        src={src}
-        alt={item.name}
-        draggable={false}
+      <button
+        className="lrp-image-open"
+        type="button"
         style={{ width: `${scale * 100}%` }}
-        onError={() => {
-          if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
-          else setFailed(true);
-        }}
-        onLoad={(event) => {
-          if (usingFallback) onRecovered(item);
-          const image = event.currentTarget;
-          if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-            onIntrinsicSize?.(image.naturalWidth, image.naturalHeight);
+        aria-label={onOpen ? `打开图片查看器：${item.name}` : `查看图片：${item.name}`}
+        title={onOpen ? '点击打开图片查看器' : '点击启用图片缩放'}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (pointerMovedRef.current) {
+            pointerMovedRef.current = false;
+            return;
           }
+          if (onOpen) onOpen(src);
+          else setZoomActive(true);
         }}
-      />
+      >
+        <img
+          className={className}
+          src={src}
+          alt={item.name}
+          draggable={false}
+          onError={() => {
+            if (!usingFallback && item.fallbackUrl) setSrc(item.fallbackUrl);
+            else setFailed(true);
+          }}
+          onLoad={(event) => {
+            if (usingFallback) onRecovered(item);
+            const image = event.currentTarget;
+            if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+              onIntrinsicSize?.(image.naturalWidth, image.naturalHeight);
+            }
+          }}
+        />
+      </button>
       <div className="lrp-image-zoom-controls" onDoubleClick={(event) => event.stopPropagation()}>
         <button
           type="button"
@@ -307,15 +336,17 @@ function PdfPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetP
 
   useEffect(() => {
     const abort = new AbortController();
-    let loadingTask: ReturnType<typeof getDocument> | null = null;
+    let loadingTask: { promise: Promise<PDFDocumentProxy>; destroy: () => Promise<void> } | null = null;
     setDocument(null);
     setZoom(1);
     setError('');
-    void fetchAsset(item, abort.signal, onRecovered)
-      .then((response) => response.arrayBuffer())
-      .then((arrayBuffer) => {
+    void Promise.all([
+      fetchAsset(item, abort.signal, onRecovered).then((response) => response.arrayBuffer()),
+      loadPdfRuntime(),
+    ])
+      .then(([arrayBuffer, pdf]) => {
         if (abort.signal.aborted) return;
-        loadingTask = getDocument({ data: new Uint8Array(arrayBuffer) });
+        loadingTask = pdf.getDocument({ data: new Uint8Array(arrayBuffer) });
         return loadingTask.promise;
       })
       .then((pdf) => {
@@ -428,9 +459,11 @@ function WordPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAsset
     const abort = new AbortController();
     setDocumentHtml('');
     setError('');
-    void fetchAsset(item, abort.signal, onRecovered)
-      .then((response) => response.arrayBuffer())
-      .then((arrayBuffer) => mammoth.convertToHtml(
+    void Promise.all([
+      fetchAsset(item, abort.signal, onRecovered).then((response) => response.arrayBuffer()),
+      import('mammoth'),
+    ])
+      .then(([arrayBuffer, mammoth]) => mammoth.convertToHtml(
         { arrayBuffer },
         {
           convertImage: mammoth.images.imgElement((image) => image.read('base64').then((value) => ({
@@ -477,29 +510,46 @@ interface LoadedResource {
   text: string | null;
 }
 
+type HtmlRuntimeProfile = 'offline' | 'geogebra';
+
+const createGeoGebraPreviewSession = async (html: string, signal: AbortSignal): Promise<string> => {
+  const response = await fetch(`${NOTE_SERVER_URL}/html-preview-sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ html }),
+    signal,
+  });
+  const payload = await response.json().catch(() => null) as { ok?: boolean; url?: string; error?: string } | null;
+  if (!response.ok || !payload?.ok || !payload.url) {
+    throw new Error(payload?.error || `GeoGebra 兼容预览创建失败（HTTP ${response.status}）`);
+  }
+  const frameUrl = new URL(payload.url, window.location.href);
+  if (frameUrl.origin === window.location.origin) {
+    throw new Error('GeoGebra 兼容预览没有获得独立来源，已阻止不安全的同源运行。');
+  }
+  return frameUrl.href;
+};
+
 async function loadHtmlProject(
   item: WorkspaceAssetPreviewItem,
   assets: WorkspaceAssetPreviewItem[],
   signal: AbortSignal,
   onRecovered: (item: WorkspaceAssetPreviewItem) => void,
   sizeToken: string,
-): Promise<{ html: string; objectUrls: string[] }> {
+): Promise<{ html: string; objectUrls: string[]; runtimeProfile: HtmlRuntimeProfile }> {
   const entryHtml = await fetchAsset(item, signal, onRecovered).then((response) => response.text());
-  const resources: LoadedResource[] = [];
-
-  for (const asset of assets) {
-    if (asset.id === item.id) continue;
-    try {
+  const resourceResults = await Promise.allSettled(assets
+    .filter((asset) => asset.id !== item.id)
+    .map(async (asset): Promise<LoadedResource> => {
       const response = await fetchAsset(asset, signal, onRecovered);
       const extension = extensionOf(asset.name);
       const text = ['.css', '.js', '.mjs', '.json', '.svg', '.txt', '.md'].includes(extension)
         ? await response.clone().text()
         : null;
-      resources.push({ asset, blob: await response.blob(), text });
-    } catch {
-      // Optional resources do not prevent the HTML entry document from opening.
-    }
-  }
+      return { asset, blob: await response.blob(), text };
+    }));
+  // Optional resources do not prevent the HTML entry document from opening.
+  const resources = resourceResults.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
 
   const objectUrls: string[] = [];
   const urlMap = new Map<string, string>();
@@ -526,9 +576,24 @@ async function loadHtmlProject(
   );
 
   const document = new DOMParser().parseFromString(entryHtml, 'text/html');
+  const officialGeoGebraRuntime = Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]')).some((script) => {
+    try {
+      const runtimeUrl = new URL(script.getAttribute('src') || '');
+      return runtimeUrl.protocol === 'https:'
+        && runtimeUrl.hostname === 'www.geogebra.org'
+        && runtimeUrl.pathname === '/apps/deployggb.js';
+    } catch {
+      return false;
+    }
+  });
+  const initializesGeoGebra = Array.from(document.querySelectorAll<HTMLScriptElement>('script:not([src])'))
+    .some((script) => /\bnew\s+GGBApplet\s*\(/.test(script.textContent || ''));
+  const usesGeoGebraRuntime = officialGeoGebraRuntime && initializesGeoGebra;
   const csp = document.createElement('meta');
   csp.httpEquiv = 'Content-Security-Policy';
-  csp.content = "default-src 'none'; img-src blob: data:; media-src blob: data:; font-src blob: data:; style-src 'unsafe-inline' blob:; script-src 'unsafe-inline' blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+  csp.content = usesGeoGebraRuntime
+    ? "default-src 'none'; img-src blob: data: https://geogebra.org https://*.geogebra.org; media-src blob: data: https://geogebra.org https://*.geogebra.org; font-src blob: data: https://geogebra.org https://*.geogebra.org; style-src 'unsafe-inline' blob: https://geogebra.org https://*.geogebra.org; script-src 'unsafe-inline' blob: https://geogebra.org https://*.geogebra.org; worker-src blob: https://geogebra.org https://*.geogebra.org; connect-src https://geogebra.org https://*.geogebra.org; frame-src https://geogebra.org https://*.geogebra.org; form-action 'none'; base-uri 'none'; object-src 'none'"
+    : "default-src 'none'; img-src blob: data:; media-src blob: data:; font-src blob: data:; style-src 'unsafe-inline' blob:; script-src 'unsafe-inline' blob:; worker-src blob:; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'";
   document.head.prepend(csp);
   if (!document.querySelector('meta[charset]')) {
     const charset = document.createElement('meta');
@@ -565,7 +630,26 @@ async function loadHtmlProject(
         if (event.ctrlKey) event.preventDefault();
       }, { passive: false });
       const sizeToken = ${JSON.stringify(sizeToken)};
+      const expectsGeoGebra = ${JSON.stringify(usesGeoGebraRuntime)};
       let fitting = false;
+      let runtimeReady = false;
+      const reportRuntime = (status, message = '') => parent.postMessage({
+        type: 'kaoyan-preview-runtime',
+        token: sizeToken,
+        status,
+        message: String(message || '').slice(0, 240),
+      }, '*');
+      const detectRuntimeReady = () => {
+        if (!expectsGeoGebra || runtimeReady || !document.querySelector('canvas')) return;
+        runtimeReady = true;
+        reportRuntime('ready');
+      };
+      addEventListener('error', (event) => {
+        if (expectsGeoGebra && !runtimeReady) reportRuntime('failed', event.message || 'GeoGebra 运行时加载失败');
+      });
+      addEventListener('unhandledrejection', (event) => {
+        if (expectsGeoGebra && !runtimeReady) reportRuntime('failed', event.reason?.message || event.reason || 'GeoGebra 运行时加载失败');
+      });
       const fit = () => {
         if (fitting) return;
         fitting = true;
@@ -594,15 +678,22 @@ async function loadHtmlProject(
             width: Math.ceil(naturalWidth),
             height: Math.ceil(naturalHeight),
           }, '*');
+          detectRuntimeReady();
           fitting = false;
         });
       };
       addEventListener('resize', fit, { passive: true });
       addEventListener('load', () => setTimeout(fit, 60), { once: true });
-      new MutationObserver(fit).observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+      // Do not observe attributes: fit() changes root.style.zoom itself and an
+      // attribute observer would create a permanent 1 <-> scale feedback loop.
+      new MutationObserver(() => {
+        fit();
+        detectRuntimeReady();
+      }).observe(root, { childList: true, subtree: true, characterData: true });
       if (document.fonts?.ready) document.fonts.ready.then(fit);
       setTimeout(fit, 80);
       setTimeout(fit, 500);
+      setTimeout(detectRuntimeReady, 1_500);
     })();
   `;
   document.body.append(fitScript);
@@ -635,24 +726,62 @@ async function loadHtmlProject(
   return {
     html: `<!doctype html>${document.documentElement.outerHTML}`,
     objectUrls,
+    runtimeProfile: usesGeoGebraRuntime ? 'geogebra' : 'offline',
   };
 }
 
 function HtmlPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAssetPreviewProps) {
-  const [html, setHtml] = useState('');
+  const [documentSource, setDocumentSource] = useState<{ html: string; runtimeProfile: HtmlRuntimeProfile; frameUrl: string } | null>(null);
   const [error, setError] = useState('');
+  const [runtimeWarning, setRuntimeWarning] = useState('');
+  const [reloadNonce, setReloadNonce] = useState(0);
   const { frameRef, token } = usePreviewSizeBridge(onIntrinsicSize);
+  const onRecoveredRef = useRef(onRecovered);
+  onRecoveredRef.current = onRecovered;
+  const projectSignature = [
+    item.id,
+    item.name,
+    item.mimeType,
+    item.filePath,
+    item.fallbackPath,
+    item.url,
+    item.fallbackUrl,
+    ...assets.flatMap((asset) => [
+      asset.id,
+      asset.name,
+      asset.mimeType,
+      asset.filePath,
+      asset.fallbackPath,
+      asset.url,
+      asset.fallbackUrl,
+    ]),
+  ].join('\u001f');
 
   useEffect(() => {
     const abort = new AbortController();
     let objectUrls: string[] = [];
-    setHtml('');
+    let previewSessionUrl = '';
+    setDocumentSource(null);
     setError('');
-    void loadHtmlProject(item, assets, abort.signal, onRecovered, token)
-      .then((result) => {
-        if (abort.signal.aborted) return;
+    setRuntimeWarning('');
+    void loadHtmlProject(item, assets, abort.signal, (recovered) => onRecoveredRef.current(recovered), token)
+      .then(async (result) => {
+        if (abort.signal.aborted) {
+          result.objectUrls.forEach((url) => URL.revokeObjectURL(url));
+          return;
+        }
         objectUrls = result.objectUrls;
-        setHtml(result.html.slice(0, 8 * 1024 * 1024));
+        const html = result.html.slice(0, 8 * 1024 * 1024);
+        const frameUrl = result.runtimeProfile === 'geogebra'
+          ? await createGeoGebraPreviewSession(html, abort.signal)
+          : '';
+        previewSessionUrl = frameUrl;
+        if (abort.signal.aborted) return;
+        setDocumentSource({
+          html,
+          runtimeProfile: result.runtimeProfile,
+          frameUrl,
+        });
       })
       .catch((reason: unknown) => {
         if (!abort.signal.aborted) setError(reason instanceof Error ? reason.message : 'HTML 读取失败');
@@ -660,18 +789,70 @@ function HtmlPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAs
     return () => {
       abort.abort();
       objectUrls.forEach((url) => URL.revokeObjectURL(url));
+      if (previewSessionUrl) {
+        void fetch(previewSessionUrl, { method: 'DELETE', keepalive: true, mode: 'cors' }).catch(() => undefined);
+      }
     };
-  }, [item.url, item.fallbackUrl, assets, onRecovered, token]);
+  }, [projectSignature, reloadNonce, token]);
+
+  useEffect(() => {
+    if (documentSource?.runtimeProfile !== 'geogebra' || !documentSource.frameUrl) return undefined;
+    let ready = false;
+    const listener = (event: MessageEvent) => {
+      if (event.source !== frameRef.current?.contentWindow) return;
+      const payload = event.data as { type?: string; token?: string; status?: string; message?: string } | null;
+      if (payload?.type !== 'kaoyan-preview-runtime' || payload.token !== token) return;
+      if (payload.status === 'ready') {
+        ready = true;
+        setRuntimeWarning('');
+      } else if (payload.status === 'failed' && !ready) {
+        setRuntimeWarning(payload.message || 'GeoGebra 运行时加载失败。');
+      }
+    };
+    const watchdog = window.setTimeout(() => {
+      if (!ready) setRuntimeWarning('GeoGebra 在 15 秒内没有完成绘制；可重新加载，或下载原 HTML 检查网络与 WebGL。');
+    }, 15_000);
+    window.addEventListener('message', listener);
+    return () => {
+      window.clearTimeout(watchdog);
+      window.removeEventListener('message', listener);
+    };
+  }, [documentSource?.frameUrl, documentSource?.runtimeProfile, frameRef, token]);
 
   if (error) return <ErrorPreview item={item} message={error} />;
-  if (!html) return <div className="lrp-preview-loading">正在装载 HTML / Web 资料…</div>;
+  if (!documentSource) return <div className="lrp-preview-loading">正在装载 HTML / Web 资料…</div>;
+  if (documentSource.runtimeProfile === 'geogebra') {
+    return (
+      <div className="lrp-html-preview">
+        {/* The short-lived 5174 document is cross-origin from the 5173 app and
+            has a strict CSP. allow-same-origin only serves GeoGebra's own frames. */}
+        <iframe
+          ref={frameRef}
+          className="lrp-document-frame"
+          sandbox="allow-scripts allow-same-origin"
+          referrerPolicy="no-referrer"
+          src={documentSource.frameUrl}
+          title={item.name}
+        />
+        {runtimeWarning && <div className="lrp-html-runtime-warning" role="alert">
+          <strong>GeoGebra 暂未完成显示</strong>
+          <span>{runtimeWarning}</span>
+          <div>
+            <button type="button" onClick={() => setReloadNonce((current) => current + 1)}>重新加载</button>
+            <a href={item.fallbackUrl || item.url} download={item.name}>下载原文件</a>
+          </div>
+        </div>}
+      </div>
+    );
+  }
   return (
     <div className="lrp-html-preview">
       <iframe
         ref={frameRef}
         className="lrp-document-frame"
-        sandbox="allow-scripts allow-forms allow-modals allow-downloads"
-        srcDoc={html}
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        srcDoc={documentSource.html}
         title={item.name}
       />
     </div>
@@ -679,12 +860,12 @@ function HtmlPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAs
 }
 
 function TextPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAssetPreviewProps, 'assets'>) {
-  const [text, setText] = useState('');
+  const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
     const abort = new AbortController();
-    setText('');
+    setText(null);
     setError('');
     void fetchAsset(item, abort.signal, onRecovered)
       .then((response) => response.text())
@@ -698,7 +879,7 @@ function TextPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAsset
   }, [item.url, item.fallbackUrl, onRecovered]);
 
   useEffect(() => {
-    if (!text) return;
+    if (text === null) return;
     const lines = text.split(/\r?\n/);
     const longest = lines.reduce((length, line) => Math.max(length, line.length), 0);
     onIntrinsicSize?.(
@@ -708,8 +889,8 @@ function TextPreview({ item, onRecovered, onIntrinsicSize }: Omit<WorkspaceAsset
   }, [onIntrinsicSize, text]);
 
   if (error) return <ErrorPreview item={item} message={error} />;
-  if (!text) return <div className="lrp-preview-loading">正在读取文本…</div>;
-  return <pre className="lrp-text-preview">{text}</pre>;
+  if (text === null) return <div className="lrp-preview-loading">正在读取文本…</div>;
+  return <pre className="lrp-text-preview">{text || '（空文本文件）'}</pre>;
 }
 
 function GenericPreview({ item }: { item: WorkspaceAssetPreviewItem }) {
@@ -726,6 +907,7 @@ function GenericPreview({ item }: { item: WorkspaceAssetPreviewItem }) {
 }
 
 export function WorkspaceAssetPreview({ item, assets, onRecovered, onIntrinsicSize }: WorkspaceAssetPreviewProps) {
+  const [imageViewer, setImageViewer] = useState<{ items: ImageViewerItem[]; index: number } | null>(null);
   const onRecoveredRef = useRef(onRecovered);
   useEffect(() => {
     onRecoveredRef.current = onRecovered;
@@ -733,8 +915,38 @@ export function WorkspaceAssetPreview({ item, assets, onRecovered, onIntrinsicSi
   const stableOnRecovered = useCallback((recoveredItem: WorkspaceAssetPreviewItem) => {
     onRecoveredRef.current(recoveredItem);
   }, []);
+  const imageAssets = useMemo(() => assets.filter((asset) => asset.kind === 'image'), [assets]);
+  const openImageViewer = useCallback((source: string) => {
+    const items = imageAssets.map((asset) => ({
+      id: asset.id,
+      src: asset.id === item.id ? source : asset.url,
+      alt: asset.name,
+    }));
+    const index = items.findIndex((viewerItem) => viewerItem.id === item.id);
+    if (index >= 0) setImageViewer({ items, index });
+  }, [imageAssets, item.id]);
 
-  if (item.kind === 'image') return <RecoverableImage item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
+  const imageViewerLayer = imageViewer ? (
+    <ImageViewer
+      items={imageViewer.items}
+      index={imageViewer.index}
+      onIndexChange={(index) => setImageViewer((current) => current ? { ...current, index } : current)}
+      onClose={() => setImageViewer(null)}
+      ariaLabel="资料图片查看器"
+    />
+  ) : null;
+
+  if (item.kind === 'image') return (
+    <>
+      <RecoverableImage
+        item={item}
+        onRecovered={stableOnRecovered}
+        onIntrinsicSize={onIntrinsicSize}
+        onOpen={openImageViewer}
+      />
+      {imageViewerLayer}
+    </>
+  );
   if (item.kind === 'pdf') return <PdfPreview item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
   if (item.kind === 'word') return <WordPreview item={item} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;
   if (item.kind === 'html') return <HtmlPreview item={item} assets={assets} onRecovered={stableOnRecovered} onIntrinsicSize={onIntrinsicSize} />;

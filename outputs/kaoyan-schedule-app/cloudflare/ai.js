@@ -3,6 +3,7 @@ import { getTaskSettings } from './ai-config.js';
 import { HttpError } from './http.js';
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const WORKERS_AI_VISION_MODEL = '@cf/moondream/moondream3.1-9B-A2B';
 
 function decodeImageDataUrl(value) {
   if (typeof value !== 'string') throw new HttpError(400, 'imageDataUrl is required.', 'INVALID_AI_IMAGE');
@@ -20,7 +21,7 @@ function finite(value) {
 
 function rawBox(object) {
   if (!object || typeof object !== 'object') return null;
-  const source = object.bbox ?? object.box ?? object.boundingBox ?? object.bounding_box ?? object;
+  const source = object.bbox ?? object.box ?? object.box_2d ?? object.boundingBox ?? object.bounding_box ?? object;
   if (Array.isArray(source) && source.length >= 4) return source.slice(0, 4).map(finite);
   if (!source || typeof source !== 'object') return null;
   const left = finite(source.x_min ?? source.xmin ?? source.x1 ?? source.left ?? source.x);
@@ -43,15 +44,29 @@ function coordinateScale(values, imageWidth, imageHeight) {
   return { x: max, y: max };
 }
 
-function normalizeBox(object, imageWidth, imageHeight, settings) {
-  const values = rawBox(object);
-  if (!values || values.some((value) => value === null)) return null;
+function normalizedBounds(values, imageWidth, imageHeight) {
   const [left, top, right, bottom] = values;
   const scale = coordinateScale(values, imageWidth, imageHeight);
   const x1 = Math.max(0, Math.min(1, left / scale.x));
   const y1 = Math.max(0, Math.min(1, top / scale.y));
   const x2 = Math.max(0, Math.min(1, right / scale.x));
   const y2 = Math.max(0, Math.min(1, bottom / scale.y));
+  return { x1, y1, x2, y2, width: x2 - x1, height: y2 - y1 };
+}
+
+function normalizeBox(object, imageWidth, imageHeight, settings) {
+  const values = rawBox(object);
+  if (!values || values.some((value) => value === null)) return null;
+  const arraySource = object.bbox ?? object.box ?? object.box_2d ?? object.boundingBox ?? object.bounding_box;
+  const direct = normalizedBounds(values, imageWidth, imageHeight);
+  const transposed = Array.isArray(arraySource)
+    ? normalizedBounds([values[1], values[0], values[3], values[2]], imageWidth, imageHeight)
+    : null;
+  const useTransposed = Boolean(transposed) && (
+    Array.isArray(object.box_2d)
+    || (direct.width < direct.height * 0.65 && transposed.width > transposed.height * 1.5)
+  );
+  const { x1, y1, x2, y2 } = useTransposed ? transposed : direct;
   const minimum = Math.max(0.01, Number(settings.options.minimumRegionPercent ?? 3.5) / 100);
   if (x2 <= x1 || y2 <= y1 || x2 - x1 < minimum || y2 - y1 < minimum) return null;
   const configuredPadding = Math.max(0, Math.min(0.08, Number(settings.options.edgePaddingPercent ?? 1.2) / 100));
@@ -187,6 +202,100 @@ function fillTemplate(value, variables) {
   return String(value || '').replace(/\{([A-Za-z0-9_]+)\}/g, (_match, key) => String(variables[key] ?? ''));
 }
 
+function parseJsonText(value) {
+  if (value && typeof value === 'object') return value;
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  const candidates = [raw];
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(raw);
+  if (fenced) candidates.push(fenced[1].trim());
+  const objectStart = raw.indexOf('{');
+  const arrayStart = raw.indexOf('[');
+  const starts = [objectStart, arrayStart].filter((index) => index >= 0);
+  if (starts.length > 0) {
+    const start = Math.min(...starts);
+    const closing = raw[start] === '{' ? '}' : ']';
+    const end = raw.lastIndexOf(closing);
+    if (end > start) candidates.push(raw.slice(start, end + 1));
+  }
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate.replace(/,\s*([}\]])/g, '$1'));
+    } catch {}
+  }
+  return null;
+}
+
+async function runWorkersAiQuestionDetection(env, request) {
+  if (!env.AI || typeof env.AI.run !== 'function') {
+    throw new HttpError(503, 'Cloudflare Workers AI binding is unavailable.', 'WORKERS_AI_UNAVAILABLE');
+  }
+  const response = await env.AI.run(WORKERS_AI_VISION_MODEL, {
+    task: 'query',
+    image: request.image,
+    question: request.prompt,
+    reasoning: false,
+    temperature: 0.1,
+    max_tokens: request.maxTokens,
+    stream: false,
+  });
+  const output = response?.answer ?? response?.response ?? response?.description ?? response;
+  const json = parseJsonText(output);
+  if (!json) {
+    throw new HttpError(502, 'Cloudflare 视觉模型没有返回可解析的题目区域 JSON。', 'WORKERS_AI_JSON_INVALID');
+  }
+  return {
+    provider: 'cloudflare-workers-ai',
+    model: WORKERS_AI_VISION_MODEL,
+    text: typeof output === 'string' ? output : JSON.stringify(output),
+    json,
+    usage: response?.metrics || response?.usage || null,
+    configurationHash: request.settings.configurationHash,
+    workflowHash: request.settings.workflowHash,
+    attempts: [{ provider: 'cloudflare-workers-ai', model: WORKERS_AI_VISION_MODEL, outcome: 'success', retry: 0 }],
+  };
+}
+
+async function requestQuestionDetection(env, request) {
+  try {
+    return await runLocalAgentTask(env, 'question_splitting', request);
+  } catch (externalError) {
+    if (!env.AI || typeof env.AI.run !== 'function') throw externalError;
+    try {
+      const fallback = await runWorkersAiQuestionDetection(env, {
+        image: request.imageDataUrl,
+        prompt: request.messages[0].content[0].text,
+        maxTokens: request.maxTokens,
+        settings: request.settings,
+      });
+      console.log(JSON.stringify({
+        event: 'capture.question_detection.fallback_success',
+        externalCode: externalError?.code || 'AI_PROVIDER_ERROR',
+        provider: fallback.provider,
+        model: fallback.model,
+      }));
+      return fallback;
+    } catch (workersAiError) {
+      console.error(JSON.stringify({
+        event: 'capture.question_detection.fallback_failed',
+        externalCode: externalError?.code || 'AI_PROVIDER_ERROR',
+        workersAiCode: workersAiError?.code || 'WORKERS_AI_ERROR',
+        message: workersAiError instanceof Error ? workersAiError.message.slice(0, 500) : String(workersAiError).slice(0, 500),
+      }));
+      throw new HttpError(
+        502,
+        `公网 AI 题目识别失败：${workersAiError instanceof Error ? workersAiError.message : String(workersAiError)}`,
+        'QUESTION_DETECTION_PROVIDERS_FAILED',
+        {
+          externalCode: externalError?.code || 'AI_PROVIDER_ERROR',
+          workersAiCode: workersAiError?.code || 'WORKERS_AI_ERROR',
+          retryable: true,
+        },
+      );
+    }
+  }
+}
+
 function splittingPrompt(settings, width, height) {
   const workflow = settings.workflow;
   if (!workflow?.prompt?.instructions?.length || !workflow.prompt.outputFormat) {
@@ -210,12 +319,15 @@ function splittingPrompt(settings, width, height) {
   ].filter(Boolean).join('\n');
 }
 
-export async function detectQuestions(env, payload) {
+export async function detectQuestions(env, payload, context = {}) {
   const image = decodeImageDataUrl(payload?.imageDataUrl);
   const width = Math.max(0, Number(payload?.imageWidth) || 0);
   const height = Math.max(0, Number(payload?.imageHeight) || 0);
-  const settings = await getTaskSettings(env, 'question_splitting');
-  const response = await runLocalAgentTask(env, 'question_splitting', {
+  // Background Workflows already load and audit this task configuration.
+  // Reusing it avoids another GitHub-backed runtime read and guarantees the
+  // prompt and saved processing hashes describe the same configuration.
+  const settings = context.settings || await getTaskSettings(env, 'question_splitting');
+  const response = await requestQuestionDetection(env, {
     messages: [{
       role: 'user',
       content: [
@@ -228,6 +340,24 @@ export async function detectQuestions(env, payload) {
     temperature: Number(settings.temperature) || 0.1,
     maxTokens: Math.min(1200, Math.max(500, Number(settings.options.maxTokens) || 900)),
     requiredCapabilities: ['vision', 'json'],
+    settings,
+    validateJson(json, candidate) {
+      const candidateRegions = normalizeRegions(json, width, height, settings);
+      if (candidateRegions.accepted.length > 0) return;
+      const firstReason = candidateRegions.rejected[0]?.reason || '';
+      throw new HttpError(
+        422,
+        `视觉模型 ${candidate.provider}/${candidate.model} 没有返回可用题目区域${firstReason ? `：${firstReason}` : ''}`,
+        'AI_NO_VALID_QUESTION_REGIONS',
+        {
+          retryable: false,
+          provider: candidate.provider,
+          model: candidate.model,
+          candidateCount: candidateRegions.candidateCount,
+          rejectedCount: candidateRegions.rejected.length,
+        },
+      );
+    },
   });
   const normalized = normalizeRegions(response.json, width, height, settings);
   if (normalized.accepted.length === 0) {
@@ -250,4 +380,11 @@ export async function detectQuestions(env, payload) {
   };
 }
 
-export const questionDetectionInternals = Object.freeze({ evaluateRegion, normalizeRegions, splittingPrompt, mergeQuestionFragments });
+export const questionDetectionInternals = Object.freeze({
+  evaluateRegion,
+  mergeQuestionFragments,
+  normalizeRegions,
+  parseJsonText,
+  runWorkersAiQuestionDetection,
+  splittingPrompt,
+});

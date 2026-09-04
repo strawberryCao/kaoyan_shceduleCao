@@ -7,13 +7,15 @@ const source = (file) => fs.readFileSync(path.join(root, file), 'utf8');
 (async () => {
   const noteDrop = source('src/components/NoteDropApp.tsx');
   assert.match(noteDrop, /await enqueueMultiQuestionJob\(sourceImage\.src/);
-  assert.match(noteDrop, /AI 后台拆分并自动保存，不再逐题确认/);
+  assert.match(noteDrop, /完成后可从活动中心逐题确认/);
   assert.doesNotMatch(noteDrop, /className="ai"[^>]+setMobileStep\('multi-crop'\)/);
+  assert.match(noteDrop, /loadMultiQuestionJobForReview/);
+  assert.match(noteDrop, /completeMultiQuestionReview/);
   assert.match(noteDrop, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(noteDrop, /<span>切换到速记<\/span>/);
 
   const jobs = source('src/utils/noteBackgroundJobs.ts');
-  assert.match(jobs, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(jobs, /await createCaptureBatch\(imageDataUrl/);
   assert.match(jobs, /await putJob\(job\)/);
   assert.doesNotMatch(jobs, /cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
 

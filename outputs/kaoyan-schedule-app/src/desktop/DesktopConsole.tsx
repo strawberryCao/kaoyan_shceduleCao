@@ -22,6 +22,7 @@ import {
 } from './storage';
 import type { WidgetLayout, WidgetType } from './types';
 import { DesktopWorkspace } from './DesktopWorkspace';
+import { explicitAiActionHeaders } from '../utils/aiAction';
 
 const AI_WIDGET_URL = 'http://127.0.0.1:5174/ai/widget';
 
@@ -265,7 +266,7 @@ export function DesktopConsole() {
     try {
       const response = await fetch(AI_WIDGET_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: explicitAiActionHeaders(),
         body: JSON.stringify({ prompt }),
       });
       const payload = await response.json() as AiWidgetResponse;

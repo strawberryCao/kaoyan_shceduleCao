@@ -134,6 +134,9 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'note_enrichment').parameters.some((parameter) => parameter.id === 'maxCards'));
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'layoutDirection'));
   assert.equal(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').defaults.timeoutMs, 90_000);
+  assert.equal(initialAiConfig.usageProtection.enabled, true);
+  assert.equal(initialAiConfig.usageProtection.dailyRequestLimit, 200);
+  assert.equal(initialAiConfig.usageProtection.usedToday, 0);
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'networkRetries'));
   assert.ok(initialAiConfig.taskDefinitions.find((task) => task.id === 'canvas_organization').parameters.some((parameter) => parameter.id === 'allowStandardVisionFallback'));
   assert.doesNotMatch(JSON.stringify(initialAiConfig), /apiKey/i);
@@ -141,7 +144,7 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   const saveAiConfig = await fetch(`${baseUrl}/ai/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tasks: {
+    body: JSON.stringify({ usageProtection: { enabled: false, dailyRequestLimit: 750 }, tasks: {
       note_naming: { customInstructions: '命名不超过 12 个字。', temperature: 0.2, options: { titleMaxLength: 12 } },
       note_enrichment: { options: { maxCards: 1, goodQuestionPolicy: 'explicit_only' } },
     } }),
@@ -152,8 +155,11 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.equal(savedAiConfig.tasks.note_naming.temperature, 0.2);
   assert.equal(savedAiConfig.tasks.note_naming.options.titleMaxLength, 12);
   assert.equal(savedAiConfig.tasks.note_enrichment.options.maxCards, 1);
+  assert.equal(savedAiConfig.usageProtection.enabled, false);
+  assert.equal(savedAiConfig.usageProtection.dailyRequestLimit, 750);
   const storedAiConfig = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'ai-providers.json'), 'utf8'));
   assert.deepEqual(storedAiConfig.tasks, savedAiConfig.tasks);
+  assert.deepEqual(storedAiConfig.usageProtection, { enabled: false, dailyRequestLimit: 750 });
   assert.equal(storedAiConfig.providers.gemini.apiKey, 'lan-test-secret-key');
   assert.deepEqual(storedAiConfig.extensionField, { preserve: true });
 
@@ -515,4 +521,8 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.match(gatewayPolicy, /api\/note-file/);
   assert.match(gatewayPolicy, /api\/learning-data\/day/);
   assert.match(gatewayPolicy, /api\/learning-data\/manual-records/);
+  assert.doesNotMatch(gatewayPolicy, /api\/ai\/(?:widget|html-note)/);
+  const webServer = fs.readFileSync(path.join(projectRoot, 'scripts', 'web-server.cjs'), 'utf8');
+  assert.match(webServer, /isLoopback[\s\S]{0,500}\/api\/ai\/html-note/);
+  assert.match(webServer, /upstreamTimeoutMs[\s\S]{0,300}610_000/);
 });

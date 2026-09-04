@@ -1,6 +1,7 @@
 import type { CanvasDocument, CanvasInkStroke } from './canvasDocument';
 import { fetchWithTimeout } from './localService';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
+import { explicitAiActionHeaders } from './aiAction';
 
 type CanvasRequestOperation = 'list' | 'load' | 'save' | 'delete' | 'active' | 'organize';
 
@@ -281,7 +282,7 @@ export async function startCanvasAiOrganization(
 ): Promise<CanvasAiOrganizationJob> {
   const result = await requestCanvas<CanvasAiOrganizationResponse>('organize', `${NOTE_SERVER_URL}/canvas-projects/${encodeURIComponent(projectId)}/ai-organize`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: explicitAiActionHeaders(),
     body: JSON.stringify({ previewDataUrl, clientId }),
   });
   if (!result.ok || !result.job) throw new Error(result.error || '启动 AI 画布整理失败');

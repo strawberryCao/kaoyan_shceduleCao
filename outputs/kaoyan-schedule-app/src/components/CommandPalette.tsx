@@ -20,6 +20,8 @@ import {
 } from '../utils/learningData';
 import { fuzzySearchScore } from '../utils/fuzzySearch';
 import { selectKnowledgeEligibleNotes } from '../utils/noteReview';
+import { learningViewForNote } from '../utils/learningNavigation';
+import { navigateApp } from '../utils/appNavigation';
 import {
   IS_CLOUD_RUNTIME,
   searchLearningRecords,
@@ -37,13 +39,28 @@ type PaletteCommand = {
 };
 
 const navigate = (path: string) => {
-  window.location.assign(`${window.location.origin}/${path}`);
+  navigateApp(path);
 };
 
 const pageReferenceText = (pageRefs: Array<{ raw: string; page?: number; question?: string }>) => pageRefs
   .map((item) => item.raw || [item.page ? `p${item.page}` : '', item.question ?? ''].filter(Boolean).join(' '))
   .filter(Boolean)
   .join(' ');
+
+const learningTarget = (input: {
+  view: string;
+  query: string;
+  noteUid?: string;
+  cardId?: string;
+  searchMode?: 'normal' | 'ai';
+}): string => {
+  const params = new URLSearchParams({ panel: 'learning', view: input.view });
+  if (input.query.trim()) params.set('q', input.query.trim());
+  if (input.noteUid) params.set('noteUid', input.noteUid);
+  if (input.cardId) params.set('cardId', input.cardId);
+  if (input.searchMode === 'ai') params.set('searchMode', 'ai');
+  return `?${params.toString()}`;
+};
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -54,6 +71,7 @@ export function CommandPalette() {
   const [semanticState, setSemanticState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [learningData, setLearningData] = useState<LearningDataSnapshot | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const semanticRequestRef = useRef(0);
 
   useEffect(() => {
     if (!open) {
@@ -63,32 +81,6 @@ export function CommandPalette() {
     setLearningData(readLearningDataCache());
     return subscribeLearningDataCache(setLearningData);
   }, [open]);
-
-  useEffect(() => {
-    const normalized = query.trim();
-    if (!open || searchMode !== 'ai' || !normalized) {
-      setSemanticResults([]);
-      setSemanticState('idle');
-      return undefined;
-    }
-    const abort = new AbortController();
-    const timer = window.setTimeout(() => {
-      setSemanticState('loading');
-      void searchLearningRecords(normalized, 'ai', 8).then((response) => {
-        if (abort.signal.aborted) return;
-        setSemanticResults(response.results || []);
-        setSemanticState('ready');
-      }).catch(() => {
-        if (abort.signal.aborted) return;
-        setSemanticResults([]);
-        setSemanticState('error');
-      });
-    }, 260);
-    return () => {
-      abort.abort();
-      window.clearTimeout(timer);
-    };
-  }, [open, query, searchMode]);
 
   const baseCommands = useMemo<PaletteCommand[]>(() => [
     {
@@ -161,6 +153,9 @@ export function CommandPalette() {
 
   const resultCommands = useMemo<PaletteCommand[]>(() => {
     if (!query.trim()) return [];
+    const notesByUid = new Map(
+      Object.values(learningData?.days ?? {}).flatMap((day) => day.autoNotes).map((note) => [note.noteUid, note]),
+    );
     if (searchMode === 'ai') {
       return semanticResults.map((result) => ({
         id: `semantic:${result.noteUid}`,
@@ -169,7 +164,12 @@ export function CommandPalette() {
         keywords: result.matchedTerms.join(' '),
         icon: BrainCircuit,
         meta: 'AI 语义',
-        run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}&searchMode=ai`),
+        run: () => navigate(learningTarget({
+          view: learningViewForNote(notesByUid.get(result.noteUid)),
+          query,
+          noteUid: result.noteUid,
+          searchMode: 'ai',
+        })),
       }));
     }
     if (!learningData) return [];
@@ -197,7 +197,7 @@ export function CommandPalette() {
         keywords: [card.front, card.back, card.subject, card.sourceTitle].join(' '),
         icon: BookOpenCheck,
         meta: card.kind === 'mistake' ? '错题卡' : '背诵卡',
-        run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}`),
+        run: () => navigate(learningTarget({ view: 'review', query, cardId: card.id })),
         searchScore: score,
       });
     });
@@ -223,7 +223,11 @@ export function CommandPalette() {
         keywords: [note.title, note.subject, note.remark, itemText].join(' '),
         icon: FileImage,
         meta: '知识笔记',
-        run: () => navigate(`?panel=learning&q=${encodeURIComponent(query)}`),
+        run: () => navigate(learningTarget({
+          view: learningViewForNote(note),
+          query,
+          noteUid: note.noteUid,
+        })),
         searchScore: score,
       });
     });
@@ -283,8 +287,31 @@ export function CommandPalette() {
   }, [open]);
 
   const close = () => {
+    semanticRequestRef.current += 1;
     setOpen(false);
     setQuery('');
+    setSearchMode('normal');
+    setSemanticResults([]);
+    setSemanticState('idle');
+  };
+
+  const runSemanticSearch = () => {
+    const normalized = query.trim();
+    if (!normalized || semanticState === 'loading') return;
+    const requestId = semanticRequestRef.current + 1;
+    semanticRequestRef.current = requestId;
+    setSearchMode('ai');
+    setSemanticResults([]);
+    setSemanticState('loading');
+    void searchLearningRecords(normalized, 'ai', 8).then((response) => {
+      if (semanticRequestRef.current !== requestId) return;
+      setSemanticResults(response.results || []);
+      setSemanticState('ready');
+    }).catch(() => {
+      if (semanticRequestRef.current !== requestId) return;
+      setSemanticResults([]);
+      setSemanticState('error');
+    });
   };
 
   return (
@@ -305,7 +332,13 @@ export function CommandPalette() {
               <input
                 ref={inputRef}
                 value={query}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  semanticRequestRef.current += 1;
+                  setQuery(event.target.value);
+                  setSearchMode('normal');
+                  setSemanticResults([]);
+                  setSemanticState('idle');
+                }}
                 placeholder="搜索页面、卡片、知识点或页码…"
                 aria-label="搜索快速操作"
               />
@@ -313,11 +346,12 @@ export function CommandPalette() {
                 className={`command-search-mode${searchMode === 'ai' ? ' is-active' : ''}`}
                 type="button"
                 aria-pressed={searchMode === 'ai'}
-                title={searchMode === 'ai' ? '切回普通关键词搜索' : '理解语义，查找忘记关键词的资料'}
-                onClick={() => setSearchMode((current) => current === 'ai' ? 'normal' : 'ai')}
+                title="理解语义，查找忘记关键词的资料；每次点击只请求一次"
+                onClick={runSemanticSearch}
+                disabled={!query.trim() || semanticState === 'loading'}
               >
                 <BrainCircuit size={15} />
-                <span>{searchMode === 'ai' ? 'AI 语义' : '普通'}</span>
+                <span>{semanticState === 'loading' ? 'AI 搜索中' : 'AI 搜索'}</span>
               </button>
               <button type="button" onClick={close} aria-label="关闭快速操作"><X size={17} /></button>
             </header>

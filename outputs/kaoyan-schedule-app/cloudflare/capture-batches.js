@@ -152,9 +152,14 @@ export async function createCaptureBatch(env, payload, ctx) {
   };
 }
 
-export async function getCaptureJob(env, jobId) {
+async function readCaptureJob(env, jobId) {
   const file = await readJsonFile(env, jobPath(jobId), { allowMissing: true, maxBytes: 512 * 1024 });
   if (!file) throw new HttpError(404, 'Capture job not found.', 'JOB_NOT_FOUND');
+  return file;
+}
+
+export async function getCaptureJob(env, jobId) {
+  const file = await readCaptureJob(env, jobId);
   let workflow = null;
   let workflowError = '';
   const instanceId = `${jobId}-r${Number(file.value.attempts) || 0}`;
@@ -175,25 +180,26 @@ export async function getCaptureJob(env, jobId) {
   const workflowStopped = /error|fail|terminate|cancel|complete/.test(workflowState);
   if (
     ['queued', 'processing'].includes(job.status)
-    && (
-      stalledMs >= 5 * 60_000
-      || (stalledMs >= 90_000 && (!workflow || workflowError || workflowStopped))
-    )
+    && workflowStopped
   ) {
     const recovered = await updateJob(env, jobId, {
       status: 'failed_retryable',
       progress: Number(job.progress) || 5,
-      message: '后台任务超过 90 秒没有继续更新（或已运行超过 5 分钟）；原图已保留，可以安全重试',
-      error: workflowError || 'Capture workflow stopped reporting progress',
+      message: 'Cloudflare 后台任务已经停止；原图已保留，可以安全重试',
+      error: workflowError || `Capture workflow entered terminal state: ${workflowState || 'unknown'}`,
     });
     return { ok: true, job: recovered, workflow, stalled: true };
   }
   if (['queued', 'processing'].includes(job.status) && stalledMs >= 30_000) {
+    const elapsedSeconds = Math.max(1, Math.round(stalledMs / 1000));
+    const workflowLabel = workflowState
+      ? `Cloudflare Workflow：${workflowState}`
+      : workflowError ? '暂时无法读取 Workflow 状态，仍会继续查询' : '等待 Workflow 状态';
     return {
       ok: true,
       job: {
         ...job,
-        message: `${job.message || 'AI 后台处理中'}（已等待 ${Math.max(1, Math.round(stalledMs / 1000))} 秒）`,
+        message: `${job.message || 'AI 后台处理中'}（已等待 ${elapsedSeconds} 秒；${workflowLabel}）`,
       },
       workflow,
       stalled: false,
@@ -229,23 +235,35 @@ export async function retryCaptureJob(env, jobId, ctx) {
 }
 
 function quotaError(message) {
-  return /quota|limit|allowance|429|too many requests|daily|monthly/i.test(message);
+  return /quota|allowance|429|too many requests|daily|monthly|rate limit/i.test(message);
 }
 
-export async function processCaptureBatch(env, jobId) {
-  const current = await getCaptureJob(env, jobId);
-  const job = current.job;
-  if (job.status === 'completed') return { ok: true, job, idempotentReplay: true };
+async function handleCaptureFailure(env, jobId, error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/too many subrequests/i.test(message)) throw error;
+  const review = error instanceof HttpError && ['NO_QUESTIONS_DETECTED', 'INVALID_CAPTURE_IMAGE'].includes(error.code);
+  const updated = await updateJob(env, jobId, {
+    status: quotaError(message) ? 'waiting_quota' : review ? 'needs_review' : 'failed_retryable',
+    progress: 15,
+    message: quotaError(message)
+      ? 'AI 服务额度暂不可用，原图已保留并可稍后重试'
+      : review ? '自动裁剪未得到可靠结果，原图已进入待处理'
+        : '后台处理暂时失败，原图仍安全保存，可重试',
+    error: message.slice(0, 1000),
+  });
+  if (!quotaError(message) && !review) throw error;
+  return { ok: false, job: updated };
+}
+
+export async function detectCaptureBatch(env, jobId, options = {}) {
+  const current = await readCaptureJob(env, jobId);
+  const job = current.value;
+  const forceRewrite = options.forceRewrite === true;
+  if (job.status === 'completed' && !forceRewrite) return { ok: true, job, idempotentReplay: true, skipSave: true };
   try {
     const settings = await getTaskSettings(env, 'question_splitting');
-    if (settings.configurationHash !== job.configurationHash || settings.workflowHash !== job.workflowHash) {
-      const updated = await updateJob(env, jobId, {
-        status: 'configuration_mismatch',
-        message: 'AI 配置与任务创建时不一致，已暂停以避免套用旧规则',
-        error: 'configurationHash 或 workflowHash 不一致',
-      });
-      return { ok: false, job: updated };
-    }
+    const configurationChangedWhileQueued = settings.configurationHash !== job.configurationHash
+      || settings.workflowHash !== job.workflowHash;
     if (!env.IMAGES || typeof env.IMAGES.info !== 'function') {
       const updated = await updateJob(env, jobId, {
         status: 'needs_review',
@@ -254,12 +272,9 @@ export async function processCaptureBatch(env, jobId) {
       });
       return { ok: false, job: updated };
     }
-    await updateJob(env, jobId, {
-      status: 'processing',
-      progress: 15,
-      message: '正在识别完整题目区域',
-      error: '',
-    });
+    // Do not create a separate Git commit just to report transient progress.
+    // It consumed several GitHub subrequests and introduced a branch conflict
+    // immediately before the real atomic result commit.
     const source = await readFile(env, job.sourcePath, { maxBytes: 20 * 1024 * 1024 });
     const info = await env.IMAGES.info(source.bytes);
     const width = Number(info?.width) || 0;
@@ -269,7 +284,36 @@ export async function processCaptureBatch(env, jobId) {
       imageDataUrl: bytesToDataUrl(source.bytes, info?.format ? `image/${String(info.format).replace(/^image\//, '')}` : 'image/jpeg'),
       imageWidth: width,
       imageHeight: height,
-    });
+    }, { settings });
+    return {
+      ok: true,
+      jobId,
+      sourcePath: job.sourcePath,
+      batchId: job.batchId,
+      parentEntryId: job.parentEntryId,
+      sourceAssetId: job.sourceAssetId,
+      processedConfigurationHash: settings.configurationHash,
+      processedWorkflowHash: settings.workflowHash,
+      configurationChangedWhileQueued,
+      forceRewrite,
+      regions: detection.regions,
+    };
+  } catch (error) {
+    return handleCaptureFailure(env, jobId, error);
+  }
+}
+
+export async function saveDetectedCaptureBatch(env, detection) {
+  if (!detection?.ok || detection.skipSave) return detection;
+  const jobId = detection.jobId;
+  const current = await readCaptureJob(env, jobId);
+  const job = current.value;
+  if (job.status === 'completed' && !detection.forceRewrite) return { ok: true, job, idempotentReplay: true };
+  try {
+    if (!env.IMAGES || typeof env.IMAGES.input !== 'function') {
+      throw new HttpError(503, 'IMAGES binding is unavailable.', 'IMAGES_UNAVAILABLE');
+    }
+    const source = await readFile(env, detection.sourcePath || job.sourcePath, { maxBytes: 20 * 1024 * 1024 });
     const crops = [];
     for (const region of detection.regions) {
       const response = (
@@ -294,27 +338,24 @@ export async function processCaptureBatch(env, jobId) {
     return commitCaptureResults(env, {
       jobId,
       jobPath: jobPath(jobId),
-      batchId: job.batchId,
-      parentEntryId: job.parentEntryId,
-      sourceAssetId: job.sourceAssetId,
+      batchId: detection.batchId || job.batchId,
+      parentEntryId: detection.parentEntryId || job.parentEntryId,
+      sourceAssetId: detection.sourceAssetId || job.sourceAssetId,
+      processedConfigurationHash: detection.processedConfigurationHash,
+      processedWorkflowHash: detection.processedWorkflowHash,
+      configurationChangedWhileQueued: detection.configurationChangedWhileQueued === true,
+      forceRewrite: detection.forceRewrite === true,
       regions: detection.regions,
       crops,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const review = error instanceof HttpError && ['NO_QUESTIONS_DETECTED', 'INVALID_CAPTURE_IMAGE'].includes(error.code);
-    const updated = await updateJob(env, jobId, {
-      status: quotaError(message) ? 'waiting_quota' : review ? 'needs_review' : 'failed_retryable',
-      progress: 15,
-      message: quotaError(message)
-        ? '免费额度暂不可用，原图已保留并可次日重试'
-        : review ? '自动裁剪未得到可靠结果，原图已进入待处理'
-          : '后台处理暂时失败，原图仍安全保存，可重试',
-      error: message.slice(0, 1000),
-    });
-    if (!quotaError(message) && !review) throw error;
-    return { ok: false, job: updated };
+    return handleCaptureFailure(env, jobId, error);
   }
+}
+
+export async function processCaptureBatch(env, jobId) {
+  const detection = await detectCaptureBatch(env, jobId);
+  return saveDetectedCaptureBatch(env, detection);
 }
 
 export const CAPTURE_JOB_ROOT = JOB_ROOT;

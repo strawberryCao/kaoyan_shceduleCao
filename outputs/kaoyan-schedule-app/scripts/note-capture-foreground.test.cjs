@@ -17,7 +17,7 @@ test('mobile multi-question capture leaves the foreground after durable local en
   const block = source.slice(start, end);
   assert.match(block, /await enqueueMultiQuestionJob\(sourceImage\.src/);
   assert.match(block, /setMobileStep\('success'\)/);
-  assert.match(block, /无需停留或逐题确认/);
+  assert.match(block, /稍后从活动中心逐题确认/);
   assert.doesNotMatch(block, /detectQuestionRegions/);
   assert.doesNotMatch(block, /cropManyImages/);
   assert.doesNotMatch(block, /setMobileStep\('batch'\)/);
@@ -27,8 +27,12 @@ test('single, multi-question and resulting image batches all use durable idempot
   assert.match(source, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(source, /await enqueueMultiQuestionJob\(sourceImage\.src/);
   assert.match(jobs, /await putJob\(job\)/);
-  assert.match(jobs, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(jobs, /imageBlob\?: Blob/);
+  assert.match(jobs, /uploading\.imageBlob \? await blobToDataUrl\(uploading\.imageBlob\) : uploading\.imageDataUrl/);
+  assert.match(jobs, /await createCaptureBatch\(imageDataUrl/);
   assert.match(jobs, /serverJobId/);
+  assert.match(jobs, /loadMultiQuestionJobForReview/);
+  assert.match(jobs, /completeMultiQuestionReview/);
   assert.doesNotMatch(jobs, /cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
   assert.match(queue, /noteUids/);
   assert.match(queue, /UPLOAD_LEASE_MS/);

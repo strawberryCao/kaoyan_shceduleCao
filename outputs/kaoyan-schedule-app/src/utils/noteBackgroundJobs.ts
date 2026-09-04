@@ -2,8 +2,10 @@ import {
   createCaptureBatch,
   getCaptureBatchJob,
   IS_CLOUD_RUNTIME,
+  NOTE_SERVER_URL,
   retryCaptureBatchJob,
 } from './notes';
+import { fetchLearningData } from './learningData';
 
 export type MultiQuestionJobStatus =
   | 'queued'
@@ -13,12 +15,15 @@ export type MultiQuestionJobStatus =
   | 'completed'
   | 'needs_review'
   | 'waiting_quota'
+  | 'cancelled'
   | 'failed';
 
 export interface MultiQuestionJob {
   id: string;
   serverJobId: string;
+  sourceEntryId?: string;
   imageDataUrl: string;
+  imageBlob?: Blob;
   subject: string;
   remark: string;
   status: MultiQuestionJobStatus;
@@ -38,9 +43,16 @@ const DB_NAME = 'kaoyan-note-background-v2';
 const STORE_NAME = 'multi-question-jobs';
 const DB_VERSION = 1;
 const EVENT_NAME = 'kaoyan-multi-question-job-changed';
-const RETRY_DELAYS = [1_500, 5_000, 20_000, 60_000];
 const activeJobs = new Set<string>();
 let databasePromise: Promise<IDBDatabase> | null = null;
+
+const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => (await fetch(dataUrl)).blob();
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error ?? new Error('本机裁题原图读取失败。'));
+  reader.readAsDataURL(blob);
+});
 
 const emit = (job: MultiQuestionJob) => {
   window.dispatchEvent(new CustomEvent(EVENT_NAME, { detail: job }));
@@ -92,6 +104,7 @@ const putJob = async (job: MultiQuestionJob): Promise<MultiQuestionJob> => {
   await requestResult(transaction.objectStore(STORE_NAME).put(job));
   await committed;
   emit(job);
+  void import('./activityTasks').then(({ mirrorCropActivity }) => mirrorCropActivity(job)).catch(() => undefined);
   return job;
 };
 
@@ -101,6 +114,7 @@ const removeJob = async (id: string): Promise<void> => {
   const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).delete(id));
   await committed;
+  void import('./activityTasks').then(({ removeActivityTask }) => removeActivityTask(`crop:${id}`)).catch(() => undefined);
 };
 
 const patchJob = async (id: string, patch: Partial<MultiQuestionJob>): Promise<MultiQuestionJob> => {
@@ -110,6 +124,7 @@ const patchJob = async (id: string, patch: Partial<MultiQuestionJob>): Promise<M
 };
 
 const localStatus = (status: string): MultiQuestionJobStatus => {
+  if (status === 'cancelled') return 'cancelled';
   if (status === 'completed') return 'completed';
   if (status === 'processing') return 'processing';
   if (status === 'waiting_quota') return 'waiting_quota';
@@ -129,6 +144,7 @@ const pollServerJob = async (job: MultiQuestionJob): Promise<void> => {
       progress: Number(response.job.progress) || 0,
       message: response.job.message || '原图已保存，后台任务处理中',
       error: response.job.error || '',
+      sourceEntryId: response.job.entryId || response.job.parentEntryId || job.sourceEntryId,
       detectedCount: response.job.resultEntryIds?.length || 0,
       savedNoteUids: response.job.resultEntryIds || [],
       completedAt: completed ? new Date().toISOString() : '',
@@ -150,13 +166,15 @@ const submitOriginal = async (job: MultiQuestionJob): Promise<void> => {
     error: '',
   });
   try {
-    const response = await createCaptureBatch(uploading.imageDataUrl, {
+    const imageDataUrl = uploading.imageBlob ? await blobToDataUrl(uploading.imageBlob) : uploading.imageDataUrl;
+    const response = await createCaptureBatch(imageDataUrl, {
       batchId: uploading.id,
       subject: uploading.subject,
       remark: uploading.remark,
     });
     const submitted = await patchJob(job.id, {
       serverJobId: response.jobId,
+      sourceEntryId: response.entryId || response.job.entryId || response.job.parentEntryId || '',
       imageDataUrl: '',
       status: localStatus(response.job.status),
       progress: Number(response.job.progress) || 5,
@@ -171,8 +189,6 @@ const submitOriginal = async (job: MultiQuestionJob): Promise<void> => {
       message: '上传未确认，原图仍保留在本机队列，稍后自动重试',
       error: message,
     });
-    const delay = RETRY_DELAYS[Math.min(RETRY_DELAYS.length - 1, Number(uploading.attempts) - 1)];
-    window.setTimeout(() => { void resumeOne(job.id); }, delay);
   }
 };
 
@@ -183,7 +199,7 @@ const resumeOne = async (id: string): Promise<void> => {
   activeJobs.add(id);
   try {
     if (job.serverJobId) await pollServerJob(job);
-    else if (job.imageDataUrl && ['queued', 'failed', 'uploading'].includes(job.status)) await submitOriginal(job);
+    else if ((job.imageBlob || job.imageDataUrl) && ['queued', 'failed', 'uploading'].includes(job.status)) await submitOriginal(job);
   } finally {
     activeJobs.delete(id);
   }
@@ -194,10 +210,13 @@ export const enqueueMultiQuestionJob = async (
   options: { subject?: string; remark?: string } = {},
 ): Promise<MultiQuestionJob> => {
   const now = new Date().toISOString();
+  const imageBlob = await dataUrlToBlob(imageDataUrl);
   const job: MultiQuestionJob = {
     id: `batch-${crypto.randomUUID()}`,
     serverJobId: '',
-    imageDataUrl,
+    sourceEntryId: '',
+    imageDataUrl: '',
+    imageBlob,
     subject: options.subject?.trim() || '默认文件夹',
     remark: options.remark?.trim() || '',
     status: 'queued',
@@ -238,14 +257,23 @@ export const resumeMultiQuestionJobs = async (): Promise<void> => {
       await removeJob(job.id);
       continue;
     }
-    if (!['completed', 'needs_review', 'waiting_quota'].includes(job.status)) {
-      window.setTimeout(() => { void resumeOne(job.id); }, 0);
-    }
+    // Keep unfinished work visible. It resumes only after a user presses retry.
   }
 };
 
 export const retryMultiQuestionJob = async (id: string): Promise<MultiQuestionJob> => {
   const current = await readJob(id);
+  if (current && !current.serverJobId && (current.imageBlob || current.imageDataUrl)) {
+    const queued = await patchJob(id, {
+      status: 'queued',
+      progress: 0,
+      message: '已重新加入本机上传队列',
+      error: '',
+      completedAt: '',
+    });
+    window.setTimeout(() => { void resumeOne(id); }, 0);
+    return queued;
+  }
   if (!current?.serverJobId) throw new Error('这条任务还没有取得服务器任务编号。');
   const retry = await retryCaptureBatchJob(current.serverJobId);
   const next = await patchJob(id, {
@@ -258,6 +286,64 @@ export const retryMultiQuestionJob = async (id: string): Promise<MultiQuestionJo
   });
   if (retry.accepted) window.setTimeout(() => { void resumeOne(id); }, 1_000);
   return next;
+};
+
+export const loadMultiQuestionJobForReview = async (id: string): Promise<{
+  job: MultiQuestionJob;
+  imageDataUrl: string;
+}> => {
+  let job = await readJob(id);
+  if (!job) throw new Error('这条多题审核任务不存在。');
+  if (job.imageBlob) return { job, imageDataUrl: await blobToDataUrl(job.imageBlob) };
+  if (job.imageDataUrl) return { job, imageDataUrl: job.imageDataUrl };
+
+  if (!job.sourceEntryId && job.serverJobId) {
+    const response = await getCaptureBatchJob(job.serverJobId);
+    const sourceEntryId = response.job.entryId || response.job.parentEntryId || '';
+    if (sourceEntryId) job = await patchJob(job.id, { sourceEntryId });
+  }
+  const sourceEntryId = job.sourceEntryId;
+  if (!sourceEntryId) throw new Error('原图索引缺失；任务记录仍保留，请从学习中心打开“AI多题原图”。');
+  const snapshot = await fetchLearningData();
+  const sourceNote = Object.values(snapshot.days || {})
+    .flatMap((day) => Array.isArray(day.autoNotes) ? day.autoNotes : [])
+    .find((note) => note.noteUid === sourceEntryId);
+  const sourceAttachment = sourceNote?.attachments?.find((attachment) => attachment.kind === 'image')
+    || sourceNote?.attachments?.[0];
+  const filePath = sourceAttachment?.filePath || sourceNote?.filePath || '';
+  if (!filePath) throw new Error('找不到这条任务保存的整页原图。');
+  const response = await fetch(`${NOTE_SERVER_URL}/note-file?path=${encodeURIComponent(filePath)}`, {
+    credentials: 'same-origin',
+    cache: 'no-store',
+  });
+  if (!response.ok) throw new Error(`整页原图读取失败（${response.status}）。`);
+  return { job, imageDataUrl: await blobToDataUrl(await response.blob()) };
+};
+
+export const completeMultiQuestionReview = async (id: string, savedNoteUids: string[]): Promise<MultiQuestionJob> => (
+  patchJob(id, {
+    status: 'completed',
+    progress: 100,
+    message: `逐题审核完成，已保存 ${savedNoteUids.length} 道题`,
+    error: '',
+    detectedCount: savedNoteUids.length,
+    savedNoteUids,
+    imageDataUrl: '',
+    imageBlob: undefined,
+    completedAt: new Date().toISOString(),
+  })
+);
+
+export const cancelMultiQuestionJob = async (id: string): Promise<void> => {
+  const current = await readJob(id);
+  if (!current || current.status === 'completed') return;
+  await patchJob(id, {
+    status: 'cancelled',
+    message: '已停止自动处理；原图和当前结果仍保留，可进入审核或稍后重试',
+    error: '',
+    completedAt: '',
+  });
+  await import('./activityTasks').then(({ patchActivityTask }) => patchActivityTask(`crop:${id}`, { status: 'cancelled', canCancel: false, canRetry: true }));
 };
 
 export const subscribeMultiQuestionJobs = (listener: (job: MultiQuestionJob) => void): (() => void) => {

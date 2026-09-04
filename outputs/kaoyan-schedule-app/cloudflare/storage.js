@@ -85,7 +85,7 @@ export async function compareAndSwapLearningState(env, current, snapshot, update
     await commitFiles(env, {
       expectedHeadSha: head,
       message: `cloud: update learning data to revision ${stored.revision}`,
-      files: [{ path: LEARNING_PATH, content: `${JSON.stringify(stored, null, 2)}\n` }],
+      files: [{ path: LEARNING_PATH, content: `${JSON.stringify(stored)}\n` }],
     });
     return stored;
   } catch (error) {

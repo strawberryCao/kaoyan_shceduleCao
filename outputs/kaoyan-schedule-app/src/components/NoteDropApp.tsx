@@ -21,22 +21,26 @@ import {
 import {
   createNoteUid,
   detectQuestionRegions,
-  fileToDataUrl,
+  imageFileToCaptureDataUrl,
   IS_CLOUD_RUNTIME,
   NOTE_SERVER_URL,
+  fetchNoteVisionModelChoices,
   saveNoteImage,
   saveNoteImagesBatch,
+  type NoteAiSelection,
+  type NoteVisionModelChoice,
 } from '../utils/notes';
 import { cropImageDataUrl, cropManyImages, type NormalizedCrop } from '../utils/imageCrop';
 import { saveLearningDataCache } from '../utils/learningData';
 import {
+  completeMultiQuestionReview,
   enqueueMultiQuestionJob,
+  loadMultiQuestionJobForReview,
   retryMultiQuestionJob,
-  resumeMultiQuestionJobs,
   subscribeMultiQuestionJobs,
   type MultiQuestionJob,
 } from '../utils/noteBackgroundJobs';
-import { enqueueCaptureUpload, installCaptureUploadResumer, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
+import { enqueueCaptureUpload, getCaptureUploadSummary, subscribeCaptureUploads, type CaptureUploadSummary } from '../utils/captureUploadQueue';
 import { fetchWithTimeout } from '../utils/localService';
 import { ImageCropEditor } from './ImageCropEditor';
 import { QuickMaterialComposer } from './QuickMaterialComposer';
@@ -73,8 +77,70 @@ const clipboardFileExtension = (mime: string): string => {
 };
 
 const mobileMediaQuery = '(max-width: 760px), (pointer: coarse) and (max-width: 1024px)';
+const NOTE_AI_SELECTION_KEY = 'kaoyan.noteApp.aiSelection.v1';
+const PROVIDER_LABELS: Record<string, string> = { qwen: '千问', kimi: 'Kimi', gemini: 'Gemini', deepseek: 'DeepSeek' };
+const DEFAULT_AI_SELECTION: NoteAiSelection = { mode: 'auto-light' };
+
+const storedAiSelection = (): NoteAiSelection => {
+  try {
+    const value = JSON.parse(localStorage.getItem(NOTE_AI_SELECTION_KEY) || 'null') as NoteAiSelection | null;
+    if (value && ['auto-light', 'auto-advanced', 'model', 'off'].includes(value.mode)) return value;
+  } catch {
+    // A damaged preference must not block note capture.
+  }
+  return DEFAULT_AI_SELECTION;
+};
+
+const selectionValue = (selection: NoteAiSelection) => selection.mode === 'model'
+  ? `model:${selection.providerId || ''}:${selection.modelId || ''}` : selection.mode;
+
+const parseSelectionValue = (value: string): NoteAiSelection => {
+  if (value.startsWith('model:')) {
+    const [, providerId, ...modelParts] = value.split(':');
+    return { mode: 'model', providerId, modelId: modelParts.join(':') };
+  }
+  return { mode: value as NoteAiSelection['mode'] };
+};
+
+function NoteAiSelectionField({ selection, models, disabled, onChange }: {
+  selection: NoteAiSelection;
+  models: NoteVisionModelChoice[];
+  disabled: boolean;
+  onChange: (selection: NoteAiSelection) => void;
+}) {
+  const currentValue = selectionValue(selection);
+  const selectedModelAvailable = selection.mode !== 'model' || models.some((model) => (
+    `model:${model.providerId}:${model.modelId}` === currentValue
+  ));
+  return (
+    <label className="note-ai-selection">
+      <span><Sparkles size={14} />识别 AI <small>会记住选择</small></span>
+      <select
+        aria-label="选择本次笔记使用的 AI"
+        value={currentValue}
+        disabled={disabled}
+        onChange={(event) => onChange(parseSelectionValue(event.target.value))}
+      >
+        <option value="auto-light">自动 · 轻量省额度</option>
+        <option value="auto-advanced">自动 · 高质量</option>
+        {!selectedModelAvailable && selection.mode === 'model' && (
+          <option value={currentValue}>
+            {PROVIDER_LABELS[selection.providerId || ''] || selection.providerId} · {selection.modelId}（已记住，当前配置未返回）
+          </option>
+        )}
+        {models.map((model) => (
+          <option key={`${model.providerId}:${model.modelId}`} value={`model:${model.providerId}:${model.modelId}`}>
+            {PROVIDER_LABELS[model.providerId] || model.providerId} · {model.modelId}
+          </option>
+        ))}
+        <option value="off">暂不使用 AI</option>
+      </select>
+    </label>
+  );
+}
 
 export function NoteDropApp() {
+  const requestedReviewJobId = new URLSearchParams(window.location.search).get('reviewJob') || '';
   const galleryInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const remarkRef = useRef<HTMLTextAreaElement>(null);
@@ -83,9 +149,9 @@ export function NoteDropApp() {
   const dragDepthRef = useRef(0);
   const detectionRunRef = useRef(0);
   const [isMobileCapture, setIsMobileCapture] = useState(() => (
-    !window.kaoyanDesktop?.isElectron
+    Boolean(requestedReviewJobId) || (!window.kaoyanDesktop?.isElectron
     && typeof window.matchMedia === 'function'
-    && window.matchMedia(mobileMediaQuery).matches
+    && window.matchMedia(mobileMediaQuery).matches)
   ));
   const [pendingImage, setPendingImage] = useState<PendingImage | null>(null);
   const [sourceImage, setSourceImage] = useState<PendingImage | null>(null);
@@ -103,9 +169,29 @@ export function NoteDropApp() {
   const [batchRemark, setBatchRemark] = useState('');
   const [materialOpen, setMaterialOpen] = useState(false);
   const [backgroundJob, setBackgroundJob] = useState<MultiQuestionJob | null>(null);
+  const [activeReviewJobId, setActiveReviewJobId] = useState(requestedReviewJobId);
   const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
+  const [aiSelection, setAiSelection] = useState<NoteAiSelection>(storedAiSelection);
+  const [visionModels, setVisionModels] = useState<NoteVisionModelChoice[]>([]);
 
   useEffect(() => {
+    let active = true;
+    void fetchNoteVisionModelChoices().then((models) => {
+      if (active) setVisionModels(models);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const updateAiSelection = useCallback((next: NoteAiSelection) => {
+    setAiSelection(next);
+    try { localStorage.setItem(NOTE_AI_SELECTION_KEY, JSON.stringify(next)); } catch { /* local persistence is optional */ }
+  }, []);
+
+  useEffect(() => {
+    if (requestedReviewJobId) {
+      setIsMobileCapture(true);
+      return undefined;
+    }
     if (window.kaoyanDesktop?.isElectron) {
       setIsMobileCapture(false);
       return undefined;
@@ -116,11 +202,39 @@ export function NoteDropApp() {
     update();
     media.addEventListener?.('change', update);
     return () => media.removeEventListener?.('change', update);
+  }, [requestedReviewJobId]);
+
+  const openMultiQuestionReview = useCallback(async (jobId: string) => {
+    setSaving(true);
+    setDialogError('');
+    try {
+      const restored = await loadMultiQuestionJobForReview(jobId);
+      setActiveReviewJobId(jobId);
+      setBackgroundJob(restored.job);
+      setSourceImage({ src: restored.imageDataUrl, noteUid: restored.job.sourceEntryId || restored.job.id });
+      setBatchSubject(restored.job.subject || '默认文件夹');
+      setBatchRemark(restored.job.remark || '');
+      setBatchImages([]);
+      setBatchProgress('原图已恢复，请先确认整页范围。');
+      setSaved(false);
+      setMobileStep('multi-crop');
+    } catch (error) {
+      setDialogError(error instanceof Error ? error.message : '无法恢复这条多题审核任务。');
+      setMobileStep('success');
+    } finally {
+      setSaving(false);
+    }
   }, []);
+
+  useEffect(() => {
+    if (!requestedReviewJobId) return;
+    void openMultiQuestionReview(requestedReviewJobId);
+  }, [openMultiQuestionReview, requestedReviewJobId]);
 
   useEffect(() => {
     if (!isMobileCapture) return undefined;
     const dispose = subscribeMultiQuestionJobs((job) => {
+      if (activeReviewJobId && job.id !== activeReviewJobId) return;
       setBackgroundJob(job);
       const progress = job.progress > 0 && !['completed', 'failed', 'needs_review'].includes(job.status)
         ? ` ${job.progress}%`
@@ -128,17 +242,15 @@ export function NoteDropApp() {
       setStatus(`${job.message || '后台任务状态已更新'}${progress}`);
       if (['failed', 'needs_review'].includes(job.status) && job.error) setDialogError(job.error);
     });
-    void resumeMultiQuestionJobs();
     return dispose;
-  }, [isMobileCapture]);
+  }, [activeReviewJobId, isMobileCapture]);
 
   useEffect(() => {
     if (!IS_CLOUD_RUNTIME) return undefined;
-    const disposeResumer = installCaptureUploadResumer();
     const disposeSubscription = subscribeCaptureUploads(setUploadSummary);
+    void getCaptureUploadSummary().then(setUploadSummary).catch(() => undefined);
     return () => {
       disposeSubscription();
-      disposeResumer();
     };
   }, []);
 
@@ -164,6 +276,8 @@ export function NoteDropApp() {
     setBatchProgress('');
     setBatchSubject('默认文件夹');
     setBatchRemark('');
+    setActiveReviewJobId('');
+    setBackgroundJob(null);
     setMobileStep('capture');
   }, []);
 
@@ -178,7 +292,7 @@ export function NoteDropApp() {
     }
 
     try {
-      const src = await fileToDataUrl(file);
+      const src = await imageFileToCaptureDataUrl(file, 2560);
       const next = { src, noteUid: createNoteUid() };
       setRemark('');
       setSaved(false);
@@ -341,6 +455,7 @@ export function NoteDropApp() {
       noteUid: pendingImage.noteUid,
       remark,
       sourceType: 'single-capture',
+      aiSelection,
     };
     try {
       setSaving(true);
@@ -443,7 +558,7 @@ export function NoteDropApp() {
       setBatchImages([]);
       setBatchProgress('');
       setSaved(true);
-      setStatus(job.message || '整页原图已安全保存，可以离开当前页面，无需停留或逐题确认');
+      setStatus(job.message || '整页原图已安全保存，可以离开当前页面，稍后从活动中心逐题确认');
       setMobileStep('success');
     } catch (error) {
       setDialogError(error instanceof Error ? error.message : '无法加入后台多题队列，请重试。');
@@ -479,8 +594,10 @@ export function NoteDropApp() {
       kind: 'single' as const,
       noteUid: item.noteUid,
       subject: batchSubject,
+      subjectLocked: batchSubject !== '默认文件夹',
       remark: batchRemark,
       sourceType: 'ai-multi-question',
+      aiSelection,
       sourceBatchId: sourceImage?.noteUid || '',
       sourceSplitIndex: index + 1,
       tags: ['AI多题拆分'],
@@ -492,6 +609,9 @@ export function NoteDropApp() {
         await enqueueCaptureUpload(payloads);
       } else {
         await saveBatchReliably(payloads, setBatchProgress);
+      }
+      if (activeReviewJobId) {
+        await completeMultiQuestionReview(activeReviewJobId, selected.map((item) => item.noteUid));
       }
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
@@ -517,6 +637,10 @@ export function NoteDropApp() {
 
   const minimizeWindow = () => window.kaoyanDesktop?.minimize();
   const closeWindow = () => {
+    if (activeReviewJobId || requestedReviewJobId) {
+      window.location.assign(`${window.location.origin}/?activity=1`);
+      return;
+    }
     if (IS_CLOUD_RUNTIME) {
       window.location.assign(`${window.location.origin}/?hub=1`);
       return;
@@ -656,7 +780,7 @@ export function NoteDropApp() {
             <button className="ai" type="button" onClick={() => void startMultiQuestion()} disabled={saving}>
               <span><Layers3 size={22} /></span>
               <strong>{saving ? '正在加入后台…' : '多题自动拆分'}</strong>
-              <small>原图先秒存；AI 后台拆分并自动保存，不再逐题确认</small>
+              <small>原图先秒存；完成后可从活动中心逐题确认</small>
               <em><Sparkles size={13} />AI</em>
             </button>
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
@@ -687,6 +811,7 @@ export function NoteDropApp() {
                 placeholder="例如：p128 例4.2，隐函数二阶导错题"
               />
             </label>
+            <NoteAiSelectionField selection={aiSelection} models={visionModels} disabled={saving} onChange={updateAiSelection} />
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
             <div className="mobile-review-actions">
               <button type="button" onClick={() => setMobileStep('crop')} disabled={saving}><Crop size={17} />重新裁剪</button>
@@ -728,7 +853,7 @@ export function NoteDropApp() {
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
             {batchProgress && <p className="mobile-batch-progress"><LoaderCircle size={16} />{batchProgress}</p>}
             <footer>
-              <button type="button" onClick={() => void startMultiQuestion()} disabled={saving}><Sparkles size={17} />重新识别</button>
+              <button type="button" onClick={() => sourceImage && void buildDetectedBatch(sourceImage.src, sourceImage.noteUid)} disabled={saving || !sourceImage}><Sparkles size={17} />重新识别</button>
               <button className="primary" type="button" onClick={() => void saveBatch()} disabled={saving || batchImages.every((item) => !item.enabled)}>
                 <Save size={18} />{saving ? '处理中…' : `保存 ${batchImages.filter((item) => item.enabled).length} 道题`}
               </button>
@@ -754,17 +879,32 @@ export function NoteDropApp() {
               </div>
             )}
             {backgroundJob && ['failed', 'needs_review'].includes(backgroundJob.status) && (
-              <button type="button" onClick={() => {
-                setDialogError('');
-                void retryMultiQuestionJob(backgroundJob.id).catch((error) => {
-                  setDialogError(error instanceof Error ? error.message : '重试失败，请稍后再试。');
-                });
-              }}>
-                <Sparkles size={18} />重试 AI 裁剪
-              </button>
+              <>
+                {backgroundJob.error && <p className="mobile-capture-error" role="alert">{backgroundJob.error}</p>}
+                {backgroundJob.status === 'needs_review' ? (
+                  <button type="button" onClick={() => void openMultiQuestionReview(backgroundJob.id)}>
+                    <Crop size={18} />进入逐题审核
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => {
+                    setDialogError('');
+                    void retryMultiQuestionJob(backgroundJob.id).catch((error) => {
+                      setDialogError(error instanceof Error ? error.message : '重试失败，请稍后再试。');
+                    });
+                  }}>
+                    <Sparkles size={18} />重试 AI 裁剪
+                  </button>
+                )}
+              </>
             )}
             {dialogError && <p className="mobile-capture-error" role="alert">{dialogError}</p>}
-            <button className="primary" type="button" onClick={resetMobileCapture}><Camera size={19} />继续拍题</button>
+            <button className="primary" type="button" onClick={() => {
+              if (activeReviewJobId || requestedReviewJobId) {
+                window.location.assign(`${window.location.origin}/?noteApp=1`);
+                return;
+              }
+              resetMobileCapture();
+            }}><Camera size={19} />继续拍题</button>
             <button type="button" onClick={() => window.location.assign(`${window.location.origin}/?panel=learning&view=uncategorized`)}>查看普通笔记</button>
           </section>
         )}
@@ -864,6 +1004,7 @@ export function NoteDropApp() {
             </header>
             <figure><img src={pendingImage.src} alt="待保存的笔记图片" /></figure>
             <textarea ref={remarkRef} aria-label="备注" value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="补充一句（可选）" />
+            <NoteAiSelectionField selection={aiSelection} models={visionModels} disabled={saving} onChange={updateAiSelection} />
             {dialogError && <p className="note-remark-error" id="note-remark-error" role="alert">{dialogError}</p>}
             <div className="note-remark-actions">
               <button type="button" onClick={() => galleryInputRef.current?.click()} disabled={saving}><ImagePlus size={15} /> 换一张</button>

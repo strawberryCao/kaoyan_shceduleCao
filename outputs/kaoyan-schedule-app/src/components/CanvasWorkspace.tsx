@@ -1274,7 +1274,7 @@ const [documentState, setDocumentState] = useState<CanvasDocument>(makeInitialDo
   const viewportPersistTimerRef = useRef<number | null>(null);
   const [directoryOpen, setDirectoryOpen] = useState(() => directoryInitiallyOpen && !isCoarsePointerDevice());
   const [helpOpen, setHelpOpen] = useState(false);
-  const [status, setStatus] = useState('Apple Pencil 已进入钢笔模式；双指移动或缩放画布。');
+  const [status, setStatus] = useState('触控笔可直接书写；触摸屏上用双指移动或缩放画布。');
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const spacePressedRef = useRef(false);
@@ -2624,7 +2624,7 @@ const [documentState, setDocumentState] = useState<CanvasDocument>(makeInitialDo
     };
     lastLiveInkSentAtRef.current = 0;
     setActiveGesture({ type: 'ink', pointerId: event.pointerId, stroke, originDocument });
-    setStatus(isStylus ? 'Apple Pencil 书写中 · 已启用压感与掌触抑制' : `${inkTool === 'highlighter' ? '荧光笔' : '钢笔'}书写中`);
+    setStatus(isStylus ? '触控笔书写中 · 已启用压感与掌触抑制' : `${inkTool === 'highlighter' ? '荧光笔' : '钢笔'}书写中`);
   };
 
   const handleCanvasPointerMoveCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -2956,7 +2956,7 @@ const handleViewportWheel = useCallback((event: WheelEvent) => {
     setTool(next);
     const messages: Record<CanvasTool, string> = {
       select: '选择模式：空白处拖框可多选；拖动所选内容可整组移动，右下角可调大小。',
-      pen: '钢笔：Apple Pencil 与鼠标可书写；书写时双指移动或缩放。',
+      pen: '钢笔：触控笔与鼠标均可书写；书写时双指移动或缩放。',
       highlighter: '荧光笔：半透明标记会保留纸面与图片细节。',
       eraser: '笔划橡皮擦：触碰一条笔迹即可整条擦除。',
       text: '自由文字：点击画布任意位置放置文字卡。',
@@ -3396,7 +3396,7 @@ const handleViewportWheel = useCallback((event: WheelEvent) => {
           <button className="cw-focus-button" onClick={toggleFocusMode} title={focusMode ? '退出专注画布' : '放大为专注画布'}>
             {focusMode ? <Minimize2 size={17} /> : <Maximize2 size={17} />}<span>{focusMode ? '退出专注' : '专注'}</span>
           </button>
-          <button onClick={() => imageInputRef.current?.click()} title="添加图片（I）"><ImagePlus size={17} /><span>图片</span></button>
+          <button className="cw-mobile-add" onClick={() => imageInputRef.current?.click()} title="添加图片（I）"><ImagePlus size={17} /><span>添加</span></button>
           <button onClick={undo} disabled={past.length === 0} title="撤销（Ctrl+Z）"><Undo2 size={17} /></button>
           <button onClick={redo} disabled={future.length === 0} title="重做（Ctrl+Shift+Z）"><Redo2 size={17} /></button>
           <button className="cw-delete-selection" onClick={deleteSelected} disabled={selection.length === 0} title="删除所选内容"><Trash2 size={17} /><span>删除</span></button>
@@ -3757,7 +3757,7 @@ const handleViewportWheel = useCallback((event: WheelEvent) => {
       {documentState.images.length === 0 && documentState.texts.length === 0 && documentState.annotations.length === 0 && documentState.relations.length === 0 && visibleInkStrokes.length === 0 && (
         <button className="cw-empty-state" onClick={() => imageInputRef.current?.click()}>
           <PenLine size={38} />
-          <strong>Apple Pencil 直接落笔</strong>
+          <strong>触控笔直接落笔</strong>
           <span>钢笔模式下双指移动/缩放；切换文字、批注等工具可精确操作</span>
         </button>
       )}
@@ -3769,7 +3769,7 @@ const handleViewportWheel = useCallback((event: WheelEvent) => {
             <dl>
               <div><dt>V</dt><dd>选择；空白处拖框多选，拖动可整组移动</dd></div>
               <div><dt>P / H / E</dt><dd>钢笔 / 荧光笔 / 笔划橡皮擦</dd></div>
-              <div><dt>Apple Pencil</dt><dd>执行当前工具：钢笔可书写，文字/批注可精确放置</dd></div>
+              <div><dt>触控笔</dt><dd>执行当前工具：钢笔可书写，文字/批注可精确放置</dd></div>
               <div><dt>单指 / 双指</dt><dd>平移画布 / 以双指中心缩放</dd></div>
               <div><dt>T</dt><dd>在任意位置放自由文字</dd></div>
               <div><dt>A</dt><dd>点锚或拖框精确批注</dd></div>

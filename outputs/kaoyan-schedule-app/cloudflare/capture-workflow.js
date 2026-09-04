@@ -1,20 +1,34 @@
 import { WorkflowEntrypoint } from 'cloudflare:workers';
-import { processCaptureBatch } from './capture-batches.js';
+import { detectCaptureBatch, saveDetectedCaptureBatch } from './capture-batches.js';
 
 export class CaptureWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const jobId = event?.payload?.jobId;
+    const forceRewrite = event?.payload?.forceRewrite === true;
+    const detection = await step.do(
+      'recognize complete question regions',
+      {
+        retries: {
+          limit: 1,
+          delay: '10 seconds',
+          backoff: 'exponential',
+        },
+        timeout: '8 minutes',
+      },
+      () => detectCaptureBatch(this.env, jobId, { forceRewrite }),
+    );
+    if (!detection?.ok || detection.skipSave) return detection;
     return step.do(
-      'recognize crop and atomically save results',
+      'crop and atomically save results',
       {
         retries: {
           limit: 2,
           delay: '10 seconds',
           backoff: 'exponential',
         },
-        timeout: '3 minutes',
+        timeout: '5 minutes',
       },
-      () => processCaptureBatch(this.env, jobId),
+      () => saveDetectedCaptureBatch(this.env, detection),
     );
   }
 }

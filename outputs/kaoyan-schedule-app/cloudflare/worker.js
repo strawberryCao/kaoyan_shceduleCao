@@ -29,13 +29,14 @@ import {
   listBackgroundJobs,
   processBackgroundJob,
 } from './background-jobs.js';
+import { runConfiguredMaterialNaming } from './material-naming.js';
 import { getNoteFile, saveNote, saveNoteBatch } from './media.js';
 import { appendEntryAssets, createEntry, getAssetRecord, getEntry, listEntries, patchEntry } from './entries.js';
 import { createCaptureBatch, getCaptureJob, retryCaptureJob } from './capture-batches.js';
 import { githubStorageInfo } from './github-store.js';
 import { readAppState, writeAppState } from './storage.js';
 import { searchLearningRecords } from './search.js';
-import { runConfiguredMaterialNaming } from './material-naming.js';
+import { generateHtmlWidget } from './widget-generation.js';
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -100,8 +101,13 @@ async function handleLearningRoute(request, env, pathname, ctx) {
 
   const noteRename = /^\/learning-data\/notes\/([^/]+)\/rename$/.exec(pathname);
   if (noteRename && request.method === 'POST') {
-    await readJson(request, 64 * 1024);
-    const { job, replayed } = await enqueueRenameJob(env, decodeURIComponent(noteRename[1]));
+    if (String(request.headers.get('X-Kaoyan-AI-Action') || '').trim().toLowerCase() !== 'user') {
+      throw new HttpError(409, 'AI 请求已被安全拦截：请在当前页面明确点击对应的 AI 按钮。', 'AI_EXPLICIT_ACTION_REQUIRED');
+    }
+    const payload = await readJson(request, 64 * 1024);
+    const { job, replayed } = await enqueueRenameJob(env, decodeURIComponent(noteRename[1]), {
+      operationId: payload.operationId,
+    });
     ctx?.waitUntil?.(processBackgroundJob(env, job.id));
     return json({ ok: true, accepted: true, replayed, job }, 202);
   }
@@ -283,6 +289,41 @@ async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'POST' && pathname === '/ai/detect-questions') {
     return json(await detectQuestions(env, await readJson(request, 28 * 1024 * 1024)));
   }
+  if (request.method === 'POST' && (pathname === '/ai/widget' || pathname === '/ai/html-note')) {
+    if (String(request.headers.get('X-Kaoyan-AI-Action') || '').trim().toLowerCase() !== 'user') {
+      throw new HttpError(409, 'AI 请求已被安全拦截：请在当前页面明确点击对应的 AI 按钮。', 'AI_EXPLICIT_ACTION_REQUIRED');
+    }
+    const requestId = crypto.randomUUID();
+    const startedAt = Date.now();
+    const taskId = pathname === '/ai/html-note' ? 'interactive_note_generation' : 'widget_generation';
+    console.log(JSON.stringify({ event: 'ai_html_started', requestId, taskId }));
+    try {
+      const result = await generateHtmlWidget(env, {
+        ...(await readJson(request, 64 * 1024)),
+        taskId,
+      });
+      const durationMs = Date.now() - startedAt;
+      console.log(JSON.stringify({
+        event: 'ai_html_completed',
+        requestId,
+        taskId,
+        durationMs,
+        provider: result.provider || '',
+        model: result.model || '',
+        attemptCount: Array.isArray(result.attempts) ? result.attempts.length : 0,
+      }));
+      return json({ ...result, requestId, durationMs });
+    } catch (error) {
+      console.log(JSON.stringify({
+        event: 'ai_html_failed',
+        requestId,
+        taskId,
+        durationMs: Date.now() - startedAt,
+        errorCode: error?.code || 'AI_HTML_FAILED',
+      }));
+      throw error;
+    }
+  }
   const jobResponse = await handleJobRoute(request, env, pathname, url, ctx);
   if (jobResponse) return jobResponse;
   const learningResponse = await handleLearningRoute(request, env, pathname, ctx);
@@ -305,10 +346,12 @@ async function handleApi(request, env, pathname, url, ctx) {
       body: payload.remark,
       kind: 'quick',
     });
-    if (!result.idempotentReplay && result.entry.assets.length > 0) {
-      ctx?.waitUntil?.(runConfiguredMaterialNaming(env, result.entry.entryId, {
+    if (!result.idempotentReplay && (result.entry.assets.length > 0 || !String(payload.title || '').trim())) {
+      const naming = runConfiguredMaterialNaming(env, result.entry.entryId, {
         userTitle: Boolean(String(payload.title || '').trim()),
-      }).catch(() => undefined));
+      }).catch(() => undefined);
+      if (ctx?.waitUntil) ctx.waitUntil(naming);
+      else await naming;
     }
     return json({
       ...result,
@@ -326,22 +369,24 @@ async function handleApi(request, env, pathname, url, ctx) {
   if (request.method === 'POST' && pathname === '/append-material-note') {
     const payload = await readJson(request, 24 * 1024 * 1024);
     const result = await appendEntryAssets(env, payload.noteUid, payload);
-    if (!result.idempotentReplay) {
-      ctx?.waitUntil?.(runConfiguredMaterialNaming(env, result.entry.entryId, {
+    if (!result.idempotentReplay && result.entry.assets.length > 0) {
+      const naming = runConfiguredMaterialNaming(env, result.entry.entryId, {
         userTitle: false,
-      }).catch(() => undefined));
+      }).catch(() => undefined);
+      if (ctx?.waitUntil) ctx.waitUntil(naming);
+      else await naming;
     }
     return json({
       ...result,
       noteUid: result.entry.entryId,
-      attachments: result.entry.assets.map((asset) => ({
+      attachments: result.attachments || result.entry.assets.map((asset) => ({
         id: asset.assetId,
         assetId: asset.assetId,
         kind: asset.kind,
         name: asset.originalFileName,
         mimeType: asset.mime,
         size: asset.size,
-        filePath: `github://${asset.path}`,
+        filePath: asset.legacyFilePath || `github://${asset.path}`,
         previewPath: '',
         posterPath: '',
         createdAt: asset.createdAt,
@@ -404,6 +449,8 @@ async function healthPayload(env, isPublic) {
     agentRuntime.error = error instanceof Error ? error.message : String(error);
   }
   const providerSecretValues = Object.values(agentRuntime.providerSecrets || {});
+  const externalAiExecutionReady = providerSecretValues.some((provider) => provider.configured && provider.cloudUsable);
+  const workersAiBound = Boolean(env.AI && typeof env.AI.run === 'function');
   return {
     ok: true,
     runtime: 'cloudflare-workers',
@@ -415,8 +462,10 @@ async function healthPayload(env, isPublic) {
     repository: github.repository,
     branch: github.branch,
     aiConfigured: agentRuntime.configured,
-    aiExecutionReady: providerSecretValues.some((provider) => provider.configured && provider.cloudUsable),
-    workersAiBound: Boolean(env.AI && typeof env.AI.run === 'function'),
+    aiExecutionReady: externalAiExecutionReady,
+    captureAiExecutionReady: agentRuntime.configured && (externalAiExecutionReady || workersAiBound),
+    externalAiExecutionReady,
+    workersAiBound,
     agentRuntime,
     cloudDeleteEnabled: false,
     d1Bound: false,
@@ -438,7 +487,6 @@ export async function handleRequest(request, env, ctx) {
     const authResponse = await requireSession(request, env);
     if (authResponse) return authResponse;
     enforceWriteRequest(request, url, pathname);
-    if (ctx?.waitUntil) ctx.waitUntil(kickPendingJobs(env, 1));
     return handleApi(request, env, pathname, url, ctx);
   }
 

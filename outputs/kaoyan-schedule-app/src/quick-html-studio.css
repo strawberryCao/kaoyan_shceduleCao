@@ -1,0 +1,161 @@
+.quick-html-studio {
+  --qh-ink: #302a24;
+  --qh-muted: #7a7066;
+  --qh-line: #ded4c8;
+  --qh-accent: #93602e;
+  display: grid;
+  gap: 17px;
+  margin: 20px 0 4px;
+  padding: clamp(17px, 2.3vw, 25px);
+  color: var(--qh-ink);
+  border: 1px solid var(--qh-line);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 92% 0, rgba(147, 96, 46, .09), transparent 34%),
+    linear-gradient(145deg, #fcfaf7 0%, #f7f3ed 100%);
+  box-shadow: 0 16px 38px rgba(55, 44, 32, .07);
+}
+.quick-html-studio > header,
+.quick-html-studio-heading,
+.quick-html-studio-header-actions,
+.quick-html-studio-context,
+.quick-html-studio-actions,
+.quick-html-studio-presets {
+  display: flex;
+  align-items: center;
+}
+.quick-html-studio > header { justify-content: space-between; gap: 18px; }
+.quick-html-studio-heading { align-items: flex-start; gap: 11px; }
+.quick-html-studio-heading > span:last-child { display: grid; gap: 3px; }
+.quick-html-studio-heading small {
+  color: var(--qh-accent);
+  font: 750 9px/1.2 Inter, "Microsoft YaHei", sans-serif;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.quick-html-studio-heading strong { font: 700 17px/1.35 "Songti SC", SimSun, "Microsoft YaHei", serif; }
+.quick-html-studio-heading em { color: var(--qh-muted); font: 400 11px/1.55 Inter, "Microsoft YaHei", sans-serif; font-style: normal; }
+.quick-html-studio-mark {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  color: #fffaf3;
+  border-radius: 11px;
+  background: linear-gradient(145deg, #a66e38, #7f4e23);
+  box-shadow: 0 7px 16px rgba(126, 77, 34, .2);
+}
+.quick-html-studio-header-actions { flex: 0 0 auto; gap: 7px; }
+.quick-html-studio-header-actions > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  color: #6d5b49;
+  border: 1px solid #ded2c4;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .64);
+  font: 650 9px/1 Inter, "Microsoft YaHei", sans-serif;
+}
+.quick-html-studio-header-actions > button {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  color: #756b62;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+}
+.quick-html-studio-header-actions > button:hover { color: #493b2f; background: rgba(147, 96, 46, .09); }
+.quick-html-studio-grid { display: grid; gap: 16px; }
+.quick-html-studio.has-preview .quick-html-studio-grid { grid-template-columns: minmax(260px, .82fr) minmax(360px, 1.18fr); align-items: stretch; }
+.quick-html-studio-compose { min-width: 0; display: grid; align-content: start; gap: 12px; }
+.quick-html-studio-context {
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 11px;
+  color: #6e5137;
+  border: 1px solid rgba(147, 96, 46, .16);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .56);
+}
+.quick-html-studio-context > span { min-width: 0; display: grid; gap: 1px; }
+.quick-html-studio-context small { color: #958474; font: 600 9px/1.25 Inter, "Microsoft YaHei", sans-serif; }
+.quick-html-studio-context strong { overflow: hidden; font: 650 11px/1.4 Inter, "Microsoft YaHei", sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.quick-html-studio label { display: grid; gap: 7px; }
+.quick-html-studio label > span { font: 700 12px/1.4 Inter, "Microsoft YaHei", sans-serif; }
+.quick-html-studio textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 116px;
+  padding: 12px 13px;
+  resize: vertical;
+  color: inherit;
+  border: 1px solid #d8cec2;
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, .78);
+  font: 400 12px/1.65 Inter, "Microsoft YaHei", sans-serif;
+}
+.quick-html-studio textarea:focus { border-color: rgba(147, 96, 46, .62); box-shadow: 0 0 0 3px rgba(147, 96, 46, .1); }
+.quick-html-studio textarea:disabled { color: #8b837a; background: #f2eee8; }
+.quick-html-studio-presets { flex-wrap: wrap; gap: 6px; }
+.quick-html-studio-presets > span { margin-right: 2px; color: #8b8177; font: 600 9px/1 Inter, "Microsoft YaHei", sans-serif; }
+.quick-html-studio-presets button {
+  min-height: 27px;
+  padding: 0 8px;
+  color: #6c5846;
+  border: 1px solid #ddd2c5;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .72);
+  font: 650 9px/1 Inter, "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+.quick-html-studio-presets button:hover:not(:disabled) { border-color: rgba(147, 96, 46, .42); background: #f4e9dc; }
+.quick-html-studio-actions { flex-wrap: wrap; gap: 8px; }
+.quick-html-studio-actions button {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  color: #62472f;
+  border: 1px solid #d7cbbb;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .78);
+  font: 700 10px/1 Inter, "Microsoft YaHei", sans-serif;
+  cursor: pointer;
+}
+.quick-html-studio-actions button.primary { color: #fffaf4; border-color: #8b5729; background: #93602e; }
+.quick-html-studio-actions button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 13px rgba(94, 62, 34, .1); }
+.quick-html-studio-actions button:disabled, .quick-html-studio-presets button:disabled { cursor: not-allowed; opacity: .52; }
+.quick-html-studio-status,
+.quick-html-studio-warning { margin: 0; padding: 8px 10px; border-radius: 8px; font: 600 10px/1.55 Inter, "Microsoft YaHei", sans-serif; }
+.quick-html-studio-status { color: #62594f; border: 1px solid #ded6cd; background: rgba(255, 255, 255, .58); }
+.quick-html-studio-warning { color: #795719; border: 1px solid #e1c990; background: #fff7e6; }
+.quick-html-studio-preview { min-width: 0; overflow: hidden; border: 1px solid #d9d0c5; border-radius: 12px; background: #f8f6f1; }
+.quick-html-studio-preview > div { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-bottom: 1px solid #ded7cd; background: #f0e9df; }
+.quick-html-studio-preview > div > span { min-width: 0; display: grid; gap: 2px; }
+.quick-html-studio-preview > div strong { overflow: hidden; color: #42382f; font: 700 11px/1.35 Inter, "Microsoft YaHei", sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.quick-html-studio-preview > div small { color: #817568; font: 500 9px/1.4 Inter, "Microsoft YaHei", sans-serif; overflow-wrap: anywhere; }
+.quick-html-studio-preview iframe { display: block; width: 100%; height: clamp(330px, 43vh, 510px); border: 0; background: #f8f6f1; }
+.quick-html-studio .is-spinning { animation: quick-html-studio-spin .8s linear infinite; }
+@keyframes quick-html-studio-spin { to { transform: rotate(360deg); } }
+@media(max-width: 1050px) {
+  .quick-html-studio.has-preview .quick-html-studio-grid { grid-template-columns: 1fr; }
+  .quick-html-studio-preview iframe { height: clamp(300px, 45vh, 460px); }
+}
+@media(max-width: 760px) {
+  .quick-html-studio { margin-top: 15px; padding: 15px; border-radius: 13px; }
+  .quick-html-studio > header { align-items: flex-start; }
+  .quick-html-studio-header-actions > span { display: none; }
+  .quick-html-studio-heading strong { font-size: 15px; }
+  .quick-html-studio-actions button { flex: 1 1 140px; }
+  .quick-html-studio-preview > div { align-items: flex-start; display: grid; }
+  .quick-html-studio-preview iframe { height: min(390px, 52vh); }
+}

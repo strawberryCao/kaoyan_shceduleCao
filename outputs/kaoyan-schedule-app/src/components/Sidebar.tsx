@@ -103,7 +103,7 @@ export function Sidebar({
         ))}
       </div>
 
-      <div className="date-list" aria-label="30 天日期列表" ref={dateListRef}>
+      <div className="date-list" aria-label="学习计划日期列表" ref={dateListRef}>
         {filteredDays.map((day) => {
           const dayNumber = getDateDistanceFromStart(day.date) + 1;
           return (

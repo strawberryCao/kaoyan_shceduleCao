@@ -140,8 +140,13 @@ function titleProblem(title, settings, ruleValue = '') {
   }).problem;
 }
 
+function namingTaskId(remark) {
+  return String(remark || '').trim() ? 'note_naming' : 'note_image_understanding';
+}
+
 async function generateTitle(env, image, settings, remark, repairReason = '', captureType = '手机单题拍照') {
-  const response = await runLocalAgentTask(env, 'note_naming', {
+  const taskId = namingTaskId(remark);
+  const response = await runLocalAgentTask(env, taskId, {
     messages: [{
       role: 'user',
       content: [
@@ -169,6 +174,7 @@ async function generateTitle(env, image, settings, remark, repairReason = '', ca
   return {
     title,
     subject,
+    taskId,
     problem: titleProblem(title, settings, matchedRule && ruleValue ? ruleValue : ''),
     provider: response.provider,
     model: response.model,
@@ -224,9 +230,11 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
   return {
     applied: true,
     title: generated.title,
+    subject: generated.subject,
     snapshot,
     provider: generated.provider,
     model: generated.model,
+    taskId: generated.taskId,
     configurationHash: generated.configurationHash,
     workflowHash: generated.workflowHash,
   };
@@ -234,6 +242,7 @@ export async function runConfiguredRename(env, noteUid, options = {}) {
 
 export const renameWorkflowInternals = Object.freeze({
   isRenameEligibleNote,
+  namingTaskId,
   namingPrompt,
   titleProblem,
 });

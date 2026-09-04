@@ -26,6 +26,10 @@ function uniqueStrings(value) {
     ? [...new Set(value.filter((item) => typeof item === 'string').map((item) => item.trim()).filter(Boolean))]
     : [];
 }
+
+function classificationPath(value) {
+  return uniqueStrings(value).map((item) => text(item, 60)).slice(0, 3);
+}
 const LEARNING_ATTACHMENT_KINDS = new Set(['image', 'pdf', 'word', 'html', 'file']);
 const LEARNING_RECORD_FACETS = new Set(['quick', 'mistake', 'good', 'memory', 'knowledge', 'method']);
 
@@ -52,7 +56,7 @@ function attachmentMime(kind, name, value) {
 
 function normalizeAttachments(value, legacy = {}) {
   const source = Array.isArray(value) ? value : [];
-  const normalized = source.filter(isObject).slice(0, 32).map((item, index) => {
+  const normalized = source.filter(isObject).map((item, index) => {
     const filePath = text(item.filePath ?? item.path ?? item.url, 2000);
     const fallbackName = filePath.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? '';
     const name = (text(item.name, 240).trim() || fallbackName || `资料 ${index + 1}`).slice(0, 240);
@@ -84,7 +88,7 @@ function normalizeAttachments(value, legacy = {}) {
       createdAt: text(legacy.firstSyncedAt || legacy.createdAt, 80),
     });
   }
-  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+  return [...new Map(normalized.map((item) => [item.id, item])).values()];
 }
 
 function normalizeFacets(value, note = {}) {
@@ -272,7 +276,10 @@ function noteDefaults(input, noteUid, timestamp) {
     knowledgePath,
     noteType,
     questionType: text(input.questionType, 60),
+    questionTypePath: classificationPath(input.questionTypePath),
     wrongReason: text(input.wrongReason, 1000),
+    wrongReasonPath: classificationPath(input.wrongReasonPath),
+    learningTypePath: classificationPath(input.learningTypePath),
     wrongReasonSource: text(input.wrongReason).trim() ? 'manual' : '',
     wrongReasonConfidence: null,
     organizationStatus: 'confirmed',
@@ -284,8 +291,13 @@ function noteDefaults(input, noteUid, timestamp) {
     proposalId: '',
     reviewedAt: timestamp,
     manualCreated: true,
-    userEditedFields: ['title', 'remark', 'tags', 'noteType'],
+    userEditedFields: [
+      'title', 'remark', 'tags', 'noteType',
+      ...(typeof input.goodQuestion === 'boolean' ? ['goodQuestion'] : []),
+      ...(text(input.goodQuestionType, 40).trim() ? ['goodQuestionType'] : []),
+    ],
     goodQuestion: typeof input.goodQuestion === 'boolean' ? input.goodQuestion : null,
+    goodQuestionType: text(input.goodQuestionType, 40).trim(),
     items: Array.isArray(input.items) ? input.items.slice(0, 24) : [],
     studyNotes: [],
     confidence: null,
@@ -420,7 +432,7 @@ function updateThoughts(note, action, timestamp) {
 
 export async function patchNote(env, noteUid, payload) {
   const patch = isObject(payload.patch) ? payload.patch : {};
-  const allowed = ['title', 'remark', 'tags', 'noteType', 'subject', 'knowledgePath', 'questionType', 'wrongReason', 'organizationStatus', 'goodQuestion', 'thoughtAction', 'attachments', 'facets'];
+  const allowed = ['title', 'remark', 'tags', 'noteType', 'subject', 'knowledgePath', 'questionType', 'questionTypePath', 'wrongReason', 'wrongReasonPath', 'learningTypePath', 'organizationStatus', 'goodQuestion', 'goodQuestionType', 'thoughtAction', 'attachments', 'facets'];
   if (!allowed.some((key) => Object.hasOwn(patch, key))) {
     throw new HttpError(400, 'Empty note update.', 'INVALID_LEARNING_NOTE');
   }
@@ -429,7 +441,7 @@ export async function patchNote(env, noteUid, payload) {
     const entry = findNote(snapshot, noteUid);
     if (!entry) throw new HttpError(404, 'Learning note not found.', 'NOTE_NOT_FOUND');
     const note = entry.note;
-    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'wrongReason'];
+    const classificationKeys = ['subject', 'knowledgePath', 'questionType', 'questionTypePath', 'wrongReason', 'wrongReasonPath', 'learningTypePath'];
     const editsClassification = classificationKeys.some((key) => Object.hasOwn(patch, key));
     const recordsDecision = editsClassification || ['confirmed', 'ignored'].includes(patch.organizationStatus);
     const nextSubject = Object.hasOwn(patch, 'subject') ? text(patch.subject, 120).trim() : note.subject;
@@ -441,7 +453,7 @@ export async function patchNote(env, noteUid, payload) {
       : patch.organizationStatus === 'ignored' ? 'ignored'
         : patch.organizationStatus === 'confirmed' ? 'accepted'
           : patch.organizationStatus === 'pending' ? 'pending' : note.reviewStatus;
-    const contentEdited = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'attachments', 'facets'].filter((key) => Object.hasOwn(patch, key));
+    const contentEdited = ['title', 'remark', 'tags', 'noteType', 'goodQuestion', 'goodQuestionType', 'attachments', 'facets'].filter((key) => Object.hasOwn(patch, key));
     const updated = {
       ...note,
       ...(Object.hasOwn(patch, 'title') ? { title: text(patch.title, 240) } : {}),
@@ -449,14 +461,18 @@ export async function patchNote(env, noteUid, payload) {
       ...(Object.hasOwn(patch, 'tags') ? { tags: uniqueStrings(patch.tags) } : {}),
       ...(Object.hasOwn(patch, 'noteType') ? { noteType: text(patch.noteType, 40) || 'note' } : {}),
       ...(Object.hasOwn(patch, 'goodQuestion') ? { goodQuestion: patch.goodQuestion === true } : {}),
+      ...(Object.hasOwn(patch, 'goodQuestionType') ? { goodQuestionType: text(patch.goodQuestionType, 40).trim() } : {}),
       subject: nextSubject,
       knowledgePath: nextPath,
       ...(Object.hasOwn(patch, 'questionType') ? { questionType: text(patch.questionType, 60) } : {}),
+      ...(Object.hasOwn(patch, 'questionTypePath') ? { questionTypePath: classificationPath(patch.questionTypePath) } : {}),
       ...(Object.hasOwn(patch, 'wrongReason') ? {
         wrongReason: text(patch.wrongReason, 500),
         wrongReasonSource: 'manual',
         wrongReasonConfidence: null,
       } : {}),
+      ...(Object.hasOwn(patch, 'wrongReasonPath') ? { wrongReasonPath: classificationPath(patch.wrongReasonPath) } : {}),
+      ...(Object.hasOwn(patch, 'learningTypePath') ? { learningTypePath: classificationPath(patch.learningTypePath) } : {}),
       organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
       classificationSource: editsClassification ? 'manual' : note.classificationSource,
       reviewStatus,
@@ -616,7 +632,10 @@ export async function applyAiNoteEnrichment(env, noteUid, input = {}) {
       tags,
       noteType,
       questionType: humanDecision ? note.questionType : text(input.questionType, 60),
+      questionTypePath: humanDecision ? classificationPath(note.questionTypePath) : classificationPath(input.questionTypePath),
       wrongReason,
+      wrongReasonPath: humanDecision ? classificationPath(note.wrongReasonPath) : classificationPath(input.wrongReasonPath),
+      learningTypePath: humanDecision ? classificationPath(note.learningTypePath) : classificationPath(input.learningTypePath),
       wrongReasonSource: humanDecision && note.wrongReasonSource === 'manual'
         ? 'manual'
         : wrongReason ? text(input.wrongReasonSource, 40) || 'ai_inferred' : 'none',
@@ -628,6 +647,7 @@ export async function applyAiNoteEnrichment(env, noteUid, input = {}) {
       classificationSource: humanDecision ? note.classificationSource || 'manual' : 'ai',
       reviewStatus,
       goodQuestion: userFields.has('goodQuestion') ? note.goodQuestion : input.goodQuestion === true,
+      goodQuestionType: userFields.has('goodQuestionType') ? note.goodQuestionType : text(input.goodQuestionType, 40).trim(),
       items: Array.isArray(input.items) ? input.items.slice(0, 24) : [],
       confidence: Number.isFinite(Number(input.confidence)) ? Math.max(0, Math.min(1, Number(input.confidence))) : 0,
       pendingAiOrganization: false,
@@ -680,7 +700,11 @@ export async function patchCard(env, cardId, payload) {
     const index = snapshot.cards.findIndex((card) => card.id === cardId);
     if (index < 0) throw new HttpError(404, 'Learning card not found.', 'CARD_NOT_FOUND');
     const current = snapshot.cards[index];
-    const reviewResult = ['remembered', 'forgotten'].includes(patch.reviewResult) ? patch.reviewResult : null;
+    const reviewRating = ['again', 'hard', 'good', 'easy'].includes(patch.reviewRating)
+      ? patch.reviewRating
+      : patch.reviewResult === 'forgotten' ? 'again'
+        : patch.reviewResult === 'remembered' ? 'good' : null;
+    const reviewResult = reviewRating === null ? null : reviewRating === 'again' ? 'forgotten' : 'remembered';
     let reviewPatch = {};
     if (reviewResult) {
       const correctCount = Number(current.correctCount || 0) + (reviewResult === 'remembered' ? 1 : 0);
@@ -694,13 +718,19 @@ export async function patchCard(env, cardId, payload) {
       const knownAttempts = correctCount + incorrectCount;
       const errorRate = knownAttempts > 0 ? incorrectCount / knownAttempts : 0;
       const difficultyPenalty = 1 + Math.min(3, incorrectCount) * 0.45 + errorRate * 0.8;
-      const intervalDays = reviewResult === 'remembered'
-        ? Math.max(1, Math.round(baseInterval / difficultyPenalty))
-        : 1;
+      const adjustedInterval = Math.max(1, Math.round(baseInterval / difficultyPenalty));
+      const intervalDays = reviewRating === 'again' ? 1
+        : reviewRating === 'hard' ? Math.max(1, Math.round(adjustedInterval * 0.72))
+          : reviewRating === 'easy' ? Math.max(2, Math.round(adjustedInterval * 1.65))
+            : adjustedInterval;
+      const nextReviewStep = reviewRating === 'again' ? 0
+        : reviewRating === 'hard' ? step
+          : reviewRating === 'easy' ? Math.min(5, step + 2)
+            : Math.min(5, step + 1);
       reviewPatch = {
-        status: mastered ? 'archived' : 'active',
-        dueDate: mastered ? '' : addDays(new Date(timestamp), intervalDays),
-        reviewStep: reviewResult === 'forgotten' ? 0 : Math.min(5, step + 1),
+        status: 'active',
+        dueDate: addDays(new Date(timestamp), intervalDays),
+        reviewStep: nextReviewStep,
         reviewCount: Number(current.reviewCount || 0) + 1,
         lastReviewedAt: timestamp,
         lastReviewResult: reviewResult,
@@ -712,6 +742,7 @@ export async function patchCard(env, cardId, payload) {
           id: `review-${crypto.randomUUID()}`,
           reviewedAt: timestamp,
           result: reviewResult,
+          rating: reviewRating,
           thought: text(patch.reviewThought, 4000).trim(),
         }].slice(-200),
       };
@@ -793,7 +824,10 @@ function canonicalReviewAction(action) {
       ...(Object.hasOwn(action.patch, 'subject') ? { subject: action.patch.subject } : {}),
       ...(Object.hasOwn(action.patch, 'knowledgePath') ? { knowledgePath: action.patch.knowledgePath } : {}),
       ...(Object.hasOwn(action.patch, 'questionType') ? { questionType: action.patch.questionType } : {}),
+      ...(Object.hasOwn(action.patch, 'questionTypePath') ? { questionTypePath: action.patch.questionTypePath } : {}),
       ...(Object.hasOwn(action.patch, 'wrongReason') ? { wrongReason: action.patch.wrongReason } : {}),
+      ...(Object.hasOwn(action.patch, 'wrongReasonPath') ? { wrongReasonPath: action.patch.wrongReasonPath } : {}),
+      ...(Object.hasOwn(action.patch, 'learningTypePath') ? { learningTypePath: action.patch.learningTypePath } : {}),
     } : {},
   });
 }
@@ -864,7 +898,10 @@ export async function applyReviewAction(env, action) {
       subject,
       knowledgePath,
       ...(Object.hasOwn(patch, 'questionType') ? { questionType: text(patch.questionType, 60) } : {}),
+      ...(Object.hasOwn(patch, 'questionTypePath') ? { questionTypePath: classificationPath(patch.questionTypePath) } : {}),
       ...(Object.hasOwn(patch, 'wrongReason') ? { wrongReason: text(patch.wrongReason, 500) } : {}),
+      ...(Object.hasOwn(patch, 'wrongReasonPath') ? { wrongReasonPath: classificationPath(patch.wrongReasonPath) } : {}),
+      ...(Object.hasOwn(patch, 'learningTypePath') ? { learningTypePath: classificationPath(patch.learningTypePath) } : {}),
       reviewStatus,
       organizationStatus: reviewStatus === 'ignored' ? 'ignored' : 'confirmed',
       classificationSource: action.action === 'correct' ? 'manual' : note.classificationSource,
@@ -991,6 +1028,10 @@ export function createSavedImageNote(payload, file, timestamp) {
   return {
     ...noteDefaults({ title, subject, remark, noteType: 'note', tags: uniqueStrings(payload.tags) }, payload.noteUid, timestamp),
     sourceType: text(payload.sourceType, 80).trim() || 'single-capture',
+    kind: payload.kind === 'canvas' ? 'canvas' : 'single',
+    canvasProjectId: text(payload.canvasProjectId, 80),
+    aiSelection: payload.aiSelection && typeof payload.aiSelection === 'object'
+      ? structuredClone(payload.aiSelection) : { mode: payload.kind === 'canvas' ? 'auto-advanced' : 'auto-light' },
     sourceBatchId: text(payload.sourceBatchId, 160).trim(),
     sourceSplitIndex: Number.isFinite(Number(payload.sourceSplitIndex)) ? Math.max(1, Math.round(Number(payload.sourceSplitIndex))) : null,
     filePath: `github://${file.repoPath}`,

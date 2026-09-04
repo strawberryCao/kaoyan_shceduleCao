@@ -6,6 +6,7 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 60_000;
 const DEFAULT_NETWORK_RETRIES = 2;
+const ROUTER_CONFIG_VERSION = 2;
 
 const PROVIDER_MODEL_CATALOG = Object.freeze({
   qwen: Object.freeze([
@@ -50,9 +51,11 @@ const TASK_PROFILES = Object.freeze({
   note_classification: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_enrichment: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'vision', 'json'] }),
   note_image_understanding: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
+  canvas_note_understanding: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json', 'longContext'] }),
   taxonomy: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json', 'longContext'] }),
   flashcard_generation: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'json'] }),
   widget_generation: Object.freeze({ difficulty: 'high', capabilities: ['text', 'json'] }),
+  interactive_note_generation: Object.freeze({ difficulty: 'medium', capabilities: ['text', 'json'] }),
   canvas_organization: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   weekly_review_pdf: Object.freeze({ difficulty: 'high', capabilities: ['text', 'vision', 'json'] }),
   custom: Object.freeze({ difficulty: 'medium', capabilities: ['text'] }),
@@ -60,6 +63,11 @@ const TASK_PROFILES = Object.freeze({
 
 const TASK_PARAMETER_DEFINITIONS = Object.freeze({
   note_naming: Object.freeze([
+    Object.freeze({ id: 'reasoningMode', group: '运行与容错', type: 'select', label: 'Kimi 推理模式', description: '命名任务应快速返回短 JSON；快速模式会关闭 K2.6/K2.5 深度思考。', default: 'fast', options: [
+      { value: 'fast', label: '快速（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'deep', label: '深度' },
+    ] }),
     Object.freeze({ id: 'titleStyle', group: '标题规则', type: 'select', label: '标题侧重点', description: '控制普通 AI 标题优先表达什么。字段命名规则匹配时仍以规则模板为准。', default: 'knowledge_point', options: [
       { value: 'knowledge_point', label: '知识点优先' },
       { value: 'question_type', label: '题型优先' },
@@ -73,6 +81,11 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '命名只需要短输出，调高通常不会提升识别质量。', default: 900, min: 300, max: 2400, step: 100, unit: 'tokens' }),
   ]),
   material_naming: Object.freeze([
+    Object.freeze({ id: 'reasoningMode', group: '运行与容错', type: 'select', label: 'Kimi 推理模式', description: '资料命名优先快速理解和稳定 JSON；复杂多资料可改为均衡。', default: 'fast', options: [
+      { value: 'fast', label: '快速（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'deep', label: '深度' },
+    ] }),
     Object.freeze({ id: 'renameNoteTitle', group: '命名范围', type: 'boolean', label: '同时命名速记标题', description: '先理解整组资料之间的关系，再为整条速记生成一个简短主题。', default: true }),
     Object.freeze({ id: 'renameAttachments', group: '命名范围', type: 'boolean', label: '关联命名全部资料', description: '在同一轮分析中看完全部资料，再按每份资料在本条速记中的作用命名。', default: true }),
     Object.freeze({ id: 'noteTitleMaxLength', group: '质量控制', type: 'number', label: '速记标题最多字数', description: '只概括整组资料的共同主题，避免标题过长。', default: 18, min: 8, max: 32, step: 1, unit: '字' }),
@@ -85,6 +98,11 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '语义搜索仅生成短检索词，不生成总结。', default: 360, min: 160, max: 900, step: 40, unit: 'tokens' }),
   ]),
   question_splitting: Object.freeze([
+    Object.freeze({ id: 'reasoningMode', group: '运行与容错', type: 'select', label: 'Kimi 推理模式', description: '自动裁剪只需要快速输出坐标；快速模式可避免 Kimi 把全部 Token 消耗在内部推理。', default: 'fast', options: [
+      { value: 'fast', label: '快速（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'deep', label: '深度' },
+    ] }),
     Object.freeze({ id: 'maxQuestions', group: '识别范围', type: 'number', label: '最多识别题目数', description: '一张整页图片最多拆分出的题目数量。', default: 24, min: 1, max: 24, step: 1, unit: '道' }),
     Object.freeze({ id: 'includeQuestionNumber', group: '题目完整性', type: 'boolean', label: '保留题号', description: '裁剪区域必须包含题号或题目标识。', default: true }),
     Object.freeze({ id: 'includeOptions', group: '题目完整性', type: 'boolean', label: '保留全部选项', description: '选择题必须包含完整选项。', default: true }),
@@ -94,6 +112,15 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '用于支持返回多个题目边界的结构化结果。', default: 1600, min: 500, max: 4000, step: 100, unit: 'tokens' }),
   ]),
   note_enrichment: Object.freeze([
+    Object.freeze({ id: 'collaborationMode', group: '多模型协作', type: 'select', label: '分类协作方式', description: '先由视觉模型读取图片，再由文本推理模型结合目录复核科目、知识点与摘要。第二阶段失败时自动保留视觉结果。', default: 'vision_then_reasoning', options: [
+      { value: 'vision_then_reasoning', label: '视觉初审 + 推理复核（推荐）' },
+      { value: 'single_model', label: '单模型直接整理' },
+    ] }),
+    Object.freeze({ id: 'reasoningMode', group: '运行与容错', type: 'select', label: 'Kimi 推理模式', description: '笔记整理默认快速生成结构化结果；只有复杂长笔记才建议使用均衡。', default: 'fast', options: [
+      { value: 'fast', label: '快速（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'deep', label: '深度' },
+    ] }),
     Object.freeze({ id: 'summaryDetail', group: '整理深度', type: 'select', label: '摘要详细度', description: '决定摘要与分项说明的浓缩程度。', default: 'standard', options: [
       { value: 'concise', label: '精简' },
       { value: 'standard', label: '标准' },
@@ -136,6 +163,45 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'defaultWidth', group: '默认尺寸', type: 'number', label: '默认宽度', description: '需求没有明确尺寸时使用的组件宽度。', default: 360, min: 240, max: 720, step: 10, unit: 'px' }),
     Object.freeze({ id: 'defaultHeight', group: '默认尺寸', type: 'number', label: '默认高度', description: '需求没有明确尺寸时使用的组件高度。', default: 260, min: 150, max: 620, step: 10, unit: 'px' }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '复杂组件需要更多输出空间，简单组件可降低以提升速度。', default: 5000, min: 1600, max: 10000, step: 200, unit: 'tokens' }),
+  ]),
+  interactive_note_generation: Object.freeze([
+    Object.freeze({ id: 'visualStyle', group: '界面风格', type: 'select', label: '交互笔记视觉风格', description: '控制 AI 生成资料的整体颜色、层次与装饰强度。', default: 'light_clean', options: [
+      { value: 'light_clean', label: '跟随学习中心（推荐）' },
+      { value: 'dark_translucent', label: '深色半透明' },
+      { value: 'follow_request', label: '跟随本次需求' },
+    ] }),
+    Object.freeze({ id: 'contentDensity', group: '界面风格', type: 'select', label: '内容密度', description: '精简模式减少说明文字；详细模式会保留更多提示与解释。', default: 'concise', options: [
+      { value: 'concise', label: '大道至简（推荐）' },
+      { value: 'balanced', label: '均衡' },
+      { value: 'detailed', label: '详细' },
+    ] }),
+    Object.freeze({ id: 'responsiveMode', group: '界面风格', type: 'select', label: '响应式布局', description: '决定生成内容优先适配手机、桌面，或同时自适应两者。', default: 'adaptive', options: [
+      { value: 'adaptive', label: '手机与桌面自适应（推荐）' },
+      { value: 'mobile_first', label: '手机优先' },
+      { value: 'desktop_first', label: '桌面优先' },
+    ] }),
+    Object.freeze({ id: 'interactionLevel', group: '交互能力', type: 'select', label: '交互复杂度', description: '限制状态、按钮、动画和可操作控件的复杂程度。', default: 'standard', options: [
+      { value: 'static', label: '静态展示' },
+      { value: 'standard', label: '常规交互（推荐）' },
+      { value: 'advanced', label: '复杂交互' },
+    ] }),
+    Object.freeze({ id: 'allowJavaScript', group: '交互能力', type: 'boolean', label: '允许安全 JavaScript', description: '关闭后只生成 HTML/CSS；网络、存储和跨页面 API 始终禁止，不能在配置中放开。', default: true }),
+    Object.freeze({ id: 'requireResetControl', group: '交互能力', type: 'boolean', label: '交互必须可重置', description: '启用后，只要有可变状态就要求提供恢复初始状态的按钮。', default: true }),
+    Object.freeze({ id: 'defaultWidth', group: '默认尺寸', type: 'number', label: '目标宽度', description: '需求未指定尺寸时采用的内容宽度；保存后的资料仍会按容器自适应。', default: 520, min: 240, max: 720, step: 10, unit: 'px' }),
+    Object.freeze({ id: 'defaultHeight', group: '默认尺寸', type: 'number', label: '目标高度', description: '需求未指定尺寸时采用的最小内容高度。', default: 360, min: 150, max: 620, step: 10, unit: 'px' }),
+    Object.freeze({ id: 'reasoningMode', group: '模型兼容', type: 'select', label: '兼容模型推理强度', description: '仅对支持推理强度的模型生效；快速模式更适合简单卡片。', default: 'balanced', options: [
+      { value: 'fast', label: '快速' },
+      { value: 'balanced', label: '均衡（推荐）' },
+      { value: 'deep', label: '深度' },
+    ] }),
+    Object.freeze({ id: 'structuredOutputMode', group: '模型兼容', type: 'select', label: 'JSON 输出兼容模式', description: '自动模式会对支持的模型发送 JSON 响应格式；若某模型拒绝该参数，可改为仅靠提示词约束。', default: 'auto', options: [
+      { value: 'auto', label: '自动（推荐）' },
+      { value: 'prompt_only', label: '仅提示词 JSON（兼容）' },
+    ] }),
+    Object.freeze({ id: 'contextChars', group: '运行限制', type: 'number', label: '速记正文上下文', description: '最多送给 AI 的当前速记正文字符数；内容较长时可调高。', default: 4000, min: 500, max: 12000, step: 500, unit: '字符' }),
+    Object.freeze({ id: 'networkRetries', group: '运行限制', type: 'number', label: '网络重试次数', description: '网络错误或限流时在同一模型上重试；次数越高，最坏等待时间越长。', default: 0, min: 0, max: 2, step: 1, unit: '次' }),
+    Object.freeze({ id: 'jsonRepairRetries', group: '运行限制', type: 'number', label: 'JSON 修复次数', description: '模型输出未通过结构或安全校验时，允许要求它修正的次数。', default: 1, min: 0, max: 2, step: 1, unit: '次' }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '复杂交互需要更多输出空间；调低可缩短等待并控制用量。', default: 5000, min: 1600, max: 10000, step: 200, unit: 'tokens' }),
   ]),
   canvas_organization: Object.freeze([
     Object.freeze({ id: 'layoutDirection', group: '布局策略', type: 'select', label: '主要阅读方向', description: '控制内容更偏向纵向、横向、网格或由 AI 自行判断。', default: 'auto', options: [
@@ -184,7 +250,7 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
     Object.freeze({ id: 'allowNewKnowledgePoints', group: '目录策略', type: 'boolean', label: '允许新建知识点', description: '一级科目仍受程序白名单约束。', default: true }),
     Object.freeze({ id: 'minKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最少知识组', description: '资料足够多时避免把整门课压成少数大类。', default: 5, min: 2, max: 12, step: 1, unit: '组' }),
     Object.freeze({ id: 'maxKnowledgeGroupsPerSubject', group: '目录规模', type: 'number', label: '每科最多知识组', description: '避免为每一道题生成一个新的知识点分类。', default: 18, min: 8, max: 40, step: 1, unit: '组' }),
-    Object.freeze({ id: 'wrongReasonGroupCount', group: '目录规模', type: 'number', label: '错因类别目标数', description: '推荐保持 7 到 10 个稳定类别，具体错误仍保留为详情。', default: 9, min: 4, max: 12, step: 1, unit: '类' }),
+    Object.freeze({ id: 'wrongReasonGroupCount', group: '目录规模', type: 'number', label: '错因一级类别目标数', description: '默认保持 6 个稳定一级类别；“粗心大意”在二、三级按真实记录逐步细分，不预建大量空分类。', default: 6, min: 4, max: 8, step: 1, unit: '类' }),
     Object.freeze({ id: 'minimumCoverage', group: '安全校验', type: 'number', label: '最低归并覆盖率', description: 'AI 未覆盖足够旧分类时整批拒绝写入，避免静默丢失。', default: 0.8, min: 0.6, max: 1, step: 0.05 }),
     Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大完成 Token', description: '全局分类整理需要同时理解大量已有名称和错因。', default: 6000, min: 2000, max: 12000, step: 500, unit: 'tokens' }),
   ]),
@@ -203,6 +269,14 @@ const TASK_PARAMETER_DEFINITIONS = Object.freeze({
       { value: 'deep', label: '深度' },
     ] }),
     Object.freeze({ id: 'maxTokens', group: '图像理解', type: 'number', label: '最大完成 Token', description: '无备注时需要从图片独立理解题意、手写过程和错因。', default: 5200, min: 1800, max: 12000, step: 200, unit: 'tokens' }),
+  ]),
+  canvas_note_understanding: Object.freeze([
+    Object.freeze({ id: 'reasoningMode', group: '识别质量', type: 'select', label: '画布推理模式', description: '画布会同时包含题目、手写过程、批注与多块关联内容，默认使用均衡推理。', default: 'balanced', options: [
+      { value: 'fast', label: '快速' },
+      { value: 'balanced', label: '均衡（推荐）' },
+      { value: 'deep', label: '深度' },
+    ] }),
+    Object.freeze({ id: 'maxTokens', group: '运行限制', type: 'number', label: '最大输出 Token', description: '只输出结构化识别结果；复杂画布可适当调高。', default: 3200, min: 1200, max: 8000, step: 200, unit: 'tokens' }),
   ]),
   weekly_review_pdf: Object.freeze([
     Object.freeze({ id: 'repository', group: 'GitHub 同步', type: 'text', label: '公开数据仓库', description: '填写 owner/name。只会上传已经确认分类为错题或背诵的内容。', default: 'strawberryCao/Caobijidata', maxLength: 200 }),
@@ -262,6 +336,12 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     description: '按照需求生成安全、可运行的桌面小组件。',
     active: true,
   }),
+  interactive_note_generation: Object.freeze({
+    label: '速记 HTML 交互创作',
+    description: '在学习中心把一条速记生成离线、安全、可操作的 HTML 资料。',
+    active: true,
+    defaultTimeoutMs: 120_000,
+  }),
   canvas_organization: Object.freeze({
     label: 'AI 自动整理画布',
     description: '理解画布图片、文字、批注和关系后，在后台重新规划清晰布局。',
@@ -278,6 +358,12 @@ const AI_TASK_DEFINITIONS = Object.freeze({
     description: '跨全部笔记归并同义知识点与错因类别，在分类过多和过少之间保持稳定粒度。',
     active: true,
     defaultTimeoutMs: 120_000,
+  }),
+  canvas_note_understanding: Object.freeze({
+    label: '画布笔记深度识别',
+    description: '独立使用高质量长上下文视觉模型，完整读取画布中的题目、手写过程、批注、错因与内容关系。',
+    active: true,
+    defaultTimeoutMs: 150_000,
   }),
   flashcard_generation: Object.freeze({
     label: '独立卡片生成',
@@ -960,7 +1046,7 @@ function modelScore(provider, model, difficulty) {
   );
 }
 
-function safeAttempt(provider, model, phase, outcome, error) {
+function safeAttempt(provider, model, phase, outcome, error, durationMs = null) {
   return {
     provider,
     model,
@@ -969,6 +1055,7 @@ function safeAttempt(provider, model, phase, outcome, error) {
     code: error?.code || null,
     status: error?.status || null,
     message: error?.message ? sanitizeProviderErrorMessage(error.message) : null,
+    durationMs: Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : null,
   };
 }
 
@@ -1010,6 +1097,7 @@ function createAiRouter(options = {}) {
   const now = options.now || (() => Date.now());
   const sleep = options.sleep || sleepDefault;
   const onUsage = typeof options.onUsage === 'function' ? options.onUsage : null;
+  const beforeAttempt = typeof options.beforeAttempt === 'function' ? options.beforeAttempt : null;
   const circuits = new Map();
 
   function getCircuit(providerId) {
@@ -1137,7 +1225,8 @@ function createAiRouter(options = {}) {
       if (isKimiThinkingModel) payload.max_completion_tokens = request.maxTokens;
       else payload.max_tokens = request.maxTokens;
     }
-    if ((request.responseSchema || request.json) && model.supportsResponseFormat) {
+    const structuredOutputMode = request.responseFormatMode || request.taskOptions?.structuredOutputMode || 'auto';
+    if ((request.responseSchema || request.json) && model.supportsResponseFormat && structuredOutputMode !== 'prompt_only') {
       payload.response_format = { type: 'json_object' };
     }
 
@@ -1311,13 +1400,22 @@ function createAiRouter(options = {}) {
         ...request.messages,
       ]
       : request.messages;
+    const preferredProvider = cleanString(request.preferredProvider).toLowerCase()
+      || (request.ignoreTaskModelPreference === true ? '' : taskConfiguration.providerId);
+    const preferredModel = cleanString(request.preferredModel)
+      || (request.ignoreTaskModelPreference === true ? '' : taskConfiguration.modelId);
+    const allowFallback = typeof request.allowFallback === 'boolean'
+      ? request.allowFallback
+      : taskConfiguration.fallback;
     return {
       ...request,
       messages,
-      ...(taskConfiguration.providerId ? { preferredProvider: taskConfiguration.providerId } : {}),
-      ...(taskConfiguration.modelId ? { preferredModel: taskConfiguration.modelId } : {}),
-      ...(typeof taskConfiguration.fallback === 'boolean' ? { allowFallback: taskConfiguration.fallback } : {}),
-      ...(taskConfiguration.difficulty ? { difficulty: taskConfiguration.difficulty } : {}),
+      ...(preferredProvider ? { preferredProvider } : {}),
+      ...(preferredModel ? { preferredModel } : {}),
+      ...(typeof allowFallback === 'boolean' ? { allowFallback } : {}),
+      ...(request.difficulty
+        ? { difficulty: request.difficulty }
+        : taskConfiguration.difficulty ? { difficulty: taskConfiguration.difficulty } : {}),
       ...(Number.isFinite(taskConfiguration.temperature) ? { temperature: taskConfiguration.temperature } : {}),
       ...(Number.isFinite(taskConfiguration.timeoutMs) ? { timeoutMs: taskConfiguration.timeoutMs } : {}),
       taskOptions,
@@ -1352,14 +1450,44 @@ function createAiRouter(options = {}) {
         { code: 'AI_NO_PROVIDER' },
       );
     }
+    const requestedCandidateCount = Math.round(toFiniteNumber(
+      effectiveRequest.maxCandidateCount,
+      route.candidates.length,
+      1,
+      route.candidates.length,
+    ));
+    const candidates = route.candidates.slice(
+      0,
+      effectiveRequest.allowFallback === false ? 1 : requestedCandidateCount,
+    );
+    const overallTimeoutMs = Number(effectiveRequest.overallTimeoutMs);
+    const deadlineAt = Number.isFinite(overallTimeoutMs) && overallTimeoutMs > 0
+      ? now() + Math.min(30 * 60 * 1000, Math.max(1_000, overallTimeoutMs))
+      : null;
 
     const attempts = [];
-    for (const { provider, model } of route.candidates) {
+    for (const { provider, model } of candidates) {
       let messages = effectiveRequest.messages;
       let networkAttempt = 0;
       let repairAttempt = 0;
       while (true) {
+        if (deadlineAt !== null && now() >= deadlineAt) {
+          throw new AiRouterError('AI 任务已到总等待时间上限', {
+            code: 'AI_OVERALL_TIMEOUT',
+            attempts,
+          });
+        }
+        const attemptStartedAt = now();
         try {
+          if (beforeAttempt) {
+            beforeAttempt({
+              task: effectiveRequest.task || 'custom',
+              provider: provider.id,
+              model: model.id,
+              attempt: networkAttempt + repairAttempt + 1,
+              phase: repairAttempt > 0 ? 'repair' : networkAttempt > 0 ? 'retry' : 'request',
+            });
+          }
           if (typeof effectiveRequest.onAttempt === 'function') {
             try {
               effectiveRequest.onAttempt({
@@ -1376,11 +1504,20 @@ function createAiRouter(options = {}) {
               // Progress reporting must never interrupt the actual AI request.
             }
           }
-          const raw = await requestModel(provider, model, effectiveRequest, messages);
+          const attemptRequest = deadlineAt === null
+            ? effectiveRequest
+            : {
+                ...effectiveRequest,
+                timeoutMs: Math.min(
+                  toFiniteNumber(effectiveRequest.timeoutMs, routing.timeoutMs, 1, 300_000),
+                  Math.max(1, deadlineAt - now()),
+                ),
+              };
+          const raw = await requestModel(provider, model, attemptRequest, messages);
           try {
             const validated = validateResult(raw, effectiveRequest);
             recordSuccess(provider.id);
-            attempts.push(safeAttempt(provider.id, model.id, repairAttempt > 0 ? 'repair' : 'request', 'success'));
+            attempts.push(safeAttempt(provider.id, model.id, repairAttempt > 0 ? 'repair' : 'request', 'success', null, now() - attemptStartedAt));
             if (onUsage) {
               try {
                 onUsage({
@@ -1389,6 +1526,7 @@ function createAiRouter(options = {}) {
                   provider: provider.id,
                   model: model.id,
                   usage: validated.usage || null,
+                  configVersion: ROUTER_CONFIG_VERSION,
                 });
               } catch {
                 // Usage accounting must never interrupt a completed AI task.
@@ -1399,10 +1537,11 @@ function createAiRouter(options = {}) {
               provider: provider.id,
               model: model.id,
               difficulty: route.difficulty,
+              configVersion: ROUTER_CONFIG_VERSION,
               attempts,
             };
           } catch (validationError) {
-            attempts.push(safeAttempt(provider.id, model.id, 'validation', 'failed', validationError));
+            attempts.push(safeAttempt(provider.id, model.id, 'validation', 'failed', validationError, now() - attemptStartedAt));
             if (repairAttempt < requestJsonRepairRetries) {
               repairAttempt += 1;
               messages = repairMessages(messages, validationError, raw.text, effectiveRequest.responseSchema);
@@ -1412,10 +1551,17 @@ function createAiRouter(options = {}) {
             break;
           }
         } catch (error) {
+          if (error?.code === 'AI_DAILY_REQUEST_LIMIT' || error?.code === 'AI_REQUEST_BUDGET_BUSY') throw error;
           const safeError = error instanceof AiRouterError
             ? error
             : new AiRouterError('AI 调用失败', { code: 'AI_PROVIDER_ERROR', retryable: true, cause: error });
-          attempts.push(safeAttempt(provider.id, model.id, 'request', 'failed', safeError));
+          attempts.push(safeAttempt(provider.id, model.id, 'request', 'failed', safeError, now() - attemptStartedAt));
+          if (deadlineAt !== null && now() >= deadlineAt) {
+            throw new AiRouterError('AI 任务已到总等待时间上限', {
+              code: 'AI_OVERALL_TIMEOUT',
+              attempts,
+            });
+          }
           if (safeError.retryable && networkAttempt < requestNetworkRetries) {
             networkAttempt += 1;
             const providerFloor = provider.id === 'gemini' ? 1_000 : 500;
@@ -1444,6 +1590,7 @@ function createAiRouter(options = {}) {
 
   function getStatus() {
     return {
+      configVersion: ROUTER_CONFIG_VERSION,
       providers: providers.map((provider) => ({
         id: provider.id,
         enabled: provider.enabled && Boolean(provider.apiKey),

@@ -119,7 +119,7 @@ Install-ScriptFile 'v2-local-adapter.cjs' $v2AdapterPath "$codeRoot/v2-local-ada
 Install-ScriptFile 'migrate-learning-data-v2.cjs' $v2MigrationPath "$codeRoot/migrate-learning-data-v2.cjs?v=$version"
 Install-ScriptFile 'build-search-index.cjs' $searchIndexPath "$codeRoot/build-search-index.cjs?v=$version"
 Install-ScriptFile 'assistant-config-watch.cjs' $watcherPath "$codeRoot/assistant-config-watch.cjs?v=$version"
-foreach ($dependency in @('ai-router.cjs', 'agent-workflow-contracts.cjs', 'math-one-question-types.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
+foreach ($dependency in @('ai-router.cjs', 'ai-request-budget.cjs', 'ai-subject-policy.cjs', 'agent-workflow-contracts.cjs', 'math-one-question-types.cjs', 'qwen-config.cjs', 'note-ai-analyzer.cjs', 'canvas-ai-organizer.cjs', 'organize-notes.cjs', 'review-github-sync.cjs', 'note-server.cjs')) {
   Install-ScriptFile $dependency (Join-Path $installRoot $dependency) "$codeRoot/${dependency}?v=$version"
 }
 

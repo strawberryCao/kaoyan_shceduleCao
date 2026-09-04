@@ -1,6 +1,7 @@
 import type { DayRecord, RecordsByDate } from '../types';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './notes';
 import { fetchWithTimeout } from './localService';
+import { normalizeLearningPath } from './learningTaxonomy';
 
 export type LearningAttachmentKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
 export type LearningRecordFacet = 'quick' | 'mistake' | 'good' | 'memory' | 'knowledge' | 'method';
@@ -26,6 +27,7 @@ export type LearningNoteOrganizationStatus = 'pending' | 'confirmed' | 'ignored'
 export type LearningNoteClassificationSource = 'ai' | 'local' | 'manual';
 export type LearningNoteReviewStatus = 'pending' | 'auto_applied' | 'accepted' | 'corrected' | 'ignored';
 export type LearningNoteReviewActionType = 'accept' | 'correct' | 'ignore';
+export type LearningReviewRating = 'again' | 'hard' | 'good' | 'easy';
 
 export interface LearningStudyThought {
   id: string;
@@ -38,6 +40,7 @@ export interface LearningReviewEntry {
   id: string;
   reviewedAt: string;
   result: 'remembered' | 'forgotten';
+  rating: LearningReviewRating;
   thought: string;
 }
 
@@ -54,9 +57,13 @@ export interface LearningNotePatch {
   subject?: string;
   knowledgePath?: string[];
   questionType?: string;
+  questionTypePath?: string[];
   wrongReason?: string;
+  wrongReasonPath?: string[];
+  learningTypePath?: string[];
   organizationStatus?: LearningNoteOrganizationStatus;
   goodQuestion?: boolean;
+  goodQuestionType?: string;
   thoughtAction?: LearningThoughtAction;
 
   attachments?: LearningAttachment[];
@@ -69,7 +76,7 @@ export interface LearningNoteReviewAction {
   operationId: string;
   expectedDecisionRevision?: number;
   proposalId?: string;
-  patch?: Pick<LearningNotePatch, 'subject' | 'knowledgePath' | 'questionType' | 'wrongReason'>;
+  patch?: Pick<LearningNotePatch, 'subject' | 'knowledgePath' | 'questionType' | 'questionTypePath' | 'wrongReason' | 'wrongReasonPath' | 'learningTypePath' | 'goodQuestion' | 'goodQuestionType'>;
 }
 
 export interface LearningNoteReviewActionResult {
@@ -102,11 +109,15 @@ export interface LearningNoteCreateInput {
   subject: string;
   knowledgePath?: string[];
   questionType?: string;
+  questionTypePath?: string[];
   wrongReason?: string;
+  wrongReasonPath?: string[];
+  learningTypePath?: string[];
   pageRefs?: LearningPageRef[];
   items?: LearningAutoNote['items'];
   createCard?: boolean;
   goodQuestion?: boolean;
+  goodQuestionType?: string;
 
   attachments?: LearningAttachment[];
   facets?: LearningRecordFacet[];
@@ -136,7 +147,10 @@ export interface LearningAutoNote {
   knowledgePath: string[];
   noteType: string;
   questionType: string;
+  questionTypePath: string[];
   wrongReason: string;
+  wrongReasonPath: string[];
+  learningTypePath: string[];
   wrongReasonSource: string;
   wrongReasonConfidence: number | null;
   organizationStatus: LearningNoteOrganizationStatus;
@@ -150,13 +164,17 @@ export interface LearningAutoNote {
   manualCreated: boolean;
   userEditedFields: string[];
   goodQuestion: boolean | null;
+  goodQuestionType: string;
   items: Array<{
     title: string;
     knowledgePoint: string;
     questionType: string;
+    questionTypePath: string[];
     summary: string;
     tags: string[];
     wrongReason: string;
+    wrongReasonPath: string[];
+    learningTypePath: string[];
     intent: {
       isQuestion: boolean;
       isMistake: boolean;
@@ -245,11 +263,13 @@ const LEARNING_REQUEST_TIMEOUT_MS = IS_CLOUD_RUNTIME ? 12_000 : 4_000;
 let lastLearningDataCacheKey: string | null = null;
 let learningDataEventSource: EventSource | null = null;
 let learningDataEventSubscribers = 0;
+let learningDataStreamConnected = false;
 let learningDataPollSubscribers = 0;
 let learningDataPollTimer: number | null = null;
 let learningDataPollInFlight: Promise<unknown> | null = null;
 let learningDataMemoryCache: LearningDataSnapshot | null = null;
 let learningDataMemoryRaw: string | null = null;
+const LEARNING_POLL_INTERVAL_MS = IS_CLOUD_RUNTIME ? 30_000 : 15_000;
 
 const emptyRecord = (): DayRecord => ({
   completedTaskIds: [],
@@ -305,6 +325,9 @@ const normalizeReviewHistory = (value: unknown): LearningReviewEntry[] => Array.
       id: typeof item.id === 'string' && item.id ? item.id : `review-${index}`,
       reviewedAt: typeof item.reviewedAt === 'string' ? item.reviewedAt : '',
       result: item.result === 'forgotten' ? 'forgotten' as const : 'remembered' as const,
+      rating: item.rating === 'again' || item.rating === 'hard' || item.rating === 'good' || item.rating === 'easy'
+        ? item.rating
+        : item.result === 'forgotten' ? 'again' : 'good',
       thought: typeof item.thought === 'string' ? item.thought.slice(0, 4000) : '',
     }))
   : [];
@@ -331,11 +354,33 @@ const attachmentMime = (kind: LearningAttachmentKind, name: string, value: unkno
   return 'application/octet-stream';
 };
 
+const normalizedAttachmentPath = (value: unknown): string => (
+  typeof value === 'string' ? value.trim().replace(/\\/g, '/').toLowerCase() : ''
+);
+
+const attachmentIdentity = (item: LearningAttachment): string => {
+  if (item.assetId) return `asset:${item.assetId.toLowerCase()}`;
+  const cloudPath = normalizedAttachmentPath(item.cloudPath);
+  if (cloudPath) return `cloud:${cloudPath}`;
+  const filePath = normalizedAttachmentPath(item.filePath);
+  return filePath ? `file:${filePath}` : `id:${item.id}`;
+};
+
+const attachmentMatchesLegacyPath = (item: LearningAttachment, legacyPath: string): boolean => {
+  const legacy = normalizedAttachmentPath(legacyPath);
+  if (!legacy) return false;
+  if ([item.filePath, item.cloudPath].some((candidate) => normalizedAttachmentPath(candidate) === legacy)) return true;
+  if (!item.assetId) return false;
+  if (legacy === `asset://${item.assetId.toLowerCase()}`) return true;
+  return new RegExp(`(?:^|/)(?:data/assets|\\.assets)/${item.assetId}(?:\\.[a-z0-9]+)?$`, 'i').test(legacy);
+};
+
 const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = {}): LearningAttachment[] => {
   const source = Array.isArray(value) ? value : [];
-  const normalized = source.filter(isObject).slice(0, 32).map((item, index) => {
+  const normalized = source.filter(isObject).map((item, index) => {
     const filePath = typeof (item.filePath ?? item.path ?? item.url) === 'string' ? String(item.filePath ?? item.path ?? item.url).slice(0, 2000) : '';
-    const fallbackName = filePath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '';
+    const filePathParts = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const fallbackName = filePathParts[filePathParts.length - 1] ?? '';
     const name = (typeof item.name === 'string' && item.name.trim() ? item.name.trim() : fallbackName || `资料 ${index + 1}`).slice(0, 240);
     const inferred = attachmentKind(name, typeof item.mimeType === 'string' ? item.mimeType : '');
     const kind = LEARNING_ATTACHMENT_KINDS.has(item.kind as LearningAttachmentKind) ? item.kind as LearningAttachmentKind : inferred;
@@ -358,17 +403,19 @@ const normalizeAttachments = (value: unknown, legacy: Record<string, unknown> = 
       createdAt: typeof item.createdAt === 'string' ? item.createdAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
     };
   }).filter((item) => item.filePath || item.name);
+  const deduped = [...new Map(normalized.map((item) => [attachmentIdentity(item), item])).values()];
   const legacyPath = typeof legacy.filePath === 'string' ? legacy.filePath.slice(0, 2000) : '';
-  if (legacyPath && !normalized.some((item) => item.filePath === legacyPath)) {
-    const name = legacyPath.replace(/\\/g, '/').split('/').filter(Boolean).at(-1) ?? '原始资料';
+  if (legacyPath && !deduped.some((item) => attachmentMatchesLegacyPath(item, legacyPath))) {
+    const legacyPathParts = legacyPath.replace(/\\/g, '/').split('/').filter(Boolean);
+    const name = legacyPathParts[legacyPathParts.length - 1] ?? '原始资料';
     const kind = attachmentKind(name, '');
-    normalized.unshift({
+    deduped.unshift({
       id: 'legacy-primary', assetId: '', kind, name, mimeType: attachmentMime(kind, name, ''), size: null,
       filePath: legacyPath, cloudPath: '', localPathKey: '', previewPath: '', posterPath: '',
       createdAt: typeof legacy.firstSyncedAt === 'string' ? legacy.firstSyncedAt : typeof legacy.createdAt === 'string' ? legacy.createdAt : '',
     });
   }
-  return [...new Map(normalized.map((item) => [item.id, item])).values()].slice(0, 32);
+  return [...new Map(deduped.map((item) => [item.id, item])).values()];
 };
 
 const normalizeFacets = (value: unknown, note: Record<string, unknown> = {}): LearningRecordFacet[] => {
@@ -402,9 +449,15 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     || normalizedFilePath.startsWith('data/assets/')
     || normalizedFilePath.startsWith('r2://note-assets/');
   const storedSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';
-  const rawSubject = isRemoteAssetPath && storedSubject.trim().toLowerCase() === 'assets' ? '默认文件夹' : storedSubject;
+  const storedSubjectKey = storedSubject.trim().toLowerCase();
+  const rawSubject = storedSubjectKey === 'assets' || storedSubjectKey === '.assets'
+    ? '默认文件夹'
+    : storedSubject;
   const pathParts = filePath.split(/[\\/]/).filter(Boolean);
-  const fileSubject = pathParts.length > 1 ? pathParts[pathParts.length - 2].trim() : '';
+  const parentDirectory = pathParts.length > 1 ? pathParts[pathParts.length - 2].trim() : '';
+  const fileSubject = ['.assets', '.metadata'].includes(parentDirectory.toLowerCase()) && pathParts.length > 2
+    ? pathParts[pathParts.length - 3].trim()
+    : parentDirectory;
   const inferredFromFile = value.classificationSource !== 'manual'
     && !isRemoteAssetPath
     && DEFAULT_SUBJECT_NAMES.has(rawSubject)
@@ -421,9 +474,12 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     title: typeof item.title === 'string' ? item.title : '',
     knowledgePoint: typeof item.knowledgePoint === 'string' ? item.knowledgePoint : '',
     questionType: typeof item.questionType === 'string' ? item.questionType : '',
+    questionTypePath: normalizeLearningPath(item.questionTypePath),
     summary: typeof item.summary === 'string' ? item.summary : '',
     tags: strings(item.tags),
     wrongReason: typeof item.wrongReason === 'string' ? item.wrongReason : '',
+    wrongReasonPath: normalizeLearningPath(item.wrongReasonPath),
+    learningTypePath: normalizeLearningPath(item.learningTypePath),
     intent: {
        isQuestion: isObject(item.intent) && item.intent.isQuestion === true,
        isMistake: isObject(item.intent) && item.intent.isMistake === true,
@@ -475,7 +531,10 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     knowledgePath,
     noteType: typeof value.noteType === 'string' ? value.noteType : '',
     questionType: typeof value.questionType === 'string' ? value.questionType : '',
+    questionTypePath: normalizeLearningPath(value.questionTypePath),
     wrongReason: typeof value.wrongReason === 'string' ? value.wrongReason : '',
+    wrongReasonPath: normalizeLearningPath(value.wrongReasonPath),
+    learningTypePath: normalizeLearningPath(value.learningTypePath),
     wrongReasonSource: typeof value.wrongReasonSource === 'string' ? value.wrongReasonSource : '',
     wrongReasonConfidence: Number.isFinite(Number(value.wrongReasonConfidence))
       ? Math.min(1, Math.max(0, Number(value.wrongReasonConfidence)))
@@ -493,6 +552,7 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
     manualCreated: value.manualCreated === true,
     userEditedFields: strings(value.userEditedFields),
     goodQuestion: typeof value.goodQuestion === 'boolean' ? value.goodQuestion : null,
+    goodQuestionType: typeof value.goodQuestionType === 'string' ? value.goodQuestionType.trim().slice(0, 40) : '',
     items,
     studyNotes: normalizeStudyNotes(value.studyNotes),
     confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : null,
@@ -723,6 +783,7 @@ export const patchLearningCard = (
   cardId: string,
   patch: Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
     reviewResult?: 'remembered' | 'forgotten';
+    reviewRating?: LearningReviewRating;
     reviewThought?: string;
   },
   expectedRevision?: number,
@@ -909,8 +970,15 @@ export const subscribeLearningDataFromServer = () => {
   learningDataEventSubscribers += 1;
   if (!learningDataEventSource) {
     learningDataEventSource = new EventSource(LEARNING_DATA_EVENTS_URL);
+    learningDataEventSource.addEventListener('open', () => {
+      learningDataStreamConnected = true;
+    });
+    learningDataEventSource.addEventListener('error', () => {
+      learningDataStreamConnected = false;
+    });
     learningDataEventSource.addEventListener('learning-data', ((event: MessageEvent<string>) => {
       try {
+        learningDataStreamConnected = true;
         saveLearningDataCache(normalizeLearningData(JSON.parse(event.data)));
       } catch {
         // Keep the last usable cache. EventSource reconnects automatically.
@@ -925,6 +993,7 @@ export const subscribeLearningDataFromServer = () => {
     if (learningDataEventSubscribers === 0 && learningDataEventSource) {
       learningDataEventSource.close();
       learningDataEventSource = null;
+      learningDataStreamConnected = false;
     }
   };
 };
@@ -939,13 +1008,22 @@ const refreshLearningDataCache = () => {
   return learningDataPollInFlight;
 };
 
+const refreshLearningDataWhenVisible = () => {
+  if ((typeof document === 'undefined' || !document.hidden) && !learningDataStreamConnected) {
+    void refreshLearningDataCache();
+  }
+};
+
 export const subscribeLearningDataPolling = () => {
   learningDataPollSubscribers += 1;
   if (learningDataPollSubscribers === 1) {
     void refreshLearningDataCache();
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', refreshLearningDataWhenVisible);
+    }
     learningDataPollTimer = window.setInterval(() => {
-      void refreshLearningDataCache();
-    }, 15_000);
+      refreshLearningDataWhenVisible();
+    }, LEARNING_POLL_INTERVAL_MS);
   }
   let released = false;
   return () => {
@@ -955,6 +1033,9 @@ export const subscribeLearningDataPolling = () => {
     if (learningDataPollSubscribers === 0 && learningDataPollTimer !== null) {
       window.clearInterval(learningDataPollTimer);
       learningDataPollTimer = null;
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', refreshLearningDataWhenVisible);
+      }
     }
   };
 };

@@ -1,7 +1,25 @@
 import type { LearningDataSnapshot } from './learningData';
 import type { NormalizedCrop } from './imageCrop';
+import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './runtime';
+import { explicitAiActionHeaders } from './aiAction';
+export { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from './runtime';
 
 export type NoteKind = 'single' | 'canvas';
+
+export type NoteAiMode = 'auto-light' | 'auto-advanced' | 'model' | 'off';
+
+export interface NoteAiSelection {
+  mode: NoteAiMode;
+  providerId?: string;
+  modelId?: string;
+}
+
+export interface NoteVisionModelChoice {
+  providerId: string;
+  modelId: string;
+  qualityTier: number | null;
+  costTier: number | null;
+}
 
 export interface SaveNotePayload {
   imageDataUrl: string;
@@ -9,11 +27,13 @@ export interface SaveNotePayload {
   noteUid?: string;
   remark?: string;
   subject?: string;
+  subjectLocked?: boolean;
   canvasProjectId?: string;
   sourceType?: 'ai-multi-question' | 'single-capture' | string;
   sourceBatchId?: string;
   sourceSplitIndex?: number;
   tags?: string[];
+  aiSelection?: NoteAiSelection;
 }
 
 export interface MaterialFilePayload {
@@ -38,14 +58,17 @@ export interface SaveMaterialPayload {
 
 export interface SaveMaterialResult {
   ok: boolean;
+  operationId?: string;
   noteUid: string;
   attachments?: Array<{ id: string; kind: string; name: string; mimeType: string; size: number | null; filePath: string }>;
   learningData?: LearningDataSnapshot;
   idempotentReplay?: boolean;
+  commitSha?: string | null;
   error?: string;
 }
 
 export interface AppendMaterialPayload {
+  operationId?: string;
   noteUid: string;
   title?: string;
   remark?: string;
@@ -53,6 +76,27 @@ export interface AppendMaterialPayload {
   tags?: string[];
   facets?: LearningRecordFacet[];
   files: File[];
+}
+
+export interface GeneratedHtmlNoteArtifact {
+  title: string;
+  width: number;
+  height: number;
+  html: string;
+  css: string;
+  js: string;
+  provider: string;
+  model: string;
+  artifactHash: string;
+  requestId: string;
+  durationMs: number;
+  attempts: Array<{
+    provider?: string;
+    model?: string;
+    phase?: string;
+    outcome?: string;
+    code?: string | null;
+  }>;
 }
 
 export interface SaveNoteResult {
@@ -106,12 +150,19 @@ export interface AiBackgroundJob {
   progress: number;
   message: string;
   error: string;
+  errorCode?: string;
+  attempts?: number;
   createdAt: string;
   updatedAt: string;
   completedAt: string;
   result?: {
     applied?: boolean;
     title?: string;
+    subject?: string;
+    provider?: string;
+    model?: string;
+    attempts?: GeneratedHtmlNoteArtifact['attempts'];
+    taskId?: string;
     revision?: number;
   } | null;
 }
@@ -145,10 +196,13 @@ export interface LearningSearchResponse {
 
 export interface CaptureBatchJob {
   jobId: string;
+  entryId?: string;
+  parentEntryId?: string;
   status: 'queued' | 'waiting_configuration' | 'processing' | 'completed' | 'configuration_mismatch' | 'needs_review' | 'waiting_quota' | 'failed_retryable';
   progress: number;
   message: string;
   error: string;
+  errorCode?: string;
   resultEntryIds: string[];
   configurationHash: string;
   workflowHash: string;
@@ -164,28 +218,6 @@ export interface CaptureBatchResponse {
   job: CaptureBatchJob;
 }
 
-const isLoopbackHostname = (hostname: string): boolean => (
-  hostname === '127.0.0.1'
-  || hostname === 'localhost'
-  || hostname === '::1'
-  || hostname === '[::1]'
-);
-
-export const IS_CLOUD_RUNTIME = typeof window !== 'undefined'
-  && window.location.protocol === 'https:'
-  && !isLoopbackHostname(window.location.hostname.toLowerCase());
-
-const resolveNoteServerUrl = (): string => {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:5174';
-  const explicitRuntimeUrl = String(import.meta.env?.VITE_NOTE_SERVER_URL || '').trim().replace(/\/+$/, '');
-  if (explicitRuntimeUrl) return explicitRuntimeUrl;
-  const hostname = window.location.hostname.toLowerCase();
-  return isLoopbackHostname(hostname) || window.location.protocol === 'file:'
-    ? 'http://127.0.0.1:5174'
-    : `${window.location.origin}/api`;
-};
-
-export const NOTE_SERVER_URL = resolveNoteServerUrl();
 const NOTE_SAVE_TIMEOUT_MS = IS_CLOUD_RUNTIME ? 45_000 : 15_000;
 const AI_REQUEST_TIMEOUT_MS = 180_000;
 const AI_ENQUEUE_TIMEOUT_MS = 12_000;
@@ -201,6 +233,66 @@ export const fileToDataUrl = (file: File): Promise<string> => new Promise((resol
   reader.onerror = () => reject(reader.error ?? new Error('读取图片失败'));
   reader.readAsDataURL(file);
 });
+
+export const imageFileToCaptureDataUrl = async (file: File, maxEdge = 2560): Promise<string> => {
+  if (!file.type.startsWith('image/')) throw new Error('请选择图片文件。');
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    return fileToDataUrl(file);
+  }
+  try {
+    const longest = Math.max(bitmap.width, bitmap.height);
+    const ratio = longest > maxEdge ? maxEdge / longest : 1;
+    const width = Math.max(1, Math.round(bitmap.width * ratio));
+    const height = Math.max(1, Math.round(bitmap.height * ratio));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d', { alpha: file.type === 'image/png' });
+    if (!context) throw new Error('图片压缩初始化失败。');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(bitmap, 0, 0, width, height);
+    const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    return canvas.toDataURL(outputType, outputType === 'image/jpeg' ? 0.9 : undefined);
+  } finally {
+    bitmap.close();
+  }
+};
+
+export const fetchNoteVisionModelChoices = async (): Promise<NoteVisionModelChoice[]> => {
+  const response = await fetch(`${NOTE_SERVER_URL}/ai/config`, { cache: 'no-store' });
+  const payload = await response.json().catch(() => null) as { providers?: unknown; error?: string } | null;
+  if (!response.ok || !payload) throw new Error(payload?.error || `AI 配置读取失败（HTTP ${response.status}）`);
+  const providerEntries = Array.isArray(payload.providers)
+    ? payload.providers.map((provider) => [String((provider as { id?: string }).id || ''), provider] as const)
+    : Object.entries((payload.providers && typeof payload.providers === 'object') ? payload.providers : {});
+  return providerEntries.flatMap(([providerId, rawProvider]) => {
+    const provider = rawProvider as { enabled?: boolean; models?: unknown[] };
+    if (!providerId || provider.enabled === false) return [];
+    return (Array.isArray(provider.models) ? provider.models : []).flatMap((rawModel) => {
+      const model = typeof rawModel === 'string' ? { id: rawModel, capabilities: [] } : rawModel as {
+        id?: string; model?: string; capabilities?: string[]; qualityTier?: number; costTier?: number;
+      };
+      const modelId = String(model.id || model.model || '').trim();
+      const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
+      const inferredVision = providerId === 'gemini' || /(?:qwen.*vl|kimi-k(?:2\.5|2\.6|3)|vision)/i.test(modelId);
+      if (!modelId || (!capabilities.includes('vision') && !inferredVision)) return [];
+      return [{
+        providerId,
+        modelId,
+        qualityTier: Number.isFinite(Number(model.qualityTier)) ? Number(model.qualityTier) : null,
+        costTier: Number.isFinite(Number(model.costTier)) ? Number(model.costTier) : null,
+      }];
+    });
+  }).sort((left, right) => (
+    (right.qualityTier ?? 0) - (left.qualityTier ?? 0)
+    || (left.costTier ?? 9) - (right.costTier ?? 9)
+    || `${left.providerId}/${left.modelId}`.localeCompare(`${right.providerId}/${right.modelId}`)
+  ));
+};
 
 export const getImageDimensions = (src: string): Promise<{ width: number; height: number }> => new Promise((resolve, reject) => {
   const image = new Image();
@@ -289,11 +381,90 @@ export const appendLearningMaterials = async (payload: AppendMaterialPayload): P
       dataUrl: await fileToDataUrl(file),
     });
   }
+  const operationId = payload.operationId || `material-${createNoteUid()}`;
   return fetchJsonWithTimeout<SaveMaterialResult>(`${NOTE_SERVER_URL}/append-material-note`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...payload, files }),
+    body: JSON.stringify({ ...payload, operationId, files }),
   }, Math.max(NOTE_SAVE_TIMEOUT_MS, 45_000));
+};
+
+export const generateQuickHtmlNote = async (input: {
+  prompt: string;
+  draftTitle?: string;
+  draftRemark?: string;
+}): Promise<GeneratedHtmlNoteArtifact> => {
+  const prompt = input.prompt.trim();
+  if (prompt.length < 3) throw new Error('请先描述希望生成的交互笔记。');
+  const clientPolicy = await (async () => {
+    try {
+      const configuration = await fetchJsonWithTimeout<{
+        ok: boolean;
+        tasks?: Record<string, { timeoutMs?: number; fallback?: boolean; options?: Record<string, string | number | boolean> }>;
+        taskDefinitions?: Array<{ id?: string; defaults?: { timeoutMs?: number } }>;
+      }>(`${NOTE_SERVER_URL}/ai/config`, { method: 'GET', cache: 'no-store' }, 5_000);
+      const task = configuration.tasks?.interactive_note_generation || {};
+      const definition = configuration.taskDefinitions?.find((entry) => entry.id === 'interactive_note_generation');
+      const timeoutMs = Math.max(1_000, Math.min(300_000, Number(task.timeoutMs || definition?.defaults?.timeoutMs || 120_000)));
+      const contextChars = Math.max(500, Math.min(12_000, Number(task.options?.contextChars || 4_000)));
+      const networkRetries = Math.max(0, Math.min(2, Number(task.options?.networkRetries || 0)));
+      const jsonRepairRetries = Math.max(0, Math.min(2, Number(task.options?.jsonRepairRetries ?? 1)));
+      const candidateCount = task.fallback === false ? 1 : 2;
+      return {
+        contextChars,
+        requestTimeoutMs: Math.min(600_000, Math.max(
+          30_000,
+          timeoutMs * (1 + networkRetries + jsonRepairRetries) * candidateCount + 15_000,
+        )),
+      };
+    } catch {
+      return { contextChars: 4_000, requestTimeoutMs: 510_000 };
+    }
+  })();
+  const draftContext = [
+    input.draftTitle?.trim() ? `当前速记标题：${input.draftTitle.trim().slice(0, 160)}` : '',
+    input.draftRemark?.trim() ? `当前速记正文：${input.draftRemark.trim().slice(0, clientPolicy.contextChars)}` : '',
+  ].filter(Boolean).join('\n');
+  let result: {
+    ok: boolean;
+    requestId?: string;
+    durationMs?: number;
+    provider?: string;
+    model?: string;
+    artifactHash?: string;
+    attempts?: GeneratedHtmlNoteArtifact['attempts'];
+    error?: string;
+    widget?: { title?: string; width?: number; height?: number; html?: string; css?: string; js?: string };
+  };
+  try {
+    result = await fetchJsonWithTimeout<typeof result>(`${NOTE_SERVER_URL}/ai/html-note`, {
+      method: 'POST',
+      headers: explicitAiActionHeaders(),
+      body: JSON.stringify({
+        prompt: [prompt.slice(0, 650), draftContext].filter(Boolean).join('\n\n'),
+      }),
+    }, clientPolicy.requestTimeoutMs);
+  } catch (error) {
+    if (error instanceof Error && /请求超时/.test(error.message)) {
+      throw new Error(`AI 交互笔记等待超过 ${Math.round(clientPolicy.requestTimeoutMs / 1000)} 秒；请在 AI 配置中缩短单次超时、关闭重试或改用更快模型。`);
+    }
+    throw error;
+  }
+  if (!result.ok || !result.widget?.html) throw new Error(result.error || 'AI 没有生成可用的 HTML。');
+  return {
+    title: String(result.widget.title || 'AI 交互笔记').slice(0, 80),
+    width: Math.max(240, Math.min(720, Number(result.widget.width) || 520)),
+    height: Math.max(150, Math.min(620, Number(result.widget.height) || 360)),
+    html: String(result.widget.html || ''),
+    css: String(result.widget.css || ''),
+    js: String(result.widget.js || ''),
+    provider: String(result.provider || ''),
+    model: String(result.model || ''),
+    artifactHash: String(result.artifactHash || ''),
+    requestId: String(result.requestId || ''),
+    durationMs: Math.max(0, Number(result.durationMs) || 0),
+    attempts: Array.isArray(result.attempts) ? result.attempts : [],
+  };
 };
 
 export const updateCloudEntryAssets = async (
@@ -341,7 +512,7 @@ export const createCaptureBatch = async (
   options: { batchId: string; subject?: string; remark?: string },
 ): Promise<CaptureBatchResponse> => fetchJsonWithTimeout<CaptureBatchResponse>(`${NOTE_SERVER_URL}/capture-batches`, {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: explicitAiActionHeaders(),
   body: JSON.stringify({
     imageDataUrl,
     batchId: options.batchId,
@@ -361,7 +532,7 @@ export const getCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; 
 export const retryCaptureBatchJob = async (jobId: string): Promise<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }> => (
   fetchJsonWithTimeout<{ ok: boolean; accepted: boolean; job: CaptureBatchJob }>(
     `${NOTE_SERVER_URL}/jobs/${encodeURIComponent(jobId)}/retry`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+    { method: 'POST', headers: explicitAiActionHeaders(), body: '{}' },
     20_000,
   )
 );
@@ -374,7 +545,7 @@ const detectQuestionRegionsOnce = async (
   if (!IS_CLOUD_RUNTIME) {
     return fetchJsonWithTimeout<DetectQuestionResult>(`${NOTE_SERVER_URL}/ai/detect-questions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: explicitAiActionHeaders(),
       body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
     }, AI_REQUEST_TIMEOUT_MS);
   }
@@ -384,7 +555,7 @@ const detectQuestionRegionsOnce = async (
   try {
     const response = await fetch(`${NOTE_SERVER_URL}/ai/detect-questions/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
+      headers: { ...explicitAiActionHeaders(), Accept: 'application/x-ndjson' },
       signal: controller.signal,
       body: JSON.stringify({ imageDataUrl, imageWidth: size.width, imageHeight: size.height }),
     });
@@ -444,8 +615,8 @@ export const enqueueLearningNoteRename = async (noteUid: string): Promise<AiJobR
     `${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/rename`,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+      headers: explicitAiActionHeaders(),
+      body: JSON.stringify({ operationId: `rename-${createNoteUid()}` }),
     },
     AI_ENQUEUE_TIMEOUT_MS,
   )
@@ -468,7 +639,7 @@ export const searchLearningRecords = async (
   `${NOTE_SERVER_URL}/search`,
   {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: mode === 'ai' ? explicitAiActionHeaders() : { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, mode, limit }),
   },
   mode === 'ai' ? 45_000 : AI_ENQUEUE_TIMEOUT_MS,

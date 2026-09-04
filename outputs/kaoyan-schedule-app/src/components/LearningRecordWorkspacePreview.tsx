@@ -31,6 +31,7 @@ import {
   type WorkspaceExportAsset,
 } from '../utils/workspaceExport';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
+import { navigateApp } from '../utils/appNavigation';
 import '../learning-record-workspace-preview.css';
 
 type AssetKind = 'image' | 'pdf' | 'word' | 'html' | 'file';
@@ -100,7 +101,8 @@ const stableFallbackPath = (note: LearningAutoNote, attachment: LearningAttachme
   if (attachment.kind === 'image') {
     return 'github://data/assets/' + note.noteUid + '.' + extensionForAttachment(attachment);
   }
-  const baseName = normalized.split('/').filter(Boolean).at(-1) || attachment.name;
+  const pathParts = normalized.split('/').filter(Boolean);
+  const baseName = pathParts[pathParts.length - 1] || attachment.name;
   return baseName ? 'github://data/assets/' + baseName : '';
 };
 
@@ -468,7 +470,7 @@ export function LearningRecordWorkspacePreview({ noteUid }: { noteUid: string })
     const url = new URL(window.location.href);
     url.searchParams.delete('workspaceNote');
     url.searchParams.set('panel', 'learning');
-    window.location.assign(url.toString());
+    navigateApp(`${url.pathname}${url.search}${url.hash}`);
   };
 
   const spawn = (item: Asset, clientX: number, clientY: number) => {

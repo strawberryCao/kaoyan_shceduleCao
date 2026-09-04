@@ -12,7 +12,9 @@
 @media(max-width:520px){.lrp-topbar{grid-template-columns:auto minmax(0,1fr) auto;gap:7px}.lrp-topbar-actions>button:nth-child(2){display:none}.lrp-reading-panel{height:540px}.lrp-reading-panel>header>a{font-size:0;padding:8px}.lrp-file-preview h2{font-size:16px}}
 
 .lrp-html-preview { width: 100%; height: 100%; min-width: 0; min-height: 0; display: grid; overflow: hidden; background: #fff; }
+.lrp-html-preview > * { grid-area: 1 / 1; }
 .lrp-html-preview .lrp-document-frame { width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.lrp-html-runtime-warning{z-index:2;align-self:center;justify-self:center;max-width:min(88%,420px);display:grid;gap:7px;padding:14px 16px;border:1px solid #dccdbb;border-radius:12px;background:rgba(255,252,247,.96);box-shadow:0 12px 30px rgba(74,55,35,.14);color:#5d5146;font-size:11px;line-height:1.55}.lrp-html-runtime-warning strong{font-size:12px;color:#3e352e}.lrp-html-runtime-warning>div{display:flex;gap:8px}.lrp-html-runtime-warning button,.lrp-html-runtime-warning a{padding:7px 10px;border:1px solid #d3b995;border-radius:8px;background:#fff;color:#76522f;text-decoration:none;font:inherit;font-weight:700;cursor:pointer}
 .lrp-text-preview { box-sizing: border-box; width: 100%; height: 100%; min-height: 260px; margin: 0; padding: 18px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #fbfaf7; color: #25282d; font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; }
 .lrp-pdf-preview{width:100%;height:100%;min-width:0;min-height:0;display:grid;grid-template-rows:34px minmax(0,1fr);overflow:hidden;background:#d8d8d5}
 .lrp-pdf-toolbar{z-index:2;display:flex;align-items:center;gap:4px;padding:4px 7px;border-bottom:1px solid rgba(36,39,44,.12);background:rgba(255,255,255,.96);box-shadow:0 2px 10px rgba(30,31,33,.08)}
@@ -133,6 +135,20 @@
 }
 .lrp-image-viewer.is-panning {
   cursor: grabbing;
+}
+.lrp-image-open {
+  min-width: 100%;
+  display: block;
+  margin: 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: zoom-in;
+}
+.lrp-image-open:focus-visible {
+  outline: 3px solid rgba(158, 98, 43, .78);
+  outline-offset: -3px;
 }
 .lrp-image-viewer .lrp-real-image {
   width: 100%;

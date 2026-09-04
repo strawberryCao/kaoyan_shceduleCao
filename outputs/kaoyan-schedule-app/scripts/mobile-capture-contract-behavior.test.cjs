@@ -55,5 +55,6 @@ test('mobile multi-question capture persists batch context before any AI or netw
   assert.match(jobs, /await resumeOne\(job\.id\)/);
   assert.match(jobs, /createCaptureBatch/);
   assert.doesNotMatch(jobs, /detectQuestionRegions|cropManyImages/);
-  assert.match(queue, /重新打开页面会自动续传/);
+  assert.match(queue, /活动中心可查看并继续上传/);
+  assert.match(queue, /\['completed', 'cancelled'\]\.includes\(job\.status\)/);
 });

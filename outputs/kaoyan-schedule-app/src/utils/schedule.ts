@@ -9,9 +9,11 @@ import type {
 } from '../types';
 
 export const START_DATE = '2026-07-09';
-export const SCHEDULE_DAYS = 30;
 export const STORAGE_KEY = 'kaoyan-schedule-records-v1';
 export const STORAGE_VERSION = 1;
+
+const MIN_SCHEDULE_DAYS = 30;
+const FUTURE_SCHEDULE_DAYS = 120;
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
 const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -41,6 +43,13 @@ const addDays = (date: string, days: number): string => {
   return formatLocalDate(next);
 };
 
+export const getScheduleDayCount = (currentDate = new Date()): number => {
+  const elapsed = Math.floor((parseLocalDate(formatLocalDate(currentDate)).getTime() - parseLocalDate(START_DATE).getTime()) / DAY_IN_MS);
+  return Math.max(MIN_SCHEDULE_DAYS, elapsed + FUTURE_SCHEDULE_DAYS + 1);
+};
+
+export const SCHEDULE_DAYS = getScheduleDayCount();
+
 const makeTask = (
   date: string,
   slug: string,
@@ -56,8 +65,8 @@ const makeTask = (
   trackable,
 });
 
-export const generateSchedule = (): ScheduleDay[] => {
-  return Array.from({ length: SCHEDULE_DAYS }, (_, index) => {
+export const generateSchedule = (dayCount = SCHEDULE_DAYS): ScheduleDay[] => {
+  return Array.from({ length: Math.max(MIN_SCHEDULE_DAYS, dayCount) }, (_, index) => {
     const date = addDays(START_DATE, index);
     const jsDate = parseLocalDate(date);
     const type: DayType = index % 2 === 0 ? 'A' : 'B';
@@ -140,14 +149,15 @@ export const isDayFullyComplete = (day: ScheduleDay, record?: DayRecord): boolea
   );
 };
 
-export const calculateStats = (days: ScheduleDay[], records: RecordsByDate): Stats => {
+export const calculateStats = (days: ScheduleDay[], records: RecordsByDate, currentDate = new Date()): Stats => {
   let totalTasks = 0;
   let completedTasks = 0;
   let mathCompletedDays = 0;
   let aDayCompletedCount = 0;
   let bDayCompletedCount = 0;
 
-  days.forEach((day) => {
+  const today = formatLocalDate(currentDate);
+  days.filter((day) => day.date <= today).forEach((day) => {
     const record = records[day.date];
     const trackableTasks = day.tasks.filter((task) => task.trackable);
     totalTasks += trackableTasks.length;
@@ -257,8 +267,8 @@ export const makeStoragePayload = (records: RecordsByDate): StoragePayload => ({
   records,
 });
 
-export const getScheduleRangeText = (): string => {
-  const endDate = addDays(START_DATE, SCHEDULE_DAYS - 1);
+export const getScheduleRangeText = (dayCount = SCHEDULE_DAYS): string => {
+  const endDate = addDays(START_DATE, dayCount - 1);
   return `${START_DATE} 至 ${endDate}`;
 };
 

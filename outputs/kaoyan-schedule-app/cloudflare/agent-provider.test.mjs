@@ -68,6 +68,34 @@ test('strict provider routing prioritizes the exact local provider and model sel
   assert.equal(route.candidates[0].model.id, 'qwen3-vl-plus');
 });
 
+test('semantic JSON validation rejects an empty vision result so routing can try another model', async () => {
+  const candidate = { providerId: 'gemini', model: { id: 'gemini-3.5-flash' } };
+  const result = { json: { regions: [] }, text: '{"regions":[]}' };
+  await assert.rejects(
+    agentProviderInternals.validateCandidateJson({
+      validateJson(json, selected) {
+        assert.deepEqual(json, { regions: [] });
+        assert.deepEqual(selected, { provider: 'gemini', model: 'gemini-3.5-flash' });
+        const error = new Error('empty semantic result');
+        error.code = 'AI_NO_VALID_QUESTION_REGIONS';
+        throw error;
+      },
+    }, result, candidate),
+    { code: 'AI_NO_VALID_QUESTION_REGIONS' },
+  );
+});
+
+test('JSON repair keeps the original request and asks for corrected JSON only', () => {
+  const request = agentProviderInternals.repairedJsonRequest(
+    { messages: [{ role: 'user', content: 'build' }], json: true },
+    Object.assign(new Error('schema invalid'), { code: 'AI_SCHEMA_INVALID' }),
+    '{"broken":true}',
+  );
+  assert.equal(request.messages.length, 3);
+  assert.equal(request.messages[1].role, 'assistant');
+  assert.match(request.messages[2].content, /JSON/);
+});
+
 test('local catalog models are materialized only when a task explicitly selects them', () => {
   const normalized = agentRuntimeInternals.normalizeProvider('qwen', {
     models: [{ id: 'qwen-vl-plus' }],
@@ -131,6 +159,17 @@ test('multi-question prompt is constrained by local task options and emits norma
   assert.equal(regions.accepted[0].x, 0.1);
   assert.equal(regions.rejected.length, 0);
   assert.equal(regions.candidateCount, 1);
+});
+
+test('Gemini y-first array boxes are transposed into wide question rows', () => {
+  const regions = questionDetectionInternals.normalizeRegions({
+    regions: [{ bbox: [184, 144, 302, 844], confidence: 0.95, questionKey: '2' }],
+  }, 1365, 2048, { options: { maxQuestions: 12, minimumRegionPercent: 3.5, edgePaddingPercent: 0 } });
+  assert.equal(regions.accepted.length, 1);
+  assert.ok(Math.abs(regions.accepted[0].x - 0.144) < 0.001);
+  assert.ok(Math.abs(regions.accepted[0].y - 0.184) < 0.001);
+  assert.ok(regions.accepted[0].width > 0.69);
+  assert.ok(regions.accepted[0].height < 0.12);
 });
 
 test('workflow contract is required for public naming and splitting tasks', () => {

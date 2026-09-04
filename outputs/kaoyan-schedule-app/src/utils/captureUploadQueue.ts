@@ -7,6 +7,7 @@ export interface CaptureUploadJob {
   id: string;
   status: CaptureUploadStatus;
   payloads: SaveNotePayload[];
+  imageBlobs?: Blob[];
   noteUids: string[];
   attempts: number;
   nextAttemptAt: number;
@@ -37,11 +38,19 @@ const RETRY_DELAYS_MS = [1_200, 3_000, 10_000, 30_000, 90_000, 5 * 60_000];
 
 let databasePromise: Promise<IDBDatabase> | null = null;
 let processorPromise: Promise<void> | null = null;
-let retryTimer: number | null = null;
 
 const nowIso = () => new Date().toISOString();
 const dataUrlBytes = (value: string): number => Math.ceil(Math.max(0, value.length - value.indexOf(',') - 1) * 0.75);
-const jobBytes = (job: CaptureUploadJob): number => job.payloads.reduce((sum, item) => sum + dataUrlBytes(item.imageDataUrl), 0);
+const jobBytes = (job: CaptureUploadJob): number => job.imageBlobs?.length
+  ? job.imageBlobs.reduce((sum, blob) => sum + blob.size, 0)
+  : job.payloads.reduce((sum, item) => sum + dataUrlBytes(item.imageDataUrl), 0);
+const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => (await fetch(dataUrl)).blob();
+const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error ?? new Error('本机原图读取失败。'));
+  reader.readAsDataURL(blob);
+});
 
 const openDatabase = (): Promise<IDBDatabase> => {
   if (databasePromise) return databasePromise;
@@ -90,6 +99,7 @@ const putJob = async (job: CaptureUploadJob): Promise<void> => {
   const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).put(job));
   await committed;
+  void import('./activityTasks').then(({ mirrorCaptureActivity }) => mirrorCaptureActivity(job)).catch(() => undefined);
 };
 
 const deleteJob = async (id: string): Promise<void> => {
@@ -98,6 +108,7 @@ const deleteJob = async (id: string): Promise<void> => {
   const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).delete(id));
   await committed;
+  void import('./activityTasks').then(({ removeActivityTask }) => removeActivityTask(`capture:${id}`)).catch(() => undefined);
 };
 
 const emit = async (): Promise<void> => {
@@ -152,21 +163,6 @@ const nextRunnable = (jobs: CaptureUploadJob[]): CaptureUploadJob | null => {
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null;
 };
 
-const scheduleNext = async (): Promise<void> => {
-  if (retryTimer !== null) window.clearTimeout(retryTimer);
-  retryTimer = null;
-  const jobs = await readJobs();
-  const waiting = jobs
-    .filter((job) => ['queued', 'failed', 'uploading'].includes(job.status))
-    .sort((left, right) => runnableAt(left) - runnableAt(right))[0];
-  if (!waiting) return;
-  const delay = Math.max(250, runnableAt(waiting) - Date.now());
-  retryTimer = window.setTimeout(() => {
-    retryTimer = null;
-    void resumeCaptureUploads();
-  }, delay);
-};
-
 const processOutbox = async (): Promise<void> => {
   while (navigator.onLine !== false) {
     const jobs = await prune();
@@ -183,7 +179,10 @@ const processOutbox = async (): Promise<void> => {
       error: '',
     });
     try {
-      const result = await saveNoteImagesBatch(uploading.payloads);
+      const payloads = uploading.imageBlobs?.length
+        ? await Promise.all(uploading.payloads.map(async (payload, index) => ({ ...payload, imageDataUrl: await blobToDataUrl(uploading.imageBlobs![index]) })))
+        : uploading.payloads;
+      const result = await saveNoteImagesBatch(payloads);
       if (result.learningData) saveLearningDataCache(result.learningData);
       await patchJob(uploading, {
         status: 'completed',
@@ -192,20 +191,20 @@ const processOutbox = async (): Promise<void> => {
         error: '',
         completedAt: nowIso(),
         payloads: [],
+        imageBlobs: [],
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const canRetry = retryable(message);
       await patchJob(uploading, {
         status: 'failed',
-        nextAttemptAt: canRetry ? Date.now() + retryDelay(uploading.attempts) : Number.MAX_SAFE_INTEGER,
-        message: canRetry ? '网络中断，已保留在本机；保持页面打开或稍后重新打开即可自动续传' : '后台保存失败，原图仍保留在本机，可手动重试',
+        nextAttemptAt: Number.MAX_SAFE_INTEGER,
+        message: canRetry ? '网络中断，原图已保留在本机；可在活动中心明确点击“继续”' : '后台保存失败，原图仍保留在本机，可手动重试',
         error: message,
       });
-      if (!canRetry) break;
+      break;
     }
   }
-  await scheduleNext();
 };
 
 export const enqueueCaptureUpload = async (payloads: SaveNotePayload[]): Promise<CaptureUploadJob> => {
@@ -219,14 +218,16 @@ export const enqueueCaptureUpload = async (payloads: SaveNotePayload[]): Promise
     return duplicate;
   }
   const createdAt = nowIso();
+  const imageBlobs = await Promise.all(payloads.map((payload) => dataUrlToBlob(payload.imageDataUrl)));
   const job: CaptureUploadJob = {
     id: `capture-${crypto.randomUUID()}`,
     status: 'queued',
-    payloads,
+    payloads: payloads.map((payload) => ({ ...payload, imageDataUrl: '' })),
+    imageBlobs,
     noteUids,
     attempts: 0,
     nextAttemptAt: Date.now(),
-    message: payloads.length > 1 ? `${payloads.length} 道题已安全保存在本机，重新打开页面会自动续传` : '图片已安全保存在本机，重新打开页面会自动续传',
+    message: payloads.length > 1 ? `${payloads.length} 道题已安全保存在本机，活动中心可查看并继续上传` : '图片已安全保存在本机，活动中心可查看并继续上传',
     error: '',
     createdAt,
     updatedAt: createdAt,
@@ -263,6 +264,21 @@ export const retryCaptureUploads = async (): Promise<void> => {
   return resumeCaptureUploads();
 };
 
+export const retryCaptureUpload = async (id: string): Promise<void> => {
+  const job = (await readJobs()).find((candidate) => candidate.id === id);
+  if (!job || ['completed', 'cancelled'].includes(job.status)) throw new Error('这条拍题任务当前不能继续。');
+  await putJob({ ...job, status: 'queued', nextAttemptAt: Date.now(), message: '等待继续上传', error: '', updatedAt: nowIso() });
+  await emit();
+  return resumeCaptureUploads();
+};
+
+export const cancelCaptureUpload = async (id: string): Promise<void> => {
+  const job = (await readJobs()).find((candidate) => candidate.id === id);
+  if (!job || ['completed', 'cancelled'].includes(job.status)) return;
+  await putJob({ ...job, status: 'cancelled', nextAttemptAt: Number.MAX_SAFE_INTEGER, message: '已取消；本机原图仍保留到任务自动清理', error: '', completedAt: nowIso(), updatedAt: nowIso() });
+  await emit();
+};
+
 export const getCaptureUploadSummary = async (): Promise<CaptureUploadSummary> => {
   let jobs: CaptureUploadJob[] = [];
   try { jobs = await readJobs(); } catch {}
@@ -284,15 +300,10 @@ export const subscribeCaptureUploads = (listener: (summary: CaptureUploadSummary
 };
 
 export const installCaptureUploadResumer = (): (() => void) => {
-  const resume = () => { if (document.visibilityState === 'visible' && navigator.onLine !== false) void resumeCaptureUploads(); };
-  window.addEventListener('online', resume);
-  document.addEventListener('visibilitychange', resume);
+  // Opening the app or restoring connectivity must not replay paid work.
+  // Historical jobs remain visible and can be retried explicitly.
   void emit();
-  void resumeCaptureUploads();
-  return () => {
-    window.removeEventListener('online', resume);
-    document.removeEventListener('visibilitychange', resume);
-  };
+  return () => undefined;
 };
 
 export const captureUploadQueueInternals = Object.freeze({

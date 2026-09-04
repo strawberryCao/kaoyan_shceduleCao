@@ -538,6 +538,14 @@
     display: none;
   }
 
+  .note-capture-page.canvas-mode {
+    grid-template-rows: minmax(0, 1fr);
+  }
+
+  .note-capture-page.canvas-mode .note-app-bar {
+    display: none;
+  }
+
   .note-mode-switch {
     justify-self: start;
   }
@@ -579,6 +587,11 @@
 
   .canvas-project-bar {
     flex-wrap: wrap;
+  }
+
+  .canvas-project-bar > button,
+  .canvas-project-picker {
+    min-height: 44px;
   }
 
   .canvas-project-picker {

@@ -237,14 +237,27 @@
 
   .image-viewer__toolbar {
     bottom: max(12px, env(safe-area-inset-bottom));
+    gap: 4px;
+    padding: 5px;
   }
 
   .image-viewer__toolbar button {
-    min-width: 36px;
+    width: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 
   .image-viewer__scale {
-    width: 46px;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .image-viewer__separator {
+    display: none;
   }
 }
 
@@ -272,7 +285,7 @@
     display: inline-flex;
     top: max(10px, env(safe-area-inset-top));
     left: max(10px, env(safe-area-inset-left));
-    min-height: 40px;
+    min-height: 44px;
     padding: 0 13px;
     border-radius: 999px;
   }

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleGauge,
   Download,
+  FileCode2,
   FolderOpen,
   LoaderCircle,
   Plus,
@@ -57,7 +58,9 @@ const instructionExamples: Record<string, string> = {
   semantic_search: '例如：允许扩展同义概念和公式别名，但不要回答问题或生成总结。',
   note_enrichment: '例如：错因必须写成可执行的改进动作；不要把单纯计算量大的题判断为好题。',
   note_image_understanding: '无备注时优先使用高质量视觉模型；只依据图片可见内容，不猜测缺失信息。',
+  canvas_note_understanding: '完整读取画布里的题目、手写过程、批注、连线和订正；优先质量，不拆成额外的第二次模型调用。',
   widget_generation: '例如：按钮使用紧凑布局；所有计时状态必须在组件内可重置。',
+  interactive_note_generation: '例如：先做可操作的图形或步骤，不要把整条速记改写成长篇文字；保留重置操作。',
   canvas_organization: '例如：同一道题的原题、草稿、订正按从左到右排列；不同题目上下分组。',
   weekly_review_pdf: '只能分组和排序；禁止补充答案、知识讲解、例题、口诀或额外总结。',
   note_classification: '例如：涉及多个知识点时，主分类选择题目最终考查的知识点。',
@@ -67,6 +70,7 @@ const instructionExamples: Record<string, string> = {
 };
 
 const cloneTasks = (tasks: Record<string, AiTaskSettings>) => JSON.parse(JSON.stringify(tasks)) as Record<string, AiTaskSettings>;
+const defaultUsageProtection = { enabled: true, dailyRequestLimit: 200, usedToday: 0 };
 
 const isConfigured = (settings: AiTaskSettings | undefined) => Boolean(settings && Object.keys(settings).length > 0);
 
@@ -97,7 +101,9 @@ const blankNamingRule = (): AiNamingRule => ({
 export function AiConfigPage() {
   const [snapshot, setSnapshot] = useState<AiConfigurationSnapshot | null>(null);
   const [draft, setDraft] = useState<Record<string, AiTaskSettings>>({});
-  const [selectedTaskId, setSelectedTaskId] = useState('note_naming');
+  const [selectedTaskId, setSelectedTaskId] = useState(() => (
+    new URLSearchParams(window.location.search).get('task')?.trim() || 'note_naming'
+  ));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -107,6 +113,7 @@ export function AiConfigPage() {
   const [deepseekKey, setDeepseekKey] = useState('');
   const [deepseekModel, setDeepseekModel] = useState('deepseek-v4-flash');
   const [providerSaving, setProviderSaving] = useState(false);
+  const [usageProtection, setUsageProtection] = useState({ enabled: true, dailyRequestLimit: 200 });
 
   useEffect(() => {
     let cancelled = false;
@@ -116,8 +123,14 @@ export function AiConfigPage() {
         if (cancelled) return;
         setSnapshot(next);
         setDraft(cloneTasks(next.tasks));
+        const protection = next.usageProtection || defaultUsageProtection;
+        setUsageProtection({ enabled: protection.enabled, dailyRequestLimit: protection.dailyRequestLimit });
+        const requestedTaskId = new URLSearchParams(window.location.search).get('task')?.trim();
+        const requestedTask = requestedTaskId
+          ? next.taskDefinitions.find((task) => task.id === requestedTaskId)
+          : null;
         const firstActive = next.taskDefinitions.find((task) => task.active);
-        if (firstActive) setSelectedTaskId(firstActive.id);
+        if (requestedTask || firstActive) setSelectedTaskId((requestedTask || firstActive)!.id);
         setError('');
       })
       .catch((reason) => {
@@ -159,7 +172,9 @@ export function AiConfigPage() {
   }, [selectedTask]);
   const dirty = useMemo(() => snapshot
     ? JSON.stringify(draft) !== JSON.stringify(snapshot.tasks)
-    : false, [draft, snapshot]);
+      || usageProtection.enabled !== (snapshot.usageProtection || defaultUsageProtection).enabled
+      || usageProtection.dailyRequestLimit !== (snapshot.usageProtection || defaultUsageProtection).dailyRequestLimit
+    : false, [draft, snapshot, usageProtection]);
 
   const compatibleModels = useMemo(() => {
     if (!snapshot || !selectedTask) return [];
@@ -283,10 +298,22 @@ export function AiConfigPage() {
     setSaving(true);
     setError('');
     setSavedMessage('');
+    const submittedDraft = cloneTasks(draft);
+    const submittedDraftJson = JSON.stringify(submittedDraft);
+    const submittedProtection = { ...usageProtection };
     try {
-      const next = await saveAiConfiguration(draft);
+      const next = await saveAiConfiguration(submittedDraft, submittedProtection);
       setSnapshot(next);
-      setDraft(cloneTasks(next.tasks));
+      setDraft((current) => JSON.stringify(current) === submittedDraftJson
+        ? cloneTasks(next.tasks)
+        : current);
+      const protection = next.usageProtection || defaultUsageProtection;
+      setUsageProtection((current) => (
+        current.enabled === submittedProtection.enabled
+          && current.dailyRequestLimit === submittedProtection.dailyRequestLimit
+          ? { enabled: protection.enabled, dailyRequestLimit: protection.dailyRequestLimit }
+          : current
+      ));
       setSavedMessage('已保存，后续 AI 任务会立即使用新配置。');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -295,19 +322,34 @@ export function AiConfigPage() {
     }
   };
 
+  const selectTask = (taskId: string) => {
+    setSelectedTaskId(taskId);
+    const url = new URL(window.location.href);
+    url.searchParams.set('task', taskId);
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+
   const handleSaveDeepseek = async () => {
+    if (dirty) {
+      setError('请先保存当前 AI 任务修改，再接入或更新 DeepSeek，避免覆盖尚未保存的配置。');
+      return;
+    }
     setProviderSaving(true);
     setError('');
     setSavedMessage('');
+    const submittedKey = deepseekKey;
+    const submittedDraftJson = JSON.stringify(draft);
     try {
       const next = await saveAiProviderCredential({
         providerId: 'deepseek',
-        apiKey: deepseekKey,
+        apiKey: submittedKey,
         model: deepseekModel,
       });
       setSnapshot(next);
-      setDraft(cloneTasks(next.tasks));
-      setDeepseekKey('');
+      setDraft((current) => JSON.stringify(current) === submittedDraftJson
+        ? cloneTasks(next.tasks)
+        : current);
+      setDeepseekKey((current) => current === submittedKey ? '' : current);
       setSavedMessage('DeepSeek 已接入本地主机；密钥只保存在本机配置文件中。');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -350,9 +392,11 @@ export function AiConfigPage() {
         className={selectedTaskId === task.id ? 'is-active' : ''}
         key={task.id}
         type="button"
-        onClick={() => setSelectedTaskId(task.id)}
+        onClick={() => selectTask(task.id)}
       >
-        <span className="ai-task-icon"><BrainCircuit aria-hidden="true" size={18} /></span>
+        <span className="ai-task-icon">{task.id === 'interactive_note_generation'
+          ? <FileCode2 aria-hidden="true" size={18} />
+          : <BrainCircuit aria-hidden="true" size={18} />}</span>
         <span className="ai-task-copy">
           <strong>{task.label}</strong>
           <small>{selectedModel}</small>
@@ -408,6 +452,45 @@ export function AiConfigPage() {
       </section>
 
       <section className="ai-provider-tools">
+        <div className="ai-usage-protection" aria-label="AI 用量保护">
+          <header>
+            <span><ShieldCheck size={17} /><strong>AI 用量保护</strong></span>
+            <label className="ai-usage-protection-toggle">
+              <input
+                type="checkbox"
+                checked={usageProtection.enabled}
+                onChange={(event) => {
+                  setUsageProtection((current) => ({ ...current, enabled: event.target.checked }));
+                  setSavedMessage('');
+                }}
+              />
+              {usageProtection.enabled ? '已开启' : '已关闭'}
+            </label>
+          </header>
+          <div>
+            <label>
+              <span>每日请求上限</span>
+              <input
+                type="number"
+                min={1}
+                max={10000}
+                step={10}
+                disabled={!usageProtection.enabled}
+                value={usageProtection.dailyRequestLimit}
+                onChange={(event) => {
+                  const value = Math.max(1, Math.min(10000, Number(event.target.value) || 1));
+                  setUsageProtection((current) => ({ ...current, dailyRequestLimit: value }));
+                  setSavedMessage('');
+                }}
+              />
+            </label>
+            <p>
+              今天已发出 <strong>{(snapshot.usageProtection || defaultUsageProtection).usedToday.toLocaleString()}</strong> 次模型请求。
+              此数包含失败后的模型重试；修改后点击右上角“保存全部”立即生效。
+            </p>
+          </div>
+          <small>这只是一道可配置的费用保险。开机、联网和页面刷新不会自动触发 AI；AI 操作仍必须由你明确点击。</small>
+        </div>
         <details>
           <summary><ServerCog size={16} /> 接入 DeepSeek（自动分配文本任务）</summary>
           <div>
@@ -431,7 +514,7 @@ export function AiConfigPage() {
             </label>
             <button
               type="button"
-              disabled={providerSaving || deepseekKey.trim().length < 10}
+              disabled={dirty || saving || providerSaving || deepseekKey.trim().length < 10}
               onClick={() => void handleSaveDeepseek()}
             >
               {providerSaving ? <LoaderCircle className="is-spinning" size={15} /> : <Save size={15} />}
@@ -674,6 +757,9 @@ export function AiConfigPage() {
                     </option>
                   ))}
                 </select>
+                {settings.modelId && /(?:pro|reasoner|thinking|k2\.6|k3)/i.test(settings.modelId) && (
+                  <small className="ai-config-model-note">这是高质量或推理型模型，复杂 HTML 可能等待超过 1 分钟；建议把单次超时设为 120 秒以上。</small>
+                )}
               </label>
 
               <label className="ai-config-field">
@@ -694,7 +780,9 @@ export function AiConfigPage() {
 
               <label className="ai-config-field">
                 <span>创造性 / 温度</span>
-                <small>命名建议 0.1–0.3；数值越大变化越多</small>
+                <small>{selectedTaskId === 'interactive_note_generation'
+                  ? '交互创作建议 0.2–0.4；数值越低结构越稳定'
+                  : '命名建议 0.1–0.3；数值越大变化越多'}</small>
                 <input
                   inputMode="decimal"
                   max="2"
@@ -730,7 +818,9 @@ export function AiConfigPage() {
               <label>
                 <span>
                   <strong>启用此任务的 AI</strong>
-                  <small>关闭后会使用该功能原有的本地降级结果（若该功能支持）</small>
+                  <small>{selectedTaskId === 'interactive_note_generation'
+                    ? '关闭后学习中心不会发起 HTML 生成请求'
+                    : '关闭后会使用该功能原有的本地降级结果（若该功能支持）'}</small>
                 </span>
                 <input
                   checked={settings.enabled !== false}
@@ -738,14 +828,14 @@ export function AiConfigPage() {
                   onChange={(event) => updateTask({ enabled: event.target.checked })}
                 />
               </label>
-              <label className={!settings.modelId ? 'is-disabled' : ''}>
+              <label className={!(settings.providerId || settings.modelId) ? 'is-disabled' : ''}>
                 <span>
                   <strong>首选模型失败时自动切换</strong>
                   <small>关闭后只调用上面指定的模型，失败时不尝试其他模型</small>
                 </span>
                 <input
                   checked={settings.fallback !== false}
-                  disabled={!settings.modelId}
+                  disabled={!(settings.providerId || settings.modelId)}
                   type="checkbox"
                   onChange={(event) => updateTask({ fallback: event.target.checked })}
                 />

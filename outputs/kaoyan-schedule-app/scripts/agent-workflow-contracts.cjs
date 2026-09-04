@@ -10,29 +10,35 @@ const NOTE_ANALYSIS_INSTRUCTIONS = Object.freeze([
   '1. subject 只能从 existingTaxonomy 中已有的标准考研一级科目选择：{supportedSubjects}。禁止创建、提议或输出其他一级科目。',
   '1.1 新领域或更细主题只能写入 knowledgePoint、tags 或 items；无法可靠归类时 subject 必须为“{fallbackSubject}”。',
   '1.2 只要图片或备注能可靠识别为某一标准科目，就不得因为信心不足退回默认分类。',
+  '1.3 已位于标准科目目录或 namingEvidence 已给出标准科目时，将其视为独立识图结果形成的稳定锚点；另一模型若给出不同科目，不得自动跨科移动，除非用户明确修改。数学积分中仅出现指数函数、积分或归一化形式，不足以改判为概率论；必须直接出现随机变量、概率、分布、密度、期望、方差等语义证据。',
   '2. subject 与 knowledgePoint 是整张笔记的主分类；多题拆分后的图片通常只含一道题或一个知识单元。',
   '2.1 knowledgePoint 必须是可长期复用的简短分类标签，优先复用 existingTaxonomy 中已有名称或别名；禁止把本题的完整描述、解题结论或一句长话当作新知识点。',
   '2.2 只有现有分类确实无法容纳且新主题会被多条资料复用时才创建知识点；单题细节写入 title、summary、tags 或 items。',
   '3. questionType 概括题型；不是题目则为 null。',
   `3.1 对高等数学、线性代数、概率论，questionType 必须优先从下面的数学一标准叶子题型中选择，不能只写“选择题、填空题、计算题、证明题、综合题”等试卷形式；证据不足时返回 null，不要编造。\n${mathOneQuestionTypePrompt()}`,
+  '3.2 questionTypePath 是不含一级科目的 1 到 3 级题型路径，questionType 必须等于最后一级。数学优先写为“章节模块 > 标准叶子题型”；408 等科目写为“知识模块 > 方法族 > 具体题型”，不得把单道题完整描述当分类。不是题目时使用空数组。',
   '4. 错因按证据优先级处理：备注明确写出时标记 explicit_remark；图片划改或订正能直接证明时标记 explicit_image；只有可见步骤足以支持时才允许 ai_inferred；证据不足必须为 null/none。',
+  '4.0 必须主动检查图片中题目正文以外的内容：手写批注、圈画、划改、订正文字、老师评语、边栏笔记和箭头关系。若其中直接写明“错在、漏看、算错、不会、没想到、符号错”等，优先作为错因证据，不得忽略。',
   '4.1 wrongReason 最多一句话，只描述具体错误动作，不写完整解法。',
-  '5. {summaryRule}',
-  '6. {mistakeRule}',
-  '6.1 {goodRule}',
-  '6.2 {memorizeRule} 错题和好题可以并存。',
-  '7. {cardRule}',
-  '8. single 通常不要拆成多个 items；只有图片明显包含多个独立知识单元时才拆分，最多 {maxItems} 项。',
-  '9. confidence 衡量主分类和语义判断可靠度；低置信度不能代替最佳分类判断。',
-  '10. 所有文字使用简洁中文，不要输出 Markdown，不要解释 JSON 之外的内容。',
+  '4.2 wrongReasonPath 必须是最多三级的稳定错因路径，一级只选：粗心大意、知识与记忆、思路与方法、推理与计算、时间与策略、其他。“粗心大意”下再按审题疏漏、计算疏漏、注意力、作答习惯细分，例如看漏条件、误读条件、算术错误、正负号错误、走神分心、漏项漏写。只有证据充分时才新增稳定叶子，禁止一次生成大量近义类别；没有可靠错因时使用空数组。',
+  '5. learningTypePath 描述内容用途，最多三级。一级只能选：基础知识、题型方法、结论规律、易错警示、英语积累、政治材料。二级优先选：定义概念、原理机制、公式定理、性质条件、术语辨析；题型识别、标准步骤、方法选择、构造技巧、答题模板；常用结论、等价关系、适用条件、边界反例、推论拓展；易混概念、条件遗漏、符号范围、特殊情形、检查清单；单词短语、长难句、翻译表达、写作模板、语法规则；核心概念、原理表述、时政材料、分析模板、关键词句。第三级仅在确有稳定细分时填写。',
+  '5.1 intent.isGood 为 true 时，goodQuestionType 只能选：经典母题、方法好题、易错辨析、综合提升、新颖拓展；不是好题时为 null。分类宁可少而稳定，不得为单题新造类别。',
+  '6. {summaryRule}',
+  '7. {mistakeRule}',
+  '7.1 {goodRule}',
+  '7.2 {memorizeRule} 错题和好题可以并存。',
+  '8. {cardRule}',
+  '9. single 通常不要拆成多个 items；只有图片明显包含多个独立知识单元时才拆分，最多 {maxItems} 项。',
+  '10. confidence 衡量主分类和语义判断可靠度；低置信度不能代替最佳分类判断。',
+  '11. 所有文字使用简洁中文，不要输出 Markdown，不要解释 JSON 之外的内容。',
   '输入上下文：{contextPayload}',
 ]);
 
-const NOTE_ANALYSIS_OUTPUT = '只输出 JSON：{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型或null","aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"wrongReasonSource":"none","wrongReasonConfidence":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","summary":"分项摘要","tags":[],"wrongReason":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}；没有错因时 wrongReason 为 null，没有分项或卡片时使用空数组。';
+const NOTE_ANALYSIS_OUTPUT = '只输出 JSON：{"subject":"科目","knowledgePoint":"规范知识点或null","questionType":"题型叶子或null","questionTypePath":["一级题型","二级题型","三级题型"],"learningTypePath":["学习用途一级","二级","三级"],"goodQuestionType":null,"aliases":{"subject":[],"knowledgePoint":[]},"title":"标题","summary":"摘要","tags":[],"wrongReason":null,"wrongReasonPath":["错因一级","错因二级","错因三级"],"wrongReasonSource":"none","wrongReasonConfidence":null,"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false},"items":[{"title":"分项标题","knowledgePoint":"知识点或null","questionType":"题型或null","questionTypePath":[],"learningTypePath":[],"summary":"分项摘要","tags":[],"wrongReason":null,"wrongReasonPath":[],"intent":{"isQuestion":true,"isMistake":false,"isGood":false,"shouldMemorize":false}}],"cards":[{"front":"问题","back":"答案","kind":"memory或mistake","itemIndex":0}],"confidence":0.9,"reason":"判断依据"}；没有题型或错因时对应路径使用空数组，没有分项或卡片时使用空数组。';
 
 const DEFAULT_WORKFLOWS = Object.freeze({
   note_enrichment: Object.freeze({
-    version: 'note-enrichment-v4',
+    version: 'note-enrichment-v6',
     steps: Object.freeze([
       '读取局域网 note_enrichment 任务设置与现有分类目录',
       '合并图片、备注、标签与强意图提示',
@@ -47,7 +53,7 @@ const DEFAULT_WORKFLOWS = Object.freeze({
     }),
   }),
   note_image_understanding: Object.freeze({
-    version: 'note-image-understanding-v4',
+    version: 'note-image-understanding-v6',
     steps: Object.freeze([
       '读取局域网 note_image_understanding 与 note_enrichment 任务设置',
       '在没有备注时独立理解题目、公式、手写过程和订正痕迹',
@@ -88,6 +94,23 @@ const DEFAULT_WORKFLOWS = Object.freeze({
         '字段命名规则：{namingRules}',
       ]),
       outputFormat: '只输出 JSON：{"subject":"科目","title":"标题","reason":"一句话依据","ruleId":"匹配规则id或空字符串","ruleValue":"提取值或空字符串","ruleEvidence":"原图证据或空字符串"}',
+    }),
+  }),
+  canvas_note_understanding: Object.freeze({
+    version: 'canvas-note-understanding-v1',
+    steps: Object.freeze([
+      '使用独立高级长上下文视觉模型读取整张画布预览',
+      '同时识别题目、手写过程、批注、错因和节点之间的空间关系',
+      '生成标题、科目、知识点、题型、错因与学习用途',
+      '保护用户手动修改字段并将低置信度结果送入待确认',
+    ]),
+    prompt: Object.freeze({
+      instructions: Object.freeze([
+        ...NOTE_ANALYSIS_INSTRUCTIONS,
+        '这是由画布发布的整页学习笔记。必须把空间上相邻、由箭头/连线关联、或同一题号下的题目、草稿、订正与批注作为同一上下文理解。',
+        '标题应概括画布的核心学习主题；如果画布包含多个并列主题，选择主要主题并在 items 中拆分。',
+      ]),
+      outputFormat: NOTE_ANALYSIS_OUTPUT,
     }),
   }),
   material_naming: Object.freeze({

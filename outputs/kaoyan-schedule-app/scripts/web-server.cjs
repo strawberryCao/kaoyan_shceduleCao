@@ -142,7 +142,10 @@ const proxyApiRequest = (request, response, apiHost, apiPort) => {
     upstreamResponse.pipe(response);
   });
 
-  upstream.setTimeout(30_000, () => upstream.destroy(new Error('Upstream request timed out.')));
+  const upstreamTimeoutMs = /^\/api\/ai\/(?:widget|html-note)$/.test(requestUrl.pathname)
+    ? 610_000
+    : 30_000;
+  upstream.setTimeout(upstreamTimeoutMs, () => upstream.destroy(new Error('Upstream request timed out.')));
   upstream.on('error', () => {
     if (!response.headersSent) sendText(response, 502, 'The local note service is unavailable.');
     else response.destroy();
@@ -176,7 +179,16 @@ const createKaoyanWebServer = (options = {}) => {
     }
 
     if (String(request.url || '').startsWith('/api')) {
-      if (!isAllowedLanApiRoute(request.method || 'GET', request.url)) {
+      const remoteAddress = String(request.socket?.remoteAddress || '').toLowerCase();
+      const isLoopback = remoteAddress === '::1'
+        || remoteAddress === '127.0.0.1'
+        || remoteAddress === '::ffff:127.0.0.1';
+      const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
+      const isLocalAiRequest = isLoopback
+        && !requestUrl.search
+        && request.method === 'POST'
+        && ['/api/ai/widget', '/api/ai/html-note'].includes(requestUrl.pathname);
+      if (!isLocalAiRequest && !isAllowedLanApiRoute(request.method || 'GET', request.url)) {
         response.statusCode = 403;
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store');

@@ -15,7 +15,8 @@ test('mobile capture persists stable single and multi-question jobs before remot
   assert.match(queue, /indexedDB\.open\(DB_NAME, DB_VERSION\)/);
   assert.match(queue, /await putJob\(job\)/);
   assert.match(queue, /void resumeCaptureUploads\(\)/);
-  assert.match(queue, /saveNoteImagesBatch\(uploading\.payloads\)/);
+  assert.match(queue, /saveNoteImagesBatch\(payloads\)/);
+  assert.match(queue, /uploading\.imageBlobs\?\.length/);
   assert.match(queue, /nextAttemptAt/);
   assert.match(queue, /noteUids/);
   assert.match(capture, /await enqueueCaptureUpload\(\[payload\]\)/);
@@ -25,7 +26,7 @@ test('mobile capture persists stable single and multi-question jobs before remot
   assert.match(background, /await putJob\(job\)/);
   assert.match(background, /await resumeOne\(job\.id\)/);
   assert.match(background, /resumeMultiQuestionJobs/);
-  assert.match(background, /await createCaptureBatch\(uploading\.imageDataUrl/);
+  assert.match(background, /await createCaptureBatch\(imageDataUrl/);
   assert.doesNotMatch(background, /detectQuestionRegions|cropManyImages|enqueueCaptureUpload/);
   assert.doesNotMatch(capture.slice(capture.indexOf('const startMultiQuestion'), capture.indexOf('const confirmBatchCrop')), /detectQuestionRegions/);
 });
@@ -40,24 +41,26 @@ test('cloud naming uses an AI merge path instead of pretending to be a manual ed
   assert.match(learning, /classificationSource: humanDecision \? note\.classificationSource \|\| 'manual' : 'ai'/);
 });
 
-test('every saved cloud image runs LAN naming and the full LAN analysis task', () => {
+test('every saved cloud image runs one full visual analysis task while manual rename remains available', () => {
   const jobs = text('cloudflare/background-jobs.js');
   const media = text('cloudflare/media.js');
   const analysis = text('cloudflare/note-analysis-job.js');
   assert.match(media, /enqueueNotePipelineJob/);
-  assert.match(jobs, /runConfiguredRename/);
+  assert.match(jobs, /job\.type === 'note-rename'/);
   assert.match(jobs, /runConfiguredNoteAnalysis/);
   assert.match(jobs, /note-pipeline/);
-  assert.match(analysis, /taskId = text\(entry\.note\.remark/);
-  assert.match(analysis, /'note_enrichment' : 'note_image_understanding'/);
+  assert.match(analysis, /resolveImageRepoPath/);
+  assert.match(analysis, /collaborationEnabled/);
+  assert.match(analysis, /'note_image_understanding'/);
+  assert.match(analysis, /requiredCapabilities: \['text', 'json'\]/);
   assert.match(analysis, /applyAiNoteEnrichment/);
 });
 
 test('LAN runtime publishes complete note analysis workflows and cloud fails closed without them', () => {
   const contracts = text('scripts/agent-workflow-contracts.cjs');
   const runtime = text('cloudflare/agent-runtime.js');
-  assert.match(contracts, /note-enrichment-v4/);
-  assert.match(contracts, /note-image-understanding-v4/);
+  assert.match(contracts, /note-enrichment-v6/);
+  assert.match(contracts, /note-image-understanding-v6/);
   assert.match(contracts, /wrongReasonSource/);
   assert.match(contracts, /contextPayload/);
   assert.match(runtime, /'note_enrichment'/);
@@ -81,26 +84,29 @@ test('local and cloud analysis render the same LAN-published prompt contract', (
   assert.match(analyzer, /NOTE_ANALYSIS_INSTRUCTIONS/);
   assert.match(analyzer, /NOTE_ANALYSIS_OUTPUT/);
   assert.match(analyzer, /fillAnalysisTemplate/);
-  assert.match(contracts, /note-enrichment-v4/);
+  assert.match(contracts, /note-enrichment-v6/);
 });
 
-test('interrupted cloud AI processing jobs become recoverable after a bounded lease', () => {
+test('interrupted cloud AI processing jobs stop before any automatic paid retry', () => {
   const jobs = text('cloudflare/background-jobs.js');
   assert.match(jobs, /PROCESSING_STALE_MS/);
   assert.match(jobs, /isStaleProcessing/);
-  assert.match(jobs, /上次 AI 任务被中断/);
-  assert.match(jobs, /job\.status === 'queued' \|\| isStaleProcessing/);
+  assert.match(jobs, /EXECUTION_RECEIPT_SCOPE/);
+  assert.match(jobs, /claimJobExecution/);
+  assert.match(jobs, /AI_JOB_INTERRUPTED/);
+  assert.match(jobs, /\.filter\(\(job\) => job\.status === 'queued'\)/);
+  assert.doesNotMatch(jobs, /job\.status === 'queued' \|\| isStaleProcessing/);
 });
 
-test('full enrichment preserves the naming-agent title and capture source tags', () => {
+test('full enrichment supplies the automatic title while preserving capture source tags', () => {
   const analysis = text('cloudflare/note-analysis-job.js');
   const learning = text('cloudflare/learning.js');
-  assert.match(analysis, /preserveTitle: true/);
+  assert.match(analysis, /preserveTitle: false/);
   assert.match(learning, /Array\.isArray\(note\.tags\)/);
   assert.match(learning, /Array\.isArray\(input\.tags\)/);
 });
 
-test('mobile outbox commits IndexedDB transactions and recovers expired upload leases', () => {
+test('mobile outbox commits IndexedDB transactions but never resumes paid work on app startup', () => {
   const queue = text('src/utils/captureUploadQueue.ts');
   const app = text('src/App.tsx');
   assert.match(queue, /transactionDone/);
@@ -108,7 +114,8 @@ test('mobile outbox commits IndexedDB transactions and recovers expired upload l
   assert.match(queue, /UPLOAD_LEASE_MS/);
   assert.match(queue, /job\.status !== 'uploading'/);
   assert.match(queue, /上次上传被系统中断/);
-  assert.match(app, /installCaptureUploadResumer/);
+  assert.doesNotMatch(app, /installCaptureUploadResumer/);
+  assert.match(queue, /Opening the app or restoring connectivity must not replay paid work/);
 });
 
 test('V11 config synchronization cannot delete the compatibility control-plane file', () => {

@@ -17,6 +17,8 @@ import {
   ChevronRight,
   ImageOff,
   Maximize2,
+  RefreshCcw,
+  RotateCcw,
   RotateCw,
   Scan,
   X,
@@ -193,10 +195,10 @@ export function ImageViewer({
     commitView(constrainView({ ...current, ...zoomed, mode: 'custom' }));
   }, [commitView, constrainView, currentNaturalSize, viewportSize]);
 
-  const rotateImage = useCallback(() => {
+  const rotateImage = useCallback((degrees: number) => {
     if (!currentNaturalSize) return;
     const current = viewRef.current;
-    const rotation = normalizeImageViewerRotation(current.rotation + 90);
+    const rotation = normalizeImageViewerRotation(current.rotation + degrees);
     if (current.mode === 'fit') {
       commitView({
         ...current,
@@ -208,6 +210,16 @@ export function ImageViewer({
     }
     commitView(constrainView({ ...current, rotation }));
   }, [commitView, constrainView, currentNaturalSize, viewportSize]);
+
+  const resetView = useCallback(() => {
+    if (!currentNaturalSize) return;
+    commitView({
+      scale: fitImageViewerScale(currentNaturalSize, viewportSize(), 0),
+      pan: { x: 0, y: 0 },
+      rotation: 0,
+      mode: 'fit',
+    });
+  }, [commitView, currentNaturalSize, viewportSize]);
 
   const changeIndex = useCallback((nextIndex: number) => {
     if (nextIndex < 0 || nextIndex >= items.length || nextIndex === safeIndex) return;
@@ -463,6 +475,8 @@ export function ImageViewer({
       '+': () => zoomBy(1.25),
       '=': () => zoomBy(1.25),
       '-': () => zoomBy(0.8),
+      r: () => rotateImage(90),
+      R: () => rotateImage(-90),
       ArrowLeft: () => panWithKeyboard(-64, 0),
       ArrowRight: () => panWithKeyboard(64, 0),
       ArrowUp: () => panWithKeyboard(0, -64),
@@ -472,7 +486,7 @@ export function ImageViewer({
     if (!action) return;
     event.preventDefault();
     action();
-  }, [changeIndex, fitImage, onClose, panWithKeyboard, safeIndex, showActualSize, zoomBy]);
+  }, [changeIndex, fitImage, onClose, panWithKeyboard, rotateImage, safeIndex, showActualSize, zoomBy]);
 
   const imageCanvasStyle = useMemo(() => currentNaturalSize ? {
     width: `${currentNaturalSize.width}px`,
@@ -579,7 +593,7 @@ export function ImageViewer({
           </div>
         </div>
 
-        <div className="image-viewer__toolbar" role="toolbar" aria-label="图片缩放工具">
+        <div className="image-viewer__toolbar" role="toolbar" aria-label="图片查看工具">
           <button type="button" onClick={() => zoomBy(0.8)} disabled={!currentNaturalSize} aria-label="缩小图片" title="缩小 (-)">
             <ZoomOut size={19} />
           </button>
@@ -596,8 +610,14 @@ export function ImageViewer({
           <button type="button" onClick={showActualSize} disabled={!currentNaturalSize} aria-label="显示图片原始大小" title="原始大小 (1)">
             <Scan size={18} />
           </button>
-          <button type="button" onClick={rotateImage} disabled={!currentNaturalSize} aria-label="顺时针旋转图片" title="顺时针旋转">
+          <button type="button" onClick={() => rotateImage(-90)} disabled={!currentNaturalSize} aria-label="逆时针旋转图片" title="逆时针旋转 (Shift + R)">
+            <RotateCcw size={18} />
+          </button>
+          <button type="button" onClick={() => rotateImage(90)} disabled={!currentNaturalSize} aria-label="顺时针旋转图片" title="顺时针旋转 (R)">
             <RotateCw size={18} />
+          </button>
+          <button type="button" onClick={resetView} disabled={!currentNaturalSize} aria-label="重置图片视图" title="重置旋转与缩放">
+            <RefreshCcw size={18} />
           </button>
         </div>
       </div>

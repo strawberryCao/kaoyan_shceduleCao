@@ -5,6 +5,9 @@ const { spawnSync } = require('child_process');
 const root = path.resolve(__dirname, '..');
 const diagnosticPath = 'data/diagnostics/learning-record-build-error.json';
 const migrationMarker = path.join(__dirname, '.apply-real-learning-records-v1');
+const liveDistPath = path.join(root, 'dist');
+const stagedDistPath = path.join(root, `.dist-build-${process.pid}`);
+const backupDistPath = path.join(root, `.dist-previous-${process.pid}`);
 
 function runNodeScript(modulePath, args) {
   return spawnSync(process.execPath, [modulePath, ...args], {
@@ -60,12 +63,31 @@ async function publishDiagnostic(phase, result) {
   if (!response.ok) throw new Error(`Unable to publish build diagnostic: HTTP ${response.status}`);
 }
 
+function publishStaticBuild(stagedPath, livePath, backupPath) {
+  if (!fs.existsSync(path.join(stagedPath, 'index.html'))) {
+    throw new Error('Staged build is incomplete: index.html is missing.');
+  }
+  fs.rmSync(backupPath, { recursive: true, force: true });
+  const hadLiveBuild = fs.existsSync(livePath);
+  try {
+    if (hadLiveBuild) fs.renameSync(livePath, backupPath);
+    fs.renameSync(stagedPath, livePath);
+  } catch (error) {
+    if (!fs.existsSync(livePath) && fs.existsSync(backupPath)) {
+      fs.renameSync(backupPath, livePath);
+    }
+    throw error;
+  }
+  fs.rmSync(backupPath, { recursive: true, force: true });
+}
+
 async function main() {
+  fs.rmSync(stagedDistPath, { recursive: true, force: true });
   const tsc = require.resolve('typescript/bin/tsc');
   const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
   const stages = [
     ['typescript', tsc, ['-p', 'tsconfig.json', '--noEmit']],
-    ['vite', vite, ['build', '--config', 'vite.config.mjs']],
+    ['vite', vite, ['build', '--config', 'vite.config.mjs', '--outDir', stagedDistPath, '--emptyOutDir']],
   ];
   if (process.env.GITHUB_ACTIONS === 'true' && fs.existsSync(migrationMarker)) {
     stages.push([
@@ -79,14 +101,16 @@ async function main() {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.status !== 0) {
+      fs.rmSync(stagedDistPath, { recursive: true, force: true });
       await publishDiagnostic(phase, result);
       process.exitCode = result.status || 1;
       return;
     }
+    if (phase === 'vite') publishStaticBuild(stagedDistPath, liveDistPath, backupDistPath);
   }
 }
 
-main().catch(async (error) => {
+if (require.main === module) main().catch(async (error) => {
   const stack = String(error?.stack || error || 'Unknown build runner error');
   console.error(stack);
   try {
@@ -101,3 +125,5 @@ main().catch(async (error) => {
   }
   process.exitCode = 1;
 });
+
+module.exports = { publishStaticBuild };

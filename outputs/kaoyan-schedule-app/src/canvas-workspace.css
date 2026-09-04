@@ -1917,6 +1917,24 @@
     display: none;
   }
 
+  @media (max-width: 720px) {
+    .cw-title-field,
+    .cw-tool-group:first-of-type > button:nth-of-type(n + 4),
+    .cw-tool-group-secondary > :not(.cw-mobile-add),
+    .cw-tool-group-files {
+      display: none;
+    }
+
+    .cw-tool-group-secondary {
+      display: flex;
+      margin-left: 0;
+    }
+
+    .cw-mobile-add {
+      display: inline-flex;
+    }
+  }
+
   .cw-title-field {
     flex-basis: 148px;
   }

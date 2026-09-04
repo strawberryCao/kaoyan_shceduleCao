@@ -140,9 +140,19 @@ function normalizeMathOneQuestionType(subject, rawType, context = '') {
   return raw || null;
 }
 
+function mathOneQuestionTypePath(subject, rawType, context = '') {
+  const normalizedSubject = String(subject || '').trim();
+  const canonical = normalizeMathOneQuestionType(normalizedSubject, rawType, context);
+  if (!canonical) return [];
+  const categories = MATH_ONE_QUESTION_TYPES[normalizedSubject] || {};
+  const category = Object.entries(categories).find(([, types]) => types.includes(canonical))?.[0];
+  return category ? [category, canonical] : [canonical];
+}
+
 module.exports = {
   MATH_ONE_QUESTION_TYPES,
   allQuestionTypes,
   mathOneQuestionTypePrompt,
+  mathOneQuestionTypePath,
   normalizeMathOneQuestionType,
 };

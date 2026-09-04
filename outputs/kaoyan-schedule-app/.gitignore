@@ -10,3 +10,6 @@ cloudflare/.seed/
 .e2e-runtime/
 test-results/
 playwright-report/
+.codex-tmp/
+.dist-build-*/
+.dist-previous-*/

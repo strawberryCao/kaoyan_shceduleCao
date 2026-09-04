@@ -28,7 +28,6 @@ const SUBJECTS = new Set([
   '政治',
 ]);
 const FACETS = new Set(['mistake', 'good', 'memory', 'knowledge', 'method']);
-const MAX_FILES = 8;
 const MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 
 function text(value, limit = Infinity) {
@@ -51,12 +50,24 @@ function receiptPath(entryId) {
   return `${V2_ROOT}/receipts/create-entry/${entryId}.json`;
 }
 
+function appendReceiptPath(entryId, operationId) {
+  return `${V2_ROOT}/receipts/append-assets/${entryId}/${operationId}.json`;
+}
+
 function normalizeEntryId(value) {
   const entryId = text(value, 160) || `entry-${crypto.randomUUID()}`;
   if (!ENTRY_ID_PATTERN.test(entryId)) {
     throw new HttpError(400, 'entryId must be path-safe ASCII.', 'INVALID_ENTRY_ID');
   }
   return entryId;
+}
+
+function normalizeOperationId(value, fallback) {
+  const operationId = text(value, 160) || fallback;
+  if (!ENTRY_ID_PATTERN.test(operationId)) {
+    throw new HttpError(400, 'operationId must be path-safe ASCII.', 'INVALID_OPERATION_ID');
+  }
+  return operationId;
 }
 
 function normalizeSubject(value) {
@@ -111,6 +122,62 @@ function legacyNoteType(entry) {
   return entry.kind === 'quick' ? 'quick' : 'note';
 }
 
+function findLegacyNote(snapshot, entryId) {
+  for (const [date, day] of Object.entries(snapshot.days)) {
+    if (!Array.isArray(day?.autoNotes)) continue;
+    const note = day.autoNotes.find((candidate) => candidate?.noteUid === entryId);
+    if (note) return { date, note };
+  }
+  return null;
+}
+
+function assetFilePath(asset) {
+  return text(asset?.legacyFilePath, 4000) || (asset?.path ? `github://${asset.path}` : '');
+}
+
+async function legacyAssets(note, entryId, timestamp) {
+  const attachments = Array.isArray(note?.attachments) ? note.attachments : [];
+  return Promise.all(attachments.map(async (attachment, index) => {
+    const filePath = text(attachment?.filePath, 4000);
+    const existingAssetId = text(attachment?.assetId ?? attachment?.id, 64).toLowerCase();
+    const assetId = /^[a-f0-9]{64}$/.test(existingAssetId)
+      ? existingAssetId
+      : await sha256(`${entryId}|${filePath}|${text(attachment?.name, 240)}|${index}`);
+    return {
+      schemaVersion: 2,
+      assetId,
+      sha256: /^[a-f0-9]{64}$/.test(existingAssetId) ? existingAssetId : '',
+      mime: text(attachment?.mimeType, 160) || 'application/octet-stream',
+      originalFileName: text(attachment?.name, 240) || `legacy-attachment-${index + 1}`,
+      size: Math.max(0, Number(attachment?.size) || 0),
+      path: filePath.startsWith('github://') ? filePath.slice('github://'.length) : '',
+      legacyFilePath: filePath,
+      legacyImported: true,
+      kind: text(attachment?.kind, 40) || 'file',
+      createdAt: text(attachment?.createdAt, 80) || timestamp,
+    };
+  }));
+}
+
+async function entryFromLegacyNote(match, entryId, timestamp) {
+  const note = match.note;
+  const facets = Array.isArray(note.facets) ? [...note.facets] : [];
+  if (note.noteType === 'mistake' && !facets.includes('mistake')) facets.push('mistake');
+  if (note.noteType === 'memory' && !facets.includes('memory')) facets.push('memory');
+  const assets = await legacyAssets(note, entryId, timestamp);
+  const entry = createEntryValue({
+    kind: note.noteType === 'quick' || facets.includes('quick') ? 'quick' : 'note',
+    title: note.title,
+    body: note.remark,
+    subject: note.subject,
+    facets,
+    tags: note.tags,
+    capturedDate: /^\d{4}-\d{2}-\d{2}$/.test(note.capturedDate) ? note.capturedDate : match.date,
+  }, entryId, assets, timestamp);
+  entry.migratedFromLegacy = true;
+  return entry;
+}
+
 function upsertLegacyNote(snapshot, entry, timestamp) {
   for (const day of Object.values(snapshot.days)) {
     if (!Array.isArray(day?.autoNotes)) continue;
@@ -132,12 +199,12 @@ function upsertLegacyNote(snapshot, entry, timestamp) {
         name: asset.originalFileName,
         mimeType: asset.mime,
         size: asset.size,
-        filePath: `github://${asset.path}`,
+        filePath: assetFilePath(asset),
         previewPath: '',
         posterPath: '',
         createdAt: asset.createdAt,
       })),
-      filePath: entry.assets[0] ? `github://${entry.assets[0].path}` : '',
+      filePath: entry.assets[0] ? assetFilePath(entry.assets[0]) : '',
       updatedAt: timestamp,
     };
     snapshot.revision += 1;
@@ -158,7 +225,7 @@ function upsertLegacyNote(snapshot, entry, timestamp) {
       name: asset.originalFileName,
       mimeType: asset.mime,
       size: asset.size,
-      filePath: `github://${asset.path}`,
+      filePath: assetFilePath(asset),
       previewPath: '',
       posterPath: '',
       createdAt: asset.createdAt,
@@ -176,8 +243,24 @@ function upsertLegacyNote(snapshot, entry, timestamp) {
   return snapshot;
 }
 
+function removeLegacyNotes(snapshot, entryIds, timestamp) {
+  if (!(entryIds instanceof Set) || entryIds.size === 0) return snapshot;
+  let changed = false;
+  for (const day of Object.values(snapshot.days)) {
+    if (!Array.isArray(day?.autoNotes)) continue;
+    const retained = day.autoNotes.filter((note) => !entryIds.has(note?.noteUid));
+    if (retained.length === day.autoNotes.length) continue;
+    day.autoNotes = retained;
+    changed = true;
+  }
+  if (changed) {
+    snapshot.revision += 1;
+    snapshot.updatedAt = timestamp;
+  }
+  return snapshot;
+}
+
 async function decodeAssets(files, timestamp) {
-  if (files.length > MAX_FILES) throw new HttpError(400, 'Too many files.', 'TOO_MANY_NOTE_FILES');
   const decoded = files.map((file, index) => decodeMaterialFile(file, index));
   const totalBytes = decoded.reduce((sum, file) => sum + file.bytes.byteLength, 0);
   if (totalBytes > MAX_TOTAL_BYTES) throw new HttpError(413, 'Files are too large in total.', 'PAYLOAD_TOO_LARGE');
@@ -403,9 +486,18 @@ export async function patchEntry(env, entryId, payload) {
       throw new HttpError(409, 'Entry version conflict.', 'ENTRY_VERSION_CONFLICT', { actualVersion: current.version });
     }
     const timestamp = new Date().toISOString();
-    const selectedAssets = Array.isArray(payload.assetIds)
-      ? current.assets.filter((asset) => payload.assetIds.includes(asset.assetId))
-      : current.assets;
+    let selectedAssets = current.assets;
+    if (Array.isArray(payload.assetIds)) {
+      const requestedAssetIds = payload.assetIds.map((assetId) => text(assetId, 160)).filter(Boolean);
+      if (new Set(requestedAssetIds).size !== requestedAssetIds.length) {
+        throw new HttpError(400, 'Asset ids must be unique.', 'INVALID_ASSET_ORDER');
+      }
+      const assetsById = new Map(current.assets.map((asset) => [asset.assetId, asset]));
+      selectedAssets = requestedAssetIds.map((assetId) => assetsById.get(assetId));
+      if (selectedAssets.some((asset) => !asset)) {
+        throw new HttpError(400, 'Asset order contains an unknown asset.', 'INVALID_ASSET_ORDER');
+      }
+    }
     const entry = {
       ...current,
       title: payload.title === undefined ? current.title : text(payload.title, 240) || current.title,
@@ -445,28 +537,55 @@ export async function appendEntryAssets(env, entryId, payload) {
   const timestamp = new Date().toISOString();
   const decodedAssets = await decodeAssets(Array.isArray(payload.files) ? payload.files : [], timestamp);
   if (decodedAssets.length < 1) throw new HttpError(400, 'At least one file is required.', 'EMPTY_ASSET_APPEND');
+  const requestHash = await sha256(JSON.stringify({
+    entryId,
+    assets: decodedAssets.map((asset) => ({
+      assetId: asset.record.assetId,
+      name: asset.record.originalFileName,
+      mime: asset.record.mime,
+    })),
+  }));
+  const operationId = normalizeOperationId(payload.operationId, `append-${requestHash.slice(0, 32)}`);
+  const operationReceipt = appendReceiptPath(entryId, operationId);
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const head = await getBranchHead(env);
-    const [entryFile, indexFile, legacyFile] = await Promise.all([
+    const [entryFile, indexFile, legacyFile, receiptFile] = await Promise.all([
       readJsonFile(env, entryPath(entryId), { ref: head, allowMissing: true, maxBytes: 2 * 1024 * 1024 }),
       readJsonFile(env, INDEX_PATH, { ref: head, allowMissing: true, maxBytes: 8 * 1024 * 1024 }),
       readJsonFile(env, LEGACY_PATH, { ref: head, allowMissing: true, maxBytes: 24 * 1024 * 1024 }),
+      readJsonFile(env, operationReceipt, { ref: head, allowMissing: true, maxBytes: 256 * 1024 }),
     ]);
-    if (!entryFile) throw new HttpError(404, 'Entry not found.', 'ENTRY_NOT_FOUND');
-    const current = entryFile.value;
+    const legacySnapshot = normalizeLegacy(legacyFile?.value);
+    const legacyMatch = findLegacyNote(legacySnapshot, entryId);
+    if (receiptFile) {
+      if (receiptFile.value?.requestHash !== requestHash) {
+        throw new HttpError(409, 'operationId was already used for different files.', 'SAVE_OPERATION_REUSED');
+      }
+      const replayEntry = entryFile?.value || (legacyMatch ? await entryFromLegacyNote(legacyMatch, entryId, timestamp) : null);
+      return {
+        ok: true,
+        operationId,
+        entry: replayEntry,
+        attachments: legacyMatch?.note?.attachments || [],
+        learningData: legacySnapshot,
+        commitSha: receiptFile.value?.commitSha || head,
+        idempotentReplay: true,
+      };
+    }
+    if (!entryFile && !legacyMatch) throw new HttpError(404, 'Entry not found.', 'ENTRY_NOT_FOUND');
+    const migrated = !entryFile;
+    const current = entryFile?.value || await entryFromLegacyNote(legacyMatch, entryId, timestamp);
     const knownIds = new Set(current.assets.map((asset) => asset.assetId));
     const additions = decodedAssets.filter((asset, index, source) => (
       !knownIds.has(asset.record.assetId)
       && source.findIndex((candidate) => candidate.record.assetId === asset.record.assetId) === index
     ));
-    if (current.assets.length + additions.length > MAX_FILES) {
-      throw new HttpError(400, `Each entry supports at most ${MAX_FILES} files.`, 'TOO_MANY_NOTE_FILES');
+    const totalBytes = current.assets.reduce((sum, asset) => sum + Math.max(0, Number(asset?.size) || 0), 0)
+      + additions.reduce((sum, asset) => sum + asset.record.size, 0);
+    if (totalBytes > MAX_TOTAL_BYTES) {
+      throw new HttpError(413, 'Entry attachments are too large in total.', 'PAYLOAD_TOO_LARGE');
     }
-    if (additions.length === 0) {
-      return { ok: true, entry: current, learningData: normalizeLegacy(legacyFile?.value), idempotentReplay: true };
-    }
-
     const files = [];
     for (const asset of additions) {
       const [binaryExists, recordExists] = await Promise.all([
@@ -475,6 +594,12 @@ export async function appendEntryAssets(env, entryId, payload) {
       ]);
       if (!binaryExists) files.push({ path: asset.record.path, content: asset.bytes });
       if (!recordExists) files.push(jsonFile(assetRecordPath(asset.record.assetId), asset.record));
+    }
+    if (migrated) {
+      for (const asset of current.assets) {
+        const recordExists = await readFileMetadata(env, assetRecordPath(asset.assetId), { ref: head, allowMissing: true });
+        if (!recordExists) files.push(jsonFile(assetRecordPath(asset.assetId), asset));
+      }
     }
     const entry = {
       ...current,
@@ -485,12 +610,23 @@ export async function appendEntryAssets(env, entryId, payload) {
     const index = normalizeIndex(indexFile?.value);
     index.revision += 1;
     index.updatedAt = timestamp;
-    index.entries = index.entries.map((item) => item.entryId === entryId ? entrySummary(entry) : item);
-    const learningData = upsertLegacyNote(normalizeLegacy(legacyFile?.value), entry, timestamp);
+    index.entries = index.entries.some((item) => item.entryId === entryId)
+      ? index.entries.map((item) => item.entryId === entryId ? entrySummary(entry) : item)
+      : [entrySummary(entry), ...index.entries];
+    const learningData = upsertLegacyNote(legacySnapshot, entry, timestamp);
+    const latestLegacyNote = findLegacyNote(learningData, entryId)?.note;
     files.push(
       jsonFile(entryPath(entryId), entry),
       jsonFile(INDEX_PATH, index),
       jsonFile(LEGACY_PATH, learningData),
+      jsonFile(operationReceipt, {
+        schemaVersion: 2,
+        operation: 'append-assets',
+        operationId,
+        entryId,
+        requestHash,
+        createdAt: timestamp,
+      }),
     );
     try {
       const commit = await commitFiles(env, {
@@ -500,10 +636,12 @@ export async function appendEntryAssets(env, entryId, payload) {
       });
       return {
         ok: true,
+        operationId,
         entry,
+        attachments: latestLegacyNote?.attachments || [],
         learningData,
         commitSha: commit.commitSha,
-        idempotentReplay: false,
+        idempotentReplay: additions.length === 0,
       };
     } catch (error) {
       if (!(error instanceof HttpError) || error.code !== 'GITHUB_REVISION_CONFLICT' || attempt === 3) throw error;
@@ -528,7 +666,9 @@ export async function commitCaptureResults(env, input) {
       readJsonFile(env, input.jobPath, { ref: head, allowMissing: true, maxBytes: 512 * 1024 }),
     ]);
     if (!parentFile || !jobFile) throw new HttpError(404, 'Capture job source was not found.', 'CAPTURE_SOURCE_NOT_FOUND');
-    if (jobFile.value?.status === 'completed') return { ok: true, job: jobFile.value, idempotentReplay: true };
+    if (jobFile.value?.status === 'completed' && input.forceRewrite !== true) {
+      return { ok: true, job: jobFile.value, idempotentReplay: true };
+    }
     const timestamp = new Date().toISOString();
     const index = normalizeIndex(indexFile?.value);
     const learningData = normalizeLegacy(legacyFile?.value);
@@ -578,12 +718,13 @@ export async function commitCaptureResults(env, input) {
           region: input.regions?.[indexValue] || null,
         },
       };
-      const [binaryExists, recordExists] = await Promise.all([
-        readFileMetadata(env, path, { ref: head, allowMissing: true }),
-        readFileMetadata(env, assetRecordPath(assetId), { ref: head, allowMissing: true }),
-      ]);
-      if (!binaryExists) files.push({ path, content: bytes });
-      if (!recordExists) files.push(jsonFile(assetRecordPath(assetId), asset));
+      // Git blobs are content-addressed, so uploading an existing crop is
+      // idempotent. Avoid two metadata probes per detected question; those
+      // probes previously exhausted the Worker Free subrequest budget.
+      files.push(
+        { path, content: bytes },
+        jsonFile(assetRecordPath(assetId), asset),
+      );
       files.push(jsonFile(entryPath(childEntryId), entry));
       derivedEntries.push(entry);
       renditions.push({
@@ -609,11 +750,14 @@ export async function commitCaptureResults(env, input) {
     index.revision += 1;
     index.updatedAt = timestamp;
     const derivedIds = new Set(derivedEntries.map((entry) => entry.entryId));
+    const previousResultIds = new Set(Array.isArray(jobFile.value?.resultEntryIds) ? jobFile.value.resultEntryIds : []);
+    const obsoleteDerivedIds = new Set([...previousResultIds].filter((entryId) => !derivedIds.has(entryId)));
     index.entries = [
       ...derivedEntries.map(entrySummary),
       ...index.entries.map((item) => item.entryId === parentEntryId ? entrySummary(parentEntry) : item)
-        .filter((item) => !derivedIds.has(item.entryId)),
+        .filter((item) => !derivedIds.has(item.entryId) && !obsoleteDerivedIds.has(item.entryId)),
     ];
+    removeLegacyNotes(learningData, obsoleteDerivedIds, timestamp);
     upsertLegacyNote(learningData, parentEntry, timestamp);
     const job = {
       ...jobFile.value,
@@ -623,6 +767,9 @@ export async function commitCaptureResults(env, input) {
       error: '',
       detectedCount: derivedEntries.length,
       resultEntryIds: derivedEntries.map((entry) => entry.entryId),
+      processedConfigurationHash: input.processedConfigurationHash || '',
+      processedWorkflowHash: input.processedWorkflowHash || '',
+      configurationChangedWhileQueued: input.configurationChangedWhileQueued === true,
       updatedAt: timestamp,
       completedAt: timestamp,
     };

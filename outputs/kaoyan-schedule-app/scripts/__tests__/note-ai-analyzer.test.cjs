@@ -97,6 +97,7 @@ test('factory reuses createAiRouter with a mocked fetch and no real network', as
           }],
         }],
         routing: { networkRetries: 0, jsonRepairRetries: 0 },
+        tasks: { note_enrichment: { options: { collaborationMode: 'single_model' } } },
       },
       fetchImpl: async (_url, init) => {
         fetchCalls += 1;
@@ -145,7 +146,8 @@ test('sends image, local parsing, current category and compact taxonomy through 
   assert.equal(capturedRequest.difficulty, 'medium');
   assert.ok(capturedRequest.responseSchema);
   const content = capturedRequest.messages[0].content;
-  assert.match(content[1].image_url.url, /^data:image\/png;base64,/);
+  assert.match(content[1].text, /整组资料图片 1\/1/);
+  assert.match(content[2].image_url.url, /^data:image\/png;base64,/);
   assert.match(content[0].text, /p108 3\.1题/);
   assert.match(content[0].text, /"pages":\[108\]/);
   assert.match(content[0].text, /"questions":\["3\.1"\]/);
@@ -163,6 +165,41 @@ test('sends image, local parsing, current category and compact taxonomy through 
   assert.equal(result.cards.length, 1);
   assert.equal(result.cards[0].status, 'active');
   assert.equal(result.cards[0].sourceKey, 'ai:root:0');
+});
+
+test('analyzes every image in one material note as a single ordered group', async (t) => {
+  const firstImage = makeImageFixture(t);
+  const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'note-ai-analyzer-group-'));
+  const secondImage = path.join(secondRoot, 'solution.jpg');
+  fs.writeFileSync(secondImage, Buffer.from([0xff, 0xd8, 0xff, 0xdb]));
+  t.after(() => fs.rmSync(secondRoot, { recursive: true, force: true }));
+  let content = [];
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      getTaskOptions(task) {
+        return task === 'note_enrichment' ? { collaborationMode: 'single_model' } : {};
+      },
+      async complete(request) {
+        content = request.messages[0].content;
+        return { json: baseAiResult({ subject: '高等数学' }), provider: 'kimi', model: 'vision-test' };
+      },
+    },
+  });
+
+  await analyzer(makeContext(firstImage, {
+    metadata: {
+      kind: 'quick',
+      sourceType: 'material-note',
+      attachments: [
+        { kind: 'image', name: '题目.png', filePath: firstImage },
+        { kind: 'image', name: '解答.jpg', filePath: secondImage },
+      ],
+    },
+  }));
+
+  assert.equal(content.filter((item) => item.type === 'image_url').length, 2);
+  assert.match(content[1].text, /1\/2/);
+  assert.match(content[3].text, /2\/2/);
 });
 
 test('hides legacy unknown subjects from the prompt and rejects them from model output', async (t) => {
@@ -206,6 +243,44 @@ test('hides legacy unknown subjects from the prompt and rejects them from model 
   assert.deepEqual(result.subjectAliases, []);
   assert.deepEqual(result.aliases.subject, []);
   assert.deepEqual(result.subjectPolicy, { fallback: true, reason: 'unknown' });
+});
+
+test('keeps a stable filename subject when a later reviewer invents another math subject', async (t) => {
+  const imagePath = makeImageFixture(t);
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      async complete() {
+        return {
+          json: baseAiResult({
+            subject: '概率论',
+            knowledgePoint: '随机变量的数字特征',
+            questionType: '数学期望计算',
+            title: '分段概率密度的数学期望',
+            summary: '模型把分段函数积分重新解释成概率密度与期望。',
+          }),
+          provider: 'kimi+deepseek',
+          model: 'vision -> reasoning',
+        };
+      },
+    },
+  });
+  const result = await analyzer(makeContext(imagePath, {
+    metadata: {
+      fileName: '高等数学_分段函数积分求解_20260806_161432.png',
+      title: '高等数学_分段函数积分求解',
+    },
+    currentCategory: { subject: '概率论', knowledgePoint: '随机变量的数字特征' },
+    taxonomy: {
+      revision: 5,
+      subjects: [
+        { name: '高等数学', aliases: ['高数'], knowledgePoints: [] },
+        { name: '概率论', aliases: ['概率'], knowledgePoints: [] },
+      ],
+    },
+  }));
+
+  assert.equal(result.subject, '高等数学');
+  assert.equal(result.subjectPolicy.reason, 'stable-subject-anchor');
 });
 
 test('does not create cards for an ordinary note without mistake or memory intent', async (t) => {
@@ -257,6 +332,44 @@ test('does not let AI automatically promote an ordinary question into good quest
   assert.equal(result.intent.isMistake, true);
   assert.equal(result.intent.isGood, false);
   assert.equal(result.tags.includes('好题'), false);
+});
+
+test('an explicit mistake-only remark suppresses inferred memory intent and tags', async (t) => {
+  const imagePath = makeImageFixture(t);
+  let prompt = '';
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      async complete(request) {
+        prompt = request.messages[0].content[0].text;
+        return {
+          json: baseAiResult({
+            tags: ['错题', '公式记忆', '背诵'],
+            intent: { isQuestion: true, isMistake: true, shouldMemorize: true },
+            items: [{
+              title: '极限公式',
+              knowledgePoint: '函数极限',
+              summary: '模型认为需要背诵。',
+              tags: ['背诵'],
+              wrongReason: null,
+              intent: { isQuestion: true, isMistake: true, shouldMemorize: true },
+            }],
+          }),
+          provider: 'qwen',
+          model: 'qwen-test',
+        };
+      },
+    },
+  });
+
+  const result = await analyzer(makeContext(imagePath, {
+    metadata: { remark: '错题' },
+  }));
+  assert.match(prompt, /用户只明确标记了错题、没有标记背诵/);
+  assert.equal(result.intent.isMistake, true);
+  assert.equal(result.intent.shouldMemorize, false);
+  assert.equal(result.items[0].intent.shouldMemorize, false);
+  assert.equal(result.tags.some((tag) => /背诵|记忆/.test(tag)), false);
+  assert.equal(result.items[0].tags.some((tag) => /背诵|记忆/.test(tag)), false);
 });
 
 test('applies note-enrichment task parameters to prompt, schema and post-processing', async (t) => {
@@ -387,10 +500,22 @@ test('canvas analysis preserves multiple items and only their highest-value acti
   });
 
   const result = await analyzer(makeContext(imagePath, {
-    metadata: { kind: 'canvas', remark: '两张内容拼在一起整理。' },
+    metadata: {
+      kind: 'canvas',
+      remark: '两张内容拼在一起整理。',
+      classifier: {
+        visualEvidence: {
+          wrongReason: '漏看洛必达适用条件',
+          wrongReasonSource: 'explicit_image',
+          wrongReasonEvidence: '右侧手写批注写着“忘记检查0/0”',
+        },
+      },
+    },
   }));
+  assert.equal(capturedRequest.task, 'canvas_note_understanding');
   assert.equal(capturedRequest.difficulty, 'high');
-  assert.match(capturedRequest.messages[0].content[1].image_url.url, /^data:image\/webp;base64,/);
+  assert.match(capturedRequest.messages[0].content[0].text, /右侧手写批注写着/);
+  assert.match(capturedRequest.messages[0].content[2].image_url.url, /^data:image\/webp;base64,/);
   assert.equal(result.items.length, 2);
   assert.equal(result.cards.length, 2);
   assert.deepEqual(result.cards.map((card) => card.itemIndex), [0, 1]);
@@ -415,6 +540,57 @@ test('taxonomy compaction is valid, bounded and marks truncation', () => {
   assert.ok(serialized.length <= 900);
   assert.equal(compact.truncated, true);
   assert.doesNotThrow(() => JSON.parse(serialized));
+});
+
+test('a configured collaboration mode still completes with one vision call', async (t) => {
+  const imagePath = makeImageFixture(t);
+  const requests = [];
+  const defaultSubject = '\u9ed8\u8ba4\u6587\u4ef6\u5939';
+  const dataStructures = '\u6570\u636e\u7ed3\u6784';
+  const analyzer = createNoteAiAnalyzer({
+    router: {
+      getTaskOptions(task) {
+        if (task === 'note_enrichment') {
+          return { collaborationMode: 'vision_then_reasoning', maxTokens: 4200 };
+        }
+        return { maxTokens: 3200 };
+      },
+      async complete(request) {
+        requests.push(request);
+        return {
+          json: baseAiResult({
+            subject: defaultSubject,
+            knowledgePoint: '\u5bf9\u6297\u6837\u672c',
+            title: '\u5bf9\u6297\u6837\u672c\u566a\u58f0\u6270\u52a8\u539f\u7406',
+            summary: '\u5185\u5bb9\u5c5e\u4e8e\u673a\u5668\u5b66\u4e60\u5b89\u5168\uff0c\u4e0d\u5c5e\u4e8e\u6570\u636e\u7ed3\u6784\u3002',
+          }),
+          provider: 'kimi',
+          model: 'kimi-k3',
+        };
+      },
+    },
+  });
+
+  const result = await analyzer(makeContext(imagePath, {
+    currentCategory: { subject: dataStructures },
+    taxonomy: {
+      revision: 1,
+      subjects: [
+        { name: dataStructures, aliases: [], knowledgePoints: [] },
+        { name: defaultSubject, aliases: [], knowledgePoints: [] },
+      ],
+    },
+  }));
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].task, 'note_image_understanding');
+  assert.match(requests[0].messages[0].content[2].image_url.url, /^data:image\/png;base64,/);
+  assert.equal(requests[0].networkRetries, 0);
+  assert.equal(requests[0].jsonRepairRetries, 0);
+  assert.equal(result.provider, 'kimi');
+  assert.equal(result.model, 'kimi-k3');
+  assert.equal(result.subject, defaultSubject);
+  assert.equal(result.subjectPolicy.reason, 'explicit_default');
 });
 
 test('router failures propagate so the organizer can record and retry them', async (t) => {

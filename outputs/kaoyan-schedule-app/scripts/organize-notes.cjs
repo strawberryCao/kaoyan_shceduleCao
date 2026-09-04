@@ -15,6 +15,7 @@ const {
   saveTaxonomyAtomic,
 } = require('./note-taxonomy.cjs');
 const {
+  AI_SUPPORTED_SUBJECTS,
   AI_FALLBACK_SUBJECT,
   canonicalAiSubject,
   isDefaultBucket,
@@ -27,6 +28,8 @@ const ORGANIZER_VERSION = 1;
 const NOTE_SCHEMA_VERSION = 2;
 const DEFAULT_SUBJECT = '默认文件夹';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']);
+const CONTENT_ADDRESSED_IMAGE_STEM = /^[a-f0-9]{64}(?:_\d+)?$/i;
+const STANDARD_SUBJECT_DIRECTORIES = new Set([...AI_SUPPORTED_SUBJECTS, DEFAULT_SUBJECT]);
 
 function normalizedReviewStatus(learning = {}) {
   if (['pending', 'auto_applied', 'accepted', 'corrected', 'ignored'].includes(learning.reviewStatus)) {
@@ -103,13 +106,62 @@ function listImageCandidates(imageDir, stem) {
 function resolveImagePath(metadata, sidecarPath, notesRoot) {
   const imageDir = imageDirFromSidecar(sidecarPath);
   const candidates = [];
+  const sidecarName = path.basename(sidecarPath).replace(/\.note\.json$/i, '');
+  candidates.push(...listImageCandidates(imageDir, sidecarName));
+  if (typeof metadata?.fileName === 'string') candidates.push(path.join(imageDir, metadata.fileName));
   if (typeof metadata?.filePath === 'string' && isInside(notesRoot, metadata.filePath)) {
     candidates.push(metadata.filePath);
   }
-  if (typeof metadata?.fileName === 'string') candidates.push(path.join(imageDir, metadata.fileName));
-  const sidecarName = path.basename(sidecarPath).replace(/\.note\.json$/i, '');
-  candidates.push(...listImageCandidates(imageDir, sidecarName));
   return candidates.find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || null;
+}
+
+function isInternalOrContentAddressedImage(filePath, notesRoot) {
+  if (!filePath || !isInside(notesRoot, filePath)) return false;
+  const relativeParts = path.relative(notesRoot, filePath).split(path.sep);
+  return relativeParts.includes('.assets')
+    || CONTENT_ADDRESSED_IMAGE_STEM.test(path.parse(filePath).name);
+}
+
+function isMaterialGroupMetadata(metadata) {
+  const attachments = Array.isArray(metadata?.attachments) ? metadata.attachments : [];
+  return metadata?.sourceType === 'material-note'
+    || metadata?.sourceType === 'quick-material'
+    || (metadata?.kind === 'quick' && attachments.length > 0);
+}
+
+function imagePathsForMetadata(metadata, primaryImagePath, notesRoot) {
+  const candidates = [
+    primaryImagePath,
+    ...(Array.isArray(metadata?.attachments)
+      ? metadata.attachments
+        .filter((attachment) => attachment?.kind === 'image' || String(attachment?.mimeType || '').startsWith('image/'))
+        .map((attachment) => attachment?.filePath)
+      : []),
+  ];
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    if (typeof candidate !== 'string' || !candidate.trim()) return false;
+    const resolved = path.resolve(candidate);
+    const key = resolved.toLocaleLowerCase('en-US');
+    if (seen.has(key) || !isInside(notesRoot, resolved)) return false;
+    try {
+      if (!fs.statSync(resolved).isFile() || !IMAGE_EXTENSIONS.has(path.extname(resolved).toLowerCase())) return false;
+    } catch {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  }).map((candidate) => path.resolve(candidate)).slice(0, 8);
+}
+
+function discoveryPreference(note) {
+  const attachments = Array.isArray(note?.metadata?.attachments) ? note.metadata.attachments : [];
+  const canonicalUidSidecar = note?.metadata?.noteUid
+    && path.basename(note.sidecarPath).toLocaleLowerCase('en-US') === `${note.metadata.noteUid}.note.json`.toLocaleLowerCase('en-US');
+  return (isMaterialGroupMetadata(note?.metadata) ? 1000 : 0)
+    + Math.min(8, attachments.length) * 50
+    + (canonicalUidSidecar ? 100 : 0)
+    + (note.fromIndex ? 0 : 10);
 }
 
 function walkMetadata(notesRoot) {
@@ -144,20 +196,27 @@ function walkMetadata(notesRoot) {
 
 function discoverNotes(notesRoot) {
   const { sidecars, indexes } = walkMetadata(notesRoot);
-  const discovered = [];
-  const imageKeys = new Set();
+  const candidates = [];
   const sidecarKeys = new Set();
 
   function add(metadata, sidecarPath, fromIndex = false) {
     if (!metadata || typeof metadata !== 'object') return;
     const imagePath = resolveImagePath(metadata, sidecarPath, notesRoot);
     if (!imagePath) return;
-    const imageKey = path.resolve(imagePath).toLocaleLowerCase('en-US');
+    // V2 assets are content-addressed storage, not user-facing notes. Treating
+    // them as captures makes the organizer pull `.assets/<sha>.png` into the
+    // subject root and then create `_2`, `_3`, ... copies on every sync pass.
+    if (isInternalOrContentAddressedImage(imagePath, notesRoot)) return;
     const sidecarKey = path.resolve(sidecarPath).toLocaleLowerCase('en-US');
-    if (imageKeys.has(imageKey) || sidecarKeys.has(sidecarKey)) return;
-    imageKeys.add(imageKey);
+    if (sidecarKeys.has(sidecarKey)) return;
     sidecarKeys.add(sidecarKey);
-    discovered.push({ metadata, sidecarPath, imagePath, fromIndex });
+    candidates.push({
+      metadata,
+      sidecarPath,
+      imagePath: path.resolve(imagePath),
+      imagePaths: imagePathsForMetadata(metadata, imagePath, notesRoot),
+      fromIndex,
+    });
   }
 
   for (const sidecarPath of sidecars) add(safeReadJson(sidecarPath), sidecarPath, false);
@@ -174,7 +233,22 @@ function discoverNotes(notesRoot) {
     }
   }
 
-  return discovered.sort((left, right) => left.imagePath.localeCompare(right.imagePath, 'zh-CN'));
+  const byUid = new Map();
+  for (const candidate of candidates) {
+    const key = String(candidate.metadata?.noteUid || candidate.metadata?.entryId || candidate.sidecarPath)
+      .toLocaleLowerCase('en-US');
+    const current = byUid.get(key);
+    if (!current || discoveryPreference(candidate) > discoveryPreference(current)) byUid.set(key, candidate);
+  }
+  const imageKeys = new Set();
+  return [...byUid.values()]
+    .sort((left, right) => left.imagePath.localeCompare(right.imagePath, 'zh-CN'))
+    .filter((note) => {
+      const imageKey = path.resolve(note.imagePath).toLocaleLowerCase('en-US');
+      if (imageKeys.has(imageKey)) return false;
+      imageKeys.add(imageKey);
+      return true;
+    });
 }
 
 function getCurrentCategory(notesRoot, imagePath, metadata) {
@@ -242,6 +316,20 @@ function makeInputHash(metadata, imagePath, analyzerVersion) {
     remark: typeof metadata?.remark === 'string' ? metadata.remark : '',
     manualTags: tags,
     file: { size: stat.size, mtimeMs: Math.round(stat.mtimeMs) },
+    attachments: (Array.isArray(metadata?.attachments) ? metadata.attachments : [])
+      .map((attachment) => {
+        const filePath = typeof attachment?.filePath === 'string' ? attachment.filePath : '';
+        try {
+          const attachmentStat = fs.statSync(filePath);
+          return {
+            name: attachment?.name || path.basename(filePath),
+            size: attachmentStat.size,
+            mtimeMs: Math.round(attachmentStat.mtimeMs),
+          };
+        } catch {
+          return { name: attachment?.name || path.basename(filePath), missing: true };
+        }
+      }),
   };
   return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -350,6 +438,7 @@ function rebuildMetadataIndex(directory) {
 
 function removeSourceDirectoryWhenMetadataOnly(directory) {
   if (!directory || !fs.existsSync(directory)) return false;
+  if (STANDARD_SUBJECT_DIRECTORIES.has(path.basename(path.resolve(directory)))) return false;
   const entries = fs.readdirSync(directory, { withFileTypes: true });
   if (entries.some((entry) => entry.name !== '.metadata')) return false;
   const metaDir = metadataDirFor(directory);
@@ -365,6 +454,33 @@ function removeSourceDirectoryWhenMetadataOnly(directory) {
     return true;
   }
   return false;
+}
+
+function persistMaterialGroupMetadata({ notesRoot, sourceSidecarPath, destinationDir, metadata }) {
+  ensureInside(notesRoot, sourceSidecarPath, 'material source sidecar');
+  ensureInside(notesRoot, destinationDir, 'material metadata directory');
+  fs.mkdirSync(destinationDir, { recursive: true });
+  const destinationSidecar = path.join(metadataDirFor(destinationDir), `${metadata.noteUid}.note.json`);
+  const storedMetadata = {
+    ...metadata,
+    id: metadata.noteUid,
+    entryId: metadata.entryId || metadata.noteUid,
+    kind: 'quick',
+    sourceType: metadata.sourceType || 'material-note',
+    updatedAt: new Date().toISOString(),
+  };
+  atomicWriteJson(destinationSidecar, storedMetadata);
+  if (path.resolve(sourceSidecarPath) !== path.resolve(destinationSidecar) && fs.existsSync(sourceSidecarPath)) {
+    unlinkFileIfExists(sourceSidecarPath);
+    rebuildMetadataIndex(imageDirFromSidecar(sourceSidecarPath));
+  }
+  rebuildMetadataIndex(destinationDir);
+  return {
+    imagePath: storedMetadata.filePath,
+    sidecarPath: destinationSidecar,
+    metadata: storedMetadata,
+    moved: false,
+  };
 }
 
 function moveWithJournal({ notesRoot, logPath, imagePath, sidecarPath, destinationDir, metadata }) {
@@ -638,7 +754,11 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
   if (intent.isMistake && !uniqueTags.includes('错题')) uniqueTags.push('错题');
   if (intent.shouldMemorize && !uniqueTags.includes('背诵')) uniqueTags.push('背诵');
   const questionType = keepsHumanDecision ? previousLearning.questionType || null : analysis.questionType;
+  const questionTypePath = keepsHumanDecision ? previousLearning.questionTypePath || [] : analysis.questionTypePath || [];
   const wrongReason = keepsHumanDecision ? previousLearning.wrongReason || null : analysis.wrongReason;
+  const wrongReasonPath = keepsHumanDecision ? previousLearning.wrongReasonPath || [] : analysis.wrongReasonPath || [];
+  const learningTypePath = keepsHumanDecision ? previousLearning.learningTypePath || [] : analysis.learningTypePath || [];
+  const goodQuestionType = keepsHumanDecision ? previousLearning.goodQuestionType || '' : analysis.goodQuestionType || '';
   if (questionType) {
     const questionTypeTag = `题型:${questionType}`.slice(0, 40);
     if (!uniqueTags.includes(questionTypeTag)) uniqueTags.push(questionTypeTag);
@@ -675,7 +795,12 @@ function attachLearningEnrichment(metadata, parsed, analysis, subject, knowledge
     knowledgePath,
     noteType,
     questionType,
+    questionTypePath,
     wrongReason,
+    wrongReasonPath,
+    learningTypePath,
+    goodQuestion: intent.isGood,
+    goodQuestionType,
     organizationStatus: reviewStatus === 'ignored' ? 'ignored' : reviewStatus === 'pending' ? 'pending' : 'confirmed',
     classificationSource: reviewStatus === 'corrected'
       ? 'manual'
@@ -746,6 +871,9 @@ async function organizeNotes(options = {}) {
     if (!dryRun) {
       fs.mkdirSync(notesRoot, { recursive: true });
       fs.mkdirSync(assistantRoot, { recursive: true });
+      for (const subject of STANDARD_SUBJECT_DIRECTORIES) {
+        fs.mkdirSync(path.join(notesRoot, subject), { recursive: true });
+      }
     }
     const recovery = dryRun ? { recovered: 0, failed: 0 } : recoverMoves({ notesRoot, logPath: moveLogPath, logger });
     report.recovered = recovery.recovered;
@@ -793,6 +921,7 @@ async function organizeNotes(options = {}) {
       try {
         const rawAnalysis = await analyzer({
           imagePath: note.imagePath,
+          imagePaths: note.imagePaths,
           sidecarPath: note.sidecarPath,
           metadata: { ...metadata },
           parsed,
@@ -934,14 +1063,21 @@ async function organizeNotes(options = {}) {
           continue;
         }
 
-        const movement = moveWithJournal({
-          notesRoot,
-          logPath: moveLogPath,
-          imagePath: note.imagePath,
-          sidecarPath: note.sidecarPath,
-          destinationDir,
-          metadata,
-        });
+        const movement = isMaterialGroupMetadata(metadata)
+          ? persistMaterialGroupMetadata({
+              notesRoot,
+              sourceSidecarPath: note.sidecarPath,
+              destinationDir,
+              metadata,
+            })
+          : moveWithJournal({
+              notesRoot,
+              logPath: moveLogPath,
+              imagePath: note.imagePath,
+              sidecarPath: note.sidecarPath,
+              destinationDir,
+              metadata,
+            });
         const finalMetadata = movement.metadata || metadata;
         let postProcessError = null;
         if (syncNote) {
@@ -1024,14 +1160,23 @@ async function organizeNotes(options = {}) {
 async function main() {
   const flags = new Set(process.argv.slice(2));
   const bundledAnalyzerPath = path.join(__dirname, 'note-ai-analyzer.cjs');
-  const analyzer = await loadInjectedAnalyzer(
-    process.env.KAOYAN_AI_ANALYZER || (fs.existsSync(bundledAnalyzerPath) ? bundledAnalyzerPath : ''),
-  );
+  // Scheduled tasks and startup shortcuts are never allowed to spend API
+  // quota. AI analysis requires an explicit command-line opt-in supplied only
+  // by a user-triggered in-app action.
+  const allowAi = flags.has('--allow-ai');
   const noteUidFlag = [...flags].find((flag) => flag.startsWith('--note-uid='));
+  if (allowAi && !noteUidFlag) {
+    throw new Error('AI note organization requires one explicit --note-uid target; full-library AI scans are disabled.');
+  }
+  const analyzer = allowAi
+    ? await loadInjectedAnalyzer(
+        process.env.KAOYAN_AI_ANALYZER || (fs.existsSync(bundledAnalyzerPath) ? bundledAnalyzerPath : ''),
+      )
+    : defaultAnalyzeNote;
   const report = await organizeNotes({
     analyzeNote: analyzer,
     noteUid: noteUidFlag ? noteUidFlag.slice('--note-uid='.length) : '',
-    analyzerVersion: process.env.KAOYAN_AI_ANALYZER_VERSION,
+    analyzerVersion: allowAi ? process.env.KAOYAN_AI_ANALYZER_VERSION : defaultAnalyzeNote.analyzerVersion,
     force: flags.has('--force'),
     dryRun: flags.has('--dry-run'),
     autoCreateCategories: !flags.has('--no-auto-create'),

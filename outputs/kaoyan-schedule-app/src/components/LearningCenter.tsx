@@ -16,6 +16,7 @@ import {
   Brain,
   CalendarClock,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
@@ -33,6 +34,7 @@ import {
   Rows3,
   Save,
   Search,
+  Sparkles,
   Star,
   Tag,
   Trash2,
@@ -51,8 +53,11 @@ import type {
   LearningNotePatch,
   LearningNoteReviewAction,
   LearningRecordFacet,
+  LearningReviewRating,
 } from '../utils/learningData';
+import { fetchLearningData } from '../utils/learningData';
 import { analyzeLearningNoteWrongReason } from '../utils/aiConfig';
+import { createActivityTask, patchActivityTask, upsertActivityTask } from '../utils/activityTasks';
 import {
   appendLearningMaterials,
   enqueueLearningNoteRename,
@@ -65,6 +70,7 @@ import {
 } from '../utils/notes';
 import { beginCrossBrowserRelayDrag } from '../utils/crossBrowserRelay';
 import { fuzzySearchScore, type WeightedSearchField } from '../utils/fuzzySearch';
+import { learningNoteTarget } from '../utils/learningNavigation';
 import { ImageViewer, type ImageViewerItem } from './ImageViewer';
 import {
   LearningInlineDetachLayer,
@@ -73,6 +79,7 @@ import {
 import { WorkspaceAssetPreview, type WorkspaceAssetPreviewItem } from './WorkspaceAssetPreview';
 import {
   isDefaultNoteBucket,
+  isExplicitMistakeOnly,
   isIgnoredNote,
   isKnowledgeEligibleNote,
   isPendingNoteReview,
@@ -83,45 +90,155 @@ import {
   shiftWeek,
   weeklyReviewFilename,
 } from '../utils/weeklyReview';
-import mascot01 from '../assets/quick-mascots/mascot-01.png';
-import mascot02 from '../assets/quick-mascots/mascot-02.png';
-import mascot03 from '../assets/quick-mascots/mascot-03.png';
-import mascot04 from '../assets/quick-mascots/mascot-04.png';
-import mascot05 from '../assets/quick-mascots/mascot-05.png';
-import mascot06 from '../assets/quick-mascots/mascot-06.png';
-import mascot07 from '../assets/quick-mascots/mascot-07.png';
-import mascot08 from '../assets/quick-mascots/mascot-08.png';
-import mascot09 from '../assets/quick-mascots/mascot-09.png';
-import mascot10 from '../assets/quick-mascots/mascot-10.png';
-import mascot11 from '../assets/quick-mascots/mascot-11.png';
-import mascot12 from '../assets/quick-mascots/mascot-12.png';
+import { QuickNoteWatcher } from './QuickNoteWatcher';
+import { QuickHtmlStudio, type QuickHtmlAttachOutcome } from './QuickHtmlStudio';
+import {
+  LEARNING_TYPE_PATHS,
+  GOOD_QUESTION_TYPES,
+  WRONG_REASON_PATHS,
+  classificationOptionsAtLevel,
+  classificationPathLabel,
+  classificationPathMatches,
+  goodQuestionTypeForNote,
+  learningTypePathForNote,
+  normalizeLearningPath,
+  questionTypePathForNote,
+  wrongReasonPathForNote,
+  type LearningClassificationPath,
+} from '../utils/learningTaxonomy';
 import '../learning-center.css';
 
-const QUICK_NOTE_MASCOTS = [
-  { src: mascot01, name: '星盘猫头鹰' },
-  { src: mascot02, name: '书签狐狸' },
-  { src: mascot03, name: '手账熊猫' },
-  { src: mascot04, name: '竹节机器人' },
-  { src: mascot05, name: '图书水豚' },
-  { src: mascot06, name: '云朵精灵' },
-  { src: mascot07, name: '实验六角龙' },
-  { src: mascot08, name: '冲刺火焰鸟' },
-  { src: mascot09, name: '纸鹤学者' },
-  { src: mascot10, name: '地图陆龟' },
-  { src: mascot11, name: '夜读飞蛾' },
-  { src: mascot12, name: '侦探石龙' },
-] as const;
+function HierarchyPathFilter({
+  label,
+  paths,
+  value,
+  onChange,
+}: {
+  label: string;
+  paths: LearningClassificationPath[];
+  value: LearningClassificationPath;
+  onChange: (value: LearningClassificationPath) => void;
+}) {
+  const selected = normalizeLearningPath(value);
+  const [open, setOpen] = useState(false);
+  const [cursor, setCursor] = useState<LearningClassificationPath>(selected);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
+  const memoryLabels: Record<string, string> = {
+    基础知识: '知识背诵',
+    题型方法: '题型背诵',
+    结论规律: '结论背诵',
+    易错警示: '易错背诵',
+    英语积累: '英语背诵',
+    政治材料: '政治背诵',
+  };
+  const displaySegment = (segment: string, level: number) => (
+    level === 0 && label.includes('背诵') ? memoryLabels[segment] || segment : segment
+  );
 
-function quickMascotIndex(noteUid: string): number {
-  let hash = 0;
-  for (const character of noteUid) hash = ((hash * 31) + character.charCodeAt(0)) >>> 0;
-  return hash % QUICK_NOTE_MASCOTS.length;
+  useEffect(() => setCursor(selected), [classificationPathLabel(selected)]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [open]);
+
+  const cancelScheduledClose = () => {
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = null;
+  };
+  const openMenu = () => {
+    cancelScheduledClose();
+    setCursor(selected);
+    setOpen(true);
+  };
+  const scheduleClose = () => {
+    cancelScheduledClose();
+    closeTimerRef.current = window.setTimeout(() => setOpen(false), 180);
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className={`lc-path-filter${open ? ' is-open' : ''}`}
+      aria-label={`${label}分级筛选`}
+      onMouseEnter={openMenu}
+      onMouseLeave={scheduleClose}
+    >
+      <button
+        className="lc-path-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onFocus={openMenu}
+        onClick={() => {
+          cancelScheduledClose();
+          setCursor(selected);
+          setOpen((current) => !current);
+        }}
+      >
+        <span>{selected.length > 0 ? selected.map(displaySegment).join(' / ') : `全部${label}`}</span>
+        <ChevronDown size={15} aria-hidden="true" />
+      </button>
+      {open && (
+        <div className="lc-path-popover" role="listbox" aria-label={`${label}级联选项`} onMouseEnter={cancelScheduledClose}>
+          <div className="lc-path-column">
+            <button className={selected.length === 0 ? 'active' : ''} type="button" onClick={() => { onChange([]); setOpen(false); }}>全部{label}</button>
+            {classificationOptionsAtLevel(paths, [], 0).map((option) => {
+              const nextPath = [option];
+              return <button key={option} className={selected[0] === option ? 'active' : ''} type="button" onMouseEnter={() => setCursor(nextPath)} onFocus={() => setCursor(nextPath)} onClick={() => { onChange(nextPath); setCursor(nextPath); if (classificationOptionsAtLevel(paths, nextPath, 1).length === 0) setOpen(false); }}>{displaySegment(option, 0)}</button>;
+            })}
+          </div>
+          {[1, 2].map((level) => {
+            const options = classificationOptionsAtLevel(paths, cursor, level);
+            if (cursor.length < level || options.length === 0) return null;
+            return (
+              <div className="lc-path-column" key={level}>
+                {options.map((option) => {
+                  const nextPath = [...cursor.slice(0, level), option];
+                  const hasChildren = level < 2 && classificationOptionsAtLevel(paths, nextPath, level + 1).length > 0;
+                  return <button key={option} className={selected[level] === option && selected.slice(0, level).every((segment, index) => segment === nextPath[index]) ? 'active' : ''} type="button" onMouseEnter={() => setCursor(nextPath)} onFocus={() => setCursor(nextPath)} onClick={() => { onChange(nextPath); setCursor(nextPath); if (!hasChildren) setOpen(false); }}>{displaySegment(option, level)}{hasChildren && <ChevronRight size={13} aria-hidden="true" />}</button>;
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
-function QuickNoteMascot({ noteUid }: { noteUid: string }) {
-  const mascot = QUICK_NOTE_MASCOTS[quickMascotIndex(noteUid)];
+function HierarchyPathInputs({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: LearningClassificationPath;
+  onChange: (value: LearningClassificationPath) => void;
+}) {
+  const selected = normalizeLearningPath(value);
   return (
-    <img className="lc-quick-mascot" src={mascot.src} alt="" title={mascot.name} aria-hidden="true" />
+    <div className="lc-path-inputs" aria-label={`${label}，最多三级`}>
+      {[0, 1, 2].map((level) => (
+        <input
+          key={level}
+          value={selected[level] ?? ''}
+          maxLength={60}
+          placeholder={`${level + 1}级${label}`}
+          onChange={(event) => {
+            const next = [...selected];
+            const segment = event.target.value;
+            if (segment) next[level] = segment;
+            else next.splice(level);
+            onChange(normalizeLearningPath(next));
+          }}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -161,16 +278,19 @@ function AssetScroller({
 
 export type LearningCardPatch = Partial<Pick<LearningCard, 'front' | 'back' | 'status' | 'dueDate' | 'userEdited'>> & {
   reviewResult?: 'remembered' | 'forgotten';
+  reviewRating?: LearningReviewRating;
   reviewThought?: string;
 };
 
 export interface LearningCenterProps {
   snapshot: LearningDataSnapshot;
+  hydrationComplete?: boolean;
   scheduleDays: ScheduleDay[];
   onPatchCard: (cardId: string, patch: LearningCardPatch) => Promise<unknown> | unknown;
   onDeleteCard: (cardId: string) => Promise<unknown> | unknown;
   onCreateNote: (input: LearningNoteCreateInput) => Promise<unknown> | unknown;
   onPatchNote: (noteUid: string, patch: LearningNotePatch) => Promise<unknown> | unknown;
+  onApplySnapshot: (snapshot: LearningDataSnapshot) => void;
   onReviewNotes: (actions: LearningNoteReviewAction[]) => Promise<unknown> | unknown;
   onDeleteNote: (noteUid: string) => Promise<unknown> | unknown;
   onOpenDate: (date: string) => void;
@@ -179,9 +299,20 @@ export interface LearningCenterProps {
 type CenterView = 'review' | 'mistakes' | 'good' | 'memory' | 'quick' | 'library' | 'uncategorized' | 'inbox' | 'weekly';
 type MistakeStatus = 'all' | 'confirm' | 'due' | 'reviewing' | 'mastered' | 'untracked';
 type QuickAssetLayout = 'vertical' | 'horizontal';
+type QuickReaderMode = 'single' | 'overview';
+type QuickAppendStatus = {
+  noteUid: string;
+  tone: 'info' | 'success' | 'error';
+  message: string;
+  operationId: string;
+};
+type QuickAppendRetry = { note: LearningAutoNote; files: File[]; operationId: string };
 
 const QUICK_ASSET_LAYOUT_STORAGE_KEY = 'kaoyan:quick-asset-layout';
 const QUICK_ASSET_RAIL_WIDTH_STORAGE_KEY = 'kaoyan:quick-asset-rail-width';
+const REVIEW_SESSION_SIZE = 30;
+const REVIEW_CONTINUE_SIZE = 10;
+const LIBRARY_PAGE_SIZE = 60;
 const QUICK_ASSET_RAIL_DEFAULT_WIDTH = 196;
 const QUICK_ASSET_RAIL_MIN_WIDTH = 132;
 const QUICK_ASSET_RAIL_MAX_WIDTH = 360;
@@ -201,16 +332,31 @@ interface IndexedNote {
 interface MistakeFilters {
   subject: string;
   knowledgePoint: string;
-  questionType: string;
-  wrongReason: string;
+  questionTypePath: LearningClassificationPath;
+  wrongReasonPath: LearningClassificationPath;
   status: MistakeStatus;
+}
+
+interface ContentFilters {
+  subject: string;
+  knowledgePoint: string;
+  learningTypePath: LearningClassificationPath;
+}
+
+interface GoodQuestionFilters {
+  subject: string;
+  knowledgePoint: string;
+  goodQuestionType: string;
 }
 
 interface ClassificationDraft {
   subject: string;
   knowledgePoint: string;
-  questionType: string;
+  questionTypePath: LearningClassificationPath;
   wrongReason: string;
+  wrongReasonPath: LearningClassificationPath;
+  learningTypePath: LearningClassificationPath;
+  goodQuestionType: string;
 }
 
 type LearningItemKind = 'quick' | 'knowledge' | 'mistake' | 'memory';
@@ -235,10 +381,13 @@ interface NoteEditorState {
   remark: string;
   subject: string;
   knowledgePoint: string;
-  questionType: string;
+  questionTypePath: LearningClassificationPath;
   wrongReason: string;
+  wrongReasonPath: LearningClassificationPath;
+  learningTypePath: LearningClassificationPath;
   tags: string;
   isGood: boolean;
+  goodQuestionType: string;
   createCard: boolean;
 }
 
@@ -278,9 +427,21 @@ const GOOD_QUESTION_WORDS = ['好题', '经典题', '典型题', '精品题'];
 const EMPTY_FILTERS: MistakeFilters = {
   subject: '',
   knowledgePoint: '',
-  questionType: '',
-  wrongReason: '',
+  questionTypePath: [],
+  wrongReasonPath: [],
   status: 'all',
+};
+
+const EMPTY_CONTENT_FILTERS: ContentFilters = {
+  subject: '',
+  knowledgePoint: '',
+  learningTypePath: [],
+};
+
+const EMPTY_GOOD_FILTERS: GoodQuestionFilters = {
+  subject: '',
+  knowledgePoint: '',
+  goodQuestionType: '',
 };
 
 const makeReviewOperationId = (): string => typeof crypto.randomUUID === 'function'
@@ -309,6 +470,17 @@ const isEditableTarget = (target: EventTarget | null): boolean => {
 const uniqueText = (items: Array<string | null | undefined>): string[] => [...new Set(
   items.map((item) => String(item ?? '').trim()).filter(Boolean),
 )];
+
+const uniquePaths = (items: unknown[]): LearningClassificationPath[] => {
+  const paths = new Map<string, LearningClassificationPath>();
+  items.forEach((item) => {
+    const path = normalizeLearningPath(item);
+    if (path.length > 0) paths.set(JSON.stringify(path), path);
+  });
+  return [...paths.values()].sort((left, right) => (
+    classificationPathLabel(left).localeCompare(classificationPathLabel(right), 'zh-CN')
+  ));
+};
 
 const pageRefText = (note: LearningAutoNote): string => note.pageRefs
   .map((ref) => ref.raw || [ref.page ? `p${ref.page}` : '', ref.question ?? ''].filter(Boolean).join(' '))
@@ -348,7 +520,12 @@ const noteAttachments = (note: LearningAutoNote) => note.attachments.length > 0
     posterPath: '',
     createdAt: note.createdAt,
   }] : [];
-const noteImageAttachment = (note: LearningAutoNote) => noteAttachments(note).find((attachment) => attachment.kind === 'image');
+const noteImageAttachment = (note: LearningAutoNote) => {
+  const images = noteAttachments(note).filter((attachment) => attachment.kind === 'image');
+  return images.find((attachment) => Boolean(attachment.assetId))
+    || images.find((attachment) => /^(?:github:\/\/data\/assets\/|data\/assets\/|r2:\/\/note-assets\/)/i.test(attachment.cloudPath || attachment.filePath))
+    || images[0];
+};
 const noteFileUrl = (filePath: string): string => {
   const assetId = /^asset:\/\/([a-f0-9]{64})$/i.exec(filePath.trim())?.[1]?.toLowerCase();
   if (assetId && IS_CLOUD_RUNTIME) return `${NOTE_SERVER_URL}/assets/${assetId}`;
@@ -389,7 +566,8 @@ const stableLearningAttachmentPath = (note: LearningAutoNote, attachment: Learni
   if (attachment.kind === 'image') {
     return `github://data/assets/${note.noteUid}.${learningAttachmentExtension(attachment)}`;
   }
-  const baseName = current.split('/').filter(Boolean).at(-1) || attachment.name;
+  const pathParts = current.split('/').filter(Boolean);
+  const baseName = pathParts[pathParts.length - 1] || attachment.name;
   return baseName ? `github://data/assets/${baseName}` : '';
 };
 
@@ -534,26 +712,6 @@ const noteWrongReasons = (note: LearningAutoNote): string[] => uniqueText([
     .map((tag) => tag.replace(/^错因[:：]\s*/, '')),
 ]);
 
-const wrongReasonCategory = (value: string): string => {
-  const normalized = value.normalize('NFKC').toLowerCase();
-  if (/(审题|题意|条件|范围看错|漏看|漏掉|遗漏条件|已知|要求)/u.test(normalized)) return '审题与条件';
-  if (/(定义|概念|性质|理解|混淆|不熟|不会判断)/u.test(normalized)) return '概念理解';
-  if (/(适用|区间|定义域|前提|边界|端点|条件不满足|使用范围)/u.test(normalized)) return '适用范围';
-  if (/(公式|定理|法则|结论|恒等式|展开式)/u.test(normalized)) return '公式与定理';
-  if (/(计算|化简|运算|求导|积分|代数|算错|约分|通分)/u.test(normalized)) return '计算与化简';
-  if (/(步骤|方法|思路|过程|顺序|分类讨论|辅助线|构造)/u.test(normalized)) return '步骤与方法';
-  if (/(符号|正负|抄写|看错|写错|下标|上标|括号)/u.test(normalized)) return '符号与抄写';
-  if (/(记忆|忘记|没记住|遗漏|漏写|漏项)/u.test(normalized)) return '记忆与遗漏';
-  return '其他';
-};
-
-const noteWrongReasonCategories = (note: LearningAutoNote): string[] => {
-  const stored = uniqueText(note.tags
-    .filter((tag) => /^错因(?:分类|类别)[:：]/u.test(tag))
-    .map((tag) => tag.replace(/^错因(?:分类|类别)[:：]\s*/u, '')));
-  return stored.length > 0 ? stored : uniqueText(noteWrongReasons(note).map(wrongReasonCategory));
-};
-
 const noteHasTag = (note: LearningAutoNote, words: string[]): boolean => note.tags.some((tag) => (
   words.some((word) => tag === word || tag.includes(word))
 ));
@@ -562,7 +720,7 @@ const remarkSignalsMistake = (remark: string): boolean => /(?:错题|易错|错�
 
 const remarkSignalsMemory = (remark: string): boolean => {
   const normalized = remark.normalize('NFKC');
-  return /(?:^|[\s#【\[，,。；;：:])(?:记|记住|背|要背)(?=$|[\s#】\]，,。；;：:])/u.test(normalized)
+  return /(?:^|[\s#【\[，,。；;：:])(?:记|记住|记忆|背|背诵|要背)(?=$|[\s#】\]，,。；;：:])/u.test(normalized)
     || /(?:要记住|需要记|必须记|背下来|需要背|必须背|重点背|熟记)/u.test(normalized);
 };
 
@@ -577,13 +735,14 @@ const isMistakeNote = (note: LearningAutoNote): boolean => (
   || note.items.some((item) => item.intent.isMistake)
 );
 
-const isMemoryNote = (note: LearningAutoNote): boolean => (
-  note.noteType === 'memory'
-  || note.facets.includes('memory')
-  || noteHasTag(note, MEMORY_WORDS)
-  || remarkSignalsMemory(note.remark)
-  || note.items.some((item) => item.intent.shouldMemorize)
-);
+const isMemoryNote = (note: LearningAutoNote): boolean => {
+  if (isExplicitMistakeOnly(note)) return false;
+  return note.noteType === 'memory'
+    || note.facets.includes('memory')
+    || noteHasTag(note, MEMORY_WORDS)
+    || remarkSignalsMemory(note.remark)
+    || note.items.some((item) => item.intent.shouldMemorize);
+};
 
 const isGoodNote = (note: LearningAutoNote): boolean => {
   if (note.facets.includes('good')) return true;
@@ -644,44 +803,70 @@ const statusLabel: Record<Exclude<MistakeStatus, 'all'>, string> = {
 const initialView = (): CenterView => {
   const params = new URLSearchParams(window.location.search);
   const requested = params.get('view');
-  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'quick' || requested === 'uncategorized' || requested === 'inbox' || requested === 'weekly') return requested;
+  if (requested === 'mistakes' || requested === 'good' || requested === 'memory' || requested === 'quick' || requested === 'library' || requested === 'uncategorized' || requested === 'inbox' || requested === 'weekly') return requested;
   if (requested === 'knowledge' || params.has('q')) return 'library';
   if (params.get('filter') === 'draft') return 'inbox';
   return 'review';
 };
 
+const learningTypePathsForSubject = (
+  subject: string | null | undefined,
+  paths: LearningClassificationPath[],
+): LearningClassificationPath[] => {
+  const normalizedSubject = String(subject ?? '').trim();
+  return paths.filter((path) => {
+    const root = path[0];
+    if (root === '英语积累') return normalizedSubject === '英语';
+    if (root === '政治材料') return normalizedSubject === '政治';
+    return true;
+  });
+};
+
 export function LearningCenter({
   snapshot,
+  hydrationComplete = true,
   scheduleDays,
   onPatchCard,
   onDeleteCard,
   onCreateNote,
   onPatchNote,
+  onApplySnapshot,
   onReviewNotes,
   onDeleteNote,
   onOpenDate,
 }: LearningCenterProps) {
   const today = localDate();
   const currentWeekStart = getWeekStart(today);
+  const requestedNoteUidRef = useRef(new URLSearchParams(window.location.search).get('noteUid'));
   const [view, setView] = useState<CenterView>(initialView);
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [selectedNoteUid, setSelectedNoteUid] = useState<string | null>(null);
+  const [selectedCardId, setSelectedCardId] = useState<string | null>(() => (
+    new URLSearchParams(window.location.search).get('cardId')
+  ));
+  const [selectedNoteUid, setSelectedNoteUid] = useState<string | null>(() => requestedNoteUidRef.current);
   const [selectedInboxKey, setSelectedInboxKey] = useState<string | null>(null);
-  const [mobileListOpen, setMobileListOpen] = useState(true);
+  const [mobileListOpen, setMobileListOpen] = useState(() => (
+    !(new URLSearchParams(window.location.search).get('view') === 'quick'
+      && new URLSearchParams(window.location.search).get('quickMode') === 'overview')
+  ));
   const [revealed, setRevealed] = useState(false);
   const [pendingCardId, setPendingCardId] = useState<string | null>(null);
   const [pendingNoteUid, setPendingNoteUid] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
+  const [quickAppendStatus, setQuickAppendStatus] = useState<QuickAppendStatus | null>(null);
+  const [quickAppendRetry, setQuickAppendRetry] = useState<QuickAppendRetry | null>(null);
+  const [quickHtmlStudioNoteUid, setQuickHtmlStudioNoteUid] = useState<string | null>(null);
   const [reviewNotice, setReviewNotice] = useState('');
+  const [reviewSessionTarget, setReviewSessionTarget] = useState(REVIEW_SESSION_SIZE);
+  const [reviewCompleted, setReviewCompleted] = useState(0);
   const reviewOperationIdsRef = useRef(new Map<string, string>());
   const [sourceFeedback, setSourceFeedback] = useState('');
   const [failedImagePath, setFailedImagePath] = useState('');
   const [editingClassificationUid, setEditingClassificationUid] = useState<string | null>(null);
   const [classificationDraft, setClassificationDraft] = useState<ClassificationDraft | null>(null);
   const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
-  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>(() => (
-    new URLSearchParams(window.location.search).get('searchMode') === 'ai' ? 'ai' : 'normal'
-  ));
+  // A stale URL must never spend API quota after a reload. AI search is
+  // enabled only by a click in the current page session.
+  const [searchMode, setSearchMode] = useState<'normal' | 'ai'>('normal');
   const [semanticSearch, setSemanticSearch] = useState<{
     query: string;
     loading: boolean;
@@ -689,7 +874,12 @@ export function LearningCenter({
     error: string;
     results: LearningSearchResult[];
   }>({ query: '', loading: false, degraded: false, error: '', results: [] });
+  const semanticSearchRequestRef = useRef(0);
   const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>(EMPTY_FILTERS);
+  const [memoryFilters, setMemoryFilters] = useState<ContentFilters>(EMPTY_CONTENT_FILTERS);
+  const [goodFilters, setGoodFilters] = useState<GoodQuestionFilters>(EMPTY_GOOD_FILTERS);
+  const [libraryFilters, setLibraryFilters] = useState<ContentFilters>(EMPTY_CONTENT_FILTERS);
+  const [libraryVisibleLimit, setLibraryVisibleLimit] = useState(LIBRARY_PAGE_SIZE);
   const [selectedWeekStart, setSelectedWeekStart] = useState(currentWeekStart);
   const [weeklyFeedback, setWeeklyFeedback] = useState('');
   const [noteEditor, setNoteEditor] = useState<NoteEditorState | null>(null);
@@ -706,6 +896,9 @@ export function LearningCenter({
   const [wrongReasonSaving, setWrongReasonSaving] = useState(false);
   const [aiRenameNoteUid, setAiRenameNoteUid] = useState<string | null>(null);
   const [activeQuickAssets, setActiveQuickAssets] = useState<Record<string, string>>({});
+  const [quickReaderMode, setQuickReaderMode] = useState<QuickReaderMode>(() => (
+    new URLSearchParams(window.location.search).get('quickMode') === 'overview' ? 'overview' : 'single'
+  ));
   const [quickAssetLayout, setQuickAssetLayout] = useState<QuickAssetLayout>(() => {
     try {
       return window.localStorage.getItem(QUICK_ASSET_LAYOUT_STORAGE_KEY) === 'horizontal'
@@ -754,6 +947,14 @@ export function LearningCenter({
     quickRailResizeCleanupRef.current?.();
   }, []);
 
+  useEffect(() => {
+    if (view !== 'quick') return;
+    const url = new URL(window.location.href);
+    if (quickReaderMode === 'overview') url.searchParams.set('quickMode', 'overview');
+    else url.searchParams.delete('quickMode');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  }, [quickReaderMode, view]);
+
   const knowledgeEligibleNoteUids = useMemo(() => new Set(
     Object.values(snapshot.days)
       .flatMap((day) => day.autoNotes)
@@ -772,7 +973,10 @@ export function LearningCenter({
   const upcomingCards = useMemo(() => activeCards
     .filter((card) => card.dueDate && card.dueDate > today)
     .sort((left, right) => left.dueDate.localeCompare(right.dueDate) || right.updatedAt.localeCompare(left.updatedAt)), [activeCards, today]);
-  const reviewCards = useMemo(() => [...dueCards, ...upcomingCards], [dueCards, upcomingCards]);
+  const reviewSessionTotal = Math.min(reviewSessionTarget, reviewCompleted + dueCards.length);
+  const reviewSessionSlots = Math.max(0, reviewSessionTotal - reviewCompleted);
+  const reviewCards = useMemo(() => dueCards.slice(0, reviewSessionSlots), [dueCards, reviewSessionSlots]);
+  const deferredDueCount = Math.max(0, dueCards.length - reviewCards.length);
   const currentCard = reviewCards.find((card) => card.id === selectedCardId) ?? reviewCards[0] ?? null;
   const currentCardIndex = currentCard ? reviewCards.findIndex((card) => card.id === currentCard.id) : -1;
   const currentCardIsDue = Boolean(currentCard && (!currentCard.dueDate || currentCard.dueDate <= today));
@@ -807,9 +1011,27 @@ export function LearningCenter({
       return leftOrder - rightOrder || left.localeCompare(right, 'zh-CN');
     });
   }, [allNotes]);
-  const knowledgePointOptions = useMemo(() => uniqueText(
-    indexedNotes.flatMap(({ note }) => noteKnowledgePoints(note)),
+  const knowledgePointsForSubject = useCallback((subject: string) => uniqueText(
+    indexedNotes
+      .filter(({ note }) => !subject || note.subject === subject)
+      .flatMap(({ note }) => noteKnowledgePoints(note)),
   ).sort((left, right) => left.localeCompare(right, 'zh-CN')), [indexedNotes]);
+  const classificationKnowledgePointOptions = useMemo(
+    () => knowledgePointsForSubject(classificationDraft?.subject ?? ''),
+    [classificationDraft?.subject, knowledgePointsForSubject],
+  );
+  const editorKnowledgePointOptions = useMemo(
+    () => knowledgePointsForSubject(noteEditor?.subject ?? ''),
+    [knowledgePointsForSubject, noteEditor?.subject],
+  );
+  const classificationLearningTypePaths = useMemo(() => learningTypePathsForSubject(
+    classificationDraft?.subject,
+    LEARNING_TYPE_PATHS,
+  ), [classificationDraft?.subject]);
+  const editorLearningTypePaths = useMemo(() => learningTypePathsForSubject(
+    noteEditor?.subject,
+    LEARNING_TYPE_PATHS,
+  ), [noteEditor?.subject]);
 
   const mistakeNotes = useMemo(() => allNotes.filter(({ note }) => isMistakeNote(note)), [allNotes]);
   const goodNotes = useMemo(() => allNotes.filter(({ note }) => isGoodNote(note)), [allNotes]);
@@ -830,45 +1052,6 @@ export function LearningCenter({
     !isQuickNote(note) && !isMistakeNote(note) && !isGoodNote(note) && !isMemoryNote(note)
   )), [indexedNotes]);
   const pendingNotes = useMemo(() => allNotes.filter(({ note }) => isPendingNoteReview(note)), [allNotes]);
-  useEffect(() => {
-    const normalizedQuery = query.trim();
-    if (searchMode !== 'ai' || !normalizedQuery) {
-      setSemanticSearch({ query: '', loading: false, degraded: false, error: '', results: [] });
-      return undefined;
-    }
-    let cancelled = false;
-    setSemanticSearch((current) => ({
-      ...current,
-      query: normalizedQuery,
-      loading: true,
-      error: '',
-    }));
-    const timer = window.setTimeout(() => {
-      void searchLearningRecords(normalizedQuery, 'ai').then((response) => {
-        if (cancelled) return;
-        setSemanticSearch({
-          query: normalizedQuery,
-          loading: false,
-          degraded: response.degraded === true,
-          error: '',
-          results: response.results || [],
-        });
-      }).catch((error) => {
-        if (cancelled) return;
-        setSemanticSearch({
-          query: normalizedQuery,
-          loading: false,
-          degraded: true,
-          error: error instanceof Error ? error.message : 'AI 搜索暂时不可用',
-          results: [],
-        });
-      });
-    }, 360);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [query, searchMode, snapshot.revision]);
   const semanticScores = useMemo(() => {
     if (
       searchMode !== 'ai'
@@ -884,37 +1067,115 @@ export function LearningCenter({
     [scheduleDays, selectedWeekStart, snapshot, today],
   );
 
-  const mistakeFacets = useMemo(() => ({
-    subjects: uniqueText(mistakeNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    knowledgePoints: uniqueText(mistakeNotes.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    questionTypes: uniqueText(mistakeNotes.flatMap(({ note }) => noteQuestionTypes(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
-    wrongReasons: uniqueText(mistakeNotes.flatMap(({ note }) => noteWrongReasonCategories(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
-  }), [mistakeNotes]);
+  const mistakeFacets = useMemo(() => {
+    const subjectScope = mistakeFilters.subject
+      ? mistakeNotes.filter(({ note }) => note.subject === mistakeFilters.subject)
+      : mistakeNotes;
+    const knowledgeScope = mistakeFilters.knowledgePoint
+      ? subjectScope.filter(({ note }) => noteKnowledgePoints(note).includes(mistakeFilters.knowledgePoint))
+      : subjectScope;
+    return {
+      subjects: uniqueText(mistakeNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      knowledgePoints: uniqueText(subjectScope.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      questionTypePaths: uniquePaths(knowledgeScope.map(({ note }) => questionTypePathForNote(note))),
+      wrongReasonPaths: uniquePaths(knowledgeScope.map(({ note }) => wrongReasonPathForNote(note))),
+    };
+  }, [mistakeFilters.knowledgePoint, mistakeFilters.subject, mistakeNotes]);
+
+  const wrongReasonEditorPaths = useMemo(() => uniquePaths([
+    ...WRONG_REASON_PATHS,
+    ...indexedNotes.map(({ note }) => wrongReasonPathForNote(note)),
+  ]), [indexedNotes]);
+
+  const memoryFacets = useMemo(() => {
+    const subjectScope = memoryFilters.subject
+      ? memoryNotes.filter(({ note }) => note.subject === memoryFilters.subject)
+      : memoryNotes;
+    const knowledgeScope = memoryFilters.knowledgePoint
+      ? subjectScope.filter(({ note }) => noteKnowledgePoints(note).includes(memoryFilters.knowledgePoint))
+      : subjectScope;
+    return {
+      subjects: uniqueText(memoryNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      knowledgePoints: uniqueText(subjectScope.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      learningTypePaths: uniquePaths(knowledgeScope.map(({ note }) => learningTypePathForNote(note))),
+    };
+  }, [memoryFilters.knowledgePoint, memoryFilters.subject, memoryNotes]);
+
+  const goodFacets = useMemo(() => {
+    const subjectScope = goodFilters.subject
+      ? goodNotes.filter(({ note }) => note.subject === goodFilters.subject)
+      : goodNotes;
+    const knowledgeScope = goodFilters.knowledgePoint
+      ? subjectScope.filter(({ note }) => noteKnowledgePoints(note).includes(goodFilters.knowledgePoint))
+      : subjectScope;
+    return {
+      subjects: uniqueText(goodNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      knowledgePoints: uniqueText(subjectScope.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      goodQuestionTypes: GOOD_QUESTION_TYPES.filter((type) => (
+        knowledgeScope.some(({ note }) => goodQuestionTypeForNote(note) === type)
+      )),
+    };
+  }, [goodFilters.knowledgePoint, goodFilters.subject, goodNotes]);
+
+  const libraryFacets = useMemo(() => {
+    const subjectScope = libraryFilters.subject
+      ? indexedNotes.filter(({ note }) => note.subject === libraryFilters.subject)
+      : indexedNotes;
+    const knowledgeScope = libraryFilters.knowledgePoint
+      ? subjectScope.filter(({ note }) => noteKnowledgePoints(note).includes(libraryFilters.knowledgePoint))
+      : subjectScope;
+    return {
+      subjects: uniqueText(indexedNotes.map(({ note }) => note.subject)).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      knowledgePoints: uniqueText(subjectScope.flatMap(({ note }) => noteKnowledgePoints(note))).sort((left, right) => left.localeCompare(right, 'zh-CN')),
+      learningTypePaths: uniquePaths(knowledgeScope.map(({ note }) => learningTypePathForNote(note))),
+    };
+  }, [indexedNotes, libraryFilters.knowledgePoint, libraryFilters.subject]);
 
   const visibleMistakes = useMemo(() => rankNotesForQuery(mistakeNotes.filter((entry) => {
     const { note } = entry;
     if (mistakeFilters.subject && note.subject !== mistakeFilters.subject) return false;
     if (mistakeFilters.knowledgePoint && !noteKnowledgePoints(note).includes(mistakeFilters.knowledgePoint)) return false;
-    if (mistakeFilters.questionType && !noteQuestionTypes(note).includes(mistakeFilters.questionType)) return false;
-    if (mistakeFilters.wrongReason && !noteWrongReasonCategories(note).includes(mistakeFilters.wrongReason)) return false;
+    if (!classificationPathMatches(questionTypePathForNote(note), mistakeFilters.questionTypePath)) return false;
+    if (!classificationPathMatches(wrongReasonPathForNote(note), mistakeFilters.wrongReasonPath)) return false;
     return mistakeFilters.status === 'all' || mistakeStatus(note, snapshot.cards, today) === mistakeFilters.status;
   }), query, semanticScores), [mistakeFilters, mistakeNotes, query, semanticScores, snapshot.cards, today]);
 
-  const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes, query, semanticScores), [memoryNotes, query, semanticScores]);
-  const visibleGood = useMemo(() => rankNotesForQuery(goodNotes, query, semanticScores), [goodNotes, query, semanticScores]);
+  const visibleMemory = useMemo(() => rankNotesForQuery(memoryNotes.filter(({ note }) => (
+    (!memoryFilters.subject || note.subject === memoryFilters.subject)
+    && (!memoryFilters.knowledgePoint || noteKnowledgePoints(note).includes(memoryFilters.knowledgePoint))
+    && classificationPathMatches(learningTypePathForNote(note), memoryFilters.learningTypePath)
+  )), query, semanticScores), [memoryFilters, memoryNotes, query, semanticScores]);
+  const visibleGood = useMemo(() => rankNotesForQuery(goodNotes.filter(({ note }) => (
+    (!goodFilters.subject || note.subject === goodFilters.subject)
+    && (!goodFilters.knowledgePoint || noteKnowledgePoints(note).includes(goodFilters.knowledgePoint))
+    && (!goodFilters.goodQuestionType || goodQuestionTypeForNote(note) === goodFilters.goodQuestionType)
+  )), query, semanticScores), [goodFilters, goodNotes, query, semanticScores]);
   const visibleQuick = useMemo(() => rankNotesForQuery(quickNotes, query, semanticScores), [query, quickNotes, semanticScores]);
-  const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes, query, semanticScores), [indexedNotes, query, semanticScores]);
+  const visibleLibrary = useMemo(() => rankNotesForQuery(indexedNotes.filter(({ note }) => (
+    (!libraryFilters.subject || note.subject === libraryFilters.subject)
+    && (!libraryFilters.knowledgePoint || noteKnowledgePoints(note).includes(libraryFilters.knowledgePoint))
+    && classificationPathMatches(learningTypePathForNote(note), libraryFilters.learningTypePath)
+  )), query, semanticScores), [indexedNotes, libraryFilters, query, semanticScores]);
   const visibleUncategorized = useMemo(() => rankNotesForQuery(uncategorizedNotes, query, semanticScores), [query, semanticScores, uncategorizedNotes]);
+  const libraryPathKey = libraryFilters.learningTypePath.join('\u001f');
+  const visibleLibraryPage = useMemo(
+    () => visibleLibrary.slice(0, libraryVisibleLimit),
+    [libraryVisibleLimit, visibleLibrary],
+  );
+
+  useEffect(() => {
+    setLibraryVisibleLimit(LIBRARY_PAGE_SIZE);
+  }, [libraryFilters.knowledgePoint, libraryFilters.subject, libraryPathKey, query, searchMode]);
 
   const groupedLibrary = useMemo(() => {
     const groups = new Map<string, IndexedNote[]>();
-    visibleLibrary.forEach((entry) => {
+    visibleLibraryPage.forEach((entry) => {
       const group = groups.get(entry.date) ?? [];
       group.push(entry);
       groups.set(entry.date, group);
     });
     return [...groups.entries()];
-  }, [visibleLibrary]);
+  }, [visibleLibraryPage]);
 
   const inboxEntries = useMemo<InboxEntry[]>(() => [
     ...pendingNotes.map((entry): InboxEntry => ({
@@ -936,7 +1197,13 @@ export function LearningCenter({
         : view === 'uncategorized'
           ? visibleUncategorized
         : visibleLibrary;
-  const selectedNote = noteListForView.find(({ note }) => note.noteUid === selectedNoteUid) ?? noteListForView[0] ?? null;
+  const requestedNotePending = Boolean(
+    requestedNoteUidRef.current
+    && !noteListForView.some(({ note }) => note.noteUid === requestedNoteUidRef.current),
+  );
+  const requestedNoteMissing = requestedNotePending && hydrationComplete;
+  const selectedNote = noteListForView.find(({ note }) => note.noteUid === selectedNoteUid)
+    ?? (requestedNotePending ? null : noteListForView[0] ?? null);
   const selectedInbox = inboxEntries.find((entry) => entry.key === selectedInboxKey) ?? inboxEntries[0] ?? null;
 
   useEffect(() => {
@@ -954,11 +1221,24 @@ export function LearningCenter({
   useEffect(() => {
     if (view === 'review' || view === 'inbox') return;
     if (!selectedNote) {
+      // The app can render a cached snapshot before the latest local/cloud
+      // snapshot arrives. Keep the requested UID alive so the fresh snapshot
+      // can resolve it instead of silently opening the first card.
+      if (requestedNoteUidRef.current) return;
+      const requestedNoteIsLoading = Boolean(
+        requestedNoteUidRef.current
+        && requestedNoteUidRef.current === selectedNoteUid
+        && searchMode === 'ai'
+        && query.trim()
+        && (semanticSearch.query !== query.trim() || semanticSearch.loading),
+      );
+      if (requestedNoteIsLoading) return;
       setSelectedNoteUid(null);
       return;
     }
     if (selectedNote.note.noteUid !== selectedNoteUid) setSelectedNoteUid(selectedNote.note.noteUid);
-  }, [selectedNote, selectedNoteUid, view]);
+    if (selectedNote.note.noteUid === requestedNoteUidRef.current) requestedNoteUidRef.current = null;
+  }, [query, searchMode, selectedNote, selectedNoteUid, semanticSearch.loading, semanticSearch.query, view]);
 
   useEffect(() => {
     if (view !== 'inbox') return;
@@ -1015,7 +1295,11 @@ export function LearningCenter({
   const patchCurrentCard = (patch: LearningCardPatch, successText: string) => {
     if (!currentCard) return;
     const nextCard = reviewCards.find((card) => card.id !== currentCard.id) ?? null;
-    void updateCard(currentCard, patch, successText, () => setSelectedCardId(nextCard?.id ?? null));
+    const recordsReview = Boolean(patch.reviewRating || patch.reviewResult);
+    void updateCard(currentCard, patch, successText, () => {
+      if (recordsReview) setReviewCompleted((value) => value + 1);
+      setSelectedCardId(nextCard?.id ?? null);
+    });
   };
 
   useEffect(() => {
@@ -1029,10 +1313,16 @@ export function LearningCenter({
         else setFeedback('');
       } else if (event.key === '1' && currentCardIsDue) {
         event.preventDefault();
-        patchCurrentCard({ reviewResult: 'forgotten' }, '已标记为忘记，明天再复习。');
+        patchCurrentCard({ reviewRating: 'again' }, '已放回短期复习队列。');
       } else if (event.key === '2' && currentCardIsDue) {
         event.preventDefault();
-        patchCurrentCard({ reviewResult: 'remembered' }, '已记住，复习间隔已延长。');
+        patchCurrentCard({ reviewRating: 'hard' }, '已按“困难”安排下次复习。');
+      } else if (event.key === '3' && currentCardIsDue) {
+        event.preventDefault();
+        patchCurrentCard({ reviewRating: 'good' }, '已按“良好”延长复习间隔。');
+      } else if (event.key === '4' && currentCardIsDue) {
+        event.preventDefault();
+        patchCurrentCard({ reviewRating: 'easy' }, '已按“轻松”安排更长间隔。');
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -1087,16 +1377,63 @@ export function LearningCenter({
       setFeedback('');
       const queued = await enqueueLearningNoteRename(note.noteUid);
       let job = queued.job;
+      // Retrying a note updates one stable activity instead of creating a new
+      // failed card for every server-side job id.
+      const activityId = `ai-rename:${note.noteUid}`;
+      await upsertActivityTask(createActivityTask({
+        id: activityId,
+        sourceId: note.noteUid,
+        kind: 'ai_rename',
+        status: job.status === 'failed' ? 'failed_retryable' : 'queued',
+        title: `AI 命名：${note.title || '未命名笔记'}`,
+        message: job.message || '已加入后台队列',
+        progress: job.progress,
+        targetUrl: learningNoteTarget(note.noteUid, note),
+        canRetry: false,
+        canCancel: false,
+      }));
       setFeedback(job.message || 'AI 重命名已加入后台队列；可以继续浏览。');
       for (let attempt = 0; attempt < 120 && ['queued', 'processing'].includes(job.status); attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 1500));
         job = await getAiBackgroundJob(job.id);
+        await patchActivityTask(activityId, {
+          status: job.status === 'processing'
+            ? 'processing'
+            : job.status === 'failed'
+              ? 'failed_retryable'
+              : ['completed', 'skipped'].includes(job.status)
+                ? 'completed'
+                : 'queued',
+          progress: job.progress,
+          message: job.message,
+          error: job.error,
+          errorCode: (job as typeof job & { errorCode?: string }).errorCode || '',
+          provider: job.result?.provider || '',
+          model: job.result?.model || '',
+          resultNoteUids: job.status === 'completed' ? [note.noteUid] : [],
+          canRetry: job.status === 'failed',
+          canCancel: ['queued', 'processing'].includes(job.status),
+          completedAt: job.completedAt,
+        });
         setFeedback(job.message || `AI 重命名处理中（${Math.round(job.progress)}%）`);
       }
       if (job.status === 'failed') throw new Error(job.error || 'AI 重命名失败，请稍后重试。');
       if (job.status === 'completed') {
+        // The cloud runtime has no EventSource. Refresh immediately so a
+        // completed rename is visible without waiting for the 15-second poll.
+        // This GET only reads the saved result; it never starts another AI call.
+        try {
+          onApplySnapshot(await fetchLearningData());
+        } catch {
+          // The normal polling fallback will reconcile the saved result later.
+        }
         setFeedback(job.result?.title ? `已重命名为“${job.result.title}”` : 'AI 重命名与分类已完成。');
       } else if (job.status === 'skipped') {
+        try {
+          onApplySnapshot(await fetchLearningData());
+        } catch {
+          // Keep the user's current snapshot while offline.
+        }
         setFeedback(job.message || '记录已变化，AI 没有覆盖你的修改。');
       } else {
         setFeedback('AI 仍在后台处理；完成后标题会自动刷新。');
@@ -1185,8 +1522,11 @@ export function LearningCenter({
     setClassificationDraft({
       subject: isDefaultNoteBucket(note.subject) ? '' : note.subject,
       knowledgePoint: noteKnowledgePoints(note)[0] ?? '',
-      questionType: noteQuestionTypes(note)[0] ?? '',
+      questionTypePath: questionTypePathForNote(note),
       wrongReason: noteWrongReasons(note)[0] ?? '',
+      wrongReasonPath: wrongReasonPathForNote(note),
+      learningTypePath: learningTypePathForNote(note),
+      goodQuestionType: isGoodNote(note) ? goodQuestionTypeForNote(note) : '',
     });
     setFeedback('');
   };
@@ -1199,11 +1539,19 @@ export function LearningCenter({
       return;
     }
     const knowledgePoint = classificationDraft.knowledgePoint.trim();
+    const questionTypePath = normalizeLearningPath(classificationDraft.questionTypePath);
     await reviewPendingNote(note, 'correct', {
         subject,
         knowledgePath: [subject, knowledgePoint].filter(Boolean),
-        questionType: classificationDraft.questionType.trim(),
+        questionType: questionTypePath[questionTypePath.length - 1] ?? '',
+        questionTypePath,
         wrongReason: classificationDraft.wrongReason.trim(),
+        wrongReasonPath: normalizeLearningPath(classificationDraft.wrongReasonPath),
+        learningTypePath: normalizeLearningPath(classificationDraft.learningTypePath),
+        ...(isGoodNote(note) ? {
+          goodQuestion: true,
+          goodQuestionType: classificationDraft.goodQuestionType || '经典母题',
+        } : {}),
     });
   };
 
@@ -1221,7 +1569,13 @@ export function LearningCenter({
     try {
       setWrongReasonSaving(true);
       setFeedback('');
-      await onPatchNote(note.noteUid, { wrongReason: wrongReasonEditor.text.trim() });
+      const wrongReason = wrongReasonEditor.text.trim();
+      await onPatchNote(note.noteUid, {
+        wrongReason,
+        wrongReasonPath: wrongReason
+          ? wrongReasonPathForNote({ ...note, wrongReason, wrongReasonPath: [] })
+          : [],
+      });
       setWrongReasonEditor(null);
       setFeedback(wrongReasonEditor.text.trim() ? '错因已保存，后续 AI 不会覆盖。' : '错因已删除，后续 AI 不会自动补回。');
     } catch (error) {
@@ -1236,7 +1590,7 @@ export function LearningCenter({
     try {
       setWrongReasonSaving(true);
       setFeedback('');
-      await onPatchNote(note.noteUid, { wrongReason: '' });
+      await onPatchNote(note.noteUid, { wrongReason: '', wrongReasonPath: [] });
       setWrongReasonEditor(null);
       setFeedback('错因已删除。');
     } catch (error) {
@@ -1274,10 +1628,13 @@ export function LearningCenter({
       remark: '',
       subject: STANDARD_EXAM_SUBJECTS[0],
       knowledgePoint: '',
-      questionType: '',
+      questionTypePath: [],
       wrongReason: '',
+      wrongReasonPath: [],
+      learningTypePath: kind === 'memory' ? ['基础知识', '定义概念'] : [],
       tags: [kind === 'mistake' ? '错题' : kind === 'memory' ? '背诵' : '', isGood ? '好题' : ''].filter(Boolean).join('，'),
       isGood,
+      goodQuestionType: isGood ? '经典母题' : '',
       createCard: kind !== 'knowledge',
     });
     setFeedback('');
@@ -1300,10 +1657,13 @@ export function LearningCenter({
       remark: note.remark,
       subject: note.subject,
       knowledgePoint: noteKnowledgePoints(note)[0] ?? '',
-      questionType: noteQuestionTypes(note)[0] ?? '',
+      questionTypePath: questionTypePathForNote(note),
       wrongReason: noteWrongReasons(note)[0] ?? '',
+      wrongReasonPath: wrongReasonPathForNote(note),
+      learningTypePath: learningTypePathForNote(note),
       tags: note.tags.join('，'),
       isGood: isGoodNote(note),
+      goodQuestionType: isGoodNote(note) ? goodQuestionTypeForNote(note) : '',
       createCard: false,
     });
     setFeedback('');
@@ -1329,16 +1689,21 @@ export function LearningCenter({
     if (noteEditor.kind === 'memory' && !tags.includes('背诵')) tags.push('背诵');
     if (noteEditor.isGood) tags.push('好题');
     const noteType = noteEditor.kind;
+    const questionTypePath = normalizeLearningPath(noteEditor.questionTypePath);
     const common = {
       title,
       remark: noteEditor.remark.trim(),
       subject,
       knowledgePath: [subject, knowledgePoint].filter(Boolean),
-      questionType: noteEditor.questionType.trim(),
+      questionType: questionTypePath[questionTypePath.length - 1] ?? '',
+      questionTypePath,
       wrongReason: noteEditor.wrongReason.trim(),
+      wrongReasonPath: noteEditor.kind === 'mistake' ? normalizeLearningPath(noteEditor.wrongReasonPath) : [],
+      learningTypePath: noteEditor.kind === 'quick' ? [] : normalizeLearningPath(noteEditor.learningTypePath),
       noteType,
       tags,
       goodQuestion: noteEditor.isGood,
+      goodQuestionType: noteEditor.isGood ? noteEditor.goodQuestionType || '经典母题' : '',
     };
     try {
       setEditorSaving(true);
@@ -1351,7 +1716,29 @@ export function LearningCenter({
         });
         setFeedback('已新增');
       } else if (noteEditor.noteUid) {
-        await onPatchNote(noteEditor.noteUid, common);
+        const existing = Object.values(snapshot.days)
+          .flatMap((day) => day.autoNotes)
+          .find((note) => note.noteUid === noteEditor.noteUid);
+        const patch: LearningNotePatch = { ...common };
+        if (existing) {
+          const sameList = (left: string[], right: string[]) => (
+            JSON.stringify(left) === JSON.stringify(right)
+          );
+          if (patch.title === existing.title) delete patch.title;
+          if (patch.remark === existing.remark) delete patch.remark;
+          if (patch.subject === existing.subject) delete patch.subject;
+          if (sameList(patch.knowledgePath ?? [], existing.knowledgePath ?? [])) delete patch.knowledgePath;
+          if (patch.questionType === existing.questionType) delete patch.questionType;
+          if (sameList(patch.questionTypePath ?? [], existing.questionTypePath ?? [])) delete patch.questionTypePath;
+          if (patch.wrongReason === existing.wrongReason) delete patch.wrongReason;
+          if (sameList(patch.wrongReasonPath ?? [], existing.wrongReasonPath ?? [])) delete patch.wrongReasonPath;
+          if (sameList(patch.learningTypePath ?? [], existing.learningTypePath ?? [])) delete patch.learningTypePath;
+          if (patch.noteType === existing.noteType) delete patch.noteType;
+          if (sameList(patch.tags ?? [], existing.tags ?? [])) delete patch.tags;
+          if (patch.goodQuestion === existing.goodQuestion) delete patch.goodQuestion;
+          if (patch.goodQuestionType === existing.goodQuestionType) delete patch.goodQuestionType;
+        }
+        if (Object.keys(patch).length > 0) await onPatchNote(noteEditor.noteUid, patch);
         setFeedback('已保存');
       }
       setNoteEditor(null);
@@ -1480,12 +1867,51 @@ export function LearningCenter({
     void Promise.resolve(onPatchNote(note.noteUid, { attachments })).catch(() => undefined);
   }, [onPatchNote]);
 
-  const appendQuickAttachments = async (note: LearningAutoNote, files: File[]) => {
-    if (files.length === 0 || pendingNoteUid) return;
+  const appendQuickAttachments = async (
+    note: LearningAutoNote,
+    files: File[],
+    requestedOperationId?: string,
+  ): Promise<QuickHtmlAttachOutcome> => {
+    if (files.length === 0) return { status: 'rejected', message: '没有可加入的资料。' };
+    if (pendingNoteUid) return { status: 'retryable', message: '当前速记还有保存任务，请稍后重试。' };
+    const existingCount = note.attachments.length;
+    const existingBytes = note.attachments.reduce((sum, attachment) => sum + Math.max(0, Number(attachment.size) || 0), 0);
+    const addedBytes = files.reduce((sum, file) => sum + file.size, 0);
+    const operationId = requestedOperationId || `material-${crypto.randomUUID()}`;
+    const sizeLabel = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MB`;
+    if (files.some((file) => file.size > 8 * 1024 * 1024) || existingBytes + addedBytes > 16 * 1024 * 1024) {
+      setQuickAppendStatus({
+        noteUid: note.noteUid,
+        tone: 'error',
+        operationId,
+        message: `已有 ${sizeLabel(existingBytes)}，本次 ${sizeLabel(addedBytes)}；单份最多 8 MB，合计最多 16 MB。`,
+      });
+      return { status: 'rejected', message: '资料超过当前 8 MB 单文件或 16 MB 总量保护限制。' };
+    }
     try {
       setPendingNoteUid(note.noteUid);
       setFeedback('正在加入资料…');
+      setQuickAppendRetry(null);
+      setQuickAppendStatus({
+        noteUid: note.noteUid,
+        tone: 'info',
+        operationId,
+        message: `正在保存：已有 ${existingCount} 份 + 本次 ${files.length} 份，共 ${sizeLabel(existingBytes + addedBytes)}。`,
+      });
+      await upsertActivityTask(createActivityTask({
+        id: `material:${operationId}`,
+        sourceId: operationId,
+        kind: 'material_append',
+        status: 'uploading',
+        title: `添加资料：${note.title || '未命名速记'}`,
+        message: `正在保存 ${files.length} 份资料`,
+        progress: 35,
+        targetUrl: `?panel=learning&view=quick&noteUid=${encodeURIComponent(note.noteUid)}`,
+        canRetry: false,
+        canCancel: false,
+      }));
       const result = await appendLearningMaterials({
+        operationId,
         noteUid: note.noteUid,
         title: note.title,
         remark: note.remark,
@@ -1494,12 +1920,70 @@ export function LearningCenter({
         facets: note.facets,
         files,
       });
-      if (result.attachments) {
-        await onPatchNote(note.noteUid, { attachments: result.attachments as LearningAttachment[] });
-      }
-      setFeedback(result.idempotentReplay ? '这些资料已经在速记里' : `已加入 ${files.length} 份资料，AI 正在统一整理命名`);
+      if (result.learningData) onApplySnapshot(result.learningData);
+      await patchActivityTask(`material:${operationId}`, {
+        status: 'completed',
+        progress: 100,
+        message: result.idempotentReplay ? '资料已存在，没有重复创建' : `已安全保存 ${files.length} 份资料`,
+        completedAt: new Date().toISOString(),
+      });
+      setFeedback('');
+      setQuickAppendStatus({
+        noteUid: note.noteUid,
+        tone: 'success',
+        operationId: result.operationId || operationId,
+        message: result.idempotentReplay
+          ? '这些资料已经保存过，没有重复创建附件。'
+          : `已安全加入 ${files.length} 份资料；需要时可点击“AI命名资料”单次整理。`,
+      });
+      return {
+        status: result.idempotentReplay ? 'replayed' : 'saved',
+        message: result.idempotentReplay ? '这份资料已经安全保存，没有重复创建。' : '已加入本条速记。',
+      };
     } catch (error) {
-      setFeedback(error instanceof Error ? error.message : '资料没有加入，请稍后重试');
+      const message = error instanceof Error ? error.message : '资料没有加入，请稍后重试';
+      try {
+        const refreshed = await fetchLearningData();
+        const refreshedNote = Object.values(refreshed.days)
+          .flatMap((day) => day.autoNotes)
+          .find((candidate) => candidate.noteUid === note.noteUid);
+        if (refreshedNote && refreshedNote.attachments.length > existingCount) {
+          onApplySnapshot(refreshed);
+          setFeedback('');
+          setQuickAppendStatus({
+            noteUid: note.noteUid,
+            tone: 'success',
+            operationId,
+            message: '资料实际已经保存，刚才只是网络响应丢失；已主动刷新为最新记录。',
+          });
+          setQuickAppendRetry(null);
+          await patchActivityTask(`material:${operationId}`, {
+            status: 'completed',
+            progress: 100,
+            message: '资料已保存，网络回执曾中断',
+            completedAt: new Date().toISOString(),
+          });
+          return { status: 'saved', message: '资料已经保存；刚才只是网络回执中断。' };
+        }
+      } catch {
+        // Keep the original error and allow an idempotent retry with the same operation ID.
+      }
+      setFeedback('');
+      setQuickAppendRetry({ note, files, operationId });
+      await patchActivityTask(`material:${operationId}`, {
+        status: 'failed_retryable',
+        progress: 35,
+        message: '保存尚未确认，可从当前速记安全重试',
+        error: message,
+        canRetry: true,
+      });
+      setQuickAppendStatus({
+        noteUid: note.noteUid,
+        tone: 'error',
+        operationId,
+        message: `${message} 未确认保存，可使用同一操作安全重试。`,
+      });
+      return { status: 'retryable', message };
     } finally {
       setPendingNoteUid(null);
     }
@@ -1527,6 +2011,38 @@ export function LearningCenter({
       setFeedback('资料已从这条速记移除，原文件仍保留');
     } catch (error) {
       setFeedback(error instanceof Error ? error.message : '资料没有移除，请稍后重试');
+    } finally {
+      setPendingNoteUid(null);
+    }
+  };
+
+  const setPrimaryAttachment = async (note: LearningAutoNote, attachmentId: string) => {
+    const sourceAttachments = note.attachments.length > 0 ? note.attachments : noteAttachments(note);
+    const selectedIndex = sourceAttachments.findIndex((attachment) => attachment.id === attachmentId);
+    if (selectedIndex <= 0 || pendingNoteUid) return;
+    const selected = sourceAttachments[selectedIndex];
+    const attachments = [
+      selected,
+      ...sourceAttachments.filter((attachment) => attachment.id !== attachmentId),
+    ];
+    try {
+      setPendingNoteUid(note.noteUid);
+      setFeedback('正在更新首个展示资料…');
+      if (IS_CLOUD_RUNTIME && attachments.every((attachment) => attachment.assetId)) {
+        const orderedAssetIds = attachments.map((attachment) => attachment.assetId).filter((assetId): assetId is string => Boolean(assetId));
+        const result = await updateCloudEntryAssets(
+          note.noteUid,
+          orderedAssetIds,
+        );
+        if (result?.learningData) onApplySnapshot(result.learningData);
+        else onApplySnapshot(await fetchLearningData());
+      } else {
+        await onPatchNote(note.noteUid, { attachments });
+      }
+      setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: attachmentId }));
+      setFeedback(`已将“${selected.name}”设为首个展示资料`);
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : '首个展示资料没有更新，请重试');
     } finally {
       setPendingNoteUid(null);
     }
@@ -1730,19 +2246,56 @@ export function LearningCenter({
       <Search size={17} aria-hidden="true" />
       <input
         value={query}
-        onChange={(event) => setQuery(event.target.value)}
+        onChange={(event) => {
+          semanticSearchRequestRef.current += 1;
+          setQuery(event.target.value);
+          setSearchMode('normal');
+          setSemanticSearch({ query: '', loading: false, degraded: false, error: '', results: [] });
+        }}
         placeholder={placeholder}
         aria-label={placeholder}
       />
-      {query && <button type="button" onClick={() => setQuery('')} aria-label="清空搜索"><X size={15} /></button>}
+      {query && <button type="button" onClick={() => {
+        semanticSearchRequestRef.current += 1;
+        setQuery('');
+        setSearchMode('normal');
+        setSemanticSearch({ query: '', loading: false, degraded: false, error: '', results: [] });
+      }} aria-label="清空搜索"><X size={15} /></button>}
       <button
         className={`lc-search-mode${searchMode === 'ai' ? ' is-active' : ''}`}
         type="button"
-        onClick={() => setSearchMode((current) => current === 'ai' ? 'normal' : 'ai')}
-        title={searchMode === 'ai' ? '切回普通关键词搜索' : '按语义查找忘记关键词的资料'}
+        onClick={() => {
+          const normalizedQuery = query.trim();
+          if (!normalizedQuery || semanticSearch.loading) return;
+          const requestId = semanticSearchRequestRef.current + 1;
+          semanticSearchRequestRef.current = requestId;
+          setSearchMode('ai');
+          setSemanticSearch({ query: normalizedQuery, loading: true, degraded: false, error: '', results: [] });
+          void searchLearningRecords(normalizedQuery, 'ai').then((response) => {
+            if (semanticSearchRequestRef.current !== requestId) return;
+            setSemanticSearch({
+              query: normalizedQuery,
+              loading: false,
+              degraded: response.degraded === true,
+              error: '',
+              results: response.results || [],
+            });
+          }).catch((error) => {
+            if (semanticSearchRequestRef.current !== requestId) return;
+            setSemanticSearch({
+              query: normalizedQuery,
+              loading: false,
+              degraded: true,
+              error: error instanceof Error ? error.message : 'AI 搜索暂时不可用',
+              results: [],
+            });
+          });
+        }}
+        title="按语义查找忘记关键词的资料；每次点击只请求一次"
         aria-pressed={searchMode === 'ai'}
+        disabled={!query.trim() || semanticSearch.loading}
       >
-        <Brain size={14} />{searchMode === 'ai' ? 'AI语义' : '普通'}
+        <Brain size={14} />{semanticSearch.loading ? 'AI搜索中' : 'AI搜索'}
       </button>
       <strong>{count}</strong>
       {addLabel && onAdd && <button className="lc-add-button" type="button" onClick={onAdd}><Plus size={15} />{addLabel}</button>}
@@ -1813,12 +2366,15 @@ export function LearningCenter({
         type="button"
         onClick={() => {
           if (context === 'inbox') setSelectedInboxKey(`note:${note.noteUid}`);
-          else setSelectedNoteUid(note.noteUid);
+          else {
+            setSelectedNoteUid(note.noteUid);
+            if (context === 'quick') setQuickReaderMode('single');
+          }
           setMobileListOpen(false);
         }}
       >
         <span className="lc-note-button-thumb" aria-hidden="true">
-          {context === 'quick' ? <QuickNoteMascot noteUid={note.noteUid} /> : <FileImage size={18} />}
+          {context === 'quick' ? <QuickNoteWatcher noteUid={note.noteUid} /> : <FileImage size={18} />}
           {thumbnailPaths.length > 0 && <ResilientNoteImage paths={thumbnailPaths} alt="" />}
         </span>
         <span className="lc-note-button-copy">
@@ -1841,21 +2397,39 @@ export function LearningCenter({
 
   const renderNoteDetail = (entry: IndexedNote | null, context: 'mistake' | 'good' | 'memory' | 'library' | 'inbox') => {
     if (!entry) {
+      const requestedUid = requestedNoteUidRef.current;
       return (
         <div className="lc-detail-empty">
           <BookOpenText size={28} />
-          <h3>这里还没有记录</h3>
+          <h3>{requestedUid ? (requestedNoteMissing ? '没有找到这条记录' : '正在定位指定记录') : '这里还没有记录'}</h3>
+          {requestedUid && (
+            <>
+              <p>{requestedNoteMissing
+                ? '同步已完成；这条记录可能已迁移、被删除，或不在当前分栏。'
+                : '正在等待最新数据；不会打开其他无关记录。'}</p>
+              <button type="button" onClick={() => {
+                requestedNoteUidRef.current = null;
+                setSelectedNoteUid(noteListForView[0]?.note.noteUid ?? null);
+              }}>查看当前分栏</button>
+            </>
+          )}
         </div>
       );
     }
     const { date, note } = entry;
     const pages = pageRefText(note);
     const knowledgePoints = noteKnowledgePoints(note);
-    const questionTypes = noteQuestionTypes(note);
+    const questionTypePath = questionTypePathForNote(note);
+    const wrongReasonPath = wrongReasonPathForNote(note);
+    const learningTypePath = learningTypePathForNote(note);
     const wrongReasons = noteWrongReasons(note);
     const itemSummary = note.items.slice(0, 8);
     const isEditingClassification = editingClassificationUid === note.noteUid && classificationDraft;
     const attachments = noteAttachments(note);
+    const previewAssets = quickPreviewAssets(note);
+    const activePreviewAsset = previewAssets.find((asset) => asset.id === activeQuickAssets[note.noteUid])
+      || previewAssets[0]
+      || null;
     const imageAttachment = noteImageAttachment(note);
     const imagePaths = imageAttachment ? noteAttachmentPaths(note, imageAttachment) : [];
     const imagePath = imagePaths[0] || '';
@@ -1863,36 +2437,24 @@ export function LearningCenter({
       !isDefaultNoteBucket(note.subject) ? { label: '科目', value: displaySubject(note.subject) } : null,
       pages ? { label: '页码 / 题号', value: pages } : null,
       knowledgePoints.length > 0 ? { label: '知识点', value: knowledgePoints.join('、') } : null,
-      questionTypes.length > 0 ? { label: '题型', value: questionTypes.join('、') } : null,
+      questionTypePath.length > 0 ? { label: '题型分类', value: classificationPathLabel(questionTypePath) } : null,
+      learningTypePath.length > 0 ? { label: context === 'memory' ? '背诵类型' : '学习类型', value: classificationPathLabel(learningTypePath) } : null,
+      context === 'good' ? { label: '好题类型', value: goodQuestionTypeForNote(note) } : null,
+      context === 'mistake' && wrongReasonPath.length > 0
+        ? { label: '错因分类', value: classificationPathLabel(wrongReasonPath) }
+        : null,
       context === 'mistake' && wrongReasons.length > 0
-        ? { label: '错因', value: wrongReasons.join('；'), wide: true }
+        ? { label: '具体错因', value: wrongReasons.join('；'), wide: true }
         : null,
     ].filter((fact): fact is { label: string; value: string; wide?: boolean } => fact !== null);
-    const sourcePreview = imagePath ? (
-      <figure className="lc-source-preview is-question-first">
-        {failedImagePath !== imagePath ? (
-          <button
-            className="lc-source-preview-open"
-            type="button"
-            onClick={() => openNoteViewer(note, context)}
-            aria-label="打开原图"
-          >
-            <ResilientNoteImage
-              paths={imagePaths}
-              alt={`${note.title || '笔记'}原图`}
-              loading="eager"
-              onUnavailable={() => setFailedImagePath(imagePath)}
-            />
-            <span aria-hidden="true"><ZoomIn size={16} /></span>
-          </button>
-        ) : (
-          <div>
-            <FileImage size={28} />
-            <strong>原图加载失败</strong>
-            <button type="button" onClick={() => setFailedImagePath('')}>重试</button>
-          </div>
-        )}
-      </figure>
+    const sourcePreview = activePreviewAsset ? (
+      <section className={`lc-detail-asset-preview is-${activePreviewAsset.kind}`} aria-label={`正在查看 ${activePreviewAsset.name}`}>
+        <WorkspaceAssetPreview
+          item={activePreviewAsset}
+          assets={previewAssets}
+          onRecovered={(item) => recoverQuickAsset(note, item)}
+        />
+      </section>
     ) : null;
     return (
       <article className="lc-note-detail">
@@ -1903,15 +2465,30 @@ export function LearningCenter({
         {attachments.length > 0 && (
           <section className="lc-attachments" aria-label="资料附件">
             <div><h3>资料附件</h3><span>{attachments.length}</span></div>
-            <ul>{attachments.map((attachment) => (
-              <li
-                key={attachment.id}
-                title="按住资料直接拖出显示"
-                onPointerDown={(event) => beginInlineDetach(event, note, attachment.id)}
-              >
-                <FileText size={17} aria-hidden="true" />
-                <span><strong>{attachment.name}</strong><small>{attachment.kind === 'image' ? '图片' : attachment.kind === 'pdf' ? 'PDF' : attachment.kind === 'word' ? 'Word' : attachment.kind === 'html' ? 'HTML' : '文件'}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
-                <em>按住拖出</em>
+            <ul>{attachments.map((attachment, index) => (
+              <li className={activePreviewAsset?.id === attachment.id ? 'is-active' : ''} key={attachment.id}>
+                <button
+                  className="lc-attachment-open"
+                  type="button"
+                  aria-pressed={activePreviewAsset?.id === attachment.id}
+                  title="点击查看；按住可拖出显示"
+                  onClick={() => setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: attachment.id }))}
+                  onPointerDown={(event) => beginInlineDetach(event, note, attachment.id, () => {
+                    setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: attachment.id }));
+                  })}
+                >
+                  <FileText size={17} aria-hidden="true" />
+                  <span><strong>{attachment.name}</strong><small>{attachment.kind === 'image' ? '图片' : attachment.kind === 'pdf' ? 'PDF' : attachment.kind === 'word' ? 'Word' : attachment.kind === 'html' ? 'HTML' : '文件'}{attachment.size ? ` · ${Math.max(1, Math.round(attachment.size / 1024))} KB` : ''}</small></span>
+                </button>
+                {index === 0 ? <em className="lc-attachment-primary">首个展示</em> : (
+                  <button
+                    className="lc-attachment-make-primary"
+                    type="button"
+                    disabled={pendingNoteUid === note.noteUid}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={() => void setPrimaryAttachment(note, attachment.id)}
+                  >设为首个</button>
+                )}
               </li>
             ))}</ul>
           </section>
@@ -1920,7 +2497,7 @@ export function LearningCenter({
         <header className="lc-detail-heading">
           <h2>{note.title || '未命名笔记'}</h2>
           <div className="lc-heading-actions">
-            {imagePath && <button type="button" disabled={Boolean(aiRenameNoteUid)} onClick={() => void renameNoteWithAi(note)}><Zap size={15} />{aiRenameNoteUid === note.noteUid ? 'AI处理中…' : 'AI重命名'}</button>}
+            {(imagePath || (note.sourceType === 'material-note' && attachments.length > 0)) && <button type="button" disabled={Boolean(aiRenameNoteUid)} onClick={() => void renameNoteWithAi(note)}><Zap size={15} />{aiRenameNoteUid === note.noteUid ? 'AI处理中…' : note.sourceType === 'material-note' ? 'AI命名资料' : 'AI重命名'}</button>}
             <button type="button" onClick={() => beginEditNote(note)}><Pencil size={15} />编辑</button>
             {context === 'good' && (
               <button type="button" disabled={pendingNoteUid === note.noteUid || editorSaving} onClick={() => void removeFromGoodQuestions(note)}><X size={15} />移出好题</button>
@@ -1963,18 +2540,27 @@ export function LearningCenter({
 
         {isEditingClassification && (
           <form className="lc-classification-editor" onSubmit={(event) => { event.preventDefault(); void saveClassification(note); }}>
-            <label>一级科目<select value={classificationDraft.subject} onChange={(event) => setClassificationDraft((current) => current ? { ...current, subject: event.target.value } : current)} autoFocus>
+            <label>一级科目<select value={classificationDraft.subject} onChange={(event) => setClassificationDraft((current) => current ? {
+              ...current,
+              subject: event.target.value,
+              knowledgePoint: '',
+              questionTypePath: [],
+              learningTypePath: [],
+            } : current)} autoFocus>
               <option value="">请选择</option>
               {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
             </select></label>
-            <label>知识点<input list="lc-knowledge-options" value={classificationDraft.knowledgePoint} onChange={(event) => setClassificationDraft((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>
-            <label>题型<input value={classificationDraft.questionType} onChange={(event) => setClassificationDraft((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>
-            <label>错因<input value={classificationDraft.wrongReason} onChange={(event) => setClassificationDraft((current) => current ? { ...current, wrongReason: event.target.value } : current)} /></label>
+            <label>知识点<input list="lc-classification-knowledge-options" value={classificationDraft.knowledgePoint} onChange={(event) => setClassificationDraft((current) => current ? { ...current, knowledgePoint: event.target.value, questionTypePath: [], learningTypePath: [] } : current)} /></label>
+            <div className="lc-classification-field wide"><span>题型分类（最多三级）</span><HierarchyPathInputs label="题型" value={classificationDraft.questionTypePath} onChange={(questionTypePath) => setClassificationDraft((current) => current ? { ...current, questionTypePath } : current)} /></div>
+            <div className="lc-classification-field wide"><span>错因分类</span><HierarchyPathFilter label="错因" paths={wrongReasonEditorPaths} value={classificationDraft.wrongReasonPath} onChange={(wrongReasonPath) => setClassificationDraft((current) => current ? { ...current, wrongReasonPath } : current)} /></div>
+            <label className="wide">具体错因<input value={classificationDraft.wrongReason} onChange={(event) => setClassificationDraft((current) => current ? { ...current, wrongReason: event.target.value } : current)} /></label>
+            <div className="lc-classification-field wide"><span>学习内容类型</span><HierarchyPathFilter label="学习类型" paths={classificationLearningTypePaths} value={classificationDraft.learningTypePath} onChange={(learningTypePath) => setClassificationDraft((current) => current ? { ...current, learningTypePath } : current)} /></div>
+            {isGoodNote(note) && <label>好题类型<select value={classificationDraft.goodQuestionType} onChange={(event) => setClassificationDraft((current) => current ? { ...current, goodQuestionType: event.target.value } : current)}>{GOOD_QUESTION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>}
             <div className="lc-classification-actions">
               <button className="primary" type="submit" disabled={pendingNoteUid === note.noteUid}><Check size={15} />保存</button>
               <button type="button" onClick={() => { setEditingClassificationUid(null); setClassificationDraft(null); }}>取消</button>
             </div>
-            <datalist id="lc-knowledge-options">{knowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
+            <datalist id="lc-classification-knowledge-options">{classificationKnowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
           </form>
         )}
 
@@ -2098,12 +2684,15 @@ export function LearningCenter({
   const renderReview = () => (
     <div className="lc-review-layout">
       <aside className="lc-review-queue" aria-label="今日复习队列">
-        <div className="lc-queue-heading">
-          <strong>今日到期</strong>
-          <span>{dueCards.length}</span>
+        <div className="lc-review-summary">
+          <div><strong>本轮复习</strong><span>{reviewCompleted} / {reviewSessionTotal}</span></div>
+          <div className="lc-review-progress" aria-label={`本轮已完成 ${reviewCompleted} 张`}>
+            <span style={{ width: `${reviewSessionTotal > 0 ? Math.min(100, reviewCompleted / reviewSessionTotal * 100) : 100}%` }} />
+          </div>
+          <p>总待复习 {dueCards.length + reviewCompleted} 张，先完成一轮，不被历史欠债淹没。</p>
         </div>
         <div className="lc-queue-list">
-          {dueCards.map((card) => (
+          {reviewCards.map((card) => (
             <button
               className={currentCard?.id === card.id ? 'active' : ''}
               key={card.id}
@@ -2114,18 +2703,8 @@ export function LearningCenter({
               <span className="lc-queue-meta"><em>{card.kind === 'mistake' ? '错题' : '背诵'}</em>{displaySubject(card.subject)}</span>
             </button>
           ))}
-          {upcomingCards.length > 0 && <div className="lc-queue-heading"><strong>遗忘曲线计划中</strong><span>{upcomingCards.length}</span></div>}
-          {upcomingCards.map((card) => (
-            <button
-              className={currentCard?.id === card.id ? 'active' : ''}
-              key={card.id}
-              type="button"
-              onClick={() => { setSelectedCardId(card.id); setRevealed(false); setFeedback(''); }}
-            >
-              <span>{card.front || card.sourceTitle || '未命名卡片'}</span>
-              <span className="lc-queue-meta"><em>{card.dueDate} 复习</em>{displaySubject(card.subject)}</span>
-            </button>
-          ))}
+          {deferredDueCount > 0 && <div className="lc-queue-footnote">另有 {deferredDueCount} 张欠债留待下一轮</div>}
+          {upcomingCards.length > 0 && <div className="lc-queue-footnote">未来已排期 {upcomingCards.length} 张</div>}
         </div>
       </aside>
 
@@ -2188,8 +2767,10 @@ export function LearningCenter({
               <button type="button" disabled={Boolean(pendingCardId) || editorSaving} onClick={() => beginEditCard(currentCard)}><Pencil size={16} />编辑</button>
               {currentCardIsDue ? (
                 <>
-                  <button className="lc-action-forgot" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'forgotten' }, '明天再复习。')}><RotateCcw size={16} />忘记 <kbd>1</kbd></button>
-                  <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewResult: 'remembered' }, '复习间隔已延长。')}><Check size={16} />记住 <kbd>2</kbd></button>
+                  <button className="lc-action-forgot" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewRating: 'again' }, '已放回短期复习队列。')}><RotateCcw size={16} />重来 <kbd>1</kbd></button>
+                  <button type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewRating: 'hard' }, '已按“困难”安排下次复习。')}>困难 <kbd>2</kbd></button>
+                  <button className="lc-action-primary" type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewRating: 'good' }, '已按“良好”延长复习间隔。')}><Check size={16} />良好 <kbd>3</kbd></button>
+                  <button type="button" disabled={Boolean(pendingCardId)} onClick={() => patchCurrentCard({ reviewRating: 'easy' }, '已按“轻松”安排更长间隔。')}>轻松 <kbd>4</kbd></button>
                 </>
               ) : <span className="lc-card-count">计划 {currentCard.dueDate} 复习</span>}
               {currentCardResolvedPath && <button type="button" onClick={() => void handleSourcePath(currentCardResolvedPath)}><FolderOpen size={16} />定位</button>}
@@ -2203,7 +2784,13 @@ export function LearningCenter({
         ) : (
           <div className="lc-detail-empty">
             <Check size={28} />
-            <h3>今天的复习已完成</h3>
+            <h3>{dueCards.length > 0 ? '本轮复习已完成' : '今天的复习已完成'}</h3>
+            {dueCards.length > 0 && (
+              <>
+                <p>剩余 {dueCards.length} 张仍会保留，不会丢失。</p>
+                <button className="primary" type="button" onClick={() => setReviewSessionTarget((value) => value + REVIEW_CONTINUE_SIZE)}>状态不错，再来 {REVIEW_CONTINUE_SIZE} 张</button>
+              </>
+            )}
           </div>
         )}
       </section>
@@ -2215,22 +2802,16 @@ export function LearningCenter({
       <aside className="lc-master-pane">
         {renderSearch(visibleMistakes.length, '搜索错题、页码或备注', '新增错题', () => beginCreateNote('mistake'))}
         <div className="lc-filters" aria-label="错题筛选">
-          <select value={mistakeFilters.subject} onChange={(event) => setMistakeFilters((current) => ({ ...current, subject: event.target.value }))} aria-label="按科目筛选">
+          <select value={mistakeFilters.subject} onChange={(event) => setMistakeFilters((current) => ({ ...current, subject: event.target.value, knowledgePoint: '', questionTypePath: [], wrongReasonPath: [] }))} aria-label="按科目筛选">
             <option value="">全部科目</option>
             {mistakeFacets.subjects.map((value) => <option key={value} value={value}>{displaySubject(value)}</option>)}
           </select>
-          <select value={mistakeFilters.knowledgePoint} onChange={(event) => setMistakeFilters((current) => ({ ...current, knowledgePoint: event.target.value }))} aria-label="按知识点筛选">
+          <select value={mistakeFilters.knowledgePoint} onChange={(event) => setMistakeFilters((current) => ({ ...current, knowledgePoint: event.target.value, questionTypePath: [], wrongReasonPath: [] }))} aria-label="按知识点筛选">
             <option value="">全部知识点</option>
             {mistakeFacets.knowledgePoints.map((value) => <option key={value}>{value}</option>)}
           </select>
-          <select value={mistakeFilters.questionType} onChange={(event) => setMistakeFilters((current) => ({ ...current, questionType: event.target.value }))} aria-label="按题型筛选">
-            <option value="">全部题型</option>
-            {mistakeFacets.questionTypes.map((value) => <option key={value}>{value}</option>)}
-          </select>
-          <select value={mistakeFilters.wrongReason} onChange={(event) => setMistakeFilters((current) => ({ ...current, wrongReason: event.target.value }))} aria-label="按错因筛选">
-            <option value="">全部错因</option>
-            {mistakeFacets.wrongReasons.map((value) => <option key={value}>{value}</option>)}
-          </select>
+          <HierarchyPathFilter label="题型" paths={mistakeFacets.questionTypePaths} value={mistakeFilters.questionTypePath} onChange={(questionTypePath) => setMistakeFilters((current) => ({ ...current, questionTypePath }))} />
+          <HierarchyPathFilter label="错因" paths={mistakeFacets.wrongReasonPaths} value={mistakeFilters.wrongReasonPath} onChange={(wrongReasonPath) => setMistakeFilters((current) => ({ ...current, wrongReasonPath }))} />
           <select value={mistakeFilters.status} onChange={(event) => setMistakeFilters((current) => ({ ...current, status: event.target.value as MistakeStatus }))} aria-label="按复习状态筛选">
             <option value="all">全部状态</option>
             <option value="due">待重做</option>
@@ -2240,8 +2821,8 @@ export function LearningCenter({
           </select>
           {(mistakeFilters.subject
             || mistakeFilters.knowledgePoint
-            || mistakeFilters.questionType
-            || mistakeFilters.wrongReason
+            || mistakeFilters.questionTypePath.length > 0
+            || mistakeFilters.wrongReasonPath.length > 0
             || mistakeFilters.status !== 'all') && (
             <button type="button" onClick={() => setMistakeFilters(EMPTY_FILTERS)}>清除筛选</button>
           )}
@@ -2259,6 +2840,20 @@ export function LearningCenter({
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
         {renderSearch(visibleMemory.length, '搜索背诵内容、页码或知识点', '新增背诵', () => beginCreateNote('memory'))}
+        <div className="lc-filters" aria-label="背诵内容筛选">
+          <select value={memoryFilters.subject} onChange={(event) => setMemoryFilters({ subject: event.target.value, knowledgePoint: '', learningTypePath: [] })} aria-label="按科目筛选背诵内容">
+            <option value="">全部科目</option>
+            {memoryFacets.subjects.map((value) => <option key={value} value={value}>{displaySubject(value)}</option>)}
+          </select>
+          <select value={memoryFilters.knowledgePoint} onChange={(event) => setMemoryFilters((current) => ({ ...current, knowledgePoint: event.target.value, learningTypePath: [] }))} aria-label="按知识点筛选背诵内容">
+            <option value="">全部知识点</option>
+            {memoryFacets.knowledgePoints.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <HierarchyPathFilter label="背诵类型" paths={memoryFacets.learningTypePaths} value={memoryFilters.learningTypePath} onChange={(learningTypePath) => setMemoryFilters((current) => ({ ...current, learningTypePath }))} />
+          {(memoryFilters.subject || memoryFilters.knowledgePoint || memoryFilters.learningTypePath.length > 0) && (
+            <button type="button" onClick={() => setMemoryFilters(EMPTY_CONTENT_FILTERS)}>清除筛选</button>
+          )}
+        </div>
         <div className="lc-master-list">
           {visibleMemory.map((entry) => renderNoteButton(entry, 'memory'))}
           {visibleMemory.length === 0 && <div className="lc-list-empty"><Brain size={23} /><strong>还没有背诵内容</strong></div>}
@@ -2272,6 +2867,21 @@ export function LearningCenter({
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
         {renderSearch(visibleGood.length, '搜索好题、页码或知识点', '新增好题', () => beginCreateNote('knowledge', true))}
+        <div className="lc-filters" aria-label="好题筛选">
+          <select value={goodFilters.subject} onChange={(event) => setGoodFilters({ subject: event.target.value, knowledgePoint: '', goodQuestionType: '' })} aria-label="按科目筛选好题">
+            <option value="">全部科目</option>
+            {goodFacets.subjects.map((value) => <option key={value} value={value}>{displaySubject(value)}</option>)}
+          </select>
+          <select value={goodFilters.knowledgePoint} onChange={(event) => setGoodFilters((current) => ({ ...current, knowledgePoint: event.target.value, goodQuestionType: '' }))} aria-label="按知识点筛选好题">
+            <option value="">全部知识点</option>
+            {goodFacets.knowledgePoints.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <select value={goodFilters.goodQuestionType} onChange={(event) => setGoodFilters((current) => ({ ...current, goodQuestionType: event.target.value }))} aria-label="按好题类型筛选">
+            <option value="">全部好题类型</option>
+            {goodFacets.goodQuestionTypes.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          {(goodFilters.subject || goodFilters.knowledgePoint || goodFilters.goodQuestionType) && <button type="button" onClick={() => setGoodFilters(EMPTY_GOOD_FILTERS)}>清除筛选</button>}
+        </div>
         <div className="lc-good-import-bar">
           <button
             type="button"
@@ -2297,6 +2907,20 @@ export function LearningCenter({
     <div className={`lc-workspace ${mobileListOpen ? 'is-list-open' : 'is-detail-open'}`}>
       <aside className="lc-master-pane">
         {renderSearch(visibleLibrary.length, '搜索页码、题号、知识点或备注', '新增知识', () => beginCreateNote('knowledge'))}
+        <div className="lc-filters" aria-label="知识内容筛选">
+          <select value={libraryFilters.subject} onChange={(event) => setLibraryFilters({ subject: event.target.value, knowledgePoint: '', learningTypePath: [] })} aria-label="按科目筛选知识内容">
+            <option value="">全部科目</option>
+            {libraryFacets.subjects.map((value) => <option key={value} value={value}>{displaySubject(value)}</option>)}
+          </select>
+          <select value={libraryFilters.knowledgePoint} onChange={(event) => setLibraryFilters((current) => ({ ...current, knowledgePoint: event.target.value, learningTypePath: [] }))} aria-label="按知识点筛选知识内容">
+            <option value="">全部知识点</option>
+            {libraryFacets.knowledgePoints.map((value) => <option key={value}>{value}</option>)}
+          </select>
+          <HierarchyPathFilter label="内容类型" paths={libraryFacets.learningTypePaths} value={libraryFilters.learningTypePath} onChange={(learningTypePath) => setLibraryFilters((current) => ({ ...current, learningTypePath }))} />
+          {(libraryFilters.subject || libraryFilters.knowledgePoint || libraryFilters.learningTypePath.length > 0) && (
+            <button type="button" onClick={() => setLibraryFilters(EMPTY_CONTENT_FILTERS)}>清除筛选</button>
+          )}
+        </div>
         <div className="lc-master-list lc-grouped-list">
           {groupedLibrary.map(([date, entries]) => (
             <section className="lc-date-group" key={date}>
@@ -2304,6 +2928,11 @@ export function LearningCenter({
               {entries.map((entry) => renderNoteButton(entry, 'library'))}
             </section>
           ))}
+          {libraryVisibleLimit < visibleLibrary.length && (
+            <button className="lc-load-more" type="button" onClick={() => setLibraryVisibleLimit((value) => value + LIBRARY_PAGE_SIZE)}>
+              再显示 {Math.min(LIBRARY_PAGE_SIZE, visibleLibrary.length - libraryVisibleLimit)} 条
+            </button>
+          )}
           {visibleLibrary.length === 0 && <div className="lc-list-empty"><BookOpenText size={23} /><strong>没有匹配的笔记</strong></div>}
         </div>
       </aside>
@@ -2379,12 +3008,32 @@ export function LearningCenter({
               >
                 <Pencil size={14} />编辑
               </button>
+              <button
+                className="lc-quick-ai-studio-trigger"
+                type="button"
+                aria-expanded={quickHtmlStudioNoteUid === note.noteUid}
+                aria-controls={`quick-html-studio-${note.noteUid}`}
+                disabled={pendingNoteUid === note.noteUid}
+                onClick={() => setQuickHtmlStudioNoteUid((current) => current === note.noteUid ? null : note.noteUid)}
+              >
+                <Sparkles size={14} />AI 交互笔记
+              </button>
+              {(assets.length > 0 || note.noteType === 'quick' || note.facets.includes('quick')) && (
+                <button
+                  type="button"
+                  disabled={Boolean(aiRenameNoteUid)}
+                  title="仅在你点击后调用一次 AI；不会自动批量运行"
+                  onClick={() => void renameNoteWithAi(note)}
+                >
+                  <Zap size={14} />{aiRenameNoteUid === note.noteUid ? 'AI处理中…' : 'AI重新命名'}
+                </button>
+              )}
               <label className={`lc-quick-attach${pendingNoteUid === note.noteUid ? ' is-busy' : ''}`}>
-                <Paperclip size={14} />添加资料
+                <Paperclip size={14} />添加资料 {note.attachments.length} 个
                 <input
                   type="file"
                   multiple
-                  accept="image/*,.pdf,.doc,.docx,.html,.htm,.txt,.md"
+                  accept="image/*,.pdf,.doc,.docx,.html,.htm,.css,.js,.mjs,.json,.svg,.txt,.md"
                   disabled={pendingNoteUid === note.noteUid}
                   onChange={(event) => {
                     const files = Array.from(event.currentTarget.files || []);
@@ -2406,6 +3055,37 @@ export function LearningCenter({
             </div>
           </div>
         </header>
+
+        {quickHtmlStudioNoteUid === note.noteUid && (
+          <QuickHtmlStudio
+            key={note.noteUid}
+            noteUid={note.noteUid}
+            contextTitle={note.title}
+            contextRemark={note.remark}
+            disabled={pendingNoteUid === note.noteUid}
+            onClose={() => setQuickHtmlStudioNoteUid(null)}
+            onAttach={(file, operationId) => appendQuickAttachments(note, [file], operationId)}
+          />
+        )}
+
+        {quickAppendStatus?.noteUid === note.noteUid && (
+          <div className={`lc-quick-append-status is-${quickAppendStatus.tone}`} role="status" aria-live="polite">
+            <span>{quickAppendStatus.message}</span>
+            {quickAppendRetry?.note.noteUid === note.noteUid && quickAppendRetry.operationId === quickAppendStatus.operationId && (
+              <button
+                type="button"
+                disabled={pendingNoteUid === note.noteUid}
+                onClick={() => void appendQuickAttachments(
+                  quickAppendRetry.note,
+                  quickAppendRetry.files,
+                  quickAppendRetry.operationId,
+                )}
+              >
+                <RotateCcw size={13} />安全重试
+              </button>
+            )}
+          </div>
+        )}
 
         {paragraphs.length > 0 && (
           <div className="lc-quick-record-copy" aria-label="速记正文">
@@ -2456,6 +3136,19 @@ export function LearningCenter({
                         onDragStart={(event) => beginQuickAssetDrag(event, note, asset, assets)}
                         onDragEnd={finishQuickAssetDrag}
                       ><b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b><span>{asset.name}</span></button>
+                      {assets[0]?.id === asset.id ? (
+                        <span className="lc-quick-asset-primary" title="打开这条速记时默认显示">首个</span>
+                      ) : (
+                        <button
+                          className="lc-quick-asset-make-primary"
+                          type="button"
+                          aria-label={`将 ${asset.name} 设为首个展示资料`}
+                          title="设为首个展示资料"
+                          disabled={pendingNoteUid === note.noteUid}
+                          onPointerDown={(event) => event.stopPropagation()}
+                          onClick={() => void setPrimaryAttachment(note, asset.id)}
+                        ><Star size={11} /></button>
+                      )}
                       <button
                         className="lc-quick-asset-remove"
                         type="button"
@@ -2508,6 +3201,66 @@ export function LearningCenter({
   };
 
   const renderQuickJournal = () => {
+    if (quickReaderMode === 'overview') {
+      return (
+        <section className="lc-quick-reader lc-quick-ledger" aria-label="总览速记">
+          <button className="lc-mobile-back" type="button" onClick={() => setMobileListOpen(true)} aria-label="返回速记列表">
+            <ChevronLeft size={20} />
+          </button>
+          <header className="lc-quick-journal-heading">
+            <div>
+              <span>QUICK NOTE OVERVIEW</span>
+              <strong>总览速记</strong>
+            </div>
+            <p>当前筛选共 {visibleQuick.length} 条；点击记录或资料，进入对应速记继续阅读。</p>
+          </header>
+          <div className="lc-quick-journal-stream">
+            {visibleQuick.map((entry) => {
+              const { note, date } = entry;
+              const assets = quickPreviewAssets(note);
+              const paragraphs = note.remark.split(/\r?\n\s*\r?\n/u).map((item) => item.trim()).filter(Boolean);
+              return (
+                <article className={`lc-quick-log-entry${selectedNoteUid === note.noteUid ? ' is-selected' : ''}`} key={`overview:${note.noteUid}`}>
+                  <div className="lc-quick-log-heading">
+                    <time>{formatRecordDate(date)}</time>
+                    {!isDefaultNoteBucket(note.subject) && <span>{displaySubject(note.subject)}</span>}
+                    <button type="button" onClick={() => {
+                      setSelectedNoteUid(note.noteUid);
+                      setQuickReaderMode('single');
+                    }} aria-label={`打开速记：${note.title || '未命名速记'}`}>打开这条</button>
+                  </div>
+                  <button className="lc-quick-overview-title" type="button" onClick={() => {
+                    setSelectedNoteUid(note.noteUid);
+                    setQuickReaderMode('single');
+                  }}>{note.title || '未命名速记'}</button>
+                  <div className="lc-quick-log-copy">
+                    {paragraphs.length > 0
+                      ? paragraphs.map((paragraph, index) => <p key={`${note.noteUid}:overview:${index}`}>{paragraph}</p>)
+                      : <p className="is-empty">这条速记没有文字备注。</p>}
+                  </div>
+                  {assets.length > 0 && (
+                    <div className="lc-quick-overview-assets" aria-label={`${note.title || '速记'}的资料`}>
+                      {assets.map((asset, index) => (
+                        <button type="button" key={asset.id} onClick={() => {
+                          setSelectedNoteUid(note.noteUid);
+                          setActiveQuickAssets((current) => ({ ...current, [note.noteUid]: asset.id }));
+                          setQuickReaderMode('single');
+                        }} aria-label={`打开资料：${asset.name}`}>
+                          <b>{asset.kind === 'image' ? 'IMG' : asset.kind === 'word' ? 'DOC' : asset.kind.toUpperCase()}</b>
+                          <span>{asset.name}</span>
+                          {index === 0 && <em>首个</em>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+            {visibleQuick.length === 0 && <div className="lc-detail-empty"><Zap size={28} /><h3>当前筛选没有速记</h3></div>}
+          </div>
+        </section>
+      );
+    }
     if (!selectedNote) {
       return <div className="lc-detail-empty"><Zap size={28} /><h3>这里还没有速记</h3></div>;
     }
@@ -2527,6 +3280,19 @@ export function LearningCenter({
         {renderSearch(visibleQuick.length, '搜索速记内容、附件名或备注')}
         <div className="lc-quick-list-tools">
           {feedback && <span role="status">{feedback}</span>}
+          <button
+            className={quickReaderMode === 'overview' ? 'active' : ''}
+            type="button"
+            disabled={quickReaderMode === 'single' && visibleQuick.length === 0}
+            aria-label="总览模式"
+            aria-pressed={quickReaderMode === 'overview'}
+            onClick={() => {
+              setQuickReaderMode((current) => current === 'overview' ? 'single' : 'overview');
+              setMobileListOpen(false);
+            }}
+          >
+            <BookOpenText size={14} />{quickReaderMode === 'overview' ? '单条速记' : '总览速记'}
+          </button>
           <button type="button" disabled={quickExporting || visibleQuick.length === 0} onClick={() => void exportQuickJournal()}>
             <FileDown size={14} />{quickExporting ? '正在打包…' : '导出日记'}
           </button>
@@ -2722,28 +3488,46 @@ export function LearningCenter({
               <button type="button" aria-label="关闭编辑器" disabled={editorSaving} onClick={() => setNoteEditor(null)}><X size={18} /></button>
             </header>
             <div className="lc-editor-grid">
-              <label>类型<select value={noteEditor.kind} onChange={(event) => setNoteEditor((current) => current ? { ...current, kind: event.target.value as LearningItemKind, createCard: event.target.value !== 'knowledge' && current.createCard } : current)}>
+              <label>类型<select value={noteEditor.kind} onChange={(event) => setNoteEditor((current) => current ? {
+                ...current,
+                kind: event.target.value as LearningItemKind,
+                createCard: event.target.value !== 'knowledge' && current.createCard,
+                learningTypePath: event.target.value === 'quick'
+                  ? []
+                  : current.learningTypePath.length > 0
+                    ? current.learningTypePath
+                    : ['基础知识', '定义概念'],
+              } : current)}>
                 <option value="quick">速记</option>
                 <option value="knowledge">知识</option>
                 <option value="mistake">错题</option>
                 <option value="memory">背诵</option>
               </select></label>
-              <label>一级科目<select value={noteEditor.subject} onChange={(event) => setNoteEditor((current) => current ? { ...current, subject: event.target.value } : current)}>
+              <label>一级科目<select value={noteEditor.subject} onChange={(event) => setNoteEditor((current) => current ? {
+                ...current,
+                subject: event.target.value,
+                knowledgePoint: '',
+                questionTypePath: [],
+                learningTypePath: [],
+              } : current)}>
                 <option value="">请选择</option>
                 {subjectOptions.map((subject) => <option key={subject} value={subject}>{subject}</option>)}
               </select></label>
               <label className="wide">标题<input value={noteEditor.title} maxLength={120} autoFocus onChange={(event) => setNoteEditor((current) => current ? { ...current, title: event.target.value } : current)} placeholder={noteEditor.kind === 'quick' ? '留空时会从正文自动生成短标题' : '例如：进程与线程的区别'} /></label>
-              {noteEditor.kind !== 'quick' && <label>知识点<input list="lc-knowledge-options" value={noteEditor.knowledgePoint} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, knowledgePoint: event.target.value } : current)} /></label>}
-              {noteEditor.kind !== 'quick' && <label>题型<input value={noteEditor.questionType} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, questionType: event.target.value } : current)} /></label>}
-              {noteEditor.kind === 'mistake' && <label className="wide">错因<input value={noteEditor.wrongReason} maxLength={500} onChange={(event) => setNoteEditor((current) => current ? { ...current, wrongReason: event.target.value } : current)} placeholder="例如：混淆阻塞与就绪状态" /></label>}
+              {noteEditor.kind !== 'quick' && <label>知识点<input list="lc-editor-knowledge-options" value={noteEditor.knowledgePoint} maxLength={60} onChange={(event) => setNoteEditor((current) => current ? { ...current, knowledgePoint: event.target.value, questionTypePath: [], learningTypePath: [] } : current)} /></label>}
+              {noteEditor.kind !== 'quick' && <div className="lc-editor-classification wide"><span>题型分类（最多三级）</span><HierarchyPathInputs label="题型" value={noteEditor.questionTypePath} onChange={(questionTypePath) => setNoteEditor((current) => current ? { ...current, questionTypePath } : current)} /></div>}
+              {noteEditor.kind !== 'quick' && <div className="lc-editor-classification wide"><span>{noteEditor.kind === 'memory' ? '背诵类型' : '学习内容类型'}</span><HierarchyPathFilter label={noteEditor.kind === 'memory' ? '背诵类型' : '学习类型'} paths={editorLearningTypePaths} value={noteEditor.learningTypePath} onChange={(learningTypePath) => setNoteEditor((current) => current ? { ...current, learningTypePath } : current)} /></div>}
+              {noteEditor.kind === 'mistake' && <div className="lc-editor-classification wide"><span>错因分类</span><HierarchyPathFilter label="错因" paths={wrongReasonEditorPaths} value={noteEditor.wrongReasonPath} onChange={(wrongReasonPath) => setNoteEditor((current) => current ? { ...current, wrongReasonPath } : current)} /></div>}
+              {noteEditor.kind === 'mistake' && <label className="wide">具体错因<input value={noteEditor.wrongReason} maxLength={500} onChange={(event) => setNoteEditor((current) => current ? { ...current, wrongReason: event.target.value } : current)} placeholder="例如：看漏了定义域条件，导致后续计算范围错误" /></label>}
               <label className="wide">内容<textarea value={noteEditor.remark} maxLength={8000} onChange={(event) => setNoteEditor((current) => current ? { ...current, remark: event.target.value } : current)} placeholder={noteEditor.kind === 'quick' ? '直接修改这条速记；空行会保留为自然分段' : '写下题目、结论、易错点或需要记住的内容'} /></label>
               {noteEditor.kind !== 'quick' && <label className="wide">标签<input value={noteEditor.tags} onChange={(event) => setNoteEditor((current) => current ? { ...current, tags: event.target.value } : current)} placeholder="用逗号分隔" /></label>}
-              {noteEditor.kind !== 'quick' && <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.isGood} onChange={(event) => setNoteEditor((current) => current ? { ...current, isGood: event.target.checked } : current)} />收藏到“好题”（可同时保留为错题）</label>}
+              {noteEditor.kind !== 'quick' && <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.isGood} onChange={(event) => setNoteEditor((current) => current ? { ...current, isGood: event.target.checked, goodQuestionType: event.target.checked ? current.goodQuestionType || '经典母题' : '' } : current)} />收藏到“好题”（可同时保留为错题）</label>}
+              {noteEditor.kind !== 'quick' && noteEditor.isGood && <label>好题类型<select value={noteEditor.goodQuestionType} onChange={(event) => setNoteEditor((current) => current ? { ...current, goodQuestionType: event.target.value } : current)}>{GOOD_QUESTION_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>}
               {noteEditor.mode === 'create' && noteEditor.kind !== 'knowledge' && (
                 <label className="lc-editor-check wide"><input type="checkbox" checked={noteEditor.createCard} onChange={(event) => setNoteEditor((current) => current ? { ...current, createCard: event.target.checked } : current)} />同时建立一张今日复习卡</label>
               )}
             </div>
-            <datalist id="lc-knowledge-options">{knowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
+            <datalist id="lc-editor-knowledge-options">{editorKnowledgePointOptions.map((point) => <option key={point} value={point} />)}</datalist>
             <footer>
               {feedback && <span role="status">{feedback}</span>}
               <button type="button" disabled={editorSaving} onClick={() => setNoteEditor(null)}>取消</button>

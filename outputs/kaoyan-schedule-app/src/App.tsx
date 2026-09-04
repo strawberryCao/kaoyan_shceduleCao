@@ -1,8 +1,7 @@
-import { lazy, Suspense, useEffect, type ReactNode } from 'react';
-import { CommandPalette } from './components/CommandPalette';
+import { Component, lazy, Suspense, useEffect, useSyncExternalStore, type ErrorInfo, type ReactNode } from 'react';
 import { WebAppShell } from './components/WebAppShell';
-import { installCaptureUploadResumer } from './utils/captureUploadQueue';
-import { IS_CLOUD_RUNTIME } from './utils/notes';
+import { getAppLocation, subscribeAppLocation } from './utils/appNavigation';
+import { IS_CLOUD_RUNTIME } from './utils/runtime';
 import './wallpaper.css';
 import './notes.css';
 import './theme-fifth.css';
@@ -25,58 +24,78 @@ const LearningRecordWorkspacePreview = lazy(() => import('./components/LearningR
 const DesktopConsole = lazy(() => import('./desktop/DesktopConsole').then((module) => ({ default: module.DesktopConsole })));
 const DesktopWorkspace = lazy(() => import('./desktop/DesktopWorkspace').then((module) => ({ default: module.DesktopWorkspace })));
 const AiConfigPage = lazy(() => import('./components/AiConfigPage').then((module) => ({ default: module.AiConfigPage })));
+const ActivityCenter = lazy(() => import('./components/ActivityCenter').then((module) => ({ default: module.ActivityCenter })));
+const CommandPalette = lazy(() => import('./components/CommandPalette').then((module) => ({ default: module.CommandPalette })));
 
-const deferred = (content: ReactNode) => <Suspense fallback={null}>{content}</Suspense>;
+const RouteLoading = () => <div className="route-loading" role="status"><span /><strong>正在打开学习工作台…</strong></div>;
+class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('Route rendering failed', error, info); }
+  render() {
+    if (this.state.failed) return <div className="route-error"><strong>页面没有成功加载</strong><p>你的数据没有受影响，可以刷新后继续。</p><button type="button" onClick={() => window.location.reload()}>重新加载</button></div>;
+    return this.props.children;
+  }
+}
+const deferred = (content: ReactNode, routeKey: string) => <RouteErrorBoundary key={routeKey}><Suspense fallback={<RouteLoading />}>{content}</Suspense></RouteErrorBoundary>;
+const palette = () => <Suspense fallback={null}><CommandPalette /></Suspense>;
 
 export default function App() {
+  const appLocation = useSyncExternalStore(subscribeAppLocation, getAppLocation, getAppLocation);
+
   useEffect(() => {
-    if (!IS_CLOUD_RUNTIME) return undefined;
-    return installCaptureUploadResumer();
+    void import('./utils/activityTasks').then(({ initializeActivityTasks }) => initializeActivityTasks()).catch(() => undefined);
+    return undefined;
   }, []);
 
-  const params = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams(appLocation.split('?')[1]?.split('#')[0] ?? '');
   const isWallpaperMode = params.get('wallpaper') === '1';
   const isConsoleMode = params.get('console') === '1';
   const isNotesMode = params.get('notes') === '1';
   const isNoteAppMode = params.get('noteApp') === '1';
   const isHubMode = params.get('hub') === '1';
   const isAiConfigMode = params.get('aiConfig') === '1';
+  const isActivityMode = params.get('activity') === '1';
   const workspaceNoteUid = params.get('workspaceNote')?.trim() || '';
 
   if (workspaceNoteUid) {
-    return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />);
+    return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />, appLocation);
   }
 
   if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode)) {
-    return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
+    return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
   }
 
   if (isAiConfigMode) {
-    return <WebAppShell active="ai-config">{deferred(<AiConfigPage />)}<CommandPalette /></WebAppShell>;
+    return <WebAppShell active="ai-config">{deferred(<AiConfigPage />, appLocation)}{palette()}</WebAppShell>;
   }
 
   if (isHubMode) {
-    return <WebAppShell active="hub">{deferred(<AppHub />)}<CommandPalette /></WebAppShell>;
+    return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
   }
 
   // The same capture route serves Electron, LAN browsers and Cloudflare.
   // The component chooses the compact mobile flow from the actual viewport.
   if (isNoteAppMode) {
-    return deferred(<NoteDropApp />);
+    return deferred(<NoteDropApp />, appLocation);
+  }
+
+  if (isActivityMode) {
+    return <WebAppShell active="activity">{deferred(<ActivityCenter />, appLocation)}{palette()}</WebAppShell>;
   }
 
   if (isNotesMode) {
-    return <WebAppShell active="notes">{deferred(<NoteCapturePage />)}<CommandPalette /></WebAppShell>;
+    return <WebAppShell active="notes">{deferred(<NoteCapturePage />, appLocation)}{palette()}</WebAppShell>;
   }
 
   if (isConsoleMode) {
-    return <WebAppShell active="console">{deferred(<DesktopConsole />)}<CommandPalette /></WebAppShell>;
+    return <WebAppShell active="console">{deferred(<DesktopConsole />, appLocation)}{palette()}</WebAppShell>;
   }
 
   if (isWallpaperMode) {
-    return deferred(<DesktopWorkspace editable={false} />);
+    return deferred(<DesktopWorkspace editable={false} />, appLocation);
   }
 
   const activeScheduleView = params.get('panel') === 'learning' ? 'learning' : 'schedule';
-  return <WebAppShell active={activeScheduleView}>{deferred(<ScheduleApp />)}<CommandPalette /></WebAppShell>;
+  return <WebAppShell active={activeScheduleView}>{deferred(<ScheduleApp key={appLocation} />, appLocation)}{palette()}</WebAppShell>;
 }

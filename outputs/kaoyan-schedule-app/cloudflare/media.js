@@ -17,7 +17,6 @@ const NOTE_UID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_MATERIAL_BYTES = 8 * 1024 * 1024;
 const MAX_MATERIAL_TOTAL_BYTES = 16 * 1024 * 1024;
-const MAX_MATERIAL_FILES = 8;
 const MAX_BATCH_IMAGES = 12;
 const MAX_BATCH_IMAGE_BYTES = 48 * 1024 * 1024;
 const ASSET_ROOT = 'data/assets/';
@@ -46,6 +45,17 @@ const EXTENSION_MIME = new Map([...MIME_EXTENSIONS].map(([mime, extension]) => [
 EXTENSION_MIME.set('jpeg', 'image/jpeg');
 EXTENSION_MIME.set('htm', 'text/html');
 const SAFE_MATERIAL_EXTENSIONS = new Set(EXTENSION_MIME.keys());
+const AI_SELECTION_MODES = new Set(['auto-light', 'auto-advanced', 'model', 'off']);
+
+function normalizeAiSelection(value, kind) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { mode: kind === 'canvas' ? 'auto-advanced' : 'auto-light' };
+  }
+  const mode = AI_SELECTION_MODES.has(value.mode) ? value.mode : kind === 'canvas' ? 'auto-advanced' : 'auto-light';
+  const providerId = String(value.providerId || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 40);
+  const modelId = String(value.modelId || '').trim().replace(/[\r\n\t]/g, '').slice(0, 120);
+  return mode === 'model' && providerId && modelId ? { mode, providerId, modelId } : { mode: mode === 'model' ? 'auto-light' : mode };
+}
 
 function decodeImageDataUrl(value) {
   if (typeof value !== 'string') throw new HttpError(400, 'imageDataUrl is required.', 'INVALID_NOTE_IMAGE');
@@ -169,6 +179,7 @@ function appendSavedImageNote(snapshot, note) {
 
 function buildSavedImageResponse(note, image, repoPath, replayed) {
   const sourceMirror = mirroredCloudImagePaths(note.noteUid, image.extension);
+  const aiDisabled = note.aiSelection?.mode === 'off';
   return {
     ok: true,
     noteUid: note.noteUid,
@@ -183,8 +194,8 @@ function buildSavedImageResponse(note, image, repoPath, replayed) {
       learning: { tags: note.tags, noteType: note.noteType },
     },
     learningSyncError: null,
-    aiStatus: 'pending',
-    aiAvailable: true,
+    aiStatus: aiDisabled ? 'complete' : 'pending',
+    aiAvailable: !aiDisabled,
     provisional: false,
     idempotentReplay: replayed,
   };
@@ -194,9 +205,11 @@ async function prepareSavedImage(payload) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const image = decodeImageDataUrl(payload.imageDataUrl);
   const imageHash = await sha256(image.bytes);
+  const kind = payload.kind === 'canvas' ? 'canvas' : 'single';
+  const aiSelection = normalizeAiSelection(payload.aiSelection, kind);
   const requestHash = await sha256(JSON.stringify({
     noteUid,
-    kind: payload.kind === 'canvas' ? 'canvas' : 'single',
+    kind,
     subject: typeof payload.subject === 'string' ? payload.subject : '',
     remark: typeof payload.remark === 'string' ? payload.remark : '',
     canvasProjectId: typeof payload.canvasProjectId === 'string' ? payload.canvasProjectId : '',
@@ -204,10 +217,11 @@ async function prepareSavedImage(payload) {
     sourceBatchId: typeof payload.sourceBatchId === 'string' ? payload.sourceBatchId : '',
     sourceSplitIndex: Number(payload.sourceSplitIndex) || 0,
     tags: Array.isArray(payload.tags) ? payload.tags : [],
+    aiSelection,
     imageHash,
   }));
   return {
-    payload: { ...payload, noteUid },
+    payload: { ...payload, noteUid, kind, aiSelection },
     noteUid,
     image,
     imageHash,
@@ -227,7 +241,7 @@ async function finishSavedImagesInBackground(env, staged, responses, timestamp) 
   }));
   reportBackgroundFailure('cloud_note_batch_post_save_failed', staged.map((item) => item.noteUid).join(','), postSave);
 
-  const naming = await Promise.allSettled(staged.map(async (item) => {
+  const naming = await Promise.allSettled(staged.filter((item) => item.note.aiSelection?.mode !== 'off').map(async (item) => {
     const queued = await enqueueNotePipelineJob(env, item.noteUid);
     await processBackgroundJob(env, queued.job.id);
   }));
@@ -341,7 +355,6 @@ function snapshotNote(snapshot, noteUid) {
 export async function saveMaterialNote(env, payload) {
   const noteUid = normalizeNoteUid(payload.noteUid);
   const files = Array.isArray(payload.files) ? payload.files : [];
-  if (files.length > MAX_MATERIAL_FILES) throw new HttpError(400, 'Too many material files.', 'TOO_MANY_NOTE_FILES');
   const decoded = files.map((file, index) => decodeMaterialFile(file, index));
   const totalBytes = decoded.reduce((sum, file) => sum + file.bytes.byteLength, 0);
   if (totalBytes > MAX_MATERIAL_TOTAL_BYTES) throw new HttpError(413, 'Material files are too large in total.', 'PAYLOAD_TOO_LARGE');

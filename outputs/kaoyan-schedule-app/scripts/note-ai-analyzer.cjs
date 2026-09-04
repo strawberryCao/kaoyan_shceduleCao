@@ -9,9 +9,9 @@ const {
 } = require('./ai-subject-policy.cjs');
 const { parseRemark } = require('./remark-parser.cjs');
 const { NOTE_ANALYSIS_INSTRUCTIONS, NOTE_ANALYSIS_OUTPUT } = require('./agent-workflow-contracts.cjs');
-const { normalizeMathOneQuestionType } = require('./math-one-question-types.cjs');
+const { mathOneQuestionTypePath, normalizeMathOneQuestionType } = require('./math-one-question-types.cjs');
 
-const ANALYZER_VERSION = 'note-ai-analyzer-v4';
+const ANALYZER_VERSION = 'note-ai-analyzer-v6';
 const DEFAULT_TAXONOMY_MAX_CHARS = 12_000;
 
 const NOTE_ANALYSIS_SCHEMA = Object.freeze({
@@ -47,7 +47,11 @@ const NOTE_ANALYSIS_SCHEMA = Object.freeze({
     summary: { type: 'string', minLength: 1, maxLength: 2_000 },
     tags: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 40 } },
     questionType: { type: ['string', 'null'], maxLength: 60 },
+    questionTypePath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
+    learningTypePath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
+    goodQuestionType: { type: ['string', 'null'], enum: ['经典母题', '方法好题', '易错辨析', '综合提升', '新颖拓展', null] },
     wrongReason: { type: ['string', 'null'], maxLength: 500 },
+    wrongReasonPath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
     wrongReasonSource: { type: 'string', enum: ['explicit_remark', 'explicit_image', 'ai_inferred', 'none'] },
     wrongReasonConfidence: { type: ['number', 'null'], minimum: 0, maximum: 1 },
     intent: {
@@ -72,9 +76,12 @@ const NOTE_ANALYSIS_SCHEMA = Object.freeze({
           title: { type: 'string', minLength: 1, maxLength: 120 },
           knowledgePoint: { type: ['string', 'null'], maxLength: 60 },
           questionType: { type: ['string', 'null'], maxLength: 60 },
+          questionTypePath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
+          learningTypePath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
           summary: { type: 'string', minLength: 1, maxLength: 1_000 },
           tags: { type: 'array', maxItems: 12, items: { type: 'string', minLength: 1, maxLength: 40 } },
           wrongReason: { type: ['string', 'null'], maxLength: 500 },
+          wrongReasonPath: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 60 } },
           intent: {
             type: 'object',
             required: ['isQuestion', 'isMistake', 'shouldMemorize'],
@@ -138,6 +145,69 @@ function uniqueStrings(value, maxItems, maxLength) {
   return result;
 }
 
+function normalizeClassificationPath(value) {
+  return uniqueStrings(value, 3, 60);
+}
+
+const GOOD_QUESTION_TYPES = new Set(['经典母题', '方法好题', '易错辨析', '综合提升', '新颖拓展']);
+
+function inferGoodQuestionType(value, isGood) {
+  if (!isGood) return null;
+  const content = cleanText(value, 4000);
+  if (/新颖|创新|拓展|一题多解/u.test(content)) return '新颖拓展';
+  if (/综合|压轴|多知识点/u.test(content)) return '综合提升';
+  if (/易错|辨析|陷阱/u.test(content)) return '易错辨析';
+  if (/方法|技巧|构造|模板/u.test(content)) return '方法好题';
+  return '经典母题';
+}
+
+function subjectFromStableNaming(metadata) {
+  const fileName = cleanText(metadata?.fileName, 240);
+  const prefixed = AI_SUPPORTED_SUBJECTS.find((subject) => fileName.startsWith(`${subject}_`));
+  if (prefixed) return prefixed;
+  if (metadata?.naming?.status !== 'complete') return '';
+  const reason = cleanText(metadata.naming.reason, 1000);
+  return AI_SUPPORTED_SUBJECTS.find((subject) => reason.includes(subject)) || '';
+}
+
+function inferWrongReasonPath(value) {
+  const reason = cleanText(value, 500).toLowerCase();
+  if (!reason) return [];
+  if (/走神|分心|注意力/u.test(reason)) return ['粗心大意', '注意力', '走神分心'];
+  if (/粗心/u.test(reason)) {
+    if (/审题|题意|条件/u.test(reason)) return ['粗心大意', '审题疏漏', '审题不仔细'];
+    if (/抄|数据/u.test(reason)) return ['粗心大意', '计算疏漏', '抄错数据'];
+    if (/计算|算错|运算/u.test(reason)) return ['粗心大意', '计算疏漏', '算术错误'];
+    return ['粗心大意', '作答习惯', '漏项漏写'];
+  }
+  if (/漏看|看漏|漏条件|遗漏条件/u.test(reason)) return ['粗心大意', '审题疏漏', '看漏条件'];
+  if (/审题|题意|误读/u.test(reason)) return ['粗心大意', '审题疏漏', '误读条件'];
+  if (/概念|定义|性质.*混/u.test(reason)) return ['知识与记忆', '概念辨析', /混/u.test(reason) ? '概念混淆' : '定义不清'];
+  if (/公式.*忘|定理.*忘|没记住/u.test(reason)) return ['知识与记忆', '公式定理', '公式遗忘'];
+  if (/方法|思路|题型/u.test(reason)) return ['思路与方法', '方法选择', /题型/u.test(reason) ? '未识别题型' : '方法选错'];
+  if (/正负|符号/u.test(reason)) return ['推理与计算', '符号表达', '正负号错误'];
+  if (/求导/u.test(reason)) return ['推理与计算', '专项计算', '求导错误'];
+  if (/积分/u.test(reason)) return ['推理与计算', '专项计算', '积分错误'];
+  if (/计算|运算|算错/u.test(reason)) return ['推理与计算', '运算错误', '算术计算错误'];
+  if (/忘记|想不起|记忆/u.test(reason)) return ['知识与记忆', '回忆失败', '公式想不起'];
+  return ['其他', '信息不足', '尚未明确'];
+}
+
+function inferLearningTypePath(value, subject, questionType, intent) {
+  const text = cleanText(value, 4000);
+  if (subject === '英语') {
+    const leaf = /作文|写作|模板/u.test(text) ? '写作模板' : /翻译/u.test(text) ? '翻译表达' : /长难句/u.test(text) ? '长难句' : /语法/u.test(text) ? '语法规则' : '单词短语';
+    return ['英语积累', leaf];
+  }
+  if (subject === '政治') return ['政治材料', /时政|材料/u.test(text) ? '时政材料' : /模板|答题/u.test(text) ? '分析模板' : /原理/u.test(text) ? '原理表述' : '核心概念'];
+  if (/易错|警示|注意|避免/u.test(text)) return ['易错警示', '检查清单'];
+  if (/结论|推论|规律/u.test(text)) return ['结论规律', '常用结论'];
+  if (questionType || /题型|解题|步骤|方法|构造/u.test(text)) return ['题型方法', '标准步骤'];
+  if (/公式|定理/u.test(text)) return ['基础知识', '公式定理'];
+  if (/原理|机制/u.test(text)) return ['基础知识', '原理机制'];
+  return intent?.shouldMemorize ? ['基础知识', '定义概念'] : ['基础知识', '定义概念'];
+}
+
 function mimeTypeForPath(imagePath) {
   const ext = path.extname(imagePath).toLowerCase();
   const mimeTypes = new Map([
@@ -179,14 +249,54 @@ function imagePathToDataUrl(imagePath) {
   return `data:${mime};base64,${fs.readFileSync(resolved).toString('base64')}`;
 }
 
+function collectImagePaths(context = {}) {
+  const candidates = [
+    ...(Array.isArray(context.imagePaths) ? context.imagePaths : []),
+    context.imagePath,
+    ...(Array.isArray(context.metadata?.attachments)
+      ? context.metadata.attachments.map((attachment) => attachment?.filePath)
+      : []),
+    ...(Array.isArray(context.metadata?.learning?.attachments)
+      ? context.metadata.learning.attachments.map((attachment) => attachment?.filePath)
+      : []),
+  ];
+  const seen = new Set();
+  const paths = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || !candidate.trim()) continue;
+    const resolved = path.resolve(candidate);
+    const key = resolved.toLocaleLowerCase('en-US');
+    if (seen.has(key)) continue;
+    try {
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile() || !mimeTypeForPath(resolved).startsWith('image/')) continue;
+    } catch {
+      continue;
+    }
+    seen.add(key);
+    paths.push(resolved);
+    if (paths.length >= 8) break;
+  }
+  if (paths.length === 0) {
+    // Preserve the previous explicit error contract when no usable image was
+    // found, while still accepting multi-image material notes.
+    imagePathToDataUrl(context.imagePath);
+  }
+  return paths;
+}
+
 function detectStrongIntentHints(remark, parsed) {
   const text = typeof remark === 'string' ? remark.normalize('NFKC') : '';
-  const standaloneMemory = /(?:^|[\s#【\[，,。；;：:])(?:记|记住|背|要背)(?=$|[\s#】\]，,。；;：:])/u.test(text);
+  const standaloneMemory = /(?:^|[\s#【\[，,。；;：:])(?:记|记住|记忆|背|背诵|要背)(?=$|[\s#】\]，,。；;：:])/u.test(text);
   const phraseMemory = /(?:要记住|记下来|需要记|必须记|背下来|需要背|必须背|重点背|熟记)/u.test(text);
+  const explicitMistake = Boolean(parsed?.flags?.isMistake);
+  const explicitMemory = Boolean(parsed?.flags?.shouldMemorize || standaloneMemory || phraseMemory);
   return {
-    isMistake: Boolean(parsed?.flags?.isMistake),
+    isMistake: explicitMistake,
     isGood: Boolean(parsed?.flags?.isClassic),
-    shouldMemorize: Boolean(parsed?.flags?.shouldMemorize || standaloneMemory || phraseMemory),
+    shouldMemorize: explicitMemory,
+    explicitMistake,
+    explicitMemory,
     memorySignal: standaloneMemory || phraseMemory ? 'strong-language-hint' : parsed?.flags?.shouldMemorize ? 'local-parser' : null,
   };
 }
@@ -258,10 +368,19 @@ function makePromptContext(context, parsed, hints, taxonomy) {
       subject: cleanText(current.subject, 60) || null,
       knowledgePoint: cleanText(current.knowledgePoint, 60) || null,
     },
+    namingEvidence: {
+      subject: subjectFromStableNaming(metadata) || null,
+      reason: cleanText(metadata.naming?.reason, 1000) || null,
+      fileName: cleanText(metadata.fileName, 240) || null,
+      visualEvidence: metadata.classifier?.visualEvidence || metadata.learning?.visualEvidence || null,
+    },
     existingLearning: {
       noteType: cleanText(metadata.learning?.noteType, 40) || null,
       organizationStatus: cleanText(metadata.learning?.organizationStatus, 40) || null,
+      questionTypePath: normalizeClassificationPath(metadata.learning?.questionTypePath),
       wrongReason: cleanText(metadata.learning?.wrongReason, 500) || null,
+      wrongReasonPath: normalizeClassificationPath(metadata.learning?.wrongReasonPath),
+      learningTypePath: normalizeClassificationPath(metadata.learning?.learningTypePath),
       wrongReasonSource: cleanText(metadata.learning?.wrongReasonSource, 40) || null,
       userEditedFields: uniqueStrings(metadata.learning?.userEditedFields, 30, 60),
     },
@@ -293,6 +412,10 @@ function buildPrompt(contextPayload, options = {}) {
   const memorizeRule = options.memorizePolicy === 'explicit_only'
     ? 'intent.shouldMemorize 只在用户明确要求背诵、熟记或主动回忆时为 true。'
     : 'intent.shouldMemorize 可依据定义、公式、结论、易混点和用户语义判断。';
+  const exclusiveIntentRule = contextPayload?.locallyParsed?.strongIntentHints?.explicitMistake
+    && !contextPayload?.locallyParsed?.strongIntentHints?.explicitMemory
+    ? '用户只明确标记了错题、没有标记背诵；intent.shouldMemorize 和所有分项的 shouldMemorize 必须为 false，不得仅因题目含公式或定义而加入背诵分类。'
+    : '';
   const cardRule = options.cardPolicy === 'disabled'
     ? 'cards 必须为空数组。'
     : options.cardPolicy === 'high_value'
@@ -307,13 +430,15 @@ function buildPrompt(contextPayload, options = {}) {
     mistakeRule,
     goodRule,
     memorizeRule,
+    exclusiveIntentRule,
     cardRule,
     contextPayload: JSON.stringify(contextPayload),
   };
   return [
     ...NOTE_ANALYSIS_INSTRUCTIONS.map((line) => fillAnalysisTemplate(line, variables)).filter(Boolean),
+    variables.exclusiveIntentRule,
     fillAnalysisTemplate(NOTE_ANALYSIS_OUTPUT, variables),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function normalizeIntent(value) {
@@ -331,9 +456,12 @@ function normalizeItems(value, maxItems = 12) {
     title: cleanText(item.title, 120),
     knowledgePoint: cleanText(item.knowledgePoint, 60) || null,
     questionType: cleanText(item.questionType, 60) || null,
+    questionTypePath: normalizeClassificationPath(item.questionTypePath),
     summary: cleanText(item.summary, 1_000),
     tags: uniqueStrings(item.tags, 12, 40),
     wrongReason: cleanText(item.wrongReason, 500) || null,
+    wrongReasonPath: normalizeClassificationPath(item.wrongReasonPath),
+    learningTypePath: normalizeClassificationPath(item.learningTypePath),
     intent: normalizeIntent(item.intent),
   }));
 }
@@ -398,19 +526,27 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
   }
   const aliases = aiResult.aliases && typeof aiResult.aliases === 'object' ? aiResult.aliases : {};
   const aiIntent = normalizeIntent(aiResult.intent);
+  const suppressInferredMemory = hints.explicitMistake === true && hints.explicitMemory !== true;
   const intent = {
     ...aiIntent,
     isMistake: options.mistakePolicy === 'explicit_only' ? hints.isMistake : aiIntent.isMistake || hints.isMistake,
     isGood: options.goodQuestionPolicy === 'ai_high_value' ? aiIntent.isGood || hints.isGood : hints.isGood,
-    shouldMemorize: options.memorizePolicy === 'explicit_only' ? hints.shouldMemorize : aiIntent.shouldMemorize || hints.shouldMemorize,
+    shouldMemorize: suppressInferredMemory
+      ? false
+      : options.memorizePolicy === 'explicit_only' ? hints.shouldMemorize : aiIntent.shouldMemorize || hints.shouldMemorize,
   };
   const items = normalizeItems(aiResult.items, Number(options.maxItems) || 12).map((item) => ({
     ...item,
+    tags: suppressInferredMemory
+      ? item.tags.filter((tag) => !/(?:背诵|记忆|要背|记住)/u.test(tag))
+      : item.tags,
     intent: {
       ...item.intent,
       ...(options.mistakePolicy === 'explicit_only' ? { isMistake: hints.isMistake } : {}),
       ...(options.goodQuestionPolicy !== 'ai_high_value' ? { isGood: hints.isGood } : {}),
-      ...(options.memorizePolicy === 'explicit_only' ? { shouldMemorize: hints.shouldMemorize } : {}),
+      ...(suppressInferredMemory
+        ? { shouldMemorize: false }
+        : options.memorizePolicy === 'explicit_only' ? { shouldMemorize: hints.shouldMemorize } : {}),
     },
   }));
   const questionType = cleanText(aiResult.questionType, 60) || null;
@@ -419,7 +555,10 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
     ...(intent.isMistake ? ['错题'] : []),
     ...(intent.shouldMemorize ? ['背诵'] : []),
     ...(questionType ? [`题型:${questionType}`] : []),
-  ], 20, 40).filter((tag) => !['好题', '经典题', '典型题', '精品题'].includes(tag));
+  ], 20, 40).filter((tag) => (
+    !['好题', '经典题', '典型题', '精品题'].includes(tag)
+    && (!suppressInferredMemory || !/(?:背诵|记忆|要背|记住)/u.test(tag))
+  ));
   const cards = normalizeCards(aiResult.cards, intent, items, hints, tags, options);
   const confidence = Number(aiResult.confidence);
   const explicitRemarkReason = uniqueStrings(parsed?.wrongReasons, 1, 500)[0] || '';
@@ -445,6 +584,28 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
       : wrongReason && Number.isFinite(rawWrongReasonConfidence)
         ? Math.min(1, Math.max(0, rawWrongReasonConfidence))
         : wrongReason ? 0.55 : null;
+  const questionTypePath = normalizeClassificationPath(aiResult.questionTypePath);
+  const wrongReasonPath = manualFields.has('wrongReasonPath')
+    ? normalizeClassificationPath(promptContext?.existingLearning?.wrongReasonPath)
+    : normalizeClassificationPath(aiResult.wrongReasonPath).length > 0
+      ? normalizeClassificationPath(aiResult.wrongReasonPath)
+      : inferWrongReasonPath(wrongReason);
+  const learningTypePath = manualFields.has('learningTypePath')
+    ? normalizeClassificationPath(promptContext?.existingLearning?.learningTypePath)
+    : normalizeClassificationPath(aiResult.learningTypePath).length > 0
+      ? normalizeClassificationPath(aiResult.learningTypePath)
+      : inferLearningTypePath(
+          [aiResult.title, aiResult.summary, ...(Array.isArray(aiResult.tags) ? aiResult.tags : [])].join(' '),
+          cleanText(aiResult.subject, 60),
+          questionType,
+          intent,
+        );
+  const requestedGoodQuestionType = cleanText(aiResult.goodQuestionType, 40);
+  const goodQuestionType = intent.isGood
+    ? GOOD_QUESTION_TYPES.has(requestedGoodQuestionType)
+      ? requestedGoodQuestionType
+      : inferGoodQuestionType([aiResult.title, aiResult.summary, ...(Array.isArray(aiResult.tags) ? aiResult.tags : [])].join(' '), true)
+    : null;
   return {
     subject: cleanText(aiResult.subject, 60),
     knowledgePoint: cleanText(aiResult.knowledgePoint, 60) || null,
@@ -459,7 +620,11 @@ function normalizeAnalysis(aiResult, provider, model, parsed, hints, options = {
     summary: cleanText(aiResult.summary, 2_000),
     tags,
     questionType,
+    questionTypePath,
     wrongReason,
+    wrongReasonPath,
+    learningTypePath,
+    goodQuestionType,
     wrongReasonSource,
     wrongReasonConfidence,
     intent,
@@ -485,8 +650,15 @@ function createNoteAiAnalyzer(options = {}) {
   const analyzer = async function noteAiAnalyzer(context = {}) {
     const metadata = context.metadata && typeof context.metadata === 'object' ? context.metadata : {};
     const remarkMissing = !cleanText(metadata.remark, 4_000);
-    const taskId = remarkMissing ? 'note_image_understanding' : 'note_enrichment';
     const baseTaskOptions = typeof router.getTaskOptions === 'function' ? router.getTaskOptions('note_enrichment') : {};
+    // One vision-capable call is the reliable write path. A previous version
+    // synchronously chained a second reviewer for every note, so provider
+    // retries could exhaust the five-minute outer job lease before any result
+    // was persisted.
+    const canvasTask = metadata.kind === 'canvas' || metadata.sourceType === 'canvas-publish';
+    const taskId = canvasTask
+      ? 'canvas_note_understanding'
+      : remarkMissing ? 'note_image_understanding' : 'note_enrichment';
     const taskOptions = typeof router.getTaskOptions === 'function'
       ? { ...baseTaskOptions, ...router.getTaskOptions(taskId) }
       : baseTaskOptions;
@@ -506,27 +678,40 @@ function createNoteAiAnalyzer(options = {}) {
       Number(taskOptions.taxonomyContextChars) || taxonomyMaxChars,
     );
     const promptContext = makePromptContext(context, parsed, hints, taxonomy);
-    const imageDataUrl = imagePathToDataUrl(context.imagePath);
+    const imagePaths = collectImagePaths(context);
+    const imageContent = imagePaths.flatMap((imagePath, index) => [
+      { type: 'text', text: `整组资料图片 ${index + 1}/${imagePaths.length}：${path.basename(imagePath)}` },
+      { type: 'image_url', image_url: { url: imagePathToDataUrl(imagePath) } },
+    ]);
 
-    const result = await router.complete({
+    const visualResult = await router.complete({
       task: taskId,
-      difficulty: remarkMissing || metadata.kind === 'canvas' ? 'high' : 'medium',
+      difficulty: canvasTask ? 'high' : remarkMissing ? 'high' : 'medium',
       messages: [
         {
           role: 'user',
           content: [
             { type: 'text', text: buildPrompt(promptContext, taskOptions) },
-            { type: 'image_url', image_url: { url: imageDataUrl } },
+            ...imageContent,
           ],
         },
       ],
       responseSchema: createNoteAnalysisSchema(taskOptions),
       temperature: 0.1,
       maxTokens: Number(taskOptions.maxTokens) || (metadata.kind === 'canvas' ? 5_200 : 3_200),
+      networkRetries: 0,
+      jsonRepairRetries: 0,
     });
-
-    const analysis = normalizeAnalysis(result.json, result.provider, result.model, parsed, hints, taskOptions, promptContext);
-    const subjectDecision = resolveAiSubject(context.taxonomy, {
+    const analysis = normalizeAnalysis(
+      visualResult.json,
+      visualResult.provider,
+      visualResult.model,
+      parsed,
+      hints,
+      taskOptions,
+      promptContext,
+    );
+    let subjectDecision = resolveAiSubject(context.taxonomy, {
       requestedSubject: analysis.subject,
       subjectAliases: analysis.subjectAliases,
       currentSubject: context.currentCategory?.subject,
@@ -537,11 +722,36 @@ function createNoteAiAnalyzer(options = {}) {
       tags: analysis.tags,
       items: analysis.items,
     });
+    const currentSubject = cleanText(context.currentCategory?.subject, 60);
+    const stableSubject = promptContext.namingEvidence?.subject
+      || (promptContext.existingLearning?.userEditedFields?.includes('subject')
+        && AI_SUPPORTED_SUBJECTS.includes(currentSubject)
+        ? currentSubject
+        : '');
+    if (stableSubject && subjectDecision.subject !== stableSubject) {
+      subjectDecision = {
+        ...resolveAiSubject(context.taxonomy, { requestedSubject: stableSubject }),
+        reason: 'stable-subject-anchor',
+      };
+    }
     const questionType = normalizeMathOneQuestionType(
       subjectDecision.subject,
       analysis.questionType,
       [analysis.title, analysis.summary, analysis.knowledgePoint, metadata.remark].filter(Boolean).join(' '),
     );
+    const canonicalMathPath = mathOneQuestionTypePath(
+      subjectDecision.subject,
+      questionType,
+      [analysis.title, analysis.summary, analysis.knowledgePoint, metadata.remark].filter(Boolean).join(' '),
+    );
+    const modelQuestionPath = normalizeClassificationPath(analysis.questionTypePath);
+    const questionTypePath = !questionType
+      ? []
+      : canonicalMathPath.length > 1
+        ? canonicalMathPath
+        : modelQuestionPath.length > 0
+          ? [...modelQuestionPath.slice(0, 2), questionType].filter((item, index, values) => values.indexOf(item) === index).slice(0, 3)
+          : [questionType];
     const items = analysis.items.map((item) => ({
       ...item,
       questionType: normalizeMathOneQuestionType(
@@ -549,11 +759,27 @@ function createNoteAiAnalyzer(options = {}) {
         item.questionType,
         [item.title, item.summary, item.knowledgePoint, analysis.title].filter(Boolean).join(' '),
       ),
+    })).map((item) => ({
+      ...item,
+      questionTypePath: item.questionType
+        ? mathOneQuestionTypePath(subjectDecision.subject, item.questionType, [item.title, item.summary].join(' ')).length > 1
+          ? mathOneQuestionTypePath(subjectDecision.subject, item.questionType, [item.title, item.summary].join(' '))
+          : normalizeClassificationPath(item.questionTypePath).length > 0
+            ? normalizeClassificationPath(item.questionTypePath)
+            : [item.questionType]
+        : [],
+      wrongReasonPath: normalizeClassificationPath(item.wrongReasonPath).length > 0
+        ? normalizeClassificationPath(item.wrongReasonPath)
+        : inferWrongReasonPath(item.wrongReason),
+      learningTypePath: normalizeClassificationPath(item.learningTypePath).length > 0
+        ? normalizeClassificationPath(item.learningTypePath)
+        : analysis.learningTypePath,
     }));
     return {
       ...analysis,
       subject: subjectDecision.subject,
       questionType,
+      questionTypePath,
       items,
       tags: uniqueStrings([
         ...analysis.tags.filter((tag) => !tag.startsWith('题型:')),
@@ -583,7 +809,26 @@ function createNoteAiAnalyzer(options = {}) {
 let defaultAnalyzer = null;
 
 async function analyzeNote(context) {
-  if (!defaultAnalyzer) defaultAnalyzer = createNoteAiAnalyzer();
+  if (!defaultAnalyzer) {
+    const os = require('node:os');
+    const assistantRoot = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
+    const { createPersistentAiRequestGuard } = require('./ai-request-budget.cjs');
+    const configPath = process.env.KAOYAN_AI_CONFIG_PATH || path.join(assistantRoot, 'ai-providers.json');
+    defaultAnalyzer = createNoteAiAnalyzer({
+      routerOptions: {
+        beforeAttempt: createPersistentAiRequestGuard({
+          assistantRoot,
+          getSettings: () => {
+            try {
+              return JSON.parse(fs.readFileSync(configPath, 'utf8')).usageProtection;
+            } catch {
+              return undefined;
+            }
+          },
+        }),
+      },
+    });
+  }
   return defaultAnalyzer(context);
 }
 analyzeNote.analyzerVersion = ANALYZER_VERSION;

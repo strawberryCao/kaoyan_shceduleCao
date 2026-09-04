@@ -213,16 +213,22 @@ export async function commitFiles(env, options) {
     throw new HttpError(500, 'A GitHub commit must contain between 1 and 100 files.', 'GITHUB_COMMIT_INVALID');
   }
   const { owner, repo, branch } = repositoryConfig(env);
-  const currentHead = await getBranchHead(env);
-  if (options.expectedHeadSha && options.expectedHeadSha !== currentHead) {
-    throw new HttpError(409, 'GitHub repository changed while saving; reload and retry.', 'GITHUB_REVISION_CONFLICT');
-  }
+  // Callers normally read a branch snapshot immediately before assembling the
+  // commit. Reuse that revision here instead of spending another external
+  // subrequest; the non-forced ref update below still rejects a stale parent.
+  const currentHead = options.expectedHeadSha || await getBranchHead(env);
   const baseCommit = await githubRequest(env, `/repos/${owner}/${repo}/git/commits/${currentHead}`);
   const baseTree = baseCommit?.tree?.sha;
   if (typeof baseTree !== 'string') throw new HttpError(502, 'GitHub base tree is unavailable.', 'GITHUB_BRANCH_UNAVAILABLE');
   const tree = await Promise.all(files.map(async (file) => {
     const path = assertRepoPath(file.path);
     if (file.delete === true) return { path, mode: '100644', type: 'blob', sha: null };
+    // GitHub's tree API can create UTF-8 text blobs inline. Most capture files
+    // are JSON, so this turns dozens of one-request-per-file blob uploads into
+    // one tree request. Binary images still use the base64 blob endpoint.
+    if (typeof file.content === 'string') {
+      return { path, mode: '100644', type: 'blob', content: file.content };
+    }
     const sha = await createBlob(env, toBytes(file.content));
     return { path, mode: '100644', type: 'blob', sha };
   }));

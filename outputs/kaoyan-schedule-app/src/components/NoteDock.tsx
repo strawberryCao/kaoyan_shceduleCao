@@ -47,12 +47,12 @@ export const openNoteCaptureAppSilently = async () => {
 export const openNoteCaptureApp = async () => {
   if (IS_CLOUD_RUNTIME) {
     window.location.assign(`${window.location.origin}/?noteApp=1`);
-    return;
+    return true;
   }
   if (window.kaoyanDesktop?.openNoteApp) {
     try {
       await window.kaoyanDesktop.openNoteApp();
-      return;
+      return true;
     } catch {
       // Continue to the local launch bridge when an older desktop process is running.
     }
@@ -61,13 +61,14 @@ export const openNoteCaptureApp = async () => {
   try {
     const response = await fetchWithTimeout(`${NOTE_SERVER_URL}/open-note-app`, { method: 'POST' }, 2500);
     if (response.ok && await waitForNativeNoteApp()) {
-      return;
+      return true;
     }
   } catch {
     // Report a real launch failure below. Never substitute a browser popup.
   }
 
   window.alert('Electron 笔记小 App 启动失败。请重新运行“一键启动考研桌面助手”后再试。');
+  return false;
 };
 
 export const closeNoteCaptureApp = async () => {

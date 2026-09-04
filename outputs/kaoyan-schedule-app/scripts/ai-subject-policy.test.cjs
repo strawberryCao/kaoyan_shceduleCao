@@ -43,6 +43,27 @@ test('unknown first-level subjects never become AI subjects and ambiguous conten
   assert.equal(taxonomy.subjects.some((subject) => subject.name === '计算机视觉'), true);
 });
 
+test('an unrelated current folder is not treated as AI classification evidence', () => {
+  const taxonomy = taxonomyFixture();
+  const result = resolveAiSubject(taxonomy, {
+    requestedSubject: '机器学习安全',
+    currentSubject: '数据结构',
+    knowledgePoint: '对抗样本噪声扰动',
+    title: '给狗图片加噪声后模型误判为猫',
+    summary: '展示深度学习模型的对抗攻击原理。',
+  });
+  assert.equal(result.subject, '默认文件夹');
+  assert.equal(result.reason, 'unknown');
+
+  const locked = resolveAiSubject(taxonomy, {
+    requestedSubject: '机器学习安全',
+    currentSubject: '数据结构',
+    allowCurrentFallback: true,
+  });
+  assert.equal(locked.subject, '数据结构');
+  assert.equal(locked.reason, 'current');
+});
+
 test('unknown model labels can be semantically remapped without creating a top-level subject', () => {
   const taxonomy = taxonomyFixture();
   const result = resolveAiSubject(taxonomy, {

@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  AI_TASK_DEFINITIONS,
   createAiRouter,
   extractJsonValue,
   loadAiProviderConfigs,
@@ -9,6 +10,27 @@ const {
   resolveTaskOptions,
   validateJsonAgainstSchema,
 } = require('../ai-router.cjs');
+
+test('publishes an independent configurable task for Learning Center HTML notes', () => {
+  assert.equal(AI_TASK_DEFINITIONS.interactive_note_generation.active, true);
+  assert.equal(AI_TASK_DEFINITIONS.interactive_note_generation.defaultTimeoutMs, 120_000);
+  const options = resolveTaskOptions('interactive_note_generation', {
+    options: {
+      contentDensity: 'detailed',
+      contextChars: 99_999,
+      networkRetries: 9,
+      jsonRepairRetries: -2,
+      structuredOutputMode: 'prompt_only',
+      unsafeSandbox: true,
+    },
+  });
+  assert.equal(options.contentDensity, 'detailed');
+  assert.equal(options.contextChars, 12_000);
+  assert.equal(options.networkRetries, 2);
+  assert.equal(options.jsonRepairRetries, 0);
+  assert.equal(options.structuredOutputMode, 'prompt_only');
+  assert.equal(Object.hasOwn(options, 'unsafeSandbox'), false);
+});
 
 function fakeResponse(status, content, usage = null) {
   return {
@@ -133,6 +155,40 @@ test('reports provider token usage after a successful request', async () => {
   assert.equal(events.length, 1);
   assert.equal(events[0].provider, 'deepseek');
   assert.equal(events[0].usage.total_tokens, 155);
+});
+
+test('HTML task can omit response_format for provider compatibility while preserving JSON validation', async () => {
+  let requestBody;
+  const attempts = [];
+  const router = makeRouter(
+    [provider('deepseek', { model: 'deepseek-v4-pro' })],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return fakeResponse(200, '{"title":"可交互函数"}');
+    },
+    {
+      tasks: {
+        interactive_note_generation: {
+          timeoutMs: 120_000,
+          options: { structuredOutputMode: 'prompt_only' },
+        },
+      },
+    },
+  );
+  const result = await router.complete({
+    task: 'interactive_note_generation',
+    timeoutMs: 45_000,
+    messages: [{ role: 'user', content: '生成交互资料' }],
+    responseSchema: {
+      type: 'object',
+      required: ['title'],
+      properties: { title: { type: 'string' } },
+    },
+    onAttempt: (attempt) => attempts.push(attempt),
+  });
+  assert.equal(result.json.title, '可交互函数');
+  assert.equal(Object.hasOwn(requestBody, 'response_format'), false);
+  assert.equal(attempts[0].timeoutMs, 120_000);
 });
 
 test('an environment model selection overrides a local multi-model list', () => {
@@ -321,6 +377,42 @@ test('applies the selected task model and custom instructions to the request', a
   assert.equal(router.getTaskOptions('note_naming').titleMinLength, 8);
 });
 
+test('lets an explicit save-time AI choice override the configured task route without changing the task config', async () => {
+  const calls = [];
+  const router = makeRouter(
+    [
+      provider('configured', { model: 'configured-expensive', costTier: 3, qualityTier: 3 }),
+      provider('light', { model: 'light-vision', costTier: 1, qualityTier: 1 }),
+    ],
+    async (url, init) => {
+      calls.push({ url, body: JSON.parse(init.body) });
+      return fakeResponse(200, '{"title":"轻量识别"}');
+    },
+    {
+      tasks: {
+        note_naming: {
+          providerId: 'configured',
+          modelId: 'configured-expensive',
+          difficulty: 'high',
+        },
+      },
+    },
+  );
+
+  const result = await router.complete({
+    task: 'note_naming',
+    difficulty: 'low',
+    ignoreTaskModelPreference: true,
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }],
+    json: true,
+  });
+
+  assert.equal(result.provider, 'light');
+  assert.equal(result.model, 'light-vision');
+  assert.equal(result.difficulty, 'low');
+  assert.match(calls[0].url, /light\.example/);
+});
+
 test('can explicitly route to a catalog model that is not the provider default', async () => {
   const calls = [];
   const router = makeRouter(
@@ -443,6 +535,25 @@ test('maps the canvas reasoning mode to official Kimi model parameters', async (
     json: true,
   });
   assert.equal(bodies[1].reasoning_effort, 'high');
+});
+
+test('disables Kimi K2.6 thinking for fast question splitting', async () => {
+  let requestBody;
+  const router = makeRouter(
+    [provider('kimi', { model: 'kimi-k2.6', costTier: 3, qualityTier: 3 })],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return fakeResponse(200, '{"regions":[{"x":0.1,"y":0.1,"width":0.8,"height":0.2}]}');
+    },
+    { tasks: { question_splitting: { providerId: 'kimi', modelId: 'kimi-k2.6', fallback: false } } },
+  );
+  await router.complete({
+    task: 'question_splitting',
+    messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }] }],
+    json: true,
+  });
+  assert.deepEqual(requestBody.thinking, { type: 'disabled' });
+  assert.equal(resolveTaskOptions('question_splitting', {}).reasoningMode, 'fast');
 });
 
 test('reports when Kimi reasoning exhausts the completion budget before final content', async () => {
@@ -638,6 +749,67 @@ test('falls back when JSON remains schema-invalid', async () => {
 
   assert.equal(result.provider, 'kimi');
   assert.equal(result.json.title, '正确');
+});
+
+test('caps an interactive request to one primary route plus one fallback', async () => {
+  let fetchCount = 0;
+  const router = makeRouter(
+    [
+      provider('qwen', { priority: 30 }),
+      provider('gemini', { priority: 20 }),
+      provider('kimi', { priority: 10 }),
+    ],
+    async () => {
+      fetchCount += 1;
+      return fakeResponse(503, 'unavailable');
+    },
+  );
+  await assert.rejects(router.complete({
+    task: 'custom',
+    messages: [{ role: 'user', content: 'build html' }],
+    maxCandidateCount: 2,
+  }), { code: 'AI_ALL_PROVIDERS_FAILED' });
+  assert.equal(fetchCount, 2);
+});
+
+test('an overall deadline stops fallback calls after the current attempt', async () => {
+  let currentTime = 1_000;
+  let fetchCount = 0;
+  const router = makeRouter(
+    [provider('qwen', { priority: 20 }), provider('gemini', { priority: 10 })],
+    async () => {
+      fetchCount += 1;
+      currentTime += 1_100;
+      return fakeResponse(503, 'unavailable');
+    },
+    { now: () => currentTime },
+  );
+  await assert.rejects(router.complete({
+    task: 'custom',
+    messages: [{ role: 'user', content: 'build html' }],
+    overallTimeoutMs: 1_000,
+    maxCandidateCount: 2,
+  }), { code: 'AI_OVERALL_TIMEOUT' });
+  assert.equal(fetchCount, 1);
+});
+
+test('fallback false uses only the best model when only a provider is selected', async () => {
+  let fetchCount = 0;
+  const qwen = provider('qwen', { priority: 20 });
+  qwen.models.push({ ...qwen.models[0], id: 'qwen-second-model', qualityTier: 1 });
+  const router = makeRouter(
+    [qwen],
+    async () => {
+      fetchCount += 1;
+      return fakeResponse(503, 'unavailable');
+    },
+    { tasks: { custom: { providerId: 'qwen', fallback: false } } },
+  );
+  await assert.rejects(router.complete({
+    task: 'custom',
+    messages: [{ role: 'user', content: 'hello' }],
+  }), { code: 'AI_ALL_PROVIDERS_FAILED' });
+  assert.equal(fetchCount, 1);
 });
 
 test('times out a stuck provider and falls back without waiting for its fetch promise', async () => {

@@ -80,3 +80,28 @@ test('journal export continuously packs records and only starts a new page when 
   assert.match(exporter, /<iframe src=/);
   assert.match(exporter, /<img src=/);
 });
+
+test('quick notes have an in-app overview without exporting or mounting every heavy preview', () => {
+  const center = read('src/components/LearningCenter.tsx');
+  assert.match(center, /type QuickReaderMode = 'single' \| 'overview'/);
+  assert.match(center, /总览速记/);
+  assert.match(center, /visibleQuick\.map\(\(entry\) =>/);
+  assert.match(center, /lc-quick-log-entry/);
+  assert.match(center, /setQuickReaderMode\('single'\)/);
+  assert.match(center, /setActiveQuickAssets/);
+  assert.match(center, /aria-label="总览模式"/);
+  assert.match(center, /disabled=\{quickReaderMode === 'single' && visibleQuick\.length === 0\}/);
+  assert.match(center, /lc-quick-overview-title/);
+  assert.doesNotMatch(center, /quickReaderMode === 'overview'[\s\S]{0,400}exportQuickJournalPackage/);
+});
+
+test('attachments remain interactive after a quick note enters another learning facet', () => {
+  const center = read('src/components/LearningCenter.tsx');
+  assert.match(center, /lc-detail-asset-preview/);
+  assert.match(center, /<WorkspaceAssetPreview[\s\S]*item=\{activePreviewAsset\}/);
+  assert.match(center, /setPrimaryAttachment\(note, attachment\.id\)/);
+  assert.match(center, /首个展示/);
+  assert.match(center, /AI命名资料/);
+  assert.match(center, /仅在你点击后调用一次 AI/);
+  assert.doesNotMatch(center, /AI 将在后台整理命名/);
+});

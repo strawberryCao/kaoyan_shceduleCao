@@ -147,6 +147,19 @@ function collectSemanticText(input) {
 }
 
 function resolveAiSubject(taxonomy, input = {}) {
+  // "Default folder" is a deliberate model decision for out-of-scope or
+  // uncertain content. Do not scan its explanation for subject keywords and
+  // accidentally override that decision (for example, "not data structures").
+  if (isDefaultBucket(input.requestedSubject)) {
+    const fallbackNode = taxonomy ? findFallbackSubject(taxonomy) : null;
+    return {
+      subject: fallbackNode?.name || AI_FALLBACK_SUBJECT,
+      canonical: null,
+      node: fallbackNode,
+      fallback: true,
+      reason: 'explicit_default',
+    };
+  }
   const requestedCanonical = canonicalAiSubject(input.requestedSubject);
   const aliasCanonical = (Array.isArray(input.subjectAliases) ? input.subjectAliases : [])
     .map(canonicalAiSubject)
@@ -197,7 +210,13 @@ function resolveAiSubject(taxonomy, input = {}) {
     };
   }
 
-  const currentCanonical = canonicalAiSubject(input.currentSubject);
+  // The folder a note currently happens to live in is only a compatibility
+  // hint. It must not turn an unrelated or out-of-scope image into a confident
+  // classification. Callers may opt in only for an explicitly locked/manual
+  // category.
+  const currentCanonical = input.allowCurrentFallback === true
+    ? canonicalAiSubject(input.currentSubject)
+    : null;
   if (currentCanonical) {
     const node = taxonomy ? findTaxonomySubject(taxonomy, currentCanonical) : null;
     if (!taxonomy || node) {

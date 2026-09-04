@@ -36,7 +36,7 @@ test('reads a JSON file from GitHub Contents API', async (t) => {
   assert.equal(result.sha, 'a'.repeat(40));
 });
 
-test('creates an atomic multi-file Git commit and advances the branch', async (t) => {
+test('inlines text, uploads only binary blobs, and advances the branch atomically', async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => { globalThis.fetch = originalFetch; });
   const calls = [];
@@ -59,12 +59,17 @@ test('creates an atomic multi-file Git commit and advances the branch', async (t
     files: [
       { path: 'data/cloud/a.json', content: '{"a":1}\n' },
       { path: 'data/cloud/b.json', content: '{"b":2}\n' },
+      { path: 'data/assets/image.jpg', content: new Uint8Array([1, 2, 3]) },
     ],
   });
   assert.equal(result.commitSha, '4'.repeat(40));
-  assert.equal(calls.filter((call) => call.pathname.endsWith('/git/blobs')).length, 2);
+  assert.equal(calls.filter((call) => call.pathname.endsWith('/git/blobs')).length, 1);
+  assert.equal(calls.filter((call) => call.pathname.endsWith('/git/ref/heads/main')).length, 0);
   const treeCall = calls.find((call) => call.pathname.endsWith('/git/trees'));
-  assert.equal(treeCall.body.tree.length, 2);
+  assert.equal(treeCall.body.tree.length, 3);
+  assert.equal(treeCall.body.tree[0].content, '{"a":1}\n');
+  assert.equal(treeCall.body.tree[1].content, '{"b":2}\n');
+  assert.match(treeCall.body.tree[2].sha, /^[a-f0-9]{40}$/i);
   const refCall = calls.at(-1);
   assert.equal(refCall.method, 'PATCH');
   assert.equal(refCall.body.force, false);

@@ -15,6 +15,11 @@ test('multi-material naming uses one shared context and role-aware names', () =>
   assert.match(workflow, /每个附件名称既要表达内容，也要体现它在本条速记中的作用/);
   assert.match(localRuntime, /禁止逐个孤立判断/);
   assert.match(cloudRuntime, /先整体判断共同主题和资料间关系/);
+  assert.match(localRuntime, /for \(let index = 0; index < sourceAttachments\.length; index \+= 1\)[\s\S]*?image_url/);
+  assert.match(cloudRuntime, /for \(let index = 0; index < entry\.assets\.length; index \+= 1\)[\s\S]*?image_url/);
+  assert.match(localRuntime, /localeCompare\(original[\s\S]*?&& weakMaterialStem\(original\)/);
+  assert.match(cloudRuntime, /localeCompare\(oldName[\s\S]*?&& weakMaterialStem\(oldName\)/);
+  assert.doesNotMatch(cloudRuntime, /imageCount < 4/);
 });
 
 test('quick-note title length is independently bounded', () => {
@@ -27,16 +32,18 @@ test('quick-note title length is independently bounded', () => {
   assert.match(cloudRuntime, /settings\.options\?\.noteTitleMaxLength\) \|\| 18/);
 });
 
-test('quick notes without an image render a warm mascot instead of a generic file icon', () => {
+test('quick notes without an image render a quiet edge watcher instead of a generic file icon', () => {
   const learningCenter = read('src/components/LearningCenter.tsx');
+  const watcher = read('src/components/QuickNoteWatcher.tsx');
   const stylesheet = read('src/learning-center.css');
 
-  assert.match(learningCenter, /function QuickNoteMascot/);
-  assert.match(learningCenter, /const QUICK_NOTE_MASCOTS = \[/);
-  assert.equal((learningCenter.match(/\{ src: mascot/g) || []).length, 12);
-  assert.match(learningCenter, /context === 'quick' \? <QuickNoteMascot noteUid=\{note\.noteUid\} \/>/);
-  assert.match(learningCenter, /className="lc-quick-mascot"/);
-  assert.match(stylesheet, /\.lc-quick-mascot/);
+  assert.match(learningCenter, /context === 'quick' \? <QuickNoteWatcher noteUid=\{note\.noteUid\} \/>/);
+  assert.match(watcher, /const WATCHER_VARIANT_COUNT = 8/);
+  assert.match(watcher, /className=\{`lc-quick-watcher is-variant-\$\{variant\}`\}/);
+  assert.match(watcher, /aria-hidden="true"/);
+  assert.doesNotMatch(watcher, /title=/);
+  assert.match(stylesheet, /\.lc-quick-watcher/);
+  assert.match(stylesheet, /@media \(prefers-reduced-motion: reduce\)/);
 });
 
 test('taxonomy consolidation is an active guarded global workflow', () => {
@@ -56,11 +63,14 @@ test('taxonomy consolidation is an active guarded global workflow', () => {
   assert.match(server, /pathname === '\/ai\/taxonomy\/consolidate'/);
 });
 
-test('mistake filters use stable categories but preserve detailed wrong reasons', () => {
+test('mistake filters use hierarchical paths but preserve detailed wrong reasons', () => {
   const learningCenter = read('src/components/LearningCenter.tsx');
-  const server = read('scripts/note-server.cjs');
+  const taxonomy = read('src/utils/learningTaxonomy.ts');
+  const store = read('scripts/learning-data-store.cjs');
   assert.match(learningCenter, /const noteWrongReasons =/);
-  assert.match(learningCenter, /const noteWrongReasonCategories =/);
-  assert.match(server, /错因分类:\$\{category\}/);
-  assert.match(learningCenter, /wrongReasons: uniqueText\(mistakeNotes\.flatMap\(\(\{ note \}\) => noteWrongReasonCategories\(note\)\)\)/);
+  assert.match(taxonomy, /export const WRONG_REASON_PATHS/);
+  assert.match(taxonomy, /'粗心大意', '计算疏漏', '算术错误'/);
+  assert.match(learningCenter, /wrongReasonPaths: uniquePaths/);
+  assert.match(learningCenter, /classificationPathMatches\(wrongReasonPathForNote\(note\), mistakeFilters\.wrongReasonPath\)/);
+  assert.match(store, /wrongReasonPath: classificationPath/);
 });

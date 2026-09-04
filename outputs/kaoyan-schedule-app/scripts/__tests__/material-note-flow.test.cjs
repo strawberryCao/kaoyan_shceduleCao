@@ -147,6 +147,7 @@ test('local material endpoint saves text and PDF attachments idempotently', { ti
     const htmlBytes = Buffer.from('<!doctype html><title>append test</title><p>辅助推导</p>', 'utf8');
     const appendPayload = {
       noteUid: payload.noteUid,
+      operationId: 'append-material-test-1',
       files: [{
         name: '辅助推导.html',
         mimeType: 'text/html',
@@ -161,6 +162,8 @@ test('local material endpoint saves text and PDF attachments idempotently', { ti
     });
     const appended = await appendResponse.json();
     assert.equal(appendResponse.status, 200);
+    assert.equal(appended.operationId, appendPayload.operationId);
+    assert.equal(appended.commitSha, null);
     assert.equal(appended.idempotentReplay, false);
     assert.equal(appended.attachments.length, 2);
     assert.equal(appended.attachments[1].kind, 'html');
@@ -174,7 +177,48 @@ test('local material endpoint saves text and PDF attachments idempotently', { ti
     const duplicateAppend = await duplicateAppendResponse.json();
     assert.equal(duplicateAppendResponse.status, 200);
     assert.equal(duplicateAppend.idempotentReplay, true);
+    assert.equal(duplicateAppend.operationId, appendPayload.operationId);
     assert.equal(duplicateAppend.attachments.length, 2);
+
+    const reusedOperationResponse = await fetch(`${baseUrl}/append-material-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...appendPayload,
+        files: [{
+          name: '不同资料.html',
+          mimeType: 'text/html',
+          dataUrl: `data:text/html;base64,${Buffer.from('<p>different</p>').toString('base64')}`,
+        }],
+      }),
+    });
+    assert.equal(reusedOperationResponse.status, 409);
+    assert.equal((await reusedOperationResponse.json()).code, 'SAVE_OPERATION_REUSED');
+
+    const manyFiles = Array.from({ length: 12 }, (_, index) => {
+      const bytes = Buffer.from(`small material ${index + 1}`, 'utf8');
+      return {
+        name: `补充资料-${index + 1}.txt`,
+        mimeType: 'text/plain',
+        size: bytes.length,
+        dataUrl: `data:text/plain;base64,${bytes.toString('base64')}`,
+      };
+    });
+    const manyResponse = await fetch(`${baseUrl}/save-material-note`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kaoyan-lan-proxy': '1' },
+      body: JSON.stringify({
+        noteUid: 'material_test_many_001',
+        title: '十二份小资料',
+        subject: '高等数学',
+        facets: ['quick'],
+        files: manyFiles,
+      }),
+    });
+    const many = await manyResponse.json();
+    assert.equal(manyResponse.status, 201);
+    assert.equal(many.attachments.length, 12);
+    assert.equal(findNote(many.learningData, 'material_test_many_001').attachments.length, 12);
 
     const detachResponse = await fetch(`${baseUrl}/learning-data/notes/${payload.noteUid}`, {
       method: 'PATCH',

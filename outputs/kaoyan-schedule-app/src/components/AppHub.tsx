@@ -29,6 +29,7 @@ import {
   selectPendingNoteReviews,
 } from '../utils/noteReview';
 import { IS_CLOUD_RUNTIME, NOTE_SERVER_URL } from '../utils/notes';
+import { navigateApp } from '../utils/appNavigation';
 import {
   generateSchedule,
   getCurrentScheduleDay,
@@ -46,7 +47,7 @@ import {
 type ServiceState = 'checking' | 'online' | 'offline';
 
 const go = (path: string) => {
-  window.location.assign(`${window.location.origin}/${path}`);
+  navigateApp(path);
 };
 
 const localDate = () => {

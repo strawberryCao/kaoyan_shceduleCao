@@ -100,6 +100,7 @@ export function ScheduleApp() {
   const [selectedDate, setSelectedDate] = useState(todayDay.date);
   const [records, setRecords] = useState<RecordsByDate>(() => readScheduleRecords(days));
   const [learningData, setLearningData] = useState<LearningDataSnapshot>(() => readLearningDataCache());
+  const [learningHydrationComplete, setLearningHydrationComplete] = useState(false);
   const recordsRef = useRef(records);
   const learningDataRef = useRef(learningData);
   const syncTimersRef = useRef(new Map<string, number>());
@@ -288,6 +289,7 @@ export function ScheduleApp() {
       } finally {
         initialHydrationRef.current = false;
         if (!controller.signal.aborted) {
+          setLearningHydrationComplete(true);
           pendingSyncRecordsRef.current.forEach((_record, date) => submitLatestRecord(date));
         }
       }
@@ -429,6 +431,7 @@ export function ScheduleApp() {
       return (
         <LearningCenter
           snapshot={learningData}
+          hydrationComplete={learningHydrationComplete}
           scheduleDays={days}
           onOpenDate={(date) => {
             if (days.some((day) => day.date === date)) {
@@ -450,6 +453,9 @@ export function ScheduleApp() {
           }}
           onPatchNote={async (noteUid, patch) => {
             const snapshot = await patchLearningNote(noteUid, patch);
+            applyLearningSnapshot(snapshot);
+          }}
+          onApplySnapshot={(snapshot) => {
             applyLearningSnapshot(snapshot);
           }}
           onReviewNotes={async (actions: LearningNoteReviewAction[]) => {
@@ -479,7 +485,7 @@ export function ScheduleApp() {
       return (
         <section className="content-panel stats-view" aria-label="学习统计">
           <div className="panel-heading">
-            <h2>30 天统计</h2>
+            <h2>累计学习统计</h2>
           </div>
           <StatsPanel stats={stats} />
         </section>

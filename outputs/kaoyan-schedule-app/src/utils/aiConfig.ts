@@ -1,4 +1,5 @@
 import { NOTE_SERVER_URL } from './notes';
+import { explicitAiActionHeaders } from './aiAction';
 
 export type AiTaskDifficulty = 'low' | 'medium' | 'high';
 
@@ -85,6 +86,11 @@ export interface AiConfigurationSnapshot {
     networkRetries: number;
     jsonRepairRetries: number;
   };
+  usageProtection: {
+    enabled: boolean;
+    dailyRequestLimit: number;
+    usedToday: number;
+  };
   usage: {
     schemaVersion: number;
     updatedAt: string | null;
@@ -122,11 +128,12 @@ export async function fetchAiConfiguration(): Promise<AiConfigurationSnapshot> {
 
 export async function saveAiConfiguration(
   tasks: Record<string, AiTaskSettings>,
+  usageProtection: { enabled: boolean; dailyRequestLimit: number },
 ): Promise<AiConfigurationSnapshot> {
   const response = await fetch(`${NOTE_SERVER_URL}/ai/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tasks }),
+    body: JSON.stringify({ tasks, usageProtection }),
   });
   return readResponse(response);
 }
@@ -195,5 +202,8 @@ export async function selectReviewOutputDirectory(initialPath = ''): Promise<{ o
 }
 
 export async function analyzeLearningNoteWrongReason(noteUid: string): Promise<{ ok: boolean; queued: boolean; noteUid: string }> {
-  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/analyze-wrong-reason`, { method: 'POST' }));
+  return readReviewResponse(await fetch(`${NOTE_SERVER_URL}/learning-data/notes/${encodeURIComponent(noteUid)}/analyze-wrong-reason`, {
+    method: 'POST',
+    headers: explicitAiActionHeaders(false),
+  }));
 }
