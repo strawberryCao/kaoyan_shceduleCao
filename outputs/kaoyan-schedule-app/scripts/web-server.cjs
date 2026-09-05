@@ -10,7 +10,7 @@ const {
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_STATIC_ROOT = path.join(PROJECT_ROOT, 'dist');
-const DEFAULT_HOST = '0.0.0.0';
+const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 5173;
 const DEFAULT_API_HOST = '127.0.0.1';
 const DEFAULT_API_PORT = 5174;
@@ -42,6 +42,30 @@ const sendText = (response, statusCode, body) => {
   response.setHeader('Cache-Control', 'no-store');
   response.end(body);
 };
+
+const sendJson = (response, statusCode, payload) => {
+  response.statusCode = statusCode;
+  response.setHeader('Content-Type', 'application/json; charset=utf-8');
+  response.setHeader('Cache-Control', 'no-store');
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.end(JSON.stringify(payload));
+};
+
+const probeNoteService = (apiHost, apiPort, timeoutMs = 2_000) => new Promise((resolve) => {
+  const request = http.request({
+    host: apiHost,
+    port: apiPort,
+    method: 'GET',
+    path: '/health',
+    headers: { host: `${apiHost}:${apiPort}` },
+  }, (upstreamResponse) => {
+    upstreamResponse.resume();
+    resolve(upstreamResponse.statusCode === 200);
+  });
+  request.setTimeout(timeoutMs, () => request.destroy(new Error('Readiness probe timed out.')));
+  request.once('error', () => resolve(false));
+  request.end();
+});
 
 const parseSingleRange = (rangeHeader, size) => {
   const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader || '').trim());
@@ -178,12 +202,27 @@ const createKaoyanWebServer = (options = {}) => {
       }
     }
 
+    const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
+    if (request.method === 'GET' && requestUrl.pathname === '/healthz') {
+      sendJson(response, 200, { ok: true, service: 'kaoyan-web-gateway' });
+      return;
+    }
+    if (request.method === 'GET' && requestUrl.pathname === '/readyz') {
+      void probeNoteService(apiHost, apiPort).then((ready) => {
+        sendJson(response, ready ? 200 : 503, {
+          ok: ready,
+          service: 'kaoyan-web-gateway',
+          dependencies: { noteService: ready ? 'ready' : 'unavailable' },
+        });
+      });
+      return;
+    }
+
     if (String(request.url || '').startsWith('/api')) {
       const remoteAddress = String(request.socket?.remoteAddress || '').toLowerCase();
       const isLoopback = remoteAddress === '::1'
         || remoteAddress === '127.0.0.1'
         || remoteAddress === '::ffff:127.0.0.1';
-      const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
       const isLocalAiRequest = isLoopback
         && !requestUrl.search
         && request.method === 'POST'
@@ -239,9 +278,11 @@ const start = () => {
 
   const host = process.env.KAOYAN_WEB_HOST || DEFAULT_HOST;
   const port = Number(process.env.KAOYAN_WEB_PORT || DEFAULT_PORT);
-  const server = createKaoyanWebServer();
+  const apiPort = Number(process.env.KAOYAN_NOTE_PORT || DEFAULT_API_PORT);
+  const server = createKaoyanWebServer({ apiHost: DEFAULT_API_HOST, apiPort });
   server.listen(port, host, () => {
     process.stdout.write(`Kaoyan production web server: http://127.0.0.1:${port}/\n`);
+    process.stdout.write(`Kaoyan internal note upstream: http://${DEFAULT_API_HOST}:${apiPort}/\n`);
   });
 
   const close = () => server.close(() => process.exit(0));
@@ -252,6 +293,8 @@ const start = () => {
 if (require.main === module) start();
 
 module.exports = {
+  DEFAULT_HOST,
   createKaoyanWebServer,
   parseSingleRange,
+  probeNoteService,
 };

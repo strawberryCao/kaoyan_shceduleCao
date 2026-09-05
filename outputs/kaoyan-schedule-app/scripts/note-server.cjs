@@ -5,6 +5,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const vm = require('vm');
+const { resolveRuntimePaths, withoutLegacyAiProviderEnvironment } = require('./runtime-paths.cjs');
+const { writeAiConfig: writeManagedAiConfig } = require('./secure-ai-config.cjs');
+
+const RUNTIME_PATHS = resolveRuntimePaths();
+if (RUNTIME_PATHS.layout === 'managed') {
+  const sanitizedEnvironment = withoutLegacyAiProviderEnvironment(process.env);
+  for (const key of Object.keys(process.env)) {
+    if (!Object.hasOwn(sanitizedEnvironment, key)) delete process.env[key];
+  }
+}
+process.env.KAOYAN_NOTES_ROOT ||= RUNTIME_PATHS.notesRoot;
+process.env.KAOYAN_ASSISTANT_ROOT ||= RUNTIME_PATHS.assistantRoot;
+process.env.KAOYAN_AI_CONFIG_PATH ||= RUNTIME_PATHS.aiConfigPath;
+
 const {
   AI_TASK_DEFINITIONS,
   TASK_PARAMETER_DEFINITIONS,
@@ -51,8 +65,8 @@ const {
 } = require('./ai-request-budget.cjs');
 
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
-const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT || path.join(os.homedir(), 'Desktop', '笔记');
-const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT || path.join(os.homedir(), 'Desktop', '考研桌面助手');
+const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT;
+const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT;
 const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
 const ORGANIZER_STATE_PATH = path.join(ASSISTANT_ROOT, 'note-organizer-state.json');
 const ORGANIZER_LOCK_PATH = path.join(ASSISTANT_ROOT, 'note-organizer.lock');
@@ -443,17 +457,21 @@ function saveAiTaskConfigurations(input, usageProtectionInput) {
   validateTaskModelSelections(tasks, loaded.providers);
   createAiRouter({ config: loaded });
 
-  fs.mkdirSync(path.dirname(AI_PROVIDER_CONFIG_PATH), { recursive: true });
-  if (fs.existsSync(AI_PROVIDER_CONFIG_PATH)) {
-    const backupStamp = new Date().toISOString().replace(/[:.]/g, '-');
-    fs.copyFileSync(AI_PROVIDER_CONFIG_PATH, `${AI_PROVIDER_CONFIG_PATH}.before-task-update-${backupStamp}.bak`);
-  }
-  const temporaryPath = `${AI_PROVIDER_CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    fs.renameSync(temporaryPath, AI_PROVIDER_CONFIG_PATH);
-  } finally {
-    if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+  if (RUNTIME_PATHS.layout === 'managed') {
+    writeManagedAiConfig(RUNTIME_PATHS, next);
+  } else {
+    fs.mkdirSync(path.dirname(AI_PROVIDER_CONFIG_PATH), { recursive: true });
+    if (fs.existsSync(AI_PROVIDER_CONFIG_PATH)) {
+      const backupStamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.copyFileSync(AI_PROVIDER_CONFIG_PATH, `${AI_PROVIDER_CONFIG_PATH}.before-task-update-${backupStamp}.bak`);
+    }
+    const temporaryPath = `${AI_PROVIDER_CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      fs.renameSync(temporaryPath, AI_PROVIDER_CONFIG_PATH);
+    } finally {
+      if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath);
+    }
   }
   aiRouter = null;
   aiRouterInitError = null;
@@ -671,6 +689,10 @@ function canControlNoteApp(req) {
 
 function launchNoteApp(flag = '--note-app') {
   return new Promise((resolve, reject) => {
+    if (RUNTIME_PATHS.layout === 'managed') {
+      reject(new Error('Mac 托管服务不从 LaunchDaemon 启动 GUI 窗口；请直接使用浏览器，Windows 继续使用 Electron 速记小窗。'));
+      return;
+    }
     if (!['--note-app', '--close-note-app'].includes(flag) && !flag.startsWith('--material-preview=')) {
       reject(new Error('不支持的笔记 App 操作'));
       return;
@@ -5726,6 +5748,14 @@ async function handleLearningDataRoute(req, res, pathname) {
 
 async function handleReviewSyncRoute(req, res, pathname) {
   if (!pathname.startsWith('/ai/review/')) return false;
+  if (RUNTIME_PATHS.layout === 'managed') {
+    sendJson(res, 409, {
+      ok: false,
+      disabled: true,
+      error: 'Mac 托管模式不会运行旧 GitHub 综合复习同步；正式同步将在统一事件协议阶段接管。',
+    });
+    return true;
+  }
   if (!canControlNoteApp(req)) {
     sendJson(res, 403, { ok: false, error: '综合复习同步只能在运行服务的 Windows 主机上操作。' });
     return true;
@@ -6050,6 +6080,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'PUT' && pathname === '/ai/providers') {
+      if (RUNTIME_PATHS.layout === 'managed') {
+        sendJson(res, 403, { ok: false, error: 'Mac 托管服务的 API 密钥只能通过 configure-macmini.cjs 的隐藏输入配置。' });
+        return;
+      }
       if (!canControlNoteApp(req)) {
         sendJson(res, 403, { ok: false, error: 'AI 厂家密钥只能在运行服务的 Windows 主机上修改。' });
         return;
@@ -6182,7 +6216,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   concealExistingInternalDirectories();
-  reviewSync.start();
+  if (RUNTIME_PATHS.layout !== 'managed') reviewSync.start();
   console.log(`Kaoyan note server running at http://127.0.0.1:${PORT}`);
   console.log(`Notes root: ${NOTES_ROOT}`);
   console.log(`Assistant root: ${ASSISTANT_ROOT}`);
@@ -6194,9 +6228,12 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Learning data endpoint: http://127.0.0.1:${PORT}/learning-data`);
   console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);
   console.log(`Review sync status: http://127.0.0.1:${PORT}/ai/review/status`);
+  if (RUNTIME_PATHS.layout === 'managed') console.log('Legacy GitHub review synchronization: disabled in favor of the future Mac authority protocol.');
   console.log(`Note app endpoint: http://127.0.0.1:${PORT}/open-note-app`);
   console.log(`Note app close endpoint: http://127.0.0.1:${PORT}/close-note-app`);
-  console.log('LAN app proxy: enabled without device authentication (canvas and learning-data routes)');
+  console.log(RUNTIME_PATHS.layout === 'managed'
+    ? 'Internal app proxy: loopback-only; remote device authentication is intentionally deferred to the ingress phase.'
+    : 'LAN app proxy: enabled without device authentication (canvas and learning-data routes)');
   console.log(`Qwen: ${qwen.apiKey ? `enabled (${qwen.model})` : `disabled, configPath=${qwen.configPath}`}`);
   const currentRouter = getAiRouter();
   console.log(`AI router providers: ${currentRouter ? currentRouter.getStatus().providers.filter((provider) => provider.enabled).map((provider) => provider.id).join(', ') || 'none' : `unavailable (${aiRouterInitError})`}`);

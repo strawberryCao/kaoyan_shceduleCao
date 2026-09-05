@@ -4,7 +4,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createKaoyanWebServer } = require('../web-server.cjs');
+const { DEFAULT_HOST, createKaoyanWebServer } = require('../web-server.cjs');
 
 const listen = (server) => new Promise((resolve, reject) => {
   server.once('error', reject);
@@ -16,6 +16,7 @@ const close = (server) => new Promise((resolve, reject) => {
 });
 
 test('serves production assets with ranges and preserves the LAN API guard', async (t) => {
+  assert.equal(DEFAULT_HOST, '127.0.0.1', 'production startup must default to loopback');
   const staticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-web-server-'));
   fs.writeFileSync(path.join(staticRoot, 'index.html'), '<!doctype html><title>Kaoyan</title>', 'utf8');
   fs.writeFileSync(path.join(staticRoot, 'sample.mp4'), Buffer.from('0123456789', 'ascii'));
@@ -44,6 +45,16 @@ test('serves production assets with ranges and preserves the LAN API guard', asy
   });
 
   const baseUrl = `http://127.0.0.1:${webPort}`;
+  const liveness = await fetch(`${baseUrl}/healthz`);
+  assert.equal(liveness.status, 200);
+  assert.deepEqual(await liveness.json(), { ok: true, service: 'kaoyan-web-gateway' });
+  const readiness = await fetch(`${baseUrl}/readyz`);
+  assert.equal(readiness.status, 200);
+  assert.deepEqual(await readiness.json(), {
+    ok: true,
+    service: 'kaoyan-web-gateway',
+    dependencies: { noteService: 'ready' },
+  });
   const page = await fetch(`${baseUrl}/?console=1`);
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Kaoyan/);

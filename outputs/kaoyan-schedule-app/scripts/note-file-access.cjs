@@ -119,36 +119,47 @@ function resolveNoteImage(notesRoot, requestedPath, options = {}) {
   return resolved;
 }
 
-function makeRevealLaunchError(cause) {
+function makeRevealLaunchError(cause, managerLabel = '系统文件管理器') {
   const detail = cause instanceof Error ? cause.message : String(cause || 'unknown error');
-  const error = new Error(`无法启动资源管理器：${detail}`);
+  const error = new Error(`无法启动${managerLabel}：${detail}`);
   error.code = 'NOTE_REVEAL_LAUNCH_FAILED';
   error.cause = cause;
   return error;
 }
 
 async function revealNoteFile(notesRoot, requestedPath, options = {}) {
-  const resolved = resolveNoteFile(notesRoot, requestedPath);
-  if ((options.platform || process.platform) !== 'win32') {
+  const resolved = resolveNoteFile(notesRoot, requestedPath, options);
+  const platform = options.platform || process.platform;
+  let command;
+  let args;
+  let managerLabel;
+  if (platform === 'win32') {
+    const windowsRoot = options.windowsRoot || process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    command = options.explorerPath || path.join(windowsRoot, 'explorer.exe');
+    args = ['/select,', resolved.filePath];
+    managerLabel = '资源管理器';
+  } else if (platform === 'darwin') {
+    command = options.openPath || '/usr/bin/open';
+    args = ['-R', resolved.filePath];
+    managerLabel = 'Finder';
+  } else {
     const error = new Error('当前系统暂不支持在资源管理器中显示');
     error.code = 'NOTE_REVEAL_UNSUPPORTED';
     throw error;
   }
   const launch = options.spawn || spawn;
-  const windowsRoot = options.windowsRoot || process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
-  const explorerPath = options.explorerPath || path.join(windowsRoot, 'explorer.exe');
   let child;
   try {
-    child = launch(explorerPath, ['/select,', resolved.filePath], {
+    child = launch(command, args, {
       detached: true,
       stdio: 'ignore',
-      windowsHide: false,
+      windowsHide: platform === 'win32' ? false : true,
     });
   } catch (error) {
-    throw makeRevealLaunchError(error);
+    throw makeRevealLaunchError(error, managerLabel);
   }
   if (!child || typeof child.once !== 'function') {
-    throw makeRevealLaunchError(new Error('资源管理器进程没有返回可监听的句柄'));
+    throw makeRevealLaunchError(new Error('启动进程没有返回可监听的句柄'), managerLabel);
   }
 
   return new Promise((resolve, reject) => {
@@ -156,7 +167,7 @@ async function revealNoteFile(notesRoot, requestedPath, options = {}) {
     child.once('error', (cause) => {
       if (settled) return;
       settled = true;
-      reject(makeRevealLaunchError(cause));
+      reject(makeRevealLaunchError(cause, managerLabel));
     });
     child.once('spawn', () => {
       if (settled) return;

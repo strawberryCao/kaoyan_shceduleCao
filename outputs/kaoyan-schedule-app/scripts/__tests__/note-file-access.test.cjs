@@ -92,3 +92,27 @@ test('reports an Explorer launch failure without leaving an unhandled child erro
     },
   }), { code: 'NOTE_REVEAL_LAUNCH_FAILED' });
 });
+
+test('reveals a selected image in macOS Finder without invoking a shell', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-file-finder-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const imagePath = path.join(root, '线性代数', '矩阵.png');
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.writeFileSync(imagePath, Buffer.from('image'));
+  let invocation = null;
+
+  await revealNoteImage(root, imagePath, {
+    platform: 'darwin',
+    spawn(command, args, options) {
+      invocation = { command, args, options };
+      const child = new EventEmitter();
+      child.unref = () => {};
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    },
+  });
+
+  assert.equal(invocation.command, '/usr/bin/open');
+  assert.deepEqual(invocation.args, ['-R', imagePath]);
+  assert.equal(invocation.options.stdio, 'ignore');
+});

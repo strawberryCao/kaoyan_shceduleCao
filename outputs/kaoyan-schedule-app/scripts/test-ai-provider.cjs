@@ -1,4 +1,5 @@
 const dns = require('node:dns').promises;
+const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
@@ -45,6 +46,16 @@ function withTimeout(promise, timeoutMs, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
+function redactSensitiveText(value, secrets = []) {
+  let text = String(value || '');
+  for (const secret of secrets.map((item) => String(item || '')).filter(Boolean)) {
+    text = text.replaceAll(secret, '[已隐藏的 API Key]');
+  }
+  return text
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, '[已隐藏的 API Key]')
+    .replace(/AIza[A-Za-z0-9_-]{12,}/g, '[已隐藏的 API Key]');
+}
+
 async function resolveHost(hostname, timeoutMs) {
   const resolve = async (family) => {
     try {
@@ -65,11 +76,12 @@ async function resolveHost(hostname, timeoutMs) {
 function tlsProbe(urlString, family, timeoutMs) {
   return new Promise((resolve) => {
     const url = new URL(urlString);
+    const transport = url.protocol === 'http:' ? http : https;
     const startedAt = Date.now();
-    const request = https.request({
+    const request = transport.request({
       method: 'HEAD',
       hostname: url.hostname,
-      port: url.port || 443,
+      port: url.port || (url.protocol === 'http:' ? 80 : 443),
       path: `${url.pathname}${url.search}`,
       family,
       timeout: timeoutMs,
@@ -88,8 +100,8 @@ function tlsProbe(urlString, family, timeoutMs) {
   });
 }
 
-function safeResponseSummary(rawText) {
-  const text = String(rawText || '');
+function safeResponseSummary(rawText, secrets = []) {
+  const text = redactSensitiveText(rawText, secrets);
   try {
     const data = JSON.parse(text);
     if (Array.isArray(data)) {
@@ -161,7 +173,7 @@ async function apiProbe(provider, timeoutMs) {
       ok: response.ok,
       status: response.status,
       elapsedMs: Date.now() - startedAt,
-      response: safeResponseSummary(rawText),
+      response: safeResponseSummary(rawText, [provider.apiKey]),
     };
   } catch (error) {
     return {
@@ -284,4 +296,12 @@ async function runProviderTest(providerId) {
   if (!result.ok) process.exitCode = 1;
 }
 
-module.exports = { runProviderTest };
+if (require.main === module) {
+  const providerId = argumentValue('provider') || process.env.KAOYAN_AI_PROVIDER || 'qwen';
+  runProviderTest(providerId).catch((error) => {
+    console.error(`AI provider diagnostic failed: ${errorChain(error)}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { redactSensitiveText, runProviderTest, safeResponseSummary };

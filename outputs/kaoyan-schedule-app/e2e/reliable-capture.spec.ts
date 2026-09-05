@@ -51,17 +51,19 @@ test('desktop drag saves the image and sidecar before reporting success', async 
   await dialog.getByRole('button', { name: '保存笔记' }).click();
   await expect(page.getByText('已保存到本地；正在后台识别标题和科目，可立即继续记录')).toBeVisible();
 
-  const sidecars = fs.readdirSync(path.join(notesRoot, '默认文件夹', '.metadata'))
-    .filter((name) => name.endsWith('.note.json'));
-  const images = fs.readdirSync(path.join(notesRoot, '默认文件夹'))
-    .filter((name) => name.endsWith('.png'));
-  expect(sidecars).toHaveLength(1);
-  expect(images).toHaveLength(1);
-
-  const sidecar = JSON.parse(fs.readFileSync(path.join(notesRoot, '默认文件夹', '.metadata', sidecars[0]), 'utf8'));
+  const sidecar = fs.readdirSync(path.join(notesRoot, '默认文件夹', '.metadata'))
+    .filter((name) => name.endsWith('.note.json'))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(notesRoot, '默认文件夹', '.metadata', name), 'utf8')))
+    .find((item) => item.remark === 'Playwright 拖放落盘验收');
+  expect(sidecar).toBeTruthy();
   expect(sidecar.noteUid).toBeTruthy();
   expect(sidecar.subject).toBe('默认文件夹');
   expect(sidecar.remark).toBe('Playwright 拖放落盘验收');
+  expect(sidecar.attachments).toHaveLength(1);
+  expect(path.relative(notesRoot, sidecar.filePath)).not.toMatch(/^\.\.(?:[\\/]|$)/);
+  expect(fs.existsSync(sidecar.filePath)).toBe(true);
+  expect(fs.readFileSync(sidecar.filePath).toString('base64')).toBe(tinyPngBase64);
+  expect(sidecar.attachments[0].filePath).toBe(sidecar.filePath);
 
   await page.reload();
   await expect(page.getByText('笔记小 App')).toBeVisible();
@@ -162,11 +164,11 @@ test('an existing quick note can edit its text and add or remove attachments', a
     mimeType: 'text/plain',
     buffer: Buffer.from('后续补充资料', 'utf8'),
   });
-  await expect(record.getByRole('button', { name: /后续补充\.txt/ })).toBeVisible();
+  await expect(record.getByRole('tab', { name: /后续补充\.txt/ })).toBeVisible();
 
   page.once('dialog', (dialog) => dialog.accept());
   await record.getByRole('button', { name: '移除附件' }).click();
-  await expect(record.getByRole('button', { name: /后续补充\.txt/ })).toHaveCount(0);
+  await expect(record.getByRole('tab', { name: /后续补充\.txt/ })).toHaveCount(0);
 
   const snapshotResponse = await request.get(`${noteOrigin}/learning-data`);
   const snapshot = await snapshotResponse.json();
@@ -277,12 +279,19 @@ test('all common formats adapt, scroll and expose a cross-browser relay payload'
   expect(verticalLayout[0]!.x + verticalLayout[0]!.width).toBeLessThanOrEqual(verticalLayout[1]!.x);
   expect(verticalLayout[0]!.width).toBeLessThan(230);
   const divider = record.locator('.lc-quick-asset-divider');
+  await divider.scrollIntoViewIfNeeded();
   const dividerBox = await divider.boundingBox();
   expect(dividerBox).toBeTruthy();
   const initialRailWidth = verticalLayout[0]!.width;
-  await page.mouse.move(dividerBox!.x + dividerBox!.width / 2, dividerBox!.y + 50);
+  const dividerCenter = {
+    x: dividerBox!.x + dividerBox!.width / 2,
+    y: Math.max(0, dividerBox!.y) + Math.min(12, dividerBox!.height / 2),
+  };
+  await page.mouse.move(dividerCenter.x, dividerCenter.y);
   await page.mouse.down();
-  await page.mouse.move(dividerBox!.x + 58, dividerBox!.y + 50);
+  await expect(materialWorkspace).toHaveClass(/is-resizing-rail/);
+  await page.mouse.move(dividerCenter.x + 54, dividerCenter.y, { steps: 8 });
+  await expect(divider).toHaveAttribute('aria-valuenow', String(Math.round(initialRailWidth + 54)));
   await page.mouse.up();
   await expect.poll(() => assetRail.evaluate((element) => element.getBoundingClientRect().width))
     .toBeGreaterThan(initialRailWidth + 30);

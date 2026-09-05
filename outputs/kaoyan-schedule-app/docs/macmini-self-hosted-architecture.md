@@ -1,6 +1,6 @@
 # Mac mini 一致本地版：目标架构与迁移合同
 
-状态：第一阶段设计冻结稿
+状态：设计合同已冻结；第二阶段核心服务基础层已实现
 
 目标分支：`deploy/macmini-full-migration`
 
@@ -227,6 +227,12 @@ Mac 在同一事务内完成去重、校验、合并、写入事件记录和生�
 5. 第五阶段：Cloudflare Tunnel 备用入口、正式迁移 dry-run 和全量验收。
 6. 最终切换：只有逐字段守恒、备份恢复、跨端 UX、性能、安全和回滚全部通过，并经用户明确确认后执行。
 
+### 11.1 第二阶段实现映射
+
+第二阶段已经新增统一运行目录、回环 Web 网关、双进程监督、健康检查、交互式 AI 配置和系统级 `LaunchDaemon` 骨架。安装入口默认只生成只读计划，实际安装限定 Apple 芯片 macOS，并只在写系统 plist 时提升权限；服务自身仍以用户指定的非 root 账户运行。
+
+当前实现有意继续使用现有文件/JSON 服务逻辑，以便先完成跨平台运行边界，不会提前宣称 SQLite、字段级同步、设备认证或正式迁移已经完成。详细命令、目录和实机验收门槛见 `docs/macmini-phase-2-runbook.md`。
+
 ## 12. 第一阶段明确不做
 
 - 不安装 Mac 服务、不建立 Tunnel、不更改 Tailscale ACL。
@@ -240,3 +246,4 @@ Mac 在同一事务内完成去重、校验、合并、写入事件记录和生�
 - [Tailscale Serve 官方说明](https://tailscale.com/docs/features/tailscale-serve)：tailnet 内 HTTPS、ACL 与 loopback 反向代理边界。
 - [Cloudflare Tunnel 官方说明](https://developers.cloudflare.com/tunnel/)：由 Mac 主动建立出站 Tunnel，不开放业务入站端口。
 - [Apple FileVault 官方部署说明](https://support.apple.com/guide/deployment/intro-to-filevault-dep82064ec40/web)：Apple 芯片启动盘解锁要求，以及受系统版本和网络条件约束的远程解锁能力。
+- [Apple launchd 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)：系统级 daemon 的 plist 位置、按需启动和 `launchd` 生命周期模型。
