@@ -19,6 +19,13 @@ $assistantRoot = if ($env:KAOYAN_ASSISTANT_ROOT) {
 }
 $logRoot = Join-Path $assistantRoot 'service-logs'
 if (-not (Test-Path -LiteralPath $logRoot)) { New-Item -ItemType Directory -Path $logRoot -Force | Out-Null }
+$managedRuntimeRoot = if ($env:KAOYAN_RUNTIME_ROOT) {
+  [string]$env:KAOYAN_RUNTIME_ROOT
+} else {
+  Join-Path $env:LOCALAPPDATA 'KaoyanStudyCenter'
+}
+$replicaConfigPath = Join-Path (Join-Path $managedRuntimeRoot 'config') 'windows-sync.json'
+$replicaConfigured = Test-Path -LiteralPath $replicaConfigPath
 
 function Test-ListeningPort([int]$Port) {
   try {
@@ -41,6 +48,15 @@ function Wait-HttpEndpoint([string]$Uri, [int]$TimeoutSeconds = 20) {
     }
   }
   return $false
+}
+
+function Test-WindowsReplicaService {
+  try {
+    $health = Invoke-RestMethod -Uri 'http://127.0.0.1:5174/health' -TimeoutSec 3
+    return [string]$health.sync.role -eq 'windows-replica'
+  } catch {
+    return $false
+  }
 }
 
 function Refresh-SyncRuntime {
@@ -91,9 +107,19 @@ function Start-HiddenNodeProcess([string]$ScriptPath, [string]$LogName) {
     -WindowStyle Hidden
 }
 
-Refresh-SyncRuntime
+if (-not $replicaConfigured) {
+  Refresh-SyncRuntime
+}
 
-if (-not (Test-ListeningPort 5174)) {
+if ($replicaConfigured) {
+  if (Test-ListeningPort 5174) {
+    if (-not (Test-WindowsReplicaService)) {
+      throw 'Port 5174 is running a legacy note service. Stop it once, then restart the note app to enable the Mac replica.'
+    }
+  } else {
+    Start-HiddenNodeProcess (Join-Path $projectRoot 'scripts\windows-replica-runtime.cjs') 'windows-replica-runtime'
+  }
+} elseif (-not (Test-ListeningPort 5174)) {
   Start-HiddenNodeProcess (Join-Path $projectRoot 'scripts\note-server.cjs') 'note-server'
 }
 
@@ -103,6 +129,9 @@ if (-not (Test-ListeningPort 5173)) {
 
 if (-not (Wait-HttpEndpoint 'http://127.0.0.1:5174/health')) {
   throw 'Note service failed its startup health check. See service-logs\note-server.err.log.'
+}
+if ($replicaConfigured -and -not (Test-WindowsReplicaService)) {
+  throw 'Note service started without the configured Windows replica role.'
 }
 if (-not (Wait-HttpEndpoint 'http://127.0.0.1:5173/')) {
   throw 'LAN web service failed its startup health check. See service-logs\web-server.err.log.'

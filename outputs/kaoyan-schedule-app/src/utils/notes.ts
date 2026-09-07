@@ -64,7 +64,15 @@ export interface SaveMaterialResult {
   learningData?: LearningDataSnapshot;
   idempotentReplay?: boolean;
   commitSha?: string | null;
+  sync?: LocalReplicaSyncState;
   error?: string;
+}
+
+export interface LocalReplicaSyncState {
+  localSaved: boolean;
+  state: 'local' | 'queued' | 'acknowledged' | 'conflict';
+  pending: number;
+  conflicts: number;
 }
 
 export interface AppendMaterialPayload {
@@ -117,6 +125,7 @@ export interface SaveNoteResult {
   aiAvailable?: boolean;
   provisional?: boolean;
   idempotentReplay?: boolean;
+  sync?: LocalReplicaSyncState;
   error?: string;
 }
 

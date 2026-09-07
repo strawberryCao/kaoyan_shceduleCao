@@ -191,9 +191,11 @@ export function QuickMaterialComposer({ compact = false, desktop = false, onClos
       }
       await clearQuickMaterialDraft();
       setSaved(true);
-      onSaved('已保存' + (submissionFiles.length
-        ? ' · ' + submissionFiles.length + ' 个资料，AI 正在后台命名速记和资料'
-        : title.trim() ? '文字速记' : ' · AI 正在后台命名文字速记'));
+      onSaved(result.sync
+        ? `已保存到 Windows 本机${submissionFiles.length ? ` · ${submissionFiles.length} 个资料` : ''}；等待 Mac 同步并统一处理 AI`
+        : '已保存' + (submissionFiles.length
+          ? ' · ' + submissionFiles.length + ' 个资料，AI 正在后台命名速记和资料'
+          : title.trim() ? '文字速记' : ' · AI 正在后台命名文字速记'));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '保存失败，请稍后重试。');
     } finally {

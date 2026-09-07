@@ -561,6 +561,19 @@ function createLearningDataStore(options = {}) {
   const lockPath = options.lockPath || path.join(os.tmpdir(), 'kaoyan-schedule-app-locks', `${lockId}.lock`);
   const now = typeof options.now === 'function' ? options.now : () => new Date();
   const timeZone = options.timeZone || DEFAULT_TIME_ZONE;
+  const onCommitted = typeof options.onCommitted === 'function' ? options.onCommitted : null;
+  const onCommittedError = typeof options.onCommittedError === 'function' ? options.onCommittedError : null;
+
+  function notifyCommitted(previous, next, mutationOptions) {
+    if (!onCommitted) return;
+    try {
+      onCommitted(clone(previous), clone(next), clone(mutationOptions));
+    } catch (error) {
+      // The JSON snapshot is already durable. Report replica capture
+      // degradation without rolling back or deleting the user's data.
+      onCommittedError?.(error, clone(next));
+    }
+  }
 
   function readFile(candidatePath) {
     if (!fs.existsSync(candidatePath)) {
@@ -665,6 +678,7 @@ function createLearningDataStore(options = {}) {
       next.revision = current.revision + 1;
       next.updatedAt = now().toISOString();
       writeAtomic(next);
+      notifyCommitted(current, next, mutationOptions);
       return clone(next);
     } finally {
       releaseLock();
@@ -1560,6 +1574,7 @@ function createLearningDataStore(options = {}) {
       next.revision = current.revision + 1;
       next.updatedAt = timestamp;
       writeAtomic(next);
+      notifyCommitted(current, next, mutationOptions);
       const stored = findLiveNote(next, noteUid)?.note || nextNote;
       return { snapshot: clone(next), note: clone(stored), replayed: false };
     } finally {

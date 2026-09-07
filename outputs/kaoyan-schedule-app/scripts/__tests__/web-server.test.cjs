@@ -78,4 +78,46 @@ test('serves production assets with ranges and preserves the LAN API guard', asy
     authorization: null,
     cookie: null,
   });
+
+  const sync = await fetch(`${baseUrl}/sync/v1/status`, {
+    headers: { authorization: 'Bearer device-secret' },
+  });
+  assert.equal(sync.status, 200);
+  assert.deepEqual(await sync.json(), {
+    path: '/sync/v1/status',
+    authorization: 'Bearer device-secret',
+    cookie: null,
+  });
+
+  const browserSync = await fetch(`${baseUrl}/sync/v1/status`, {
+    headers: { origin: baseUrl, authorization: 'Bearer device-secret' },
+  });
+  assert.equal(browserSync.status, 403);
+});
+
+test('explicit loopback ingress accepts a Tailscale or Cloudflare hostname without weakening LAN defaults', async (t) => {
+  const staticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-loopback-ingress-'));
+  fs.writeFileSync(path.join(staticRoot, 'index.html'), '<!doctype html><title>Ingress</title>', 'utf8');
+  const webServer = createKaoyanWebServer({
+    staticRoot,
+    apiPort: 1,
+    allowedHosts: new Set(['127.0.0.1']),
+    trustLoopbackIngress: true,
+  });
+  const webPort = await listen(webServer);
+  t.after(async () => {
+    await close(webServer);
+    fs.rmSync(staticRoot, { recursive: true, force: true });
+  });
+  const response = await new Promise((resolve, reject) => {
+    const request = http.get({
+      host: '127.0.0.1',
+      port: webPort,
+      path: '/',
+      headers: { host: 'study-mac.tailnet.ts.net', connection: 'close' },
+    }, resolve);
+    request.once('error', reject);
+  });
+  response.resume();
+  assert.equal(response.statusCode, 200);
 });

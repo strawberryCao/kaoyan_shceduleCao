@@ -30,7 +30,9 @@ function resolveManagedRoot(options) {
       : paths.join(homeDir, 'Library', 'Application Support', APP_DIRECTORY_NAME);
   }
   if (platform === 'win32') {
-    const base = clean(env.PROGRAMDATA) || clean(env.LOCALAPPDATA) || paths.join(homeDir, 'AppData', 'Local');
+    // The Windows replica belongs to the signed-in user. LOCALAPPDATA is both
+    // writable without elevation and isolated from other Windows accounts.
+    const base = clean(env.LOCALAPPDATA) || clean(env.PROGRAMDATA) || paths.join(homeDir, 'AppData', 'Local');
     return paths.join(base, APP_DIRECTORY_NAME);
   }
   const xdgDataHome = clean(env.XDG_DATA_HOME) || paths.join(homeDir, '.local', 'share');

@@ -457,6 +457,7 @@ export function NoteDropApp() {
       sourceType: 'single-capture',
       aiSelection,
     };
+    let replicaState: Awaited<ReturnType<typeof saveNoteImage>>['sync'] = undefined;
     try {
       setSaving(true);
       setSaved(false);
@@ -464,14 +465,18 @@ export function NoteDropApp() {
       if (IS_CLOUD_RUNTIME) {
         await enqueueCaptureUpload([payload]);
       } else {
-        await saveImageReliably(payload, setStatus);
+        replicaState = (await saveImageReliably(payload, setStatus)).sync;
       }
       setPendingImage(null);
       setRemark('');
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
         ? '图片已加入可靠上传队列；现在可以立即关闭或继续拍题'
-        : '已保存到本地；正在后台识别标题和科目，可立即继续记录');
+        : replicaState?.state === 'conflict'
+          ? '已保存到 Windows 本机；与 Mac 的同字段修改需要稍后确认，数据不会被静默覆盖'
+          : replicaState
+            ? '已保存到 Windows 本机；正在等待同步到 Mac，AI 将由 Mac 统一处理'
+            : '已保存到本地；正在后台识别标题和科目，可立即继续记录');
       if (isMobileCapture) setMobileStep('success');
     } catch (error) {
       const message = error instanceof Error
@@ -605,10 +610,12 @@ export function NoteDropApp() {
     try {
       setSaving(true);
       setDialogError('');
+      let replicaQueued = false;
       if (IS_CLOUD_RUNTIME) {
         await enqueueCaptureUpload(payloads);
       } else {
-        await saveBatchReliably(payloads, setBatchProgress);
+        const result = await saveBatchReliably(payloads, setBatchProgress);
+        replicaQueued = result.notes.some((note) => Boolean(note.sync));
       }
       if (activeReviewJobId) {
         await completeMultiQuestionReview(activeReviewJobId, selected.map((item) => item.noteUid));
@@ -616,7 +623,9 @@ export function NoteDropApp() {
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
         ? `${selected.length} 道题已加入可靠上传队列；现在可以立即关闭`
-        : `${selected.length} 道题已保存到本地；正在后台识别标题和科目`);
+        : replicaQueued
+          ? `${selected.length} 道题已保存到 Windows 本机；等待 Mac 同步并统一处理 AI`
+          : `${selected.length} 道题已保存到本地；正在后台识别标题和科目`);
       setBatchProgress('');
       setMobileStep('success');
     } catch (error) {

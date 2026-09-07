@@ -130,6 +130,8 @@ function createChildSpecifications(runtimePaths, options = {}) {
     KAOYAN_NOTE_PORT: String(notePort),
     KAOYAN_WEB_PORT: String(webPort),
     KAOYAN_WEB_HOST: '127.0.0.1',
+    KAOYAN_TRUST_LOOPBACK_INGRESS: '1',
+    KAOYAN_SYNC_ROLE: 'mac-authority',
   });
 
   return [
@@ -163,6 +165,12 @@ function runDoctor(runtimePaths, options = {}) {
   const add = (id, ok, severity, detail) => checks.push({ id, ok: Boolean(ok), severity, detail });
   const nodeMajor = Number(process.versions.node.split('.')[0]);
   add('node-version', nodeMajor >= 22, 'error', `Node ${process.versions.node}; require >=22`);
+  try {
+    require('node:sqlite');
+    add('node-sqlite', true, 'error', 'built-in SQLite available');
+  } catch (error) {
+    add('node-sqlite', false, 'error', `built-in SQLite unavailable: ${error.message}`);
+  }
   add('project-note-service', fs.existsSync(path.join(projectRoot, 'scripts', 'note-server.cjs')), 'error', 'note-server.cjs');
   add('project-web-gateway', fs.existsSync(path.join(projectRoot, 'scripts', 'web-server.cjs')), 'error', 'web-server.cjs');
   add('production-build', fs.existsSync(path.join(projectRoot, 'dist', 'index.html')), 'error', 'dist/index.html');

@@ -177,17 +177,51 @@ const proxyApiRequest = (request, response, apiHost, apiPort) => {
   request.pipe(upstream);
 };
 
+const proxySyncRequest = (request, response, apiHost, apiPort) => {
+  const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
+  const headers = { ...request.headers };
+  delete headers.cookie;
+  delete headers.host;
+  delete headers.origin;
+  delete headers['x-kaoyan-lan-proxy'];
+  headers.host = `${apiHost}:${apiPort}`;
+
+  const upstream = http.request({
+    host: apiHost,
+    port: apiPort,
+    method: request.method,
+    path: `${requestUrl.pathname}${requestUrl.search}`,
+    headers,
+  }, (upstreamResponse) => {
+    response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
+    upstreamResponse.pipe(response);
+  });
+  upstream.setTimeout(5 * 60_000, () => upstream.destroy(new Error('Sync upstream timed out.')));
+  upstream.on('error', () => {
+    if (!response.headersSent) sendText(response, 502, 'The local sync service is unavailable.');
+    else response.destroy();
+  });
+  request.pipe(upstream);
+};
+
+const isLoopbackAddress = (value) => {
+  const address = String(value || '').toLowerCase();
+  return address === '::1' || address === '127.0.0.1' || address === '::ffff:127.0.0.1';
+};
+
 const createKaoyanWebServer = (options = {}) => {
   const staticRoot = path.resolve(options.staticRoot || DEFAULT_STATIC_ROOT);
   const staticRootPrefix = `${staticRoot}${path.sep}`;
   const apiHost = options.apiHost || DEFAULT_API_HOST;
   const apiPort = Number(options.apiPort || DEFAULT_API_PORT);
   const allowedHosts = options.allowedHosts || createAllowedHosts(os.networkInterfaces());
+  const trustLoopbackIngress = options.trustLoopbackIngress === true;
 
   return http.createServer((request, response) => {
     const requestHost = String(request.headers.host || '').toLowerCase();
     const hostname = hostnameFromHostHeader(requestHost);
-    if (!allowedHosts.has(hostname)) {
+    const trustedIngress = trustLoopbackIngress && isLoopbackAddress(request.socket?.remoteAddress);
+    if (!allowedHosts.has(hostname) && !trustedIngress) {
       sendText(response, 403, 'Host is not allowed.');
       return;
     }
@@ -203,6 +237,14 @@ const createKaoyanWebServer = (options = {}) => {
     }
 
     const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
+    if (requestUrl.pathname.startsWith('/sync/v1/')) {
+      if (origin || !['GET', 'HEAD', 'POST', 'PUT'].includes(request.method || 'GET')) {
+        sendJson(response, 403, { ok: false, code: 'SYNC_INGRESS_REJECTED', error: 'Sync ingress is only available to registered device clients.' });
+        return;
+      }
+      proxySyncRequest(request, response, apiHost, apiPort);
+      return;
+    }
     if (request.method === 'GET' && requestUrl.pathname === '/healthz') {
       sendJson(response, 200, { ok: true, service: 'kaoyan-web-gateway' });
       return;
@@ -279,7 +321,11 @@ const start = () => {
   const host = process.env.KAOYAN_WEB_HOST || DEFAULT_HOST;
   const port = Number(process.env.KAOYAN_WEB_PORT || DEFAULT_PORT);
   const apiPort = Number(process.env.KAOYAN_NOTE_PORT || DEFAULT_API_PORT);
-  const server = createKaoyanWebServer({ apiHost: DEFAULT_API_HOST, apiPort });
+  const server = createKaoyanWebServer({
+    apiHost: DEFAULT_API_HOST,
+    apiPort,
+    trustLoopbackIngress: process.env.KAOYAN_TRUST_LOOPBACK_INGRESS === '1',
+  });
   server.listen(port, host, () => {
     process.stdout.write(`Kaoyan production web server: http://127.0.0.1:${port}/\n`);
     process.stdout.write(`Kaoyan internal note upstream: http://${DEFAULT_API_HOST}:${apiPort}/\n`);

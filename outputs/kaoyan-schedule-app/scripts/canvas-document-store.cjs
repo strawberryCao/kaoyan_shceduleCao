@@ -603,6 +603,14 @@ function createCanvasDocumentStore(options = {}) {
     : path.join(notesRoot, DOCUMENTS_DIRECTORY);
   const limits = mergeLimits(options.limits);
   const now = typeof options.now === 'function' ? options.now : () => new Date();
+  const onSaved = typeof options.onSaved === 'function' ? options.onSaved : null;
+  const onDeleted = typeof options.onDeleted === 'function' ? options.onDeleted : null;
+  const onCallbackError = typeof options.onCallbackError === 'function' ? options.onCallbackError : null;
+
+  function notify(callback, ...args) {
+    if (!callback) return;
+    try { callback(...args); } catch (error) { onCallbackError?.(error); }
+  }
 
   function getDocumentPath(canvasId) {
     return path.join(rootPath, assertCanvasId(canvasId), DOCUMENT_FILE);
@@ -670,10 +678,12 @@ function createCanvasDocumentStore(options = {}) {
         error,
       );
     }
-    return JSON.parse(validation.serialized);
+    const saved = JSON.parse(validation.serialized);
+    if (saveOptions.skipSyncCapture !== true) notify(onSaved, existing, saved, saveOptions);
+    return saved;
   }
 
-  function deleteDocument(canvasId) {
+  function deleteDocument(canvasId, deleteOptions = {}) {
     const document = readDocument(canvasId, { validate: false });
     if (!document) return null;
     const projectPath = path.dirname(getDocumentPath(canvasId));
@@ -696,11 +706,13 @@ function createCanvasDocumentStore(options = {}) {
         error,
       );
     }
-    return {
+    const result = {
       document,
       deletedAt: deletedAt.toISOString(),
       trashPath,
     };
+    if (deleteOptions.skipSyncCapture !== true) notify(onDeleted, result, { canvasId, ...deleteOptions });
+    return result;
   }
 
   function listDocuments(listOptions = {}) {

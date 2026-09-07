@@ -7,6 +7,13 @@ const path = require('path');
 const vm = require('vm');
 const { resolveRuntimePaths, withoutLegacyAiProviderEnvironment } = require('./runtime-paths.cjs');
 const { writeAiConfig: writeManagedAiConfig } = require('./secure-ai-config.cjs');
+const { createSyncStore } = require('./sync-core.cjs');
+const { authenticateRequest: authenticateSyncRequest } = require('./sync-device-auth.cjs');
+const { createSyncHttpApi } = require('./sync-http-api.cjs');
+const { createWindowsReplicaStore } = require('./windows-replica-store.cjs');
+const { createReplicaLearningBridge } = require('./replica-learning-bridge.cjs');
+const { createAuthorityLearningMaterializer } = require('./authority-learning-materializer.cjs');
+const { createCanvasMaterializer, createCanvasSyncBridge } = require('./replica-canvas-sync.cjs');
 
 const RUNTIME_PATHS = resolveRuntimePaths();
 if (RUNTIME_PATHS.layout === 'managed') {
@@ -65,6 +72,7 @@ const {
 } = require('./ai-request-budget.cjs');
 
 const PORT = Number(process.env.KAOYAN_NOTE_PORT || 5174);
+const SYNC_ROLE = String(process.env.KAOYAN_SYNC_ROLE || '').trim();
 const NOTES_ROOT = process.env.KAOYAN_NOTES_ROOT;
 const ASSISTANT_ROOT = process.env.KAOYAN_ASSISTANT_ROOT;
 const LAYOUT_PATH = path.join(ASSISTANT_ROOT, 'desktop-layout.json');
@@ -81,6 +89,8 @@ const BACKGROUND_JOB_LOG_PATH = path.join(ASSISTANT_ROOT, 'background-jobs.jsonl
 const NOTE_ENRICHMENT_TIMEOUT_MS = 5 * 60 * 1000;
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
 const EXPLICIT_AI_ACTION_HEADER = 'x-kaoyan-ai-action';
+const INTERNAL_SYNC_TOKEN_HEADER = 'x-kaoyan-internal-sync-token';
+const INTERNAL_SYNC_TOKEN = String(process.env.KAOYAN_INTERNAL_SYNC_TOKEN || '');
 const LIVE_STROKE_MAX_BODY_BYTES = 512 * 1024;
 const ACTIVE_CANVAS_MAX_BODY_BYTES = 16 * 1024;
 const CANVAS_AI_MAX_BODY_BYTES = 9 * 1024 * 1024;
@@ -131,15 +141,114 @@ const normalizeStoredSubject = (value) => {
 };
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const qwen = loadQwenConfig();
-const learningData = createLearningDataStore({ assistantRoot: ASSISTANT_ROOT });
+const authoritySyncStore = SYNC_ROLE === 'mac-authority'
+  ? createSyncStore({
+    databasePath: path.join(RUNTIME_PATHS.dataRoot, 'sync', 'authority.sqlite'),
+    assetsRoot: RUNTIME_PATHS.assetsRoot,
+  })
+  : null;
+const windowsReplicaStore = SYNC_ROLE === 'windows-replica'
+  ? createWindowsReplicaStore({
+    databasePath: path.join(RUNTIME_PATHS.dataRoot, 'sync', 'windows-replica.sqlite'),
+    assetsRoot: path.join(RUNTIME_PATHS.notesRoot, '.sync-assets', 'sha256'),
+    deviceId: process.env.KAOYAN_SYNC_DEVICE_ID || 'windows-main',
+  })
+  : null;
+let lastReplicaCaptureError = null;
+const replicaLearningBridge = windowsReplicaStore
+  ? createReplicaLearningBridge({
+    replica: windowsReplicaStore,
+    onError(error) {
+      lastReplicaCaptureError = {
+        code: String(error?.code || 'REPLICA_CAPTURE_FAILED'),
+        at: new Date().toISOString(),
+      };
+    },
+  })
+  : null;
+const authorityLearningBridge = authoritySyncStore
+  ? createReplicaLearningBridge({
+    replica: {
+      getEntity: authoritySyncStore.getEntity,
+      queueMutation: (input) => authoritySyncStore.queueLocalMutation({ ...input, deviceId: 'mac-local' }),
+      entityStatus: () => ({ state: 'acknowledged', pending: 0, conflicts: 0 }),
+      status: () => ({ deviceId: 'mac-local', pending: 0, conflicts: 0, acknowledged: 0 }),
+    },
+    onError(error) {
+      lastReplicaCaptureError = {
+        code: String(error?.code || 'AUTHORITY_CAPTURE_FAILED'),
+        at: new Date().toISOString(),
+      };
+    },
+  })
+  : null;
+const learningCaptureBridge = replicaLearningBridge || authorityLearningBridge;
+const learningData = createLearningDataStore({
+  assistantRoot: ASSISTANT_ROOT,
+  onCommitted: learningCaptureBridge?.captureCommit,
+  onCommittedError(error) {
+    lastReplicaCaptureError = {
+      code: String(error?.code || 'REPLICA_CAPTURE_FAILED'),
+      at: new Date().toISOString(),
+    };
+  },
+});
+const authorityLearningMaterializer = authoritySyncStore
+  ? createAuthorityLearningMaterializer({ authority: authoritySyncStore, learningData })
+  : null;
+let materializeAuthorityChanges = () => authorityLearningMaterializer?.reconcile();
+const syncDeviceConfigPath = path.join(RUNTIME_PATHS.secretsRoot, 'sync-devices.json');
+const authoritySyncApi = authoritySyncStore
+  ? createSyncHttpApi({
+    store: authoritySyncStore,
+    authenticate: (request) => authenticateSyncRequest(request, syncDeviceConfigPath),
+    afterOperations: () => materializeAuthorityChanges(),
+    afterAsset: () => materializeAuthorityChanges(),
+  })
+  : null;
+authorityLearningMaterializer?.reconcile();
 const reviewSync = createReviewSyncManager({
   assistantRoot: ASSISTANT_ROOT,
   configPath: AI_PROVIDER_CONFIG_PATH,
   getLearningSnapshot: () => learningData.getSnapshot(),
 });
+const replicaCanvasBridge = windowsReplicaStore
+  ? createCanvasSyncBridge({
+    target: windowsReplicaStore,
+    onError(error) {
+      lastReplicaCaptureError = { code: String(error?.code || 'CANVAS_REPLICA_CAPTURE_FAILED'), at: new Date().toISOString() };
+    },
+  })
+  : null;
+const authorityCanvasBridge = authoritySyncStore
+  ? createCanvasSyncBridge({
+    target: authoritySyncStore,
+    deviceId: 'mac-local',
+    onError(error) {
+      lastReplicaCaptureError = { code: String(error?.code || 'CANVAS_AUTHORITY_CAPTURE_FAILED'), at: new Date().toISOString() };
+    },
+  })
+  : null;
+const canvasCaptureBridge = replicaCanvasBridge || authorityCanvasBridge;
 const canvasProjects = createCanvasDocumentStore({
   rootDir: path.join(ASSISTANT_ROOT, 'canvas-projects'),
+  onSaved: canvasCaptureBridge?.captureSave,
+  onDeleted: canvasCaptureBridge?.captureDelete,
+  onCallbackError(error) {
+    lastReplicaCaptureError = { code: String(error?.code || 'CANVAS_CAPTURE_FAILED'), at: new Date().toISOString() };
+  },
 });
+const authorityCanvasMaterializer = authoritySyncStore
+  ? createCanvasMaterializer({ source: authoritySyncStore, canvasStore: canvasProjects })
+  : null;
+materializeAuthorityChanges = () => {
+  const learning = authorityLearningMaterializer?.reconcile();
+  const canvas = authorityCanvasMaterializer?.reconcile();
+  if (learning?.changed) broadcastLearningData(learningData.getSnapshot());
+  for (const event of canvas?.events || []) broadcastCanvasProject(event);
+  return { learning, canvas };
+};
+authorityCanvasMaterializer?.reconcile();
 const canvasEventClients = new Set();
 const layoutEventClients = new Set();
 const learningEventClients = new Set();
@@ -551,6 +660,11 @@ function sendJson(res, status, data) {
 }
 
 function requireExplicitAiAction(req) {
+  if (SYNC_ROLE === 'windows-replica') {
+    const error = new Error('AI 已统一交由 Mac mini 处理；Windows 本机只负责可靠保存和同步。');
+    error.code = 'AI_REMOTE_AUTHORITY_REQUIRED';
+    throw error;
+  }
   if (String(req.headers[EXPLICIT_AI_ACTION_HEADER] || '').trim().toLowerCase() === 'user') return;
   const error = new Error('AI 请求已被安全拦截：请在当前页面明确点击对应的 AI 按钮。');
   error.code = 'AI_EXPLICIT_ACTION_REQUIRED';
@@ -845,6 +959,17 @@ function decodeDataUrl(dataUrl) {
 
 function metadataDir(subjectDir) {
   return path.join(subjectDir, '.metadata');
+}
+
+function isLoopbackRequest(req) {
+  const address = String(req.socket?.remoteAddress || '').toLowerCase();
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
+function internalSyncTokenAccepted(req) {
+  const presented = Buffer.from(String(req.headers[INTERNAL_SYNC_TOKEN_HEADER] || ''), 'utf8');
+  const expected = Buffer.from(INTERNAL_SYNC_TOKEN, 'utf8');
+  return expected.length >= 32 && presented.length === expected.length && crypto.timingSafeEqual(presented, expected);
 }
 
 function normalizeClassificationPath(value) {
@@ -1397,16 +1522,25 @@ function removeMetadataEntry(subjectDir, noteUid) {
   fs.writeFileSync(indexPath, JSON.stringify(next, null, 2), 'utf8');
 }
 
-function syncLearningMetadata(metadata) {
+function syncLearningMetadata(metadata, syncSource = 'human') {
   try {
     const currentCards = learningData.getSnapshot().cards.filter((card) => card.noteUid === metadata.noteUid);
     const cards = Array.isArray(metadata.learning?.cards) ? metadata.learning.cards : currentCards;
-    const snapshot = learningData.syncNote(metadata, { enrichment: metadata.learning, cards });
+    const snapshot = learningData.syncNote(metadata, { enrichment: metadata.learning, cards, syncSource });
     broadcastLearningData(snapshot);
     return null;
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
+}
+
+function localReplicaStatus(noteUid) {
+  return replicaLearningBridge ? {
+    sync: {
+      localSaved: true,
+      ...replicaLearningBridge.noteStatus(noteUid),
+    },
+  } : {};
 }
 
 function makeSaveResponse(saved, options = {}) {
@@ -1422,6 +1556,7 @@ function makeSaveResponse(saved, options = {}) {
     aiStatus,
     provisional: aiStatus === 'pending',
     idempotentReplay: options.idempotentReplay === true,
+    ...localReplicaStatus(saved.metadata.noteUid),
   };
 }
 
@@ -2095,7 +2230,7 @@ function makeInitialLearning(kind, parsed, createdAt, details = {}) {
 function persistBackgroundMetadata(saved, metadata) {
   atomicWriteJson(saved.receipt.sidecarPath, metadata);
   appendMetadata(subjectDirForMetadata(metadata), metadata);
-  const learningSyncError = syncLearningMetadata(metadata);
+  const learningSyncError = syncLearningMetadata(metadata, 'ai');
   writeSaveReceipt(metadata.noteUid, metadata, learningSyncError, saved.receipt.sidecarPath);
 }
 
@@ -2370,7 +2505,7 @@ async function runAiNamingJob(noteUid) {
     }
   }
 
-  const learningSyncError = syncLearningMetadata(metadata);
+  const learningSyncError = syncLearningMetadata(metadata, 'ai');
   atomicWriteJson(activeSidecarPath, metadata);
   appendMetadata(subjectDir, metadata);
   writeSaveReceipt(noteUid, metadata, learningSyncError, activeSidecarPath);
@@ -2380,6 +2515,7 @@ async function runAiNamingJob(noteUid) {
 }
 
 function queueNoteEnrichment(noteUid) {
+  if (SYNC_ROLE === 'windows-replica') return false;
   if (!noteUid || noteEnrichmentJobs.has(noteUid)) return false;
   const job = noteEnrichmentQueue.then(() => new Promise((resolve) => {
     const startedAt = Date.now();
@@ -2450,6 +2586,7 @@ async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
 }
 
 function queueAiNamingJob(noteUid) {
+  if (SYNC_ROLE === 'windows-replica') return false;
   if (aiNamingJobs.has(noteUid)) return false;
   const lane = aiNamingLaneCursor % aiNamingQueues.length;
   aiNamingLaneCursor += 1;
@@ -2671,7 +2808,7 @@ async function runLearningOnlyAiRename(noteUid, jobId) {
       attachments: promoted.attachments,
       facets: latest.facets,
       learning: enrichment,
-    }, { enrichment, cards: enrichment.cards });
+    }, { enrichment, cards: enrichment.cards, syncSource: 'ai' });
   } catch (error) {
     promoted.rollback();
     throw error;
@@ -3298,6 +3435,7 @@ async function runTaxonomyConsolidation(jobId) {
     try {
       nextSnapshot = learningData.restoreSnapshot(currentApplied.snapshot, {
         expectedRevision: currentSnapshot.revision,
+        syncSource: 'ai',
       });
       applied = currentApplied;
       appliedSourceSnapshot = currentSnapshot;
@@ -3354,6 +3492,7 @@ async function runTaxonomyConsolidation(jobId) {
 }
 
 function enqueueTaxonomyConsolidation(options = {}) {
+  if (SYNC_ROLE === 'windows-replica') return { job: null, replayed: false, delegated: true };
   const existing = [...manualAiJobs.values()].find((job) => (
     job.type === 'taxonomy-consolidation' && ['queued', 'processing'].includes(job.status)
   ));
@@ -4413,7 +4552,7 @@ async function runMaterialEnrichment(noteUid, attachments, router) {
     facets: latestNote.facets,
     learning: enrichment,
   };
-  const snapshot = learningData.syncNote(metadata, { enrichment, cards: enrichment.cards });
+  const snapshot = learningData.syncNote(metadata, { enrichment, cards: enrichment.cards, syncSource: 'ai' });
   return { analysis, snapshot, note: findMaterialLearningNote(snapshot, noteUid) };
 }
 
@@ -4605,7 +4744,7 @@ async function runMaterialNamingJob(noteUid, options = {}) {
     snapshot = learningData.updateNote(noteUid, {
       title: nextTitle,
       attachments: renamed,
-    }, { trackUserEdits: false });
+    }, { trackUserEdits: false, syncSource: 'ai' });
     noteUpdated = true;
     writeMaterialReceipt(namingReceipt);
     fileTransaction.commit();
@@ -4616,7 +4755,7 @@ async function runMaterialNamingJob(noteUid, options = {}) {
         snapshot = learningData.updateNote(noteUid, {
           title: latestNote.title,
           attachments: latestNote.attachments,
-        }, { trackUserEdits: false });
+        }, { trackUserEdits: false, syncSource: 'ai' });
       } catch {}
     }
     throw error;
@@ -4675,6 +4814,7 @@ async function runMaterialNamingJob(noteUid, options = {}) {
 }
 
 function queueMaterialNamingJob(noteUid, options = {}) {
+  if (SYNC_ROLE === 'windows-replica') return false;
   if (materialNamingJobs.has(noteUid)) {
     const pending = materialNamingRerunRequests.get(noteUid) || {};
     materialNamingRerunRequests.set(noteUid, {
@@ -4820,6 +4960,7 @@ async function handleSaveMaterial(req, res) {
       attachments: existing.attachments,
       learningData: learningData.getSnapshot(),
       idempotentReplay: true,
+      ...localReplicaStatus(noteUid),
     });
     if (existing.aiNaming?.status !== 'complete' && (files.length > 0 || !title)) {
       queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
@@ -4903,6 +5044,7 @@ async function handleSaveMaterial(req, res) {
       attachments: storedAttachments,
       learningData: snapshot,
       idempotentReplay: false,
+      ...localReplicaStatus(noteUid),
     });
     if (files.length > 0 || !title) queueMaterialNamingJob(noteUid, { userTitle: Boolean(title) });
   } catch (error) {
@@ -4963,6 +5105,7 @@ async function handleAppendMaterial(req, res) {
       learningData: snapshot,
       commitSha: null,
       idempotentReplay: true,
+      ...localReplicaStatus(noteUid),
     });
     if (rawReceipt?.aiNaming?.status !== 'complete') {
       queueMaterialNamingJob(noteUid, { userTitle: false });
@@ -5026,6 +5169,7 @@ async function handleAppendMaterial(req, res) {
       learningData: snapshot,
       commitSha: null,
       idempotentReplay: true,
+      ...localReplicaStatus(noteUid),
     });
     if (rawReceipt?.aiNaming?.status !== 'complete') {
       queueMaterialNamingJob(noteUid, { userTitle: false });
@@ -5072,6 +5216,7 @@ async function handleAppendMaterial(req, res) {
       learningData: nextSnapshot,
       commitSha: null,
       idempotentReplay: false,
+      ...localReplicaStatus(noteUid),
     });
     queueMaterialNamingJob(noteUid, { userTitle: false });
   } catch (error) {
@@ -5210,7 +5355,7 @@ function queueCanvasOrganization(projectId, previewDataUrl, sourceClientId) {
           movedCount: applied.movedCount,
           completedAt: updatedAt,
         },
-      }, { canvasId: projectId });
+      }, { canvasId: projectId, syncSource: 'ai' });
       updateCanvasOrganizationJob(projectId, {
         status: 'complete',
         progress: 100,
@@ -5909,6 +6054,50 @@ const server = http.createServer(async (req, res) => {
     const requestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
     const { pathname } = requestUrl;
 
+    if (req.method === 'POST' && pathname === '/internal/replica/materialized') {
+      if (SYNC_ROLE !== 'windows-replica') {
+        sendJson(res, 404, { ok: false, error: 'Internal replica notification is unavailable.' });
+        return;
+      }
+      if (!isLoopbackRequest(req) || !internalSyncTokenAccepted(req)) {
+        sendJson(res, 403, { ok: false, error: 'Internal replica notification was rejected.' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 64 * 1024)) || '{}');
+      if (payload.learningChanged === true) broadcastLearningData(learningData.getSnapshot());
+      let canvasEvents = 0;
+      for (const event of Array.isArray(payload.canvasEvents) ? payload.canvasEvents.slice(0, 100) : []) {
+        if (!['saved', 'deleted'].includes(event?.type)
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(String(event?.projectId || ''))
+          || !Number.isInteger(event?.revision)
+          || event.revision < 0) continue;
+        broadcastCanvasProject({
+          type: event.type,
+          projectId: event.projectId,
+          revision: event.revision,
+          updatedAt: String(event.updatedAt || new Date().toISOString()),
+          sourceClientId: 'windows-sync-service',
+        });
+        canvasEvents += 1;
+      }
+      sendJson(res, 200, { ok: true, learningBroadcast: payload.learningChanged === true, canvasEvents });
+      return;
+    }
+
+    if (authoritySyncApi && await authoritySyncApi.handle(req, res)) return;
+    if (req.method === 'GET' && pathname === '/replica/status') {
+      if (!replicaLearningBridge) {
+        sendJson(res, 404, { ok: false, error: 'This process is not a Windows replica.' });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        ...replicaLearningBridge.status(),
+        capture: lastReplicaCaptureError ? { state: 'degraded', lastError: lastReplicaCaptureError } : { state: 'healthy' },
+      });
+      return;
+    }
+
     if (await handleReviewSyncRoute(req, res, pathname)) return;
     if (await handleCanvasProjectRoute(req, res, pathname)) return;
     if (await handleLearningDataRoute(req, res, pathname)) return;
@@ -6040,6 +6229,15 @@ const server = http.createServer(async (req, res) => {
         organizer: readOrganizerStatus(),
         reviewSyncEndpoint: '/ai/review/status',
         reviewSync: reviewSync.status(),
+        sync: authoritySyncStore
+          ? authoritySyncStore.getStatus()
+          : replicaLearningBridge
+            ? {
+                role: 'windows-replica',
+                ...replicaLearningBridge.status(),
+                capture: lastReplicaCaptureError ? { state: 'degraded', lastError: lastReplicaCaptureError } : { state: 'healthy' },
+              }
+            : { role: 'standalone', enabled: false },
         aiRouter: currentRouter ? currentRouter.getStatus() : { providers: [], error: aiRouterInitError },
         qwen: {
           enabled: Boolean(qwen.apiKey),
@@ -6191,6 +6389,7 @@ const server = http.createServer(async (req, res) => {
       : error?.code === 'NOTE_REVEAL_UNSUPPORTED' ? 501
       : error?.code === 'NOTE_REVEAL_LAUNCH_FAILED' ? 503
       : error?.code === 'AI_EXPLICIT_ACTION_REQUIRED' ? 409
+      : error?.code === 'AI_REMOTE_AUTHORITY_REQUIRED' ? 503
       : error?.code === 'AI_TASK_DISABLED' ? 403
       : error?.code === 'AI_DAILY_REQUEST_LIMIT' ? 429
       : (error?.code === 'AI_TIMEOUT' || error?.code === 'AI_OVERALL_TIMEOUT') ? 504
@@ -6229,6 +6428,10 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Organizer status: http://127.0.0.1:${PORT}/organizer/status`);
   console.log(`Review sync status: http://127.0.0.1:${PORT}/ai/review/status`);
   if (RUNTIME_PATHS.layout === 'managed') console.log('Legacy GitHub review synchronization: disabled in favor of the future Mac authority protocol.');
+  console.log(authoritySyncApi
+    ? 'Authority sync API: enabled on the internal loopback service; remote ingress is not configured.'
+    : 'Authority sync API: disabled for this process.');
+  if (replicaLearningBridge) console.log('Windows replica capture: enabled; AI execution is delegated to the Mac authority.');
   console.log(`Note app endpoint: http://127.0.0.1:${PORT}/open-note-app`);
   console.log(`Note app close endpoint: http://127.0.0.1:${PORT}/close-note-app`);
   console.log(RUNTIME_PATHS.layout === 'managed'
@@ -6245,9 +6448,12 @@ module.exports = {
   async close() {
     reviewSync.stop();
     server.closeAllConnections?.();
-    if (!server.listening) return;
-    await new Promise((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    });
+    if (server.listening) {
+      await new Promise((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+    authoritySyncStore?.close();
+    windowsReplicaStore?.close();
   },
 };
