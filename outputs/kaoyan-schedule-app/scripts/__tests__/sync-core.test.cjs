@@ -175,6 +175,58 @@ test('a human can resolve an explicit field conflict against the latest revision
   assert.deepEqual(store.getOpenConflicts('learning-note', 'note-1'), []);
 });
 
+test('the user-facing conflict flow can choose either value and undo only before newer work', (t) => {
+  const { store } = fixture(t);
+  store.applyOperation(operation());
+  const conflict = store.applyOperation(operation({
+    operationId: 'op-ipad-title-ui',
+    deviceId: 'ipad',
+    clientSequence: 1,
+    mutation: { kind: 'patch', source: 'human', fields: { title: 'iPad 标题' } },
+  })).conflicts[0];
+  const listed = store.listConflicts();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].entityTitle, '人工标题');
+  assert.equal(listed[0].canUndo, false);
+
+  const resolved = store.resolveConflictValue(conflict.conflictId, {
+    choice: 'incoming',
+    deviceId: 'mobile-user',
+    operationId: 'mobile-resolve-incoming',
+  });
+  assert.equal(resolved.conflict.status, 'resolved');
+  assert.equal(resolved.conflict.canUndo, true);
+  assert.equal(store.getEntity('learning-note', 'note-1').document.title, 'iPad 标题');
+  assert.equal(store.listConflicts().length, 0);
+
+  const undone = store.undoConflictResolution(conflict.conflictId, {
+    deviceId: 'mobile-user',
+    operationId: 'mobile-undo-resolution',
+  });
+  assert.equal(undone.conflict.status, 'undone');
+  assert.equal(store.getEntity('learning-note', 'note-1').document.title, '人工标题');
+});
+
+test('conflict undo refuses to overwrite edits made after the resolution', (t) => {
+  const { store } = fixture(t);
+  store.applyOperation(operation());
+  const conflict = store.applyOperation(operation({
+    operationId: 'op-ipad-title-stale-undo',
+    deviceId: 'ipad', clientSequence: 1,
+    mutation: { kind: 'patch', source: 'human', fields: { title: 'iPad 标题' } },
+  })).conflicts[0];
+  store.resolveConflictValue(conflict.conflictId, {
+    choice: 'incoming', deviceId: 'mobile-user', operationId: 'mobile-resolve-before-edit',
+  });
+  store.applyOperation(operation({
+    operationId: 'windows-newer-remark', clientSequence: 2, baseRevision: 2,
+    mutation: { kind: 'patch', source: 'human', fields: { remark: '之后的新修改' } },
+  }));
+  assert.throws(() => store.undoConflictResolution(conflict.conflictId, {
+    deviceId: 'mobile-user', operationId: 'mobile-stale-undo',
+  }), (error) => error.code === 'SYNC_CONFLICT_UNDO_STALE');
+});
+
 test('tombstones cannot be revived by stale patches and restore requires the exact revision', (t) => {
   const { store } = fixture(t);
   store.applyOperation(operation());

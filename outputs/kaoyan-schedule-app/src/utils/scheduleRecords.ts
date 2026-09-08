@@ -1,9 +1,12 @@
 import type { RecordsByDate, ScheduleDay } from '../types';
 import { makeStoragePayload, normalizeRecords, STORAGE_KEY } from './schedule';
+import { IS_CLOUD_RUNTIME } from './runtime';
 
 const SCHEDULE_RECORDS_EVENT = 'kaoyan-schedule-records-changed';
+let remoteMemoryRecords: RecordsByDate = {};
 
 export const readScheduleRecords = (days: ScheduleDay[]): RecordsByDate => {
+  if (IS_CLOUD_RUNTIME) return normalizeRecords(remoteMemoryRecords, days);
   try {
     return normalizeRecords(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? 'null'), days);
   } catch {
@@ -12,7 +15,8 @@ export const readScheduleRecords = (days: ScheduleDay[]): RecordsByDate => {
 };
 
 export const saveScheduleRecords = (records: RecordsByDate) => {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(makeStoragePayload(records)));
+  if (IS_CLOUD_RUNTIME) remoteMemoryRecords = structuredClone(records);
+  else window.localStorage.setItem(STORAGE_KEY, JSON.stringify(makeStoragePayload(records)));
   window.dispatchEvent(new CustomEvent(SCHEDULE_RECORDS_EVENT, { detail: records }));
 };
 
@@ -24,6 +28,7 @@ export const subscribeScheduleRecords = (
     callback(normalizeRecords((event as CustomEvent<unknown>).detail, days));
   };
   const handleStorage = (event: StorageEvent) => {
+    if (IS_CLOUD_RUNTIME) return;
     if (event.key !== STORAGE_KEY || !event.newValue) {
       return;
     }

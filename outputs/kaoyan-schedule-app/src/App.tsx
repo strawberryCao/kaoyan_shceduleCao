@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, useEffect, useSyncExternalStore, type ErrorI
 import { WebAppShell } from './components/WebAppShell';
 import { getAppLocation, subscribeAppLocation } from './utils/appNavigation';
 import { IS_CLOUD_RUNTIME } from './utils/runtime';
+import { prepareRemotePrivateStorage } from './utils/remoteDataPolicy';
 import './wallpaper.css';
 import './notes.css';
 import './theme-fifth.css';
@@ -41,11 +42,34 @@ const deferred = (content: ReactNode, routeKey: string) => <RouteErrorBoundary k
 const palette = () => <Suspense fallback={null}><CommandPalette /></Suspense>;
 
 export default function App() {
+  prepareRemotePrivateStorage();
   const appLocation = useSyncExternalStore(subscribeAppLocation, getAppLocation, getAppLocation);
 
   useEffect(() => {
     void import('./utils/activityTasks').then(({ initializeActivityTasks }) => initializeActivityTasks()).catch(() => undefined);
     return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void Promise.all([
+      import('./utils/captureUploadQueue'),
+      import('./utils/noteBackgroundJobs'),
+    ]).then(([{ installCaptureUploadResumer }, { installMultiQuestionJobResumer }]) => {
+      if (!active) return;
+      const disposeCapture = installCaptureUploadResumer();
+      const disposeMultiQuestion = installMultiQuestionJobResumer();
+      dispose = () => {
+        disposeCapture();
+        disposeMultiQuestion();
+      };
+    }).catch(() => undefined);
+    return () => {
+      active = false;
+      dispose?.();
+    };
   }, []);
 
   const params = new URLSearchParams(appLocation.split('?')[1]?.split('#')[0] ?? '');
@@ -62,7 +86,11 @@ export default function App() {
     return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />, appLocation);
   }
 
-  if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode)) {
+  if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode || isWallpaperMode)) {
+    return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
+  }
+
+  if (isWallpaperMode && !window.kaoyanDesktop?.isElectron) {
     return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
   }
 

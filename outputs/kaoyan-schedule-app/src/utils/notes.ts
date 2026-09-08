@@ -149,7 +149,7 @@ export interface DetectQuestionResult {
   error?: string;
 }
 
-export type AiBackgroundJobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'skipped';
+export type AiBackgroundJobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'needs_review' | 'skipped';
 
 export interface AiBackgroundJob {
   id: string;
@@ -181,6 +181,42 @@ export interface AiJobResponse {
   accepted?: boolean;
   replayed?: boolean;
   job: AiBackgroundJob;
+}
+
+export interface AuthorityAiTask extends AiBackgroundJob {
+  subjectType?: string;
+  subjectId?: string;
+  attemptCount?: number;
+  billableAttemptCount?: number;
+  requiresExplicitRetry?: boolean;
+  startedAt?: string;
+}
+
+export interface AuthorityAiQueueStatus {
+  role: string;
+  total: number;
+  queued: number;
+  processing: number;
+  failed: number;
+  needsReview: number;
+  running: boolean;
+}
+
+export interface SyncConflictRecord {
+  id: string;
+  entityType: string;
+  entityId: string;
+  entityTitle: string;
+  field: string;
+  current: unknown;
+  incoming: unknown;
+  status: 'open' | 'resolved' | 'undone';
+  createdAt: string;
+  resolvedAt: string;
+  resolutionValue: unknown;
+  resolutionRevision: number | null;
+  undoneAt: string;
+  canUndo: boolean;
 }
 
 export interface LearningSearchResult {
@@ -638,6 +674,62 @@ export const getAiBackgroundJob = async (jobId: string): Promise<AiBackgroundJob
     AI_ENQUEUE_TIMEOUT_MS,
   );
   return response.job;
+};
+
+export const fetchAuthorityAiTasks = async (): Promise<{
+  jobs: AuthorityAiTask[];
+  queue: AuthorityAiQueueStatus | null;
+}> => {
+  const response = await fetchJsonWithTimeout<{
+    ok: boolean;
+    jobs: AuthorityAiTask[];
+    queue: AuthorityAiQueueStatus | null;
+  }>(`${NOTE_SERVER_URL}/ai/tasks`, { method: 'GET', cache: 'no-store' }, AI_ENQUEUE_TIMEOUT_MS);
+  return { jobs: response.jobs || [], queue: response.queue || null };
+};
+
+export const retryAuthorityAiTask = async (jobId: string): Promise<AuthorityAiTask> => {
+  const response = await fetchJsonWithTimeout<{ ok: boolean; job: AuthorityAiTask }>(
+    `${NOTE_SERVER_URL}/ai/tasks/${encodeURIComponent(jobId)}/retry`,
+    { method: 'POST', headers: explicitAiActionHeaders(), body: '{}' },
+    AI_ENQUEUE_TIMEOUT_MS,
+  );
+  return response.job;
+};
+
+export const fetchSyncConflicts = async (includeResolved = true): Promise<SyncConflictRecord[]> => {
+  const response = await fetchJsonWithTimeout<{ ok: boolean; conflicts: SyncConflictRecord[] }>(
+    `${NOTE_SERVER_URL}/sync/conflicts?includeResolved=${includeResolved ? '1' : '0'}`,
+    { method: 'GET', cache: 'no-store' },
+    AI_ENQUEUE_TIMEOUT_MS,
+  );
+  return response.conflicts || [];
+};
+
+export const resolveSyncConflict = async (
+  conflictId: string,
+  choice: 'current' | 'incoming' | 'custom',
+  value?: unknown,
+): Promise<SyncConflictRecord> => {
+  const response = await fetchJsonWithTimeout<{ ok: boolean; conflict: SyncConflictRecord }>(
+    `${NOTE_SERVER_URL}/sync/conflicts/${encodeURIComponent(conflictId)}/resolve`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ operationId: `conflict-${createNoteUid()}`, choice, value }),
+    },
+    AI_ENQUEUE_TIMEOUT_MS,
+  );
+  return response.conflict;
+};
+
+export const undoSyncConflict = async (conflictId: string): Promise<SyncConflictRecord> => {
+  const response = await fetchJsonWithTimeout<{ ok: boolean; conflict: SyncConflictRecord }>(
+    `${NOTE_SERVER_URL}/sync/conflicts/${encodeURIComponent(conflictId)}/undo`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ operationId: `conflict-undo-${createNoteUid()}` }) },
+    AI_ENQUEUE_TIMEOUT_MS,
+  );
+  return response.conflict;
 };
 
 export const searchLearningRecords = async (

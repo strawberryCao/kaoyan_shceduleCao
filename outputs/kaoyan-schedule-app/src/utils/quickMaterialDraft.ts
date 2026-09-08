@@ -1,7 +1,9 @@
 import type { LearningRecordFacet } from './notes';
+import { IS_CLOUD_RUNTIME } from './runtime';
+import { openTransientBytes, sealTransientBytes, type EncryptedTransientBytes } from './captureUploadQueue';
 
 const DATABASE_NAME = 'kaoyan-quick-material-draft';
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const STORE_NAME = 'drafts';
 const ACTIVE_DRAFT_KEY = 'active';
 
@@ -12,6 +14,14 @@ export interface QuickMaterialDraft {
   subject: string;
   facets: LearningRecordFacet[];
   files: File[];
+  updatedAt: string;
+}
+
+interface EncryptedQuickMaterialDraft {
+  version: 2;
+  encryption: 'AES-GCM';
+  metadata: EncryptedTransientBytes;
+  files: EncryptedTransientBytes[];
   updatedAt: string;
 }
 
@@ -67,12 +77,58 @@ const isDraft = (value: unknown): value is QuickMaterialDraft => {
     && Array.isArray(draft.files);
 };
 
+const isEncryptedDraft = (value: unknown): value is EncryptedQuickMaterialDraft => {
+  const draft = value as Partial<EncryptedQuickMaterialDraft> | null;
+  return Boolean(draft && draft.version === 2 && draft.encryption === 'AES-GCM'
+    && draft.metadata && Array.isArray(draft.files));
+};
+
+const encryptDraft = async (draft: QuickMaterialDraft): Promise<EncryptedQuickMaterialDraft> => {
+  const metadata = await sealTransientBytes(
+    'quick-material-metadata',
+    ACTIVE_DRAFT_KEY,
+    new TextEncoder().encode(JSON.stringify({
+      title: draft.title,
+      remark: draft.remark,
+      subject: draft.subject,
+      facets: draft.facets,
+      updatedAt: draft.updatedAt,
+      fileDescriptors: draft.files.map((file) => ({ name: file.name, type: file.type, lastModified: file.lastModified })),
+    })),
+  );
+  const files = await Promise.all(draft.files.map(async (file, index) => sealTransientBytes(
+    'quick-material-file', `${ACTIVE_DRAFT_KEY}:${index}`, await file.arrayBuffer(),
+  )));
+  return { version: 2, encryption: 'AES-GCM', metadata, files, updatedAt: draft.updatedAt };
+};
+
+const decryptDraft = async (draft: EncryptedQuickMaterialDraft): Promise<QuickMaterialDraft> => {
+  const metadata = JSON.parse(new TextDecoder().decode(await openTransientBytes(
+    'quick-material-metadata', ACTIVE_DRAFT_KEY, draft.metadata,
+  ))) as Omit<QuickMaterialDraft, 'version' | 'files'> & {
+    fileDescriptors?: Array<{ name?: string; type?: string; lastModified?: number }>;
+  };
+  const files = await Promise.all(draft.files.map(async (file, index) => new File([
+    await openTransientBytes('quick-material-file', `${ACTIVE_DRAFT_KEY}:${index}`, file),
+  ], metadata.fileDescriptors?.[index]?.name || `资料-${index + 1}`, {
+    type: metadata.fileDescriptors?.[index]?.type || 'application/octet-stream',
+    lastModified: metadata.fileDescriptors?.[index]?.lastModified || Date.now(),
+  })));
+  const { fileDescriptors: _fileDescriptors, ...plainMetadata } = metadata;
+  return { version: 1, ...plainMetadata, files };
+};
+
 export const loadQuickMaterialDraft = async (): Promise<QuickMaterialDraft | null> => {
   try {
-    const stored = await runDraftRequest<QuickMaterialDraft>('readonly', (store) => store.get(ACTIVE_DRAFT_KEY));
-    if (isDraft(stored)) {
-      memoryDraft = cloneDraft(stored);
-      return cloneDraft(stored);
+    const stored = await runDraftRequest<QuickMaterialDraft | EncryptedQuickMaterialDraft>('readonly', (store) => store.get(ACTIVE_DRAFT_KEY));
+    const restored = isEncryptedDraft(stored) ? await decryptDraft(stored) : isDraft(stored) ? stored : null;
+    if (restored) {
+      memoryDraft = cloneDraft(restored);
+      if (IS_CLOUD_RUNTIME && isDraft(stored)) {
+        const encrypted = await encryptDraft(restored);
+        await runDraftRequest('readwrite', (store) => store.put(encrypted, ACTIVE_DRAFT_KEY));
+      }
+      return cloneDraft(restored);
     }
   } catch {
     // Safari private mode and embedded browsers may reject IndexedDB.
@@ -83,7 +139,8 @@ export const loadQuickMaterialDraft = async (): Promise<QuickMaterialDraft | nul
 export const saveQuickMaterialDraft = async (draft: QuickMaterialDraft): Promise<void> => {
   memoryDraft = cloneDraft(draft);
   try {
-    await runDraftRequest('readwrite', (store) => store.put(draft, ACTIVE_DRAFT_KEY));
+    const stored = IS_CLOUD_RUNTIME ? await encryptDraft(draft) : draft;
+    await runDraftRequest('readwrite', (store) => store.put(stored, ACTIVE_DRAFT_KEY));
   } catch {
     // Keep the in-memory copy so a component remount in this page remains lossless.
   }

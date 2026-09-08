@@ -16,6 +16,8 @@ test('setup is read-only by default and keeps secret input out of argv', () => {
   assert.equal(plan.cloudflareDeployment, false);
   assert.equal(plan.networkBinding, '127.0.0.1');
   assert.equal(plan.steps.find((step) => step.id === 'configure-ai').secretInput, 'interactive-hidden-only');
+  assert.equal(plan.steps.find((step) => step.id === 'configure-mobile-access').secretInput, 'interactive-hidden-only');
+  assert.equal(plan.steps.find((step) => step.id === 'configure-tailscale-serve').mutatesProduction, true);
   assert.doesNotMatch(JSON.stringify(plan), /api[-_]?key=/i);
   assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.id), ['offline-tests', 'type-check', 'production-build']);
   assert.equal(plan.steps[3].id, 'runtime-smoke');

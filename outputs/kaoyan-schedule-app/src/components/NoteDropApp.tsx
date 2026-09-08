@@ -14,6 +14,7 @@ import {
   LoaderCircle,
   Minus,
   Save,
+  ShieldCheck,
   Sparkles,
   Trash2,
   X,
@@ -170,7 +171,7 @@ export function NoteDropApp() {
   const [materialOpen, setMaterialOpen] = useState(false);
   const [backgroundJob, setBackgroundJob] = useState<MultiQuestionJob | null>(null);
   const [activeReviewJobId, setActiveReviewJobId] = useState(requestedReviewJobId);
-  const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '' });
+  const [uploadSummary, setUploadSummary] = useState<CaptureUploadSummary>({ queued: 0, uploading: 0, failed: 0, completed: 0, message: '', encrypted: true });
   const [aiSelection, setAiSelection] = useState<NoteAiSelection>(storedAiSelection);
   const [visionModels, setVisionModels] = useState<NoteVisionModelChoice[]>([]);
 
@@ -471,7 +472,7 @@ export function NoteDropApp() {
       setRemark('');
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
-        ? '图片已加入可靠上传队列；现在可以立即关闭或继续拍题'
+        ? '图片已加密暂存；送达 Mac 后会自动清除本机临时内容'
         : replicaState?.state === 'conflict'
           ? '已保存到 Windows 本机；与 Mac 的同字段修改需要稍后确认，数据不会被静默覆盖'
           : replicaState
@@ -622,7 +623,7 @@ export function NoteDropApp() {
       }
       setSaved(true);
       setStatus(IS_CLOUD_RUNTIME
-        ? `${selected.length} 道题已加入可靠上传队列；现在可以立即关闭`
+        ? `${selected.length} 道题已加密暂存；送达 Mac 后会自动清除本机临时内容`
         : replicaQueued
           ? `${selected.length} 道题已保存到 Windows 本机；等待 Mac 同步并统一处理 AI`
           : `${selected.length} 道题已保存到本地；正在后台识别标题和科目`);
@@ -756,6 +757,13 @@ export function NoteDropApp() {
               <h1>拍下题目，马上归档</h1>
               <p>单题可手动裁剪；一页多题可由 AI 自动拆分。</p>
             </div>
+            <aside className="mobile-private-status" aria-live="polite">
+              <ShieldCheck size={18} />
+              <span>
+                <strong>{uploadSummary.queued || uploadSummary.uploading || uploadSummary.failed ? uploadSummary.message : 'Mac 私有直连'}</strong>
+                <small>未送达内容仅以设备内不可导出密钥加密暂存</small>
+              </span>
+            </aside>
             <div className="mobile-capture-primary-actions">
               <button className="primary" type="button" onClick={() => cameraInputRef.current?.click()}>
                 <Camera size={22} /><span><strong>拍照</strong><small>直接调用后置摄像头</small></span>

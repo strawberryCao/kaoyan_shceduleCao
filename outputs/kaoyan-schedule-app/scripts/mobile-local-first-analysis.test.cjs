@@ -13,20 +13,24 @@ test('mobile capture persists stable single and multi-question jobs before remot
   const capture = text('src/components/NoteDropApp.tsx');
   const background = text('src/utils/noteBackgroundJobs.ts');
   assert.match(queue, /indexedDB\.open\(DB_NAME, DB_VERSION\)/);
-  assert.match(queue, /await putJob\(job\)/);
+  assert.match(queue, /await putStoredJob\(job\)/);
   assert.match(queue, /void resumeCaptureUploads\(\)/);
   assert.match(queue, /saveNoteImagesBatch\(payloads\)/);
-  assert.match(queue, /uploading\.imageBlobs\?\.length/);
+  assert.match(queue, /decryptPayloads\(uploading\)/);
+  assert.match(queue, /window\.crypto\.subtle\.generateKey\(\{ name: 'AES-GCM', length: 256 \}, false/);
+  assert.match(queue, /encryptedItems: \[\]/);
   assert.match(queue, /nextAttemptAt/);
   assert.match(queue, /noteUids/);
   assert.match(capture, /await enqueueCaptureUpload\(\[payload\]\)/);
   assert.match(capture, /await enqueueMultiQuestionJob\(sourceImage\.src/);
-  assert.match(capture, /图片已加入可靠上传队列/);
+  assert.match(capture, /图片已加密暂存；送达 Mac 后会自动清除/);
   assert.match(capture, /setStatus\(job\.message/);
   assert.match(background, /await putJob\(job\)/);
   assert.match(background, /await resumeOne\(job\.id\)/);
   assert.match(background, /resumeMultiQuestionJobs/);
   assert.match(background, /await createCaptureBatch\(imageDataUrl/);
+  assert.match(background, /sealTransientBytes\('multi-question-image'/);
+  assert.match(background, /openTransientBytes\('multi-question-image'/);
   assert.doesNotMatch(background, /detectQuestionRegions|cropManyImages|enqueueCaptureUpload/);
   assert.doesNotMatch(capture.slice(capture.indexOf('const startMultiQuestion'), capture.indexOf('const confirmBatchCrop')), /detectQuestionRegions/);
 });
@@ -106,16 +110,23 @@ test('full enrichment supplies the automatic title while preserving capture sour
   assert.match(learning, /Array\.isArray\(input\.tags\)/);
 });
 
-test('mobile outbox commits IndexedDB transactions but never resumes paid work on app startup', () => {
+test('mobile outbox resumes transport after Safari lifecycle events without replaying paid AI work', () => {
   const queue = text('src/utils/captureUploadQueue.ts');
+  const background = text('src/utils/noteBackgroundJobs.ts');
   const app = text('src/App.tsx');
   assert.match(queue, /transactionDone/);
   assert.match(queue, /await committed/);
   assert.match(queue, /UPLOAD_LEASE_MS/);
-  assert.match(queue, /job\.status !== 'uploading'/);
-  assert.match(queue, /上次上传被系统中断/);
-  assert.doesNotMatch(app, /installCaptureUploadResumer/);
-  assert.match(queue, /Opening the app or restoring connectivity must not replay paid work/);
+  assert.match(queue, /current\.status === 'uploading'/);
+  assert.match(queue, /Safari 上次被系统中断/);
+  assert.match(app, /installCaptureUploadResumer/);
+  assert.match(queue, /window\.addEventListener\('pageshow', resume\)/);
+  assert.match(app, /installMultiQuestionJobResumer/);
+  assert.match(background, /window\.addEventListener\('online', resume\)/);
+  assert.match(background, /window\.addEventListener\('pageshow', resume\)/);
+  assert.match(background, /stable batch id makes a lost upload response safe to replay/);
+  assert.doesNotMatch(app, /retryCaptureBatchJob/);
+  assert.doesNotMatch(app, /retryAuthorityAiTask/);
 });
 
 test('V11 config synchronization cannot delete the compatibility control-plane file', () => {

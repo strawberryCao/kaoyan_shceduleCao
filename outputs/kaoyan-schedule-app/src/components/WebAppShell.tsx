@@ -7,6 +7,7 @@ import {
   Home,
   PanelsTopLeft,
   LayoutDashboard,
+  LogOut,
   Monitor,
   PanelLeftClose,
   PanelLeftOpen,
@@ -48,6 +49,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
   const [collapsed, setCollapsed] = useState(() => window.localStorage.getItem(COLLAPSE_KEY) === '1');
   const [activity, setActivity] = useState<ActivityTaskSummary>({ failed: 0, needsReview: 0, active: 0 });
   const [captureFeedback, setCaptureFeedback] = useState('');
+  const [loggingOut, setLoggingOut] = useState(false);
   const visibleWorkspaceItems = IS_CLOUD_RUNTIME
     ? workspaceItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
     : workspaceItems;
@@ -90,6 +92,24 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
 
   const openSearch = () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }));
+  };
+
+  const logoutRemoteSession = async () => {
+    if (loggingOut) return;
+    if (!window.confirm('退出这台设备上的登录？尚未送达 Mac 的加密速记会保留。')) return;
+    try {
+      setLoggingOut(true);
+      setCaptureFeedback('正在安全退出…');
+      const response = await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+      });
+      if (!response.ok) throw new Error(`退出服务返回 ${response.status}`);
+      window.location.reload();
+    } catch (cause) {
+      setCaptureFeedback(cause instanceof Error ? cause.message : '暂时无法退出，请稍后重试');
+      setLoggingOut(false);
+    }
   };
 
   return (
@@ -148,10 +168,18 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
             <span>搜索</span>
             <kbd>Ctrl K</kbd>
           </button>
-          <button type="button" onClick={() => window.open(`${window.location.origin}/?wallpaper=1`, '_blank', 'noopener,noreferrer')} title="打开壁纸页">
-            <Monitor aria-hidden="true" size={20} />
-            <span>壁纸页</span>
-          </button>
+          {window.kaoyanDesktop?.isElectron && (
+            <button type="button" onClick={() => window.open(`${window.location.origin}/?wallpaper=1`, '_blank', 'noopener,noreferrer')} title="打开壁纸页">
+              <Monitor aria-hidden="true" size={20} />
+              <span>壁纸页</span>
+            </button>
+          )}
+          {IS_CLOUD_RUNTIME && (
+            <button type="button" onClick={() => void logoutRemoteSession()} disabled={loggingOut} title="退出这台设备">
+              <LogOut aria-hidden="true" size={20} />
+              <span>{loggingOut ? '正在退出…' : '安全退出'}</span>
+            </button>
+          )}
         </div>
 
         <button
@@ -167,6 +195,19 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       </aside>
 
       <div className="web-app-content">{children}</div>
+      {IS_CLOUD_RUNTIME && (
+        <button
+          aria-label={loggingOut ? '正在退出' : '退出这台设备'}
+          className="web-app-mobile-logout"
+          type="button"
+          disabled={loggingOut}
+          onClick={() => void logoutRemoteSession()}
+          title="安全退出"
+        >
+          <LogOut aria-hidden="true" size={18} />
+          <span>{loggingOut ? '退出中' : '退出'}</span>
+        </button>
+      )}
       {active === 'learning' && <Suspense fallback={null}><LearningRenameAction /></Suspense>}
       {captureFeedback && <div className="web-app-feedback" role="status" aria-live="polite">{captureFeedback}</div>}
 

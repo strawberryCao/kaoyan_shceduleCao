@@ -53,7 +53,10 @@ export function CloudAuthGate({ children }: CloudAuthGateProps) {
     if (!cloud) return;
     const controller = new AbortController();
     void authRequest('status', { signal: controller.signal })
-      .then((status) => setAuthenticated(status.authenticated))
+      .then((status) => {
+        setAuthenticated(status.authenticated);
+        if (status.username) setUsername(status.username);
+      })
       .catch((cause) => {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : '无法检查登录状态');
       })
@@ -91,7 +94,7 @@ export function CloudAuthGate({ children }: CloudAuthGateProps) {
         <span className="cloud-auth-icon"><KeyRound size={28} /></span>
         <div>
           <h1>进入考研学习中心</h1>
-          <p>原始笔记和图片已设为私有，请先登录这台设备。</p>
+          <p>笔记和图片直接保存在你的 Mac mini，请先登录后继续。</p>
         </div>
         {checking ? (
           <p className="cloud-auth-checking"><LoaderCircle size={18} />正在检查登录状态…</p>

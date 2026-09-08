@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
+const { createMobileSessionManager, MobileAuthError } = require('./mobile-session-auth.cjs');
 const {
   createAllowedHosts,
   hostnameFromHostHeader,
@@ -36,6 +37,15 @@ const MIME_TYPES = new Map([
   ['.webp', 'image/webp'],
 ]);
 
+const applySecurityHeaders = (response, remoteBrowserIngress = false) => {
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('X-Frame-Options', 'DENY');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('Content-Security-Policy', "base-uri 'none'; object-src 'none'; frame-ancestors 'none'");
+  response.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  if (remoteBrowserIngress) response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+};
+
 const sendText = (response, statusCode, body) => {
   response.statusCode = statusCode;
   response.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -49,6 +59,72 @@ const sendJson = (response, statusCode, payload) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.end(JSON.stringify(payload));
+};
+
+const readJsonBody = (request, maxBytes = 16 * 1024) => new Promise((resolve, reject) => {
+  const chunks = [];
+  let size = 0;
+  request.on('data', (chunk) => {
+    size += chunk.length;
+    if (size > maxBytes) {
+      const error = new Error('Payload too large.');
+      error.code = 'PAYLOAD_TOO_LARGE';
+      reject(error);
+      request.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  request.on('end', () => {
+    try {
+      resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
+    } catch {
+      const error = new Error('Malformed JSON payload.');
+      error.code = 'INVALID_JSON';
+      reject(error);
+    }
+  });
+  request.once('error', reject);
+});
+
+const ingressClientKey = (request) => {
+  const forwarded = String(request.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return (forwarded || String(request.socket?.remoteAddress || 'unknown')).slice(0, 180);
+};
+
+const handleMobileAuthRoute = async (request, response, requestUrl, manager, origin) => {
+  const pathname = requestUrl.pathname;
+  if (request.method === 'GET' && pathname === '/api/auth/status') {
+    try {
+      const session = manager.readSession(request);
+      const status = manager.status();
+      sendJson(response, 200, {
+        ok: true,
+        authenticated: Boolean(session),
+        username: session?.username || status.username || '',
+        access: 'macmini-private-session',
+      });
+    } catch (error) {
+      if (error?.code !== 'AUTH_NOT_CONFIGURED') throw error;
+      sendJson(response, 503, { ok: false, authenticated: false, code: error.code, error: error.message });
+    }
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/auth/login') {
+    if (!origin) throw new MobileAuthError('AUTH_ORIGIN_REQUIRED', '登录请求缺少同源证明。', 403);
+    const payload = await readJsonBody(request);
+    const session = manager.login(payload.username, payload.password, ingressClientKey(request));
+    response.setHeader('Set-Cookie', session.cookie);
+    sendJson(response, 200, { ok: true, authenticated: true, username: session.username, expiresAt: session.expiresAt });
+    return;
+  }
+  if (request.method === 'POST' && pathname === '/api/auth/logout') {
+    if (!origin) throw new MobileAuthError('AUTH_ORIGIN_REQUIRED', '退出请求缺少同源证明。', 403);
+    response.setHeader('Set-Cookie', manager.logoutCookie());
+    sendJson(response, 200, { ok: true, authenticated: false });
+    return;
+  }
+  sendJson(response, 404, { ok: false, code: 'AUTH_ROUTE_NOT_FOUND', error: '登录接口不存在。' });
 };
 
 const probeNoteService = (apiHost, apiPort, timeoutMs = 2_000) => new Promise((resolve) => {
@@ -216,11 +292,17 @@ const createKaoyanWebServer = (options = {}) => {
   const apiPort = Number(options.apiPort || DEFAULT_API_PORT);
   const allowedHosts = options.allowedHosts || createAllowedHosts(os.networkInterfaces());
   const trustLoopbackIngress = options.trustLoopbackIngress === true;
+  const mobileAuthManager = options.mobileAuthManager || (trustLoopbackIngress
+    ? createMobileSessionManager({ configPath: options.mobileAuthConfigPath || process.env.KAOYAN_MOBILE_AUTH_CONFIG_PATH })
+    : null);
 
   return http.createServer((request, response) => {
+    applySecurityHeaders(response);
     const requestHost = String(request.headers.host || '').toLowerCase();
     const hostname = hostnameFromHostHeader(requestHost);
     const trustedIngress = trustLoopbackIngress && isLoopbackAddress(request.socket?.remoteAddress);
+    const remoteBrowserIngress = trustedIngress && !allowedHosts.has(hostname);
+    if (remoteBrowserIngress) applySecurityHeaders(response, true);
     if (!allowedHosts.has(hostname) && !trustedIngress) {
       sendText(response, 403, 'Host is not allowed.');
       return;
@@ -245,6 +327,19 @@ const createKaoyanWebServer = (options = {}) => {
       proxySyncRequest(request, response, apiHost, apiPort);
       return;
     }
+    if (remoteBrowserIngress && requestUrl.pathname.startsWith('/api/auth/')) {
+      void handleMobileAuthRoute(request, response, requestUrl, mobileAuthManager, origin).catch((error) => {
+        if (response.headersSent) {
+          response.destroy();
+          return;
+        }
+        const status = Number(error?.statusCode)
+          || (error?.code === 'PAYLOAD_TOO_LARGE' ? 413 : error?.code === 'INVALID_JSON' ? 400 : 500);
+        if (error?.details?.retryAfterMs) response.setHeader('Retry-After', String(Math.max(1, Math.ceil(error.details.retryAfterMs / 1000))));
+        sendJson(response, status, { ok: false, authenticated: false, code: error?.code || 'AUTH_FAILED', error: error?.message || '登录失败。' });
+      });
+      return;
+    }
     if (request.method === 'GET' && requestUrl.pathname === '/healthz') {
       sendJson(response, 200, { ok: true, service: 'kaoyan-web-gateway' });
       return;
@@ -261,6 +356,19 @@ const createKaoyanWebServer = (options = {}) => {
     }
 
     if (String(request.url || '').startsWith('/api')) {
+      if (remoteBrowserIngress) {
+        try {
+          mobileAuthManager.requireSession(request);
+        } catch (error) {
+          sendJson(response, Number(error?.statusCode) || 401, {
+            ok: false,
+            authenticated: false,
+            code: error?.code || 'AUTH_REQUIRED',
+            error: error?.message || '请先登录这台 Mac mini。',
+          });
+          return;
+        }
+      }
       const remoteAddress = String(request.socket?.remoteAddress || '').toLowerCase();
       const isLoopback = remoteAddress === '::1'
         || remoteAddress === '127.0.0.1'
@@ -325,6 +433,7 @@ const start = () => {
     apiHost: DEFAULT_API_HOST,
     apiPort,
     trustLoopbackIngress: process.env.KAOYAN_TRUST_LOOPBACK_INGRESS === '1',
+    mobileAuthConfigPath: process.env.KAOYAN_MOBILE_AUTH_CONFIG_PATH,
   });
   server.listen(port, host, () => {
     process.stdout.write(`Kaoyan production web server: http://127.0.0.1:${port}/\n`);
@@ -340,6 +449,7 @@ if (require.main === module) start();
 
 module.exports = {
   DEFAULT_HOST,
+  applySecurityHeaders,
   createKaoyanWebServer,
   parseSingleRange,
   probeNoteService,

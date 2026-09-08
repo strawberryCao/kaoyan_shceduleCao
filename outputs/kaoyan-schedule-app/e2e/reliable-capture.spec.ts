@@ -133,6 +133,186 @@ test('mobile quick note needs one text field and one save action', async ({ page
   expect(note.facets).toContain('quick');
 });
 
+test('mobile outbox stores ciphertext only and clears it after Mac delivery', async ({ page, context, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?noteApp=1');
+  await expect(page.locator('.mobile-capture-home')).toBeVisible();
+  await page.evaluate(() => import('/src/utils/captureUploadQueue.ts').then(() => true));
+  await context.setOffline(true);
+  const noteUid = `e2e_encrypted_${Date.now()}`;
+  const marker = `private-marker-${Date.now()}`;
+
+  const stored = await page.evaluate(async ({ png, noteUid: uid, marker: privateMarker }) => {
+    const queue = await import('/src/utils/captureUploadQueue.ts');
+    await queue.enqueueCaptureUpload([{
+      noteUid: uid,
+      imageDataUrl: `data:image/png;base64,${png}`,
+      subject: '默认文件夹',
+      remark: privateMarker,
+    }]);
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(queue.captureUploadQueueInternals.databaseName);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    const read = <T,>(store: string, key?: IDBValidKey) => new Promise<T>((resolve, reject) => {
+      const transaction = database.transaction(store, 'readonly');
+      const operation = key === undefined ? transaction.objectStore(store).getAll() : transaction.objectStore(store).get(key);
+      operation.onerror = () => reject(operation.error);
+      operation.onsuccess = () => resolve(operation.result as T);
+    });
+    const jobs = await read<Array<Record<string, unknown>>>(queue.captureUploadQueueInternals.storeName);
+    const keyRecord = await read<{ key: CryptoKey }>(queue.captureUploadQueueInternals.keyStoreName, 'aes-gcm-v1');
+    const job = jobs.find((candidate) => candidate.noteUids && (candidate.noteUids as string[]).includes(uid))!;
+    const cipher = new Uint8Array((job.encryptedItems as Array<{ metadataCiphertext: ArrayBuffer }>)[0].metadataCiphertext);
+    const cipherText = new TextDecoder().decode(cipher);
+    database.close();
+    return {
+      id: String(job.id),
+      status: String(job.status),
+      schemaVersion: job.schemaVersion,
+      encryption: job.encryption,
+      hasPayloads: Object.hasOwn(job, 'payloads'),
+      hasImageBlobs: Object.hasOwn(job, 'imageBlobs'),
+      containsMarker: JSON.stringify(job).includes(privateMarker) || cipherText.includes(privateMarker),
+      keyExtractable: keyRecord.key.extractable,
+    };
+  }, { png: tinyPngBase64, noteUid, marker });
+
+  expect(stored.status).toBe('queued');
+  expect(stored.schemaVersion).toBe(2);
+  expect(stored.encryption).toBe('AES-GCM');
+  expect(stored.hasPayloads).toBe(false);
+  expect(stored.hasImageBlobs).toBe(false);
+  expect(stored.containsMarker).toBe(false);
+  expect(stored.keyExtractable).toBe(false);
+
+  await context.setOffline(false);
+  await page.evaluate(async () => {
+    const queue = await import('/src/utils/captureUploadQueue.ts');
+    queue.installCaptureUploadResumer();
+    window.dispatchEvent(new PageTransitionEvent('pageshow'));
+  });
+  await expect.poll(() => page.evaluate(async (jobId) => {
+    const queue = await import('/src/utils/captureUploadQueue.ts');
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(queue.captureUploadQueueInternals.databaseName);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    const job = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const operation = database.transaction(queue.captureUploadQueueInternals.storeName, 'readonly')
+        .objectStore(queue.captureUploadQueueInternals.storeName).get(jobId);
+      operation.onerror = () => reject(operation.error);
+      operation.onsuccess = () => resolve(operation.result);
+    });
+    database.close();
+    return { status: job.status, encryptedItemCount: (job.encryptedItems as unknown[]).length };
+  }, stored.id)).toEqual({ status: 'completed', encryptedItemCount: 0 });
+
+  const response = await request.get(`${noteOrigin}/learning-data`);
+  const snapshot = await response.json();
+  const notes = Object.values(snapshot.days as Record<string, { autoNotes?: Array<{ noteUid?: string }> }>)
+    .flatMap((day) => day.autoNotes || []);
+  expect(notes.some((note) => note.noteUid === noteUid)).toBeTruthy();
+});
+
+test('Safari lifecycle safely resumes an encrypted multi-question original without replaying AI', async ({ page, context, request }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?noteApp=1');
+  await expect(page.locator('.mobile-capture-home')).toBeVisible();
+  await page.evaluate(() => import('/src/utils/noteBackgroundJobs.ts').then(() => true));
+  await context.setOffline(true);
+  const marker = `multi-private-${Date.now()}`;
+
+  const queued = await page.evaluate(async ({ png, privateMarker }) => {
+    const jobs = await import('/src/utils/noteBackgroundJobs.ts');
+    try {
+      await jobs.enqueueMultiQuestionJob(`data:image/png;base64,${png}`, {
+        subject: '默认文件夹',
+        remark: privateMarker,
+      });
+    } catch {
+      // The test origin is loopback HTTP, so the local-runtime branch waits for
+      // disk confirmation. Offline mode intentionally makes that confirmation
+      // fail after the encrypted job has been durably stored.
+    }
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(jobs.multiQuestionJobInternals.databaseName);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    const stored = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const operation = database.transaction(jobs.multiQuestionJobInternals.storeName, 'readonly')
+        .objectStore(jobs.multiQuestionJobInternals.storeName).getAll();
+      operation.onerror = () => reject(operation.error);
+      operation.onsuccess = () => resolve((operation.result as Array<Record<string, unknown>>)
+        .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))[0]);
+    });
+    database.close();
+    return {
+      id: String(stored.id),
+      schemaVersion: stored.schemaVersion,
+      encryption: stored.encryption,
+      hasPlainImage: Object.hasOwn(stored, 'imageBlob') || Object.hasOwn(stored, 'imageDataUrl'),
+      hasSealedImage: Boolean(stored.sealedImage),
+      containsMarker: JSON.stringify(stored).includes(privateMarker),
+    };
+  }, { png: tinyPngBase64, privateMarker: marker });
+
+  expect(queued).toMatchObject({ schemaVersion: 2, encryption: 'AES-GCM', hasPlainImage: false, hasSealedImage: true, containsMarker: false });
+  await context.setOffline(false);
+  await page.evaluate(async () => {
+    const jobs = await import('/src/utils/noteBackgroundJobs.ts');
+    jobs.installMultiQuestionJobResumer();
+    window.dispatchEvent(new PageTransitionEvent('pageshow'));
+  });
+
+  await expect.poll(() => page.evaluate(async (jobId) => {
+    const jobs = await import('/src/utils/noteBackgroundJobs.ts');
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(jobs.multiQuestionJobInternals.databaseName);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    const stored = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const operation = database.transaction(jobs.multiQuestionJobInternals.storeName, 'readonly')
+        .objectStore(jobs.multiQuestionJobInternals.storeName).get(jobId);
+      operation.onerror = () => reject(operation.error);
+      operation.onsuccess = () => resolve(operation.result);
+    });
+    database.close();
+    return { serverJobId: String(stored.serverJobId || ''), hasSealedImage: Boolean(stored.sealedImage) };
+  }, queued.id)).toEqual({ serverJobId: expect.stringMatching(/^(?:local-|capture-)/), hasSealedImage: false });
+
+  const localJob = await page.evaluate(async (jobId) => {
+    const jobs = await import('/src/utils/noteBackgroundJobs.ts');
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open(jobs.multiQuestionJobInternals.databaseName);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    const stored = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const operation = database.transaction(jobs.multiQuestionJobInternals.storeName, 'readonly')
+        .objectStore(jobs.multiQuestionJobInternals.storeName).get(jobId);
+      operation.onerror = () => reject(operation.error);
+      operation.onsuccess = () => resolve(operation.result);
+    });
+    database.close();
+    return { serverJobId: String(stored.serverJobId || '') };
+  }, queued.id);
+  const jobResponse = await request.get(`${noteOrigin}/jobs/${localJob.serverJobId}`);
+  expect(jobResponse.status()).toBe(200);
+  const serverJob = (await jobResponse.json()).job as { batchId: string; entryId: string };
+  expect(serverJob.batchId).toBe(queued.id);
+
+  const response = await request.get(`${noteOrigin}/learning-data`);
+  const snapshot = await response.json();
+  const notes = Object.values(snapshot.days as Record<string, { autoNotes?: Array<{ noteUid?: string; sourceType?: string }> }> )
+    .flatMap((day) => day.autoNotes || []);
+  expect(notes.some((note) => note.noteUid === serverJob.entryId && note.sourceType === 'multi-capture-original')).toBeTruthy();
+});
+
 test('an existing quick note can edit its text and add or remove attachments', async ({ page, request }) => {
   const noteUid = 'e2e_quick_edit_001';
   const createResponse = await request.post(`${noteOrigin}/save-material-note`, {

@@ -28,6 +28,11 @@ const isAllowedLanApiRoute = (method, requestUrl) => {
       && Boolean(url.searchParams.get('path'))
       && (url.searchParams.get('preview') === null || url.searchParams.get('preview') === '1');
   }
+  if (method === 'GET' && url.pathname === '/api/sync/conflicts') {
+    const keys = [...url.searchParams.keys()];
+    return keys.every((key) => key === 'includeResolved')
+      && (url.searchParams.get('includeResolved') === null || ['0', '1'].includes(url.searchParams.get('includeResolved')));
+  }
   if (url.search) return false;
   if (method === 'GET' && url.pathname === '/api/canvas-projects') return true;
   if (method === 'GET' && url.pathname === '/api/canvas-projects/events') return true;
@@ -41,6 +46,9 @@ const isAllowedLanApiRoute = (method, requestUrl) => {
   if (method === 'POST' && /^\/api\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\/retry$/.test(url.pathname)) return true;
   if (method === 'GET' && (url.pathname === '/api/learning-data' || url.pathname === '/api/learning-data/events')) return true;
   if (method === 'GET' && /^\/api\/ai\/jobs\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(url.pathname)) return true;
+  if (method === 'GET' && url.pathname === '/api/ai/tasks') return true;
+  if (method === 'POST' && /^\/api\/ai\/tasks\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\/retry$/.test(url.pathname)) return true;
+  if (method === 'POST' && /^\/api\/sync\/conflicts\/[A-Za-z0-9][A-Za-z0-9._:-]{0,191}\/(?:resolve|undo)$/.test(url.pathname)) return true;
   if (method === 'POST' && url.pathname === '/api/search') return true;
   if (method === 'POST' && (url.pathname === '/api/learning-data/notes' || url.pathname === '/api/learning-data/cards')) return true;
   if (method === 'POST' && /^\/api\/learning-data\/notes\/[^/]+\/rename$/.test(url.pathname)) return true;

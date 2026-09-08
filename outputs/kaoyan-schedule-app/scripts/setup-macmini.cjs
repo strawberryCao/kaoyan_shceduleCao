@@ -82,6 +82,19 @@ function buildSetupPlan(options, environment = process.env) {
     secretInput: 'interactive-hidden-only',
   });
   steps.push({
+    id: 'configure-mobile-access',
+    command: process.execPath,
+    args: [path.join(PROJECT_ROOT, 'scripts', 'configure-mobile-access.cjs'), 'configure', `--runtime-root=${options.runtimeRoot}`],
+    mutatesProduction: true,
+    secretInput: 'interactive-hidden-only',
+  });
+  steps.push({
+    id: 'configure-tailscale-serve',
+    command: process.execPath,
+    args: [path.join(PROJECT_ROOT, 'scripts', 'configure-tailscale-serve.cjs'), 'apply', `--runtime-root=${options.runtimeRoot}`, `--web-port=${options.webPort}`],
+    mutatesProduction: true,
+  });
+  steps.push({
     id: 'doctor',
     command: process.execPath,
     args: [path.join(PROJECT_ROOT, 'scripts', 'macmini-runtime.cjs'), 'doctor', ...common],
@@ -158,7 +171,7 @@ async function main() {
   for (const step of plan.steps) runStep(step);
   await probeReady(options.webPort);
   process.stdout.write(`\nMac mini core service is ready on loopback port ${options.webPort}.\n`);
-  process.stdout.write('Tailscale Serve and Cloudflare Tunnel remain separate, explicit later-stage actions.\n');
+  process.stdout.write('Tailscale private HTTPS is configured; Cloudflare Tunnel remains a separate, explicit phase-five action.\n');
 }
 
 if (require.main === module) {

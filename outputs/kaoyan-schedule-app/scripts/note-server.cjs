@@ -14,6 +14,7 @@ const { createWindowsReplicaStore } = require('./windows-replica-store.cjs');
 const { createReplicaLearningBridge } = require('./replica-learning-bridge.cjs');
 const { createAuthorityLearningMaterializer } = require('./authority-learning-materializer.cjs');
 const { createCanvasMaterializer, createCanvasSyncBridge } = require('./replica-canvas-sync.cjs');
+const { createDurableAiQueue } = require('./durable-ai-queue.cjs');
 
 const RUNTIME_PATHS = resolveRuntimePaths();
 if (RUNTIME_PATHS.layout === 'managed') {
@@ -147,6 +148,13 @@ const authoritySyncStore = SYNC_ROLE === 'mac-authority'
     assetsRoot: RUNTIME_PATHS.assetsRoot,
   })
   : null;
+const durableAiQueue = authoritySyncStore
+  ? createDurableAiQueue({
+    databasePath: path.join(RUNTIME_PATHS.dataRoot, 'ai', 'tasks.sqlite'),
+    syncStore: authoritySyncStore,
+    execute: executeDurableAiTask,
+  })
+  : null;
 const windowsReplicaStore = SYNC_ROLE === 'windows-replica'
   ? createWindowsReplicaStore({
     databasePath: path.join(RUNTIME_PATHS.dataRoot, 'sync', 'windows-replica.sqlite'),
@@ -197,13 +205,14 @@ const authorityLearningMaterializer = authoritySyncStore
   ? createAuthorityLearningMaterializer({ authority: authoritySyncStore, learningData })
   : null;
 let materializeAuthorityChanges = () => authorityLearningMaterializer?.reconcile();
+const pendingAuthorityAiNoteIds = new Set();
 const syncDeviceConfigPath = path.join(RUNTIME_PATHS.secretsRoot, 'sync-devices.json');
 const authoritySyncApi = authoritySyncStore
   ? createSyncHttpApi({
     store: authoritySyncStore,
     authenticate: (request) => authenticateSyncRequest(request, syncDeviceConfigPath),
-    afterOperations: () => materializeAuthorityChanges(),
-    afterAsset: () => materializeAuthorityChanges(),
+    afterOperations: (receipts) => materializeAuthorityChanges(receipts),
+    afterAsset: () => materializeAuthorityChanges([], true),
   })
   : null;
 authorityLearningMaterializer?.reconcile();
@@ -241,11 +250,12 @@ const canvasProjects = createCanvasDocumentStore({
 const authorityCanvasMaterializer = authoritySyncStore
   ? createCanvasMaterializer({ source: authoritySyncStore, canvasStore: canvasProjects })
   : null;
-materializeAuthorityChanges = () => {
+materializeAuthorityChanges = (receipts = [], assetArrived = false) => {
   const learning = authorityLearningMaterializer?.reconcile();
   const canvas = authorityCanvasMaterializer?.reconcile();
   if (learning?.changed) broadcastLearningData(learningData.getSnapshot());
   for (const event of canvas?.events || []) broadcastCanvasProject(event);
+  queueAuthorityAiFromReceipts(receipts, assetArrived);
   return { learning, canvas };
 };
 authorityCanvasMaterializer?.reconcile();
@@ -274,11 +284,15 @@ function getNoteTitlePolicy() {
 }
 let canvasOrganizationQueue = Promise.resolve();
 const canvasOrganizationJobs = new Map();
-const beforeAiRequest = createPersistentAiRequestGuard({
+const budgetBeforeAiRequest = createPersistentAiRequestGuard({
   assistantRoot: ASSISTANT_ROOT,
   logPath: AI_REQUEST_ATTEMPTS_PATH,
   getSettings: () => readAiUsageProtection(),
 });
+const beforeAiRequest = (details) => {
+  budgetBeforeAiRequest(details);
+  durableAiQueue?.markAttemptStarted(details);
+};
 
 function emptyAiUsage() {
   return { schemaVersion: 1, updatedAt: null, providers: {}, daily: {} };
@@ -2585,8 +2599,134 @@ async function acquireOrganizerLockForHumanAction(timeoutMs = 12_000) {
   throw lastError || Object.assign(new Error('Note organizer is still running'), { code: 'ORGANIZER_LOCKED' });
 }
 
+function aiTaskFingerprint(note, fallbackPath = '') {
+  const attachments = (Array.isArray(note?.attachments) ? note.attachments : []).map((attachment) => ({
+    assetHash: String(attachment?.assetHash || ''),
+    checksum: String(attachment?.checksum || ''),
+    size: Number(attachment?.size) || 0,
+    mimeType: String(attachment?.mimeType || attachment?.mime || ''),
+  }));
+  let primaryHash = '';
+  const candidatePath = String(fallbackPath || note?.filePath || '');
+  try {
+    if (candidatePath && path.isAbsolute(candidatePath) && fs.existsSync(candidatePath)) {
+      primaryHash = crypto.createHash('sha256').update(fs.readFileSync(candidatePath)).digest('hex');
+    }
+  } catch {}
+  return crypto.createHash('sha256').update(JSON.stringify({
+    noteUid: String(note?.noteUid || ''),
+    createdAt: String(note?.createdAt || ''),
+    remark: String(note?.remark || ''),
+    sourceType: String(note?.sourceType || ''),
+    attachments,
+    primaryHash,
+  })).digest('hex');
+}
+
+function enqueueDurableTask(input) {
+  if (!durableAiQueue) return null;
+  return durableAiQueue.enqueue(input);
+}
+
+async function executeDurableAiTask(job) {
+  const noteUid = String(job.payload?.noteUid || job.subjectId || '');
+  if (job.type === 'note-naming') {
+    await runAiNamingJob(noteUid);
+    const saved = readSaveReceipt(noteUid);
+    const naming = saved?.metadata?.naming || {};
+    if (naming.status !== 'complete') {
+      const error = new Error(String(naming.error || 'AI naming did not complete.'));
+      error.code = 'AI_NAMING_INCOMPLETE';
+      throw error;
+    }
+    return {
+      noteUid,
+      title: String(saved.metadata.title || ''),
+      subject: String(saved.metadata.subject || ''),
+      provider: String(naming.provider || ''),
+      model: String(naming.model || ''),
+      revision: Number(learningData.getSnapshot().revision) || 0,
+    };
+  }
+  if (job.type === 'learning-note-rename') {
+    const timestamp = new Date().toISOString();
+    manualAiJobs.set(job.id, {
+      id: job.id, type: 'note-rename', noteUid, status: 'processing', progress: 10,
+      message: 'Mac 正在统一处理命名与分类', error: '', createdAt: job.createdAt || timestamp,
+      updatedAt: timestamp, completedAt: '', request: { operationId: job.id }, result: null,
+    });
+    await runLearningOnlyAiRename(noteUid, job.id);
+    const completed = manualAiJobs.get(job.id);
+    if (completed?.status !== 'completed') {
+      const error = new Error(completed?.error || 'AI learning-note rename did not complete.');
+      error.code = completed?.errorCode || 'AI_NAMING_INCOMPLETE';
+      throw error;
+    }
+    return completed.result;
+  }
+  if (job.type === 'material-naming') {
+    const result = await runMaterialNamingJob(noteUid, job.payload?.options || {});
+    if (!result) {
+      const error = new Error('Material note was not found.');
+      error.code = 'MATERIAL_NOTE_NOT_FOUND';
+      throw error;
+    }
+    return {
+      noteUid,
+      title: String(result.title || ''),
+      revision: Number(result.snapshot?.revision) || 0,
+      enrichmentError: String(result.enrichmentError || ''),
+    };
+  }
+  const error = new Error(`Unsupported durable AI task: ${job.type}`);
+  error.code = 'AI_JOB_HANDLER_MISSING';
+  throw error;
+}
+
+function queueAuthorityAiFromReceipts(receipts = [], assetArrived = false) {
+  if (!durableAiQueue) return;
+  for (const receipt of Array.isArray(receipts) ? receipts : []) {
+    if (receipt?.entityType === 'learning-note' && receipt.eventCursor) pendingAuthorityAiNoteIds.add(receipt.entityId);
+  }
+  if (!assetArrived && pendingAuthorityAiNoteIds.size === 0) return;
+  for (const noteUid of [...pendingAuthorityAiNoteIds]) {
+    const note = findLearningNote(learningData.getSnapshot(), noteUid);
+    if (!note || note.pendingAiOrganization !== true) {
+      pendingAuthorityAiNoteIds.delete(noteUid);
+      continue;
+    }
+    try {
+      resolveLearningNoteImage(note);
+      enqueueDurableTask({
+        idempotencyKey: `remote-note:${noteUid}:${aiTaskFingerprint(note)}`,
+        taskType: 'learning-note-rename',
+        subjectType: 'learning-note',
+        subjectId: noteUid,
+        payload: { noteUid, trigger: 'remote-sync' },
+        message: 'Windows 记录已到达 Mac，等待统一 AI 命名与分类',
+      });
+      pendingAuthorityAiNoteIds.delete(noteUid);
+    } catch {
+      // The operation may arrive before its content-addressed image. The asset
+      // callback retries only these newly received IDs; startup never scans history.
+    }
+  }
+}
+
 function queueAiNamingJob(noteUid) {
   if (SYNC_ROLE === 'windows-replica') return false;
+  if (durableAiQueue) {
+    const saved = readSaveReceipt(noteUid);
+    if (!saved) return false;
+    return !enqueueDurableTask({
+      idempotencyKey: `local-note:${noteUid}:${aiTaskFingerprint(saved.metadata, saved.filePath)}`,
+      taskType: 'note-naming',
+      subjectType: 'learning-note',
+      subjectId: noteUid,
+      payload: { noteUid, trigger: 'local-save' },
+      message: '已保存到 Mac，等待统一 AI 命名与分类',
+    }).replayed;
+  }
   if (aiNamingJobs.has(noteUid)) return false;
   const lane = aiNamingLaneCursor % aiNamingQueues.length;
   aiNamingLaneCursor += 1;
@@ -2873,6 +3013,35 @@ function enqueueManualAiRename(noteUid, requestedOperationId = '') {
   const operationId = /^[A-Za-z0-9_-]{12,100}$/.test(String(requestedOperationId || '').trim())
     ? String(requestedOperationId).trim()
     : `rename-${crypto.randomUUID()}`;
+  if (durableAiQueue) {
+    const active = durableAiQueue.listJobs({ subjectType: 'learning-note', subjectId: noteUid, limit: 12 })
+      .find((job) => ['queued', 'processing'].includes(job.status));
+    if (active) return { job: active, replayed: true };
+    const materialReceipt = readMaterialReceipt(noteUid);
+    const materialNote = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+    let taskType = 'learning-note-rename';
+    let fingerprintNote = materialNote || findLearningNote(learningData.getSnapshot(), noteUid);
+    if (materialReceipt && materialNote) taskType = 'material-naming';
+    if (!fingerprintNote) throw makeReviewError(`Learning note not found: ${noteUid}`, 'NOTE_NOT_FOUND');
+    if (taskType === 'learning-note-rename') resolveLearningNoteImage(fingerprintNote);
+    const queued = enqueueDurableTask({
+      idempotencyKey: `manual-note:${operationId}`,
+      taskType,
+      subjectType: 'learning-note',
+      subjectId: noteUid,
+      payload: {
+        noteUid,
+        trigger: 'user',
+        fingerprint: materialReceipt?.requestHash || aiTaskFingerprint(fingerprintNote),
+        ...(taskType === 'material-naming' ? { options: { explicit: true, forceTitle: true, userTitle: false } } : {}),
+      },
+      priority: 20,
+      message: taskType === 'material-naming'
+        ? '已加入 Mac 整组资料命名队列'
+        : '已加入 Mac 命名与分类队列',
+    });
+    return queued;
+  }
   const operationReplay = [...manualAiJobs.values()].find((job) => (
     job.noteUid === noteUid
     && job.type === 'note-rename'
@@ -4815,6 +4984,27 @@ async function runMaterialNamingJob(noteUid, options = {}) {
 
 function queueMaterialNamingJob(noteUid, options = {}) {
   if (SYNC_ROLE === 'windows-replica') return false;
+  if (durableAiQueue) {
+    const receipt = readMaterialReceipt(noteUid);
+    const note = findMaterialLearningNote(learningData.getSnapshot(), noteUid);
+    if (!receipt || !note) return false;
+    return !enqueueDurableTask({
+      idempotencyKey: `material-note:${noteUid}:${receipt.requestHash || aiTaskFingerprint(note)}`,
+      taskType: 'material-naming',
+      subjectType: 'learning-note',
+      subjectId: noteUid,
+      payload: {
+        noteUid,
+        trigger: options.explicit === true ? 'user' : 'local-save',
+        options: {
+          explicit: options.explicit === true,
+          forceTitle: options.forceTitle === true,
+          userTitle: options.userTitle === true,
+        },
+      },
+      message: '已保存到 Mac，等待统一处理资料命名与分类',
+    }).replayed;
+  }
   if (materialNamingJobs.has(noteUid)) {
     const pending = materialNamingRerunRequests.get(noteUid) || {};
     materialNamingRerunRequests.set(noteUid, {
@@ -5616,12 +5806,40 @@ async function handleLearningDataRoute(req, res, pathname) {
   }
   const aiJobMatch = /^\/ai\/jobs\/([^/]+)$/.exec(pathname);
   if (req.method === 'GET' && aiJobMatch) {
-    const job = manualAiJobs.get(decodeURIComponent(aiJobMatch[1]));
+    const jobId = decodeURIComponent(aiJobMatch[1]);
+    const job = durableAiQueue?.getJob(jobId) || manualAiJobs.get(jobId);
     if (!job) {
       sendJson(res, 404, { ok: false, code: 'JOB_NOT_FOUND', error: '找不到这个 AI 任务' });
       return true;
     }
     sendJson(res, 200, { ok: true, job });
+    return true;
+  }
+  if (req.method === 'GET' && pathname === '/ai/tasks') {
+    const jobs = durableAiQueue
+      ? durableAiQueue.listJobs({ limit: 100 })
+      : windowsReplicaStore
+        ? windowsReplicaStore.listEntities()
+          .filter((entity) => entity.entityType === 'ai-task' && !entity.deleted)
+          .map((entity) => ({
+            id: entity.entityId,
+            type: entity.document.taskType,
+            ...entity.document,
+          }))
+          .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')))
+          .slice(0, 100)
+        : [...manualAiJobs.values()].slice(-100).reverse();
+    sendJson(res, 200, { ok: true, jobs, queue: durableAiQueue?.getStatus() || null });
+    return true;
+  }
+  const aiRetryMatch = /^\/ai\/tasks\/([^/]+)\/retry$/.exec(pathname);
+  if (req.method === 'POST' && aiRetryMatch) {
+    requireExplicitAiAction(req);
+    if (!durableAiQueue) {
+      sendJson(res, 409, { ok: false, code: 'AI_RETRY_ON_MAC_REQUIRED', error: '请在 Mac 私有访问页面确认这次重试。' });
+      return true;
+    }
+    sendJson(res, 202, { ok: true, job: durableAiQueue.retry(decodeURIComponent(aiRetryMatch[1])) });
     return true;
   }
 
@@ -6098,6 +6316,39 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === 'GET' && pathname === '/sync/conflicts') {
+      if (!authoritySyncStore) {
+        sendJson(res, 409, { ok: false, code: 'MAC_AUTHORITY_REQUIRED', error: '冲突详情只能从 Mac 权威服务读取。' });
+        return;
+      }
+      sendJson(res, 200, {
+        ok: true,
+        conflicts: authoritySyncStore.listConflicts({ includeResolved: requestUrl.searchParams.get('includeResolved') === '1' }),
+      });
+      return;
+    }
+    const userConflictMatch = /^\/sync\/conflicts\/([^/]+)\/(resolve|undo)$/.exec(pathname);
+    if (req.method === 'POST' && userConflictMatch) {
+      if (!authoritySyncStore) {
+        sendJson(res, 409, { ok: false, code: 'MAC_AUTHORITY_REQUIRED', error: '请在 Mac 私有访问页面处理冲突。' });
+        return;
+      }
+      const payload = JSON.parse((await readBody(req, 64 * 1024)) || '{}');
+      const conflictId = decodeURIComponent(userConflictMatch[1]);
+      const result = userConflictMatch[2] === 'undo'
+        ? authoritySyncStore.undoConflictResolution(conflictId, {
+          deviceId: 'mobile-user', operationId: payload.operationId,
+        })
+        : authoritySyncStore.resolveConflictValue(conflictId, {
+          deviceId: 'mobile-user', operationId: payload.operationId,
+          choice: payload.choice,
+          value: payload.value,
+        });
+      materializeAuthorityChanges();
+      sendJson(res, 200, { ok: true, ...result });
+      return;
+    }
+
     if (await handleReviewSyncRoute(req, res, pathname)) return;
     if (await handleCanvasProjectRoute(req, res, pathname)) return;
     if (await handleLearningDataRoute(req, res, pathname)) return;
@@ -6239,6 +6490,7 @@ const server = http.createServer(async (req, res) => {
               }
             : { role: 'standalone', enabled: false },
         aiRouter: currentRouter ? currentRouter.getStatus() : { providers: [], error: aiRouterInitError },
+        aiQueue: durableAiQueue ? durableAiQueue.getStatus() : { role: SYNC_ROLE === 'windows-replica' ? 'mac-remote' : 'legacy-memory', enabled: false },
         qwen: {
           enabled: Boolean(qwen.apiKey),
           model: qwen.model,
@@ -6366,7 +6618,8 @@ const server = http.createServer(async (req, res) => {
 
     sendJson(res, 404, { ok: false, error: 'Not found' });
   } catch (error) {
-    const status = String(error?.message || '') === 'Payload too large'
+    const status = Number.isInteger(error?.statusCode) ? error.statusCode
+      : String(error?.message || '') === 'Payload too large'
       ? 413
       : error instanceof SyntaxError || error instanceof URIError || error instanceof CanvasDocumentValidationError
         ? 400
@@ -6413,6 +6666,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+durableAiQueue?.start();
+
 server.listen(PORT, '127.0.0.1', () => {
   concealExistingInternalDirectories();
   if (RUNTIME_PATHS.layout !== 'managed') reviewSync.start();
@@ -6432,6 +6687,7 @@ server.listen(PORT, '127.0.0.1', () => {
     ? 'Authority sync API: enabled on the internal loopback service; remote ingress is not configured.'
     : 'Authority sync API: disabled for this process.');
   if (replicaLearningBridge) console.log('Windows replica capture: enabled; AI execution is delegated to the Mac authority.');
+  if (durableAiQueue) console.log('Mac AI queue: durable and idempotent; interrupted paid requests require explicit retry.');
   console.log(`Note app endpoint: http://127.0.0.1:${PORT}/open-note-app`);
   console.log(`Note app close endpoint: http://127.0.0.1:${PORT}/close-note-app`);
   console.log(RUNTIME_PATHS.layout === 'managed'
@@ -6453,6 +6709,7 @@ module.exports = {
         server.close((error) => error ? reject(error) : resolve());
       });
     }
+    durableAiQueue?.close();
     authoritySyncStore?.close();
     windowsReplicaStore?.close();
   },

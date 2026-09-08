@@ -269,6 +269,8 @@ let learningDataPollTimer: number | null = null;
 let learningDataPollInFlight: Promise<unknown> | null = null;
 let learningDataMemoryCache: LearningDataSnapshot | null = null;
 let learningDataMemoryRaw: string | null = null;
+let remotePendingRecords: RecordsByDate = {};
+let remotePendingReplacement: RecordsByDate | null = null;
 const LEARNING_POLL_INTERVAL_MS = IS_CLOUD_RUNTIME ? 30_000 : 15_000;
 
 const emptyRecord = (): DayRecord => ({
@@ -875,6 +877,11 @@ export const hasLearningContent = (snapshot: LearningDataSnapshot): boolean => s
   || Object.values(snapshot.days).some((day) => day.autoNotes.length > 0 || hasRecordContent(day.manual));
 
 export const readLearningDataCache = (): LearningDataSnapshot => {
+  if (IS_CLOUD_RUNTIME) {
+    const snapshot = learningDataMemoryCache ?? emptyLearningData();
+    lastLearningDataCacheKey = learningDataCacheKey(snapshot);
+    return snapshot;
+  }
   const raw = window.localStorage.getItem(LEARNING_DATA_CACHE_KEY);
   if (learningDataMemoryCache && raw === learningDataMemoryRaw) {
     lastLearningDataCacheKey = learningDataCacheKey(learningDataMemoryCache);
@@ -905,6 +912,10 @@ export const saveLearningDataCache = (snapshot: LearningDataSnapshot) => {
   const raw = JSON.stringify(normalized);
   learningDataMemoryCache = normalized;
   learningDataMemoryRaw = raw;
+  if (IS_CLOUD_RUNTIME) {
+    window.dispatchEvent(new CustomEvent(LEARNING_DATA_EVENT, { detail: normalized }));
+    return;
+  }
   try {
     window.localStorage.setItem(LEARNING_DATA_CACHE_KEY, raw);
   } catch (error) {
@@ -937,6 +948,7 @@ export const subscribeLearningDataCache = (callback: (snapshot: LearningDataSnap
       : normalizeLearningData(detail));
   };
   const handleStorage = (event: StorageEvent) => {
+    if (IS_CLOUD_RUNTIME) return;
     if (event.key !== LEARNING_DATA_CACHE_KEY || !event.newValue) {
       return;
     }
@@ -1041,6 +1053,7 @@ export const subscribeLearningDataPolling = () => {
 };
 
 export const readPendingLearningRecords = (): RecordsByDate => {
+  if (IS_CLOUD_RUNTIME) return structuredClone(remotePendingRecords);
   try {
     const value = JSON.parse(window.localStorage.getItem(LEARNING_PENDING_RECORDS_KEY) ?? '{}');
     if (!isObject(value)) {
@@ -1057,6 +1070,11 @@ export const readPendingLearningRecords = (): RecordsByDate => {
 };
 
 export const queuePendingLearningRecord = (date: string, record: DayRecord) => {
+  if (IS_CLOUD_RUNTIME) {
+    if (remotePendingReplacement) remotePendingReplacement[date] = normalizeManual(record);
+    else remotePendingRecords[date] = normalizeManual(record);
+    return;
+  }
   const replacement = readPendingLearningReplacement();
   if (replacement) {
     replacement[date] = normalizeManual(record);
@@ -1069,6 +1087,7 @@ export const queuePendingLearningRecord = (date: string, record: DayRecord) => {
 };
 
 export const readPendingLearningReplacement = (): RecordsByDate | null => {
+  if (IS_CLOUD_RUNTIME) return remotePendingReplacement ? structuredClone(remotePendingReplacement) : null;
   const raw = window.localStorage.getItem(LEARNING_PENDING_REPLACE_KEY);
   if (raw === null) {
     return null;
@@ -1094,12 +1113,18 @@ export const queuePendingLearningReplacement = (records: RecordsByDate) => {
       .filter(([date]) => /^\d{4}-\d{2}-\d{2}$/.test(date))
       .map(([date, record]) => [date, normalizeManual(record)]),
   );
-  window.localStorage.setItem(LEARNING_PENDING_REPLACE_KEY, JSON.stringify(normalized));
-  window.localStorage.removeItem(LEARNING_PENDING_RECORDS_KEY);
+  if (IS_CLOUD_RUNTIME) {
+    remotePendingReplacement = normalized;
+    remotePendingRecords = {};
+  } else {
+    window.localStorage.setItem(LEARNING_PENDING_REPLACE_KEY, JSON.stringify(normalized));
+    window.localStorage.removeItem(LEARNING_PENDING_RECORDS_KEY);
+  }
 };
 
 export const clearPendingLearningReplacement = () => {
-  window.localStorage.removeItem(LEARNING_PENDING_REPLACE_KEY);
+  if (IS_CLOUD_RUNTIME) remotePendingReplacement = null;
+  else window.localStorage.removeItem(LEARNING_PENDING_REPLACE_KEY);
 };
 
 export const clearPendingLearningRecord = (date: string, expectedRecord?: DayRecord) => {
@@ -1108,6 +1133,10 @@ export const clearPendingLearningRecord = (date: string, expectedRecord?: DayRec
     return;
   }
   delete pending[date];
+  if (IS_CLOUD_RUNTIME) {
+    remotePendingRecords = pending;
+    return;
+  }
   if (Object.keys(pending).length === 0) {
     window.localStorage.removeItem(LEARNING_PENDING_RECORDS_KEY);
   } else {

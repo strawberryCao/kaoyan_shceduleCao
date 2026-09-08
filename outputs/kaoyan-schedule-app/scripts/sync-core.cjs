@@ -4,6 +4,7 @@ const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
 const SYNC_SCHEMA_VERSION = 1;
+const AUTHORITY_DATABASE_SCHEMA_VERSION = 2;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$/;
 const DEFAULT_EVENT_LIMIT = 200;
@@ -218,11 +219,11 @@ function createSyncStore(options = {}) {
   ensurePrivateDirectory(assetsRoot);
   const database = new DatabaseSync(databasePath);
   const existingSchemaVersion = Number(database.prepare('PRAGMA user_version').get().user_version || 0);
-  if (existingSchemaVersion > SYNC_SCHEMA_VERSION) {
+  if (existingSchemaVersion > AUTHORITY_DATABASE_SCHEMA_VERSION) {
     database.close();
     throw new SyncProtocolError(
       'SYNC_DATABASE_TOO_NEW',
-      `Sync database schema ${existingSchemaVersion} is newer than supported schema ${SYNC_SCHEMA_VERSION}.`,
+      `Sync database schema ${existingSchemaVersion} is newer than supported schema ${AUTHORITY_DATABASE_SCHEMA_VERSION}.`,
       409,
     );
   }
@@ -282,7 +283,11 @@ function createSyncStore(options = {}) {
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL,
       resolved_at TEXT,
-      resolution_operation_id TEXT
+      resolution_operation_id TEXT,
+      resolution_value_json TEXT,
+      resolution_revision INTEGER,
+      undone_at TEXT,
+      undo_operation_id TEXT
     );
     CREATE TABLE IF NOT EXISTS sync_assets (
       asset_hash TEXT PRIMARY KEY,
@@ -294,7 +299,11 @@ function createSyncStore(options = {}) {
   const conflictColumns = new Set(database.prepare('PRAGMA table_info(sync_conflicts)').all().map((column) => column.name));
   if (!conflictColumns.has('resolved_at')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN resolved_at TEXT');
   if (!conflictColumns.has('resolution_operation_id')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN resolution_operation_id TEXT');
-  if (existingSchemaVersion < SYNC_SCHEMA_VERSION) database.exec(`PRAGMA user_version = ${SYNC_SCHEMA_VERSION}`);
+  if (!conflictColumns.has('resolution_value_json')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN resolution_value_json TEXT');
+  if (!conflictColumns.has('resolution_revision')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN resolution_revision INTEGER');
+  if (!conflictColumns.has('undone_at')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN undone_at TEXT');
+  if (!conflictColumns.has('undo_operation_id')) database.exec('ALTER TABLE sync_conflicts ADD COLUMN undo_operation_id TEXT');
+  if (existingSchemaVersion < AUTHORITY_DATABASE_SCHEMA_VERSION) database.exec(`PRAGMA user_version = ${AUTHORITY_DATABASE_SCHEMA_VERSION}`);
 
   const statements = {
     operation: database.prepare('SELECT payload_hash, receipt_json FROM sync_operations WHERE operation_id = ?'),
@@ -317,8 +326,11 @@ function createSyncStore(options = {}) {
     insertAsset: database.prepare('INSERT OR IGNORE INTO sync_assets(asset_hash, size, mime_type, created_at) VALUES(?, ?, ?, ?)'),
     events: database.prepare('SELECT * FROM sync_events WHERE cursor > ? ORDER BY cursor ASC LIMIT ?'),
     openConflicts: database.prepare("SELECT * FROM sync_conflicts WHERE status = 'open' AND entity_type = ? AND entity_id = ? ORDER BY created_at ASC"),
+    listOpenConflicts: database.prepare("SELECT * FROM sync_conflicts WHERE status = 'open' ORDER BY created_at DESC LIMIT ?"),
+    listRecentConflicts: database.prepare("SELECT * FROM sync_conflicts WHERE status IN ('open','resolved','undone') ORDER BY created_at DESC LIMIT ?"),
     conflict: database.prepare('SELECT * FROM sync_conflicts WHERE conflict_id = ?'),
-    resolveConflict: database.prepare("UPDATE sync_conflicts SET status = 'resolved', resolved_at = ?, resolution_operation_id = ? WHERE conflict_id = ? AND status = 'open'"),
+    resolveConflict: database.prepare("UPDATE sync_conflicts SET status = 'resolved', resolved_at = ?, resolution_operation_id = ?, resolution_value_json = ?, resolution_revision = ?, undone_at = NULL, undo_operation_id = NULL WHERE conflict_id = ? AND status = 'open'"),
+    undoConflict: database.prepare("UPDATE sync_conflicts SET status = 'undone', undone_at = ?, undo_operation_id = ? WHERE conflict_id = ? AND status = 'resolved'"),
     status: database.prepare(`SELECT
       (SELECT COUNT(*) FROM sync_entities) AS entity_count,
       (SELECT COUNT(*) FROM sync_entities WHERE deleted = 1) AS tombstone_count,
@@ -639,7 +651,12 @@ function createSyncStore(options = {}) {
   }
 
   function getOpenConflicts(entityType, entityId) {
-    return statements.openConflicts.all(assertIdentifier(entityType, 'entityType'), assertIdentifier(entityId, 'entityId')).map((row) => ({
+    return statements.openConflicts.all(assertIdentifier(entityType, 'entityType'), assertIdentifier(entityId, 'entityId')).map(serializeConflict);
+  }
+
+  function serializeConflict(row) {
+    const entity = getEntity(row.entity_type, row.entity_id);
+    return {
       conflictId: row.conflict_id,
       operationId: row.operation_id,
       entityType: row.entity_type,
@@ -649,7 +666,23 @@ function createSyncStore(options = {}) {
       incoming: parseJson(row.incoming_json, null),
       status: row.status,
       createdAt: row.created_at,
-    }));
+      resolvedAt: row.resolved_at || '',
+      resolutionValue: parseJson(row.resolution_value_json, null),
+      resolutionRevision: Number(row.resolution_revision) || null,
+      undoneAt: row.undone_at || '',
+      entityTitle: String(entity?.document?.title || entity?.document?.name || row.entity_id).slice(0, 160),
+      canUndo: row.status === 'resolved'
+        && Number(row.resolution_revision) > 0
+        && Number(entity?.revision) === Number(row.resolution_revision),
+    };
+  }
+
+  function listConflicts(input = {}) {
+    const limit = Math.max(1, Math.min(200, Number(input.limit) || 80));
+    const rows = input.includeResolved === true
+      ? statements.listRecentConflicts.all(limit)
+      : statements.listOpenConflicts.all(limit);
+    return rows.map(serializeConflict);
   }
 
   function getStatus() {
@@ -691,8 +724,62 @@ function createSyncStore(options = {}) {
         currentRevision: receipt.revision,
       });
     }
-    transaction(() => statements.resolveConflict.run(now().toISOString(), operation.operationId, id));
-    return { conflictId: id, receipt };
+    const resolutionValue = operation.mutation.fields[field];
+    transaction(() => statements.resolveConflict.run(
+      now().toISOString(), operation.operationId, canonicalJson(resolutionValue), receipt.revision, id,
+    ));
+    return { conflictId: id, receipt, conflict: serializeConflict(statements.conflict.get(id)) };
+  }
+
+  function resolveConflictValue(conflictId, input = {}) {
+    const id = assertIdentifier(conflictId, 'conflictId');
+    const conflict = statements.conflict.get(id);
+    if (!conflict || conflict.status !== 'open') {
+      throw new SyncProtocolError('SYNC_CONFLICT_NOT_FOUND', 'Open sync conflict was not found.', 404);
+    }
+    const choice = String(input.choice || 'current');
+    if (!['current', 'incoming', 'custom'].includes(choice)) {
+      throw new SyncProtocolError('INVALID_CONFLICT_CHOICE', 'Conflict choice must be current, incoming, or custom.');
+    }
+    const value = choice === 'incoming'
+      ? parseJson(conflict.incoming_json, null)
+      : choice === 'custom' ? clone(input.value) : parseJson(conflict.current_json, null);
+    const queued = queueLocalMutation({
+      operationId: String(input.operationId || crypto.randomUUID()),
+      deviceId: String(input.deviceId || 'mobile-user'),
+      entityType: conflict.entity_type,
+      entityId: conflict.entity_id,
+      mutation: { kind: 'patch', source: 'human', fields: { [conflict.field_name]: value } },
+    });
+    return resolveConflict(id, queued.operation);
+  }
+
+  function undoConflictResolution(conflictId, input = {}) {
+    const id = assertIdentifier(conflictId, 'conflictId');
+    const conflict = statements.conflict.get(id);
+    if (!conflict || conflict.status !== 'resolved') {
+      throw new SyncProtocolError('SYNC_CONFLICT_NOT_UNDOABLE', 'Resolved sync conflict was not found.', 404);
+    }
+    const entity = getEntity(conflict.entity_type, conflict.entity_id);
+    if (!entity || Number(entity.revision) !== Number(conflict.resolution_revision)) {
+      throw new SyncProtocolError('SYNC_CONFLICT_UNDO_STALE', 'The record changed after resolution; undo would overwrite newer work.', 409, {
+        currentRevision: Number(entity?.revision) || 0,
+        resolutionRevision: Number(conflict.resolution_revision) || 0,
+      });
+    }
+    const queued = queueLocalMutation({
+      operationId: String(input.operationId || crypto.randomUUID()),
+      deviceId: String(input.deviceId || 'mobile-user'),
+      entityType: conflict.entity_type,
+      entityId: conflict.entity_id,
+      mutation: {
+        kind: 'patch',
+        source: 'human',
+        fields: { [conflict.field_name]: parseJson(conflict.current_json, null) },
+      },
+    });
+    transaction(() => statements.undoConflict.run(now().toISOString(), queued.operation.operationId, id));
+    return { conflictId: id, receipt: queued.receipt, conflict: serializeConflict(statements.conflict.get(id)) };
   }
 
   function close() {
@@ -707,6 +794,7 @@ function createSyncStore(options = {}) {
     getAsset,
     getEntity,
     getOpenConflicts,
+    listConflicts,
     getStatus,
     hasAsset,
     missingAssets,
@@ -715,11 +803,14 @@ function createSyncStore(options = {}) {
     queueLocalMutation,
     readEvents,
     resolveConflict,
+    resolveConflictValue,
+    undoConflictResolution,
   };
 }
 
 module.exports = {
   DEFAULT_ASSET_LIMIT,
+  AUTHORITY_DATABASE_SCHEMA_VERSION,
   SYNC_SCHEMA_VERSION,
   SyncProtocolError,
   canonicalJson,

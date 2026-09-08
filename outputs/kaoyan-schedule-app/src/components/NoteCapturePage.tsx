@@ -37,6 +37,12 @@ type DraftStatus = 'saving' | 'saved' | 'failed';
 const LAST_CANVAS_DRAFT_KEY = 'kaoyan.canvas.lastDraftId.v1';
 const CANVAS_REMARK_KEY_PREFIX = 'kaoyan.canvas.publishRemark.v1.';
 const SAFE_CANVAS_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+const remoteCanvasMemory = new Map<string, string>();
+const localStorage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> = IS_CLOUD_RUNTIME ? {
+  getItem: (key) => remoteCanvasMemory.get(key) ?? null,
+  setItem: (key, value) => { remoteCanvasMemory.set(key, value); },
+  removeItem: (key) => { remoteCanvasMemory.delete(key); },
+} : window.localStorage;
 
 interface InitialCanvasState {
   document: CanvasDocument;
@@ -912,7 +918,7 @@ export function NoteCapturePage() {
               key={`${canvasDocument.id}:${workspaceRevision}`}
               ref={workspaceRef}
               initialDocument={canvasDocument}
-              draftKey={`kaoyan.canvas.draft.v1.${canvasDocument.id}`}
+              draftKey={IS_CLOUD_RUNTIME ? false : `kaoyan.canvas.draft.v1.${canvasDocument.id}`}
               onInkStrokePreview={relayLiveInkStroke}
               onInkStrokeCommit={relayLiveInkStroke}
               onChange={(document) => {

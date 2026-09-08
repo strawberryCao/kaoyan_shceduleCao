@@ -6,11 +6,14 @@ import {
   ChevronRight,
   Clock3,
   FileUp,
+  GitMerge,
   Inbox,
   RefreshCw,
   RotateCcw,
+  Server,
   Sparkles,
   StopCircle,
+  Undo2,
 } from 'lucide-react';
 import {
   activitySummary,
@@ -24,7 +27,18 @@ import {
 import { navigateApp, openAppTarget } from '../utils/appNavigation';
 import { cancelCaptureUpload, retryCaptureUpload } from '../utils/captureUploadQueue';
 import { cancelMultiQuestionJob, retryMultiQuestionJob } from '../utils/noteBackgroundJobs';
-import { enqueueLearningNoteRename, getAiBackgroundJob } from '../utils/notes';
+import {
+  enqueueLearningNoteRename,
+  fetchAuthorityAiTasks,
+  fetchSyncConflicts,
+  getAiBackgroundJob,
+  resolveSyncConflict,
+  retryAuthorityAiTask,
+  undoSyncConflict,
+  type AuthorityAiQueueStatus,
+  type AuthorityAiTask,
+  type SyncConflictRecord,
+} from '../utils/notes';
 import { fetchLearningData } from '../utils/learningData';
 import { learningNoteTarget, learningTargetViewFromUrl } from '../utils/learningNavigation';
 import '../activity-center.css';
@@ -48,12 +62,50 @@ const taskIcon = (task: ActivityTask) => {
   return <Sparkles size={20} />;
 };
 
+const authorityStatus = (status: AuthorityAiTask['status']) => ({
+  queued: { label: '等待 Mac', tone: 'neutral' },
+  processing: { label: 'Mac 处理中', tone: 'active' },
+  completed: { label: '已完成', tone: 'success' },
+  failed: { label: '等待你重试', tone: 'danger' },
+  needs_review: { label: '结果不确定', tone: 'warning' },
+  skipped: { label: '无需处理', tone: 'muted' },
+}[status] || { label: status, tone: 'neutral' });
+
+const authorityTaskLabel = (task: AuthorityAiTask): string => ({
+  'note-naming': '图片笔记理解与命名',
+  'learning-note-rename': '学习笔记重新命名',
+  'material-naming': '速记与资料命名',
+}[task.type] || 'Mac AI 任务');
+
+const conflictFieldLabel = (field: string): string => ({
+  title: '标题', remark: '备注', subject: '学科', document: '内容', status: '状态', deleted: '删除状态',
+}[field] || field);
+
+const formatConflictValue = (value: unknown): string => {
+  if (value === null || value === undefined || value === '') return '空白';
+  if (typeof value === 'string') return value.length > 220 ? `${value.slice(0, 220)}…` : value;
+  try {
+    const serialized = JSON.stringify(value, null, 2);
+    return serialized.length > 420 ? `${serialized.slice(0, 420)}…` : serialized;
+  } catch {
+    return String(value);
+  }
+};
+
 export function ActivityCenter() {
   const [tasks, setTasks] = useState<ActivityTask[]>([]);
+  const [authorityJobs, setAuthorityJobs] = useState<AuthorityAiTask[]>([]);
+  const [queueStatus, setQueueStatus] = useState<AuthorityAiQueueStatus | null>(null);
+  const [conflicts, setConflicts] = useState<SyncConflictRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState('');
+  const [actionError, setActionError] = useState('');
 
   const refresh = async () => {
+    const authorityState = Promise.allSettled([
+      fetchAuthorityAiTasks(),
+      fetchSyncConflicts(true),
+    ]);
     try {
       let nextTasks = await listActivityTasks();
       const staleFailures = nextTasks.filter((task) => task.kind === 'ai_rename'
@@ -78,7 +130,18 @@ export function ActivityCenter() {
         nextTasks = await listActivityTasks();
       }
       setTasks(nextTasks);
-    } finally { setLoading(false); }
+    } finally {
+      const [aiResult, conflictResult] = await authorityState;
+      if (aiResult.status === 'fulfilled') {
+        setAuthorityJobs(aiResult.value.jobs);
+        setQueueStatus(aiResult.value.queue);
+      } else {
+        setAuthorityJobs([]);
+        setQueueStatus(null);
+      }
+      setConflicts(conflictResult.status === 'fulfilled' ? conflictResult.value : []);
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -87,6 +150,54 @@ export function ActivityCenter() {
   }, []);
 
   const summary = useMemo(() => activitySummary(tasks), [tasks]);
+  const visibleAuthorityJobs = useMemo(() => authorityJobs.slice(0, 24), [authorityJobs]);
+  const visibleConflicts = useMemo(() => conflicts
+    .filter((conflict) => conflict.status === 'open' || conflict.canUndo)
+    .slice(0, 16), [conflicts]);
+  const activeCount = summary.active + authorityJobs.filter((job) => ['queued', 'processing'].includes(job.status)).length;
+  const failedCount = summary.failed + authorityJobs.filter((job) => job.status === 'failed').length;
+  const reviewCount = summary.needsReview
+    + authorityJobs.filter((job) => job.status === 'needs_review').length
+    + conflicts.filter((conflict) => conflict.status === 'open').length;
+
+  const retryMacTask = async (task: AuthorityAiTask) => {
+    setBusyId(`mac:${task.id}`);
+    setActionError('');
+    try {
+      await retryAuthorityAiTask(task.id);
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Mac AI 任务未能重试。');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const chooseConflict = async (conflict: SyncConflictRecord, choice: 'current' | 'incoming') => {
+    setBusyId(`conflict:${conflict.id}`);
+    setActionError('');
+    try {
+      await resolveSyncConflict(conflict.id, choice);
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '没有完成冲突选择，请刷新后再试。');
+    } finally {
+      setBusyId('');
+    }
+  };
+
+  const undoConflict = async (conflict: SyncConflictRecord) => {
+    setBusyId(`conflict:${conflict.id}`);
+    setActionError('');
+    try {
+      await undoSyncConflict(conflict.id);
+      await refresh();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : '无法撤销；这条记录可能已经有了更新。');
+    } finally {
+      setBusyId('');
+    }
+  };
 
   const retry = async (task: ActivityTask) => {
     setBusyId(task.id);
@@ -122,6 +233,7 @@ export function ActivityCenter() {
               job = await getAiBackgroundJob(job.id);
               await patchActivityTask(replacementId, {
                 status: job.status === 'processing' ? 'processing'
+                  : job.status === 'needs_review' ? 'needs_review'
                   : job.status === 'failed' ? 'failed_retryable'
                     : job.status === 'completed' || job.status === 'skipped' ? 'completed' : 'queued',
                 progress: job.progress,
@@ -200,16 +312,68 @@ export function ActivityCenter() {
       </header>
 
       <section className="activity-summary" aria-label="任务概览">
-        <div><Clock3 size={18} /><strong>{summary.active}</strong><span>处理中</span></div>
-        <div><AlertTriangle size={18} /><strong>{summary.failed}</strong><span>需要处理</span></div>
-        <button type="button" onClick={() => navigateApp('?panel=learning&view=inbox')}>
-          <Inbox size={18} /><strong>{summary.needsReview}</strong><span>待确认</span><ChevronRight size={16} />
+        <div><Clock3 size={18} /><strong>{activeCount}</strong><span>处理中</span></div>
+        <div><AlertTriangle size={18} /><strong>{failedCount}</strong><span>需要处理</span></div>
+        <button type="button" onClick={() => document.querySelector('.authority-conflicts')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>
+          <Inbox size={18} /><strong>{reviewCount}</strong><span>待确认</span><ChevronRight size={16} />
         </button>
       </section>
 
+      {actionError && <p className="activity-action-error" role="alert">{actionError}</p>}
+
+      {visibleConflicts.length > 0 && (
+        <section className="authority-section authority-conflicts" aria-labelledby="conflict-heading">
+          <header><span><GitMerge size={18} /><strong id="conflict-heading">数据版本选择</strong></span><small>只在两个设备改了同一处时出现；你的选择可以立即撤销</small></header>
+          <div className="conflict-grid">
+            {visibleConflicts.map((conflict) => {
+              const busy = busyId === `conflict:${conflict.id}`;
+              return (
+                <article className={`conflict-card${conflict.status === 'resolved' ? ' is-resolved' : ''}`} key={conflict.id}>
+                  <div className="conflict-title"><strong>{conflict.entityTitle || '未命名记录'}</strong><span>{conflictFieldLabel(conflict.field)}</span></div>
+                  {conflict.status === 'open' ? (
+                    <>
+                      <div className="conflict-choices">
+                        <button type="button" disabled={busy} onClick={() => void chooseConflict(conflict, 'current')}>
+                          <span>Mac 当前内容</span><pre>{formatConflictValue(conflict.current)}</pre><b>保留这一版</b>
+                        </button>
+                        <button type="button" disabled={busy} onClick={() => void chooseConflict(conflict, 'incoming')}>
+                          <span>另一设备内容</span><pre>{formatConflictValue(conflict.incoming)}</pre><b>采用这一版</b>
+                        </button>
+                      </div>
+                      <small>系统不会静默覆盖任一版本。</small>
+                    </>
+                  ) : (
+                    <div className="conflict-resolved"><CheckCircle2 size={17} /><span>已处理，当前采用：{formatConflictValue(conflict.resolutionValue)}</span>{conflict.canUndo && <button type="button" disabled={busy} onClick={() => void undoConflict(conflict)}><Undo2 size={15} />撤销</button>}</div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {visibleAuthorityJobs.length > 0 && (
+        <section className="authority-section authority-ai" aria-labelledby="mac-ai-heading">
+          <header><span><Server size={18} /><strong id="mac-ai-heading">Mac AI 处理中心</strong></span><small>{queueStatus ? `${queueStatus.queued + queueStatus.processing} 个进行中 · ${queueStatus.total} 个有记录` : '任务状态由 Mac 统一保存'}</small></header>
+          <div className="authority-ai-list">
+            {visibleAuthorityJobs.map((job) => {
+              const meta = authorityStatus(job.status);
+              const busy = busyId === `mac:${job.id}`;
+              return (
+                <article className="authority-ai-card" key={job.id}>
+                  <span className={`activity-kind is-${meta.tone}`}><Sparkles size={19} /></span>
+                  <div><div><strong>{authorityTaskLabel(job)}</strong><span className={`activity-state is-${meta.tone}`}>{meta.label}</span></div><p>{job.message || 'Mac 已记录任务状态'}</p>{job.error && <small>{job.error}</small>}<footer><span>模型请求 {job.billableAttemptCount || 0} 次</span><time>{new Date(job.updatedAt).toLocaleString('zh-CN', { hour12: false })}</time></footer></div>
+                  {job.requiresExplicitRetry && <button type="button" disabled={busy} onClick={() => void retryMacTask(job)}><RotateCcw size={15} />确认重试</button>}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <section className="activity-list" aria-live="polite">
         {loading && <div className="activity-skeleton"><span /><span /><span /></div>}
-        {!loading && tasks.length === 0 && (
+        {!loading && tasks.length === 0 && visibleAuthorityJobs.length === 0 && visibleConflicts.length === 0 && (
           <div className="activity-empty"><CheckCircle2 size={30} /><h2>当前没有任务</h2><p>拍题或给速记添加资料后，进度会出现在这里。</p></div>
         )}
         {tasks.map((task) => {

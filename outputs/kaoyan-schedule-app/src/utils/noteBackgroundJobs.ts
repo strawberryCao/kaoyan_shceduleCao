@@ -6,6 +6,11 @@ import {
   retryCaptureBatchJob,
 } from './notes';
 import { fetchLearningData } from './learningData';
+import {
+  openTransientBytes,
+  sealTransientBytes,
+  type EncryptedTransientBytes,
+} from './captureUploadQueue';
 
 export type MultiQuestionJobStatus =
   | 'queued'
@@ -41,10 +46,19 @@ export interface MultiQuestionJob {
 
 const DB_NAME = 'kaoyan-note-background-v2';
 const STORE_NAME = 'multi-question-jobs';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const EVENT_NAME = 'kaoyan-multi-question-job-changed';
 const activeJobs = new Set<string>();
 let databasePromise: Promise<IDBDatabase> | null = null;
+let migrationPromise: Promise<void> | null = null;
+
+interface StoredMultiQuestionJob extends Omit<MultiQuestionJob, 'imageDataUrl' | 'imageBlob' | 'subject' | 'remark'> {
+  schemaVersion: 2;
+  encryption: 'AES-GCM';
+  sealedMetadata?: EncryptedTransientBytes;
+  sealedImage?: EncryptedTransientBytes;
+  imageMimeType?: string;
+}
 
 const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => (await fetch(dataUrl)).blob();
 const blobToDataUrl = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
@@ -87,22 +101,97 @@ const transactionDone = (transaction: IDBTransaction): Promise<void> => new Prom
   transaction.onerror = () => reject(transaction.error ?? new Error('后台队列事务失败。'));
 });
 
-const readJobs = async (): Promise<MultiQuestionJob[]> => {
+const readStoredJobs = async (): Promise<Array<StoredMultiQuestionJob | MultiQuestionJob>> => {
   const database = await openDatabase();
-  return requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll()) as Promise<MultiQuestionJob[]>;
+  return requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll());
 };
 
-const readJob = async (id: string): Promise<MultiQuestionJob | null> => {
+const readStoredJob = async (id: string): Promise<StoredMultiQuestionJob | MultiQuestionJob | null> => {
   const database = await openDatabase();
-  return (await requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id)) as MultiQuestionJob | undefined) ?? null;
+  return (await requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id)) as StoredMultiQuestionJob | MultiQuestionJob | undefined) ?? null;
 };
 
-const putJob = async (job: MultiQuestionJob): Promise<MultiQuestionJob> => {
+const storeJob = async (job: StoredMultiQuestionJob): Promise<void> => {
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const committed = transactionDone(transaction);
   await requestResult(transaction.objectStore(STORE_NAME).put(job));
   await committed;
+};
+
+const toStoredJob = async (job: MultiQuestionJob): Promise<StoredMultiQuestionJob> => {
+  const sourceBlob = job.imageBlob || (job.imageDataUrl ? await dataUrlToBlob(job.imageDataUrl) : null);
+  const { imageDataUrl: _imageDataUrl, imageBlob: _imageBlob, subject, remark, ...rest } = job;
+  const [sealedMetadata, sealedImage] = sourceBlob ? await Promise.all([
+    sealTransientBytes('multi-question-metadata', job.id, new TextEncoder().encode(JSON.stringify({ subject, remark }))),
+    sealTransientBytes('multi-question-image', job.id, await sourceBlob.arrayBuffer()),
+  ]) : [undefined, undefined];
+  return {
+    ...rest,
+    schemaVersion: 2,
+    encryption: 'AES-GCM',
+    sealedMetadata,
+    sealedImage,
+    imageMimeType: sourceBlob?.type || '',
+  };
+};
+
+const fromStoredJob = async (stored: StoredMultiQuestionJob | MultiQuestionJob): Promise<MultiQuestionJob> => {
+  if ((stored as StoredMultiQuestionJob).schemaVersion !== 2) return stored as MultiQuestionJob;
+  const encrypted = stored as StoredMultiQuestionJob;
+  let subject = '默认文件夹';
+  let remark = '';
+  let imageBlob: Blob | undefined;
+  if (encrypted.sealedMetadata) {
+    const metadata = JSON.parse(new TextDecoder().decode(await openTransientBytes(
+      'multi-question-metadata', encrypted.id, encrypted.sealedMetadata,
+    ))) as { subject?: string; remark?: string };
+    subject = metadata.subject?.trim() || subject;
+    remark = metadata.remark?.trim() || '';
+  }
+  if (encrypted.sealedImage) {
+    imageBlob = new Blob([
+      await openTransientBytes('multi-question-image', encrypted.id, encrypted.sealedImage),
+    ], { type: encrypted.imageMimeType || 'image/jpeg' });
+  }
+  const {
+    schemaVersion: _schemaVersion,
+    encryption: _encryption,
+    sealedMetadata: _sealedMetadata,
+    sealedImage: _sealedImage,
+    imageMimeType: _imageMimeType,
+    ...rest
+  } = encrypted;
+  return { ...rest, imageDataUrl: '', imageBlob, subject, remark };
+};
+
+const ensureMigrated = async (): Promise<void> => {
+  if (migrationPromise) return migrationPromise;
+  migrationPromise = (async () => {
+    for (const stored of await readStoredJobs()) {
+      if ((stored as StoredMultiQuestionJob).schemaVersion === 2) continue;
+      await storeJob(await toStoredJob(stored as MultiQuestionJob));
+    }
+  })().catch((error): never => {
+    migrationPromise = null;
+    throw error;
+  });
+  return migrationPromise;
+};
+
+const readJobs = async (): Promise<MultiQuestionJob[]> => {
+  await ensureMigrated();
+  return Promise.all((await readStoredJobs()).map(fromStoredJob));
+};
+
+const readJob = async (id: string): Promise<MultiQuestionJob | null> => {
+  await ensureMigrated();
+  const stored = await readStoredJob(id);
+  return stored ? fromStoredJob(stored) : null;
+};
+
+const putJob = async (job: MultiQuestionJob): Promise<MultiQuestionJob> => {
+  await storeJob(await toStoredJob(job));
   emit(job);
   void import('./activityTasks').then(({ mirrorCropActivity }) => mirrorCropActivity(job)).catch(() => undefined);
   return job;
@@ -176,6 +265,7 @@ const submitOriginal = async (job: MultiQuestionJob): Promise<void> => {
       serverJobId: response.jobId,
       sourceEntryId: response.entryId || response.job.entryId || response.job.parentEntryId || '',
       imageDataUrl: '',
+      imageBlob: undefined,
       status: localStatus(response.job.status),
       progress: Number(response.job.progress) || 5,
       message: response.job.message || '原图已保存，AI 将在后台继续处理',
@@ -221,7 +311,7 @@ export const enqueueMultiQuestionJob = async (
     remark: options.remark?.trim() || '',
     status: 'queued',
     progress: 0,
-    message: '整页原图已保存在本机上传队列',
+    message: '整页原图已加密暂存在本机，送达 Mac 后自动清除',
     error: '',
     attempts: 0,
     createdAt: now,
@@ -257,8 +347,33 @@ export const resumeMultiQuestionJobs = async (): Promise<void> => {
       await removeJob(job.id);
       continue;
     }
-    // Keep unfinished work visible. It resumes only after a user presses retry.
+    if (!job.serverJobId && (job.imageBlob || job.imageDataUrl) && ['queued', 'uploading', 'failed'].includes(job.status)) {
+      // The stable batch id makes a lost upload response safe to replay. This
+      // only confirms the original on Mac; failed/uncertain paid AI work is
+      // never restarted from a browser lifecycle event.
+      await resumeOne(job.id);
+      continue;
+    }
+    if (job.serverJobId && ['submitted', 'processing'].includes(job.status)) {
+      // Status polling is read-only and lets a reopened Safari surface work
+      // that the Mac has already completed.
+      await resumeOne(job.id);
+    }
   }
+};
+
+export const installMultiQuestionJobResumer = (): (() => void) => {
+  const resume = () => { void resumeMultiQuestionJobs(); };
+  const visible = () => { if (document.visibilityState === 'visible') resume(); };
+  window.addEventListener('online', resume);
+  window.addEventListener('pageshow', resume);
+  document.addEventListener('visibilitychange', visible);
+  resume();
+  return () => {
+    window.removeEventListener('online', resume);
+    window.removeEventListener('pageshow', resume);
+    document.removeEventListener('visibilitychange', visible);
+  };
 };
 
 export const retryMultiQuestionJob = async (id: string): Promise<MultiQuestionJob> => {
@@ -267,7 +382,7 @@ export const retryMultiQuestionJob = async (id: string): Promise<MultiQuestionJo
     const queued = await patchJob(id, {
       status: 'queued',
       progress: 0,
-      message: '已重新加入本机上传队列',
+      message: '已重新加入本机加密上传队列',
       error: '',
       completedAt: '',
     });
@@ -351,3 +466,8 @@ export const subscribeMultiQuestionJobs = (listener: (job: MultiQuestionJob) => 
   window.addEventListener(EVENT_NAME, handler);
   return () => window.removeEventListener(EVENT_NAME, handler);
 };
+
+export const multiQuestionJobInternals = Object.freeze({
+  databaseName: DB_NAME,
+  storeName: STORE_NAME,
+});

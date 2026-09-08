@@ -17,5 +17,7 @@ test('quick material attachments survive remounts and do not leak into the image
   assert.match(composer, /await clearQuickMaterialDraft\(\)/);
   assert.match(draft, /indexedDB\.open/);
   assert.match(draft, /memoryDraft/);
-  assert.match(draft, /store\.put\(draft, ACTIVE_DRAFT_KEY\)/);
+  assert.match(draft, /IS_CLOUD_RUNTIME \? await encryptDraft\(draft\) : draft/);
+  assert.match(draft, /sealTransientBytes\(\s*'quick-material-file'/);
+  assert.match(draft, /encryption: 'AES-GCM'/);
 });

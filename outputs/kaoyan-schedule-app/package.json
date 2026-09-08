@@ -15,6 +15,8 @@
     "macmini:paths": "node scripts/macmini-runtime.cjs paths",
     "macmini:doctor": "node scripts/macmini-runtime.cjs doctor",
     "macmini:configure": "node scripts/configure-macmini.cjs",
+    "macmini:mobile-access": "node scripts/configure-mobile-access.cjs",
+    "macmini:tailscale": "node scripts/configure-tailscale-serve.cjs",
     "macmini:setup": "node scripts/setup-macmini.cjs",
     "macmini:smoke": "node scripts/smoke-macmini-runtime.cjs",
     "macmini:serve": "node scripts/macmini-runtime.cjs serve",

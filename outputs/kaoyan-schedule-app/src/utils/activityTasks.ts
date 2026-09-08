@@ -54,6 +54,7 @@ const DB_VERSION = 1;
 const EVENT_NAME = 'kaoyan-activity-tasks-changed';
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 let databasePromise: Promise<IDBDatabase> | null = null;
+const remoteMemoryTasks = new Map<string, ActivityTask>();
 
 const openDatabase = (): Promise<IDBDatabase> => {
   if (databasePromise) return databasePromise;
@@ -107,8 +108,12 @@ export const activityTaskNoteUid = (task: ActivityTask): string => {
 };
 
 export const listActivityTasks = async (): Promise<ActivityTask[]> => {
-  const database = await openDatabase();
-  const tasks = await requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll()) as ActivityTask[];
+  const tasks = IS_CLOUD_RUNTIME
+    ? [...remoteMemoryTasks.values()]
+    : await (async () => {
+      const database = await openDatabase();
+      return requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).getAll()) as Promise<ActivityTask[]>;
+    })();
   const ordered = tasks.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   const seenAiRenameNotes = new Set<string>();
   return ordered.filter((task) => {
@@ -122,11 +127,17 @@ export const listActivityTasks = async (): Promise<ActivityTask[]> => {
 };
 
 export const getActivityTask = async (id: string): Promise<ActivityTask | null> => {
+  if (IS_CLOUD_RUNTIME) return remoteMemoryTasks.get(id) ?? null;
   const database = await openDatabase();
   return (await requestResult(database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id)) as ActivityTask | undefined) ?? null;
 };
 
 export const upsertActivityTask = async (task: ActivityTask): Promise<ActivityTask> => {
+  if (IS_CLOUD_RUNTIME) {
+    remoteMemoryTasks.set(task.id, task);
+    emit();
+    return task;
+  }
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const committed = transactionDone(transaction);
@@ -143,6 +154,11 @@ export const patchActivityTask = async (id: string, patch: Partial<ActivityTask>
 };
 
 export const removeActivityTask = async (id: string): Promise<void> => {
+  if (IS_CLOUD_RUNTIME) {
+    remoteMemoryTasks.delete(id);
+    emit();
+    return;
+  }
   const database = await openDatabase();
   const transaction = database.transaction(STORE_NAME, 'readwrite');
   const committed = transactionDone(transaction);
@@ -266,3 +282,4 @@ export const initializeActivityTasks = async (): Promise<void> => {
     .filter((task) => ['completed', 'cancelled'].includes(task.status) && new Date(task.completedAt || task.updatedAt).getTime() < cutoff)
     .map((task) => removeActivityTask(task.id)));
 };
+import { IS_CLOUD_RUNTIME } from './runtime';

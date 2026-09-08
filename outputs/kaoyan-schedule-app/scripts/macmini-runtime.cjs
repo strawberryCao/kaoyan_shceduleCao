@@ -19,6 +19,7 @@ const {
   providerStatus,
   readAiConfig,
 } = require('./secure-ai-config.cjs');
+const { publicMobileAuthStatus } = require('./mobile-session-auth.cjs');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_NOTE_PORT = 5174;
@@ -132,6 +133,7 @@ function createChildSpecifications(runtimePaths, options = {}) {
     KAOYAN_WEB_HOST: '127.0.0.1',
     KAOYAN_TRUST_LOOPBACK_INGRESS: '1',
     KAOYAN_SYNC_ROLE: 'mac-authority',
+    KAOYAN_MOBILE_AUTH_CONFIG_PATH: path.join(runtimePaths.secretsRoot, 'mobile-access.json'),
   });
 
   return [
@@ -253,6 +255,20 @@ function runDoctor(runtimePaths, options = {}) {
     }
   } else {
     add('ai-config-json', false, 'warning', 'No AI provider is configured yet.');
+  }
+
+  const mobileAuthPath = path.join(runtimePaths.secretsRoot, 'mobile-access.json');
+  try {
+    const status = publicMobileAuthStatus(mobileAuthPath);
+    add('mobile-access', status.configured, 'warning', status.configured
+      ? `Configured for ${status.username}; session generation ${status.generation}`
+      : 'No mobile/iPad login is configured yet.');
+    if (status.configured && process.platform !== 'win32') {
+      const mode = fs.statSync(mobileAuthPath).mode & 0o777;
+      add('mobile-access-permissions', (mode & 0o077) === 0, 'error', `mode ${mode.toString(8).padStart(3, '0')}`);
+    }
+  } catch (error) {
+    add('mobile-access', false, 'error', error.message);
   }
 
   return {

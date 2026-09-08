@@ -55,6 +55,9 @@ test('mobile multi-question capture persists batch context before any AI or netw
   assert.match(jobs, /await resumeOne\(job\.id\)/);
   assert.match(jobs, /createCaptureBatch/);
   assert.doesNotMatch(jobs, /detectQuestionRegions|cropManyImages/);
-  assert.match(queue, /活动中心可查看并继续上传/);
+  assert.match(queue, /encryption: 'AES-GCM'/);
+  assert.match(queue, /encryptedItems: \[\]/);
+  assert.match(jobs, /sealedMetadata/);
+  assert.match(jobs, /sealedImage/);
   assert.match(queue, /\['completed', 'cancelled'\]\.includes\(job\.status\)/);
 });

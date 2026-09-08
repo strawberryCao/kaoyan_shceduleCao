@@ -36,5 +36,6 @@ test('single, multi-question and resulting image batches all use durable idempot
   assert.doesNotMatch(jobs, /cropManyImages|detectQuestionRegions|enqueueCaptureUpload/);
   assert.match(queue, /noteUids/);
   assert.match(queue, /UPLOAD_LEASE_MS/);
-  assert.match(queue, /上次上传被系统中断/);
+  assert.match(queue, /Safari 上次被系统中断/);
+  assert.match(jobs, /encryption: 'AES-GCM'/);
 });

@@ -42,6 +42,7 @@ test('child services share one managed layout and bind the web gateway to loopba
     assert.equal(spec.environment.KAOYAN_WEB_PORT, '6173');
     assert.equal(spec.environment.KAOYAN_SYNC_ROLE, 'mac-authority');
     assert.equal(spec.environment.KAOYAN_TRUST_LOOPBACK_INGRESS, '1');
+    assert.equal(spec.environment.KAOYAN_MOBILE_AUTH_CONFIG_PATH, path.join(runtime.secretsRoot, 'mobile-access.json'));
     assert.equal(spec.environment.QWEN_API_KEY, undefined);
     assert.equal(spec.environment.GEMINI_MODEL, undefined);
   }
