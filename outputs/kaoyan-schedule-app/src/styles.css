@@ -2592,3 +2592,92 @@ input:focus-visible {
   align-items: center;
   gap: 8px;
 }
+
+.cloud-auth-access {
+  width: fit-content;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 999px;
+  background: rgba(72, 126, 99, .1);
+  padding: 6px 10px;
+  color: #47765f;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.cloud-auth-access.is-fallback {
+  background: rgba(179, 121, 67, .11);
+  color: #8b5c31;
+}
+
+@media (max-width: 860px) {
+  .apple-mobile-web .cloud-auth-gate {
+    align-content: center;
+    padding: max(20px, env(safe-area-inset-top, 0px)) 16px max(20px, env(safe-area-inset-bottom, 0px));
+    background:
+      radial-gradient(circle at 13% 9%, rgba(202, 147, 79, .2), transparent 34%),
+      radial-gradient(circle at 92% 22%, rgba(77, 115, 128, .14), transparent 31%),
+      linear-gradient(165deg, #f8f3eb, #eee9e2);
+  }
+
+  .apple-mobile-web .cloud-auth-card {
+    width: min(100%, 430px);
+    gap: 19px;
+    border-color: rgba(255, 255, 255, .72);
+    border-radius: 30px;
+    background: rgba(255, 253, 249, .78);
+    box-shadow:
+      0 22px 60px rgba(72, 53, 35, .12),
+      inset 0 0 0 .5px rgba(108, 79, 49, .08);
+    padding: 27px 22px 23px;
+    -webkit-backdrop-filter: blur(24px) saturate(1.18);
+    backdrop-filter: blur(24px) saturate(1.18);
+  }
+
+  .apple-mobile-web .cloud-auth-icon {
+    width: 56px;
+    height: 56px;
+    border: 1px solid rgba(153, 104, 57, .1);
+    border-radius: 19px;
+    background: linear-gradient(145deg, #f2e1c7, #ead5b5);
+    box-shadow: inset 0 1px rgba(255, 255, 255, .65);
+  }
+
+  .apple-mobile-web .cloud-auth-card h1 {
+    color: #302b26;
+    font-size: 28px;
+    line-height: 1.08;
+    letter-spacing: -.05em;
+  }
+
+  .apple-mobile-web .cloud-auth-card p {
+    color: #766d63;
+    font-size: 13px;
+  }
+
+  .apple-mobile-web .cloud-auth-card input {
+    min-height: 50px;
+    border-color: rgba(128, 101, 74, .17);
+    border-radius: 16px;
+    background: rgba(255, 255, 255, .72);
+    padding-inline: 15px;
+    font-size: 16px;
+    box-shadow: inset 0 1px 3px rgba(72, 53, 35, .035);
+  }
+
+  .apple-mobile-web .cloud-auth-card input:focus-visible {
+    border-color: rgba(133, 86, 47, .55);
+    outline: 3px solid rgba(172, 118, 71, .12);
+  }
+
+  .apple-mobile-web .cloud-auth-card button.primary {
+    min-height: 52px;
+    border: 0;
+    border-radius: 17px;
+    background: linear-gradient(145deg, #815434, #684127);
+    box-shadow: 0 11px 25px rgba(92, 57, 32, .2);
+    color: #fff;
+  }
+}

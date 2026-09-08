@@ -18,9 +18,14 @@ test('setup is read-only by default and keeps secret input out of argv', () => {
   assert.equal(plan.steps.find((step) => step.id === 'configure-ai').secretInput, 'interactive-hidden-only');
   assert.equal(plan.steps.find((step) => step.id === 'configure-mobile-access').secretInput, 'interactive-hidden-only');
   assert.equal(plan.steps.find((step) => step.id === 'configure-tailscale-serve').mutatesProduction, true);
+  assert.equal(plan.steps.find((step) => step.id === 'configure-cloudflare-fallback').secretInput, 'interactive-hidden-only');
+  assert.equal(plan.steps.find((step) => step.id === 'configure-cloudflare-fallback').cloudflareAccountMutation, false);
+  assert.equal(plan.steps.find((step) => step.id === 'install-menu-bar-manager').coreServiceDependency, false);
+  assert.equal(plan.steps.find((step) => step.id === 'reload-launchdaemon-for-ingress').command, 'sudo');
   assert.doesNotMatch(JSON.stringify(plan), /api[-_]?key=/i);
-  assert.deepEqual(plan.steps.slice(0, 3).map((step) => step.id), ['offline-tests', 'type-check', 'production-build']);
-  assert.equal(plan.steps[3].id, 'runtime-smoke');
+  assert.deepEqual(plan.steps.slice(0, 4).map((step) => step.id), ['cloudflared-cli', 'offline-tests', 'type-check', 'production-build']);
+  assert.equal(plan.steps[4].id, 'runtime-smoke');
+  assert.equal(plan.steps.findIndex((step) => step.id === 'cloudflared-cli') < plan.steps.findIndex((step) => step.id === 'install-launchdaemon'), true);
   assert.match(plan.steps.find((step) => step.id === 'doctor').args.join(' '), /--note-port=5174/);
 });
 

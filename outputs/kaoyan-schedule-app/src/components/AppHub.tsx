@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import {
   ArrowRight,
   BookOpenCheck,
@@ -145,9 +145,11 @@ export function AppHub() {
   const pendingClassifications = selectPendingNoteReviews(allNotes).length;
   const completedTaskIds = new Set(todayRecord.completedTaskIds);
   const currentTaskId = getCurrentTaskId(todayDay.tasks, now);
+  const currentTask = todayDay.tasks.find((task) => task.id === currentTaskId);
 
   return (
     <main className="app-hub-page">
+      <div className="hub-mobile-atmosphere" aria-hidden="true"><span /><span /><span /></div>
       <section className="app-hub-shell">
         <header className="hub-topbar">
           <div className="hub-date">
@@ -158,9 +160,17 @@ export function AppHub() {
 
         <section className="hub-workbench">
           <section className="hub-today-pane">
+            <header className="hub-mobile-context">
+              <div>
+                <span>{formatToday(now)}</span>
+                <b className={serviceState === 'online' ? 'is-online' : ''}>{serviceState === 'online' ? 'Mac 已连接' : serviceState === 'checking' ? '正在连接 Mac' : 'Mac 暂时离线'}</b>
+              </div>
+              <h1>把今天做好</h1>
+              <p>{currentTask ? `现在专注：${currentTask.title}` : progress.rate === 100 ? '今天的计划已经完成，辛苦了。' : '选择下一件事，然后安静地完成它。'}</p>
+            </header>
             <header className="hub-today-heading">
               <h1>{todayDay.type} 日</h1>
-              <div className="hub-progress-number">
+              <div className="hub-progress-number" style={{ '--hub-progress': `${progress.rate * 3.6}deg` } as CSSProperties}>
                 <strong>{progress.rate}%</strong>
                 <span>{progress.completed}/{progress.total} 完成</span>
               </div>

@@ -1,6 +1,6 @@
 # Mac mini 一致本地版：目标架构与迁移合同
 
-状态：设计合同已冻结；第四阶段移动访问、Mac AI 队列与冲突界面已实现，尚未切换正式数据
+状态：设计合同已冻结；第五阶段上机候选实现已完成，尚未在真实 Mac 和正式数据上切换权威源
 
 目标分支：`deploy/macmini-full-migration`
 
@@ -212,7 +212,7 @@ Mac 在同一事务内完成去重、校验、合并、写入事件记录和生�
 
 ## 10. 备份、监控与性能底线
 
-- 每日自动一致性快照，附件按哈希校验；至少保留 Mac 本机快照、独立介质/Time Machine 和一个加密异地副本。
+- 内置 SSD 上每日自动生成一致性快照，附件按哈希校验；至少再保留独立介质/Time Machine 和一个加密异地副本。
 - 定期自动校验备份，但按计划进行真实恢复演练；“备份任务成功”不能替代“能恢复”。
 - 健康页覆盖数据库迁移、可写性、磁盘空间、队列积压、最后一次同步、AI provider、Tailscale 和 Tunnel；不得泄露正文、路径或密钥。
 - 前端长列表分段/虚拟化，图片懒加载；首屏不等待 AI。交互反馈目标沿用 120–220ms 动画与 `prefers-reduced-motion`。
@@ -249,6 +249,16 @@ Mac 网关只在显式启用的 loopback ingress 模式下接受 Tailscale/Cloud
 
 同步冲突已经有用户可理解的版本比较、选择和安全撤销界面。远程入口隐藏 AI 密钥、桌面控制台和 Windows 壁纸；手机提供保留未送达密文的安全退出。详细操作和剩余边界见 `docs/macmini-phase-4-runbook.md`。
 
+### 11.4 第五阶段实现映射
+
+第五阶段加入 remotely-managed Cloudflare Tunnel 的本地安全配置：域名和非密钥配置存于 `config`，token 以私有文件保存并通过 `--token-file` 交给受监督的 `cloudflared`。配置脚本不登录 Cloudflare、不改 DNS；Tailscale 仍是默认入口，Cloudflare 明确作为备用入口。网关分别签发最长 30 天和 7 天的 Tailscale/Cloudflare 会话，并在界面显示实际入口，禁止静默切换。
+
+Mac 核心监督器同时运行每日备份调度器；快照只包含权威数据与非密钥配置，SQLite 使用 `quick_check + VACUUM INTO`，文件使用 SHA-256 复核，恢复命令目前只生成安全计划。菜单栏管理器作为用户级 LaunchAgent 提供只读状态和入口，不成为核心服务依赖。
+
+正式迁移盘点器已能只读扫描四类来源，输出稳定 ID、逐字段统计、哈希重复、人工字段冲突、绝对路径、损坏 JSON 和未解析附件，但有意不执行正式导入。iPhone/iPad 新视觉只在 Apple 移动浏览器启用，不改变 Windows 与桌面外观。完整命令和实机门槛见 `docs/macmini-phase-5-runbook.md`。
+
+因此“代码已具备上机候选能力”不等于“迁移已完成”。正式来源 dry-run、影子导入、独立介质恢复、Cloudflare 控制台配置和全部真实设备验收仍是切换前硬门槛。
+
 ## 12. 第一阶段明确不做
 
 - 不安装 Mac 服务、不建立 Tunnel、不更改 Tailscale ACL。
@@ -260,6 +270,6 @@ Mac 网关只在显式启用的 loopback ingress 模式下接受 Tailscale/Cloud
 ## 13. 平台依据
 
 - [Tailscale Serve 官方说明](https://tailscale.com/docs/features/tailscale-serve)：tailnet 内 HTTPS、ACL 与 loopback 反向代理边界。
-- [Cloudflare Tunnel 官方说明](https://developers.cloudflare.com/tunnel/)：由 Mac 主动建立出站 Tunnel，不开放业务入站端口。
+- [Cloudflare Tunnel 官方说明](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/)：由 Mac 主动建立出站 Tunnel，不开放业务入站端口。
 - [Apple FileVault 官方部署说明](https://support.apple.com/guide/deployment/intro-to-filevault-dep82064ec40/web)：Apple 芯片启动盘解锁要求，以及受系统版本和网络条件约束的远程解锁能力。
 - [Apple launchd 官方说明](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingLaunchdJobs.html)：系统级 daemon 的 plist 位置、按需启动和 `launchd` 生命周期模型。

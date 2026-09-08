@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "id": "windows-notes",
+      "kind": "notes-directory",
+      "path": "FILL_WITH_EXPORTED_WINDOWS_NOTES_DIRECTORY",
+      "priority": 100
+    },
+    {
+      "id": "windows-assistant",
+      "kind": "assistant-directory",
+      "path": "FILL_WITH_EXPORTED_WINDOWS_ASSISTANT_DIRECTORY",
+      "priority": 100
+    },
+    {
+      "id": "v2-repository-data",
+      "kind": "v2-directory",
+      "path": "FILL_WITH_CHECKED_OUT_PRIVATE_DATA_DIRECTORY",
+      "priority": 80
+    },
+    {
+      "id": "cloudflare-export",
+      "kind": "cloudflare-export",
+      "path": "FILL_WITH_CLOUDFLARE_EXPORT_JSON_OR_DIRECTORY",
+      "priority": 60
+    }
+  ]
+}

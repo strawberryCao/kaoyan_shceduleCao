@@ -20,6 +20,11 @@ const {
   readAiConfig,
 } = require('./secure-ai-config.cjs');
 const { publicMobileAuthStatus } = require('./mobile-session-auth.cjs');
+const {
+  createTunnelChildSpecification,
+  publicTunnelStatus,
+  readTunnelConfig,
+} = require('./cloudflare-tunnel-config.cjs');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_NOTE_PORT = 5174;
@@ -136,10 +141,21 @@ function createChildSpecifications(runtimePaths, options = {}) {
     KAOYAN_MOBILE_AUTH_CONFIG_PATH: path.join(runtimePaths.secretsRoot, 'mobile-access.json'),
   });
 
-  return [
-    Object.freeze({ id: 'note-service', command: nodePath, args: [path.join(projectRoot, 'scripts', 'note-server.cjs')], environment }),
-    Object.freeze({ id: 'web-gateway', command: nodePath, args: [path.join(projectRoot, 'scripts', 'web-server.cjs')], environment }),
+  const specifications = [
+    Object.freeze({ id: 'note-service', critical: true, command: nodePath, args: [path.join(projectRoot, 'scripts', 'note-server.cjs')], environment }),
+    Object.freeze({ id: 'web-gateway', critical: true, command: nodePath, args: [path.join(projectRoot, 'scripts', 'web-server.cjs')], environment }),
+    Object.freeze({ id: 'backup-scheduler', critical: false, command: nodePath, args: [path.join(projectRoot, 'scripts', 'macmini-backup-scheduler.cjs'), 'serve', `--runtime-root=${runtimePaths.runtimeRoot}`], environment }),
   ];
+  const tunnelConfig = readTunnelConfig(runtimePaths, { allowMissing: true });
+  if (tunnelConfig?.enabled) {
+    environment.KAOYAN_CLOUDFLARE_HOSTNAME = tunnelConfig.hostname;
+    const tunnel = createTunnelChildSpecification(runtimePaths, {
+      command: options.cloudflaredPath || commandAvailable('cloudflared'),
+      environment,
+    });
+    if (tunnel) specifications.push(tunnel);
+  }
+  return specifications;
 }
 
 function commandAvailable(command, options = {}) {
@@ -175,6 +191,7 @@ function runDoctor(runtimePaths, options = {}) {
   }
   add('project-note-service', fs.existsSync(path.join(projectRoot, 'scripts', 'note-server.cjs')), 'error', 'note-server.cjs');
   add('project-web-gateway', fs.existsSync(path.join(projectRoot, 'scripts', 'web-server.cjs')), 'error', 'web-server.cjs');
+  add('project-backup-scheduler', fs.existsSync(path.join(projectRoot, 'scripts', 'macmini-backup-scheduler.cjs')), 'error', 'macmini-backup-scheduler.cjs');
   add('production-build', fs.existsSync(path.join(projectRoot, 'dist', 'index.html')), 'error', 'dist/index.html');
   try {
     const notePort = assertPort(Number(options.notePort || DEFAULT_NOTE_PORT), 'note port');
@@ -271,6 +288,32 @@ function runDoctor(runtimePaths, options = {}) {
     add('mobile-access', false, 'error', error.message);
   }
 
+  try {
+    const cloudflare = publicTunnelStatus(runtimePaths);
+    const cloudflared = commandAvailable('cloudflared');
+    add('cloudflare-fallback', !cloudflare.enabled || Boolean(cloudflared), 'error', cloudflare.enabled
+      ? `${cloudflare.hostname}; token ${cloudflare.token}; ${cloudflared || 'cloudflared missing'}`
+      : 'Optional Cloudflare fallback is not enabled.');
+    if (cloudflare.configured && process.platform !== 'win32') {
+      const tokenMode = fs.statSync(cloudflare.tokenPath).mode & 0o777;
+      add('cloudflare-token-permissions', (tokenMode & 0o077) === 0, 'error', `mode ${tokenMode.toString(8).padStart(3, '0')}`);
+    }
+  } catch (error) {
+    add('cloudflare-fallback', false, 'error', error.message);
+  }
+
+  try {
+    const { listBackups } = require('./macmini-backup.cjs');
+    const backups = listBackups(runtimePaths);
+    const latest = backups.find((backup) => backup.validManifest);
+    const ageHours = latest?.createdAt ? (Date.now() - Date.parse(latest.createdAt)) / 3_600_000 : Number.POSITIVE_INFINITY;
+    add('latest-backup', Boolean(latest) && ageHours <= 48, 'warning', latest
+      ? `${latest.createdAt}; ${Number.isFinite(ageHours) ? ageHours.toFixed(1) : '?'} hours old`
+      : 'No verified-manifest snapshot has been created yet.');
+  } catch (error) {
+    add('latest-backup', false, 'error', error.message);
+  }
+
   return {
     ok: checks.every((check) => check.severity !== 'error' || check.ok),
     generatedAt: new Date().toISOString(),
@@ -312,15 +355,21 @@ function startManagedRuntime(runtimePaths, options = {}) {
     children.set(specification.id, child);
     child.once('error', (error) => {
       process.stderr.write(`[macmini-runtime] ${specification.id} failed to start: ${error.message}\n`);
-      exitCode = 1;
-      stop();
+      if (specification.critical !== false) {
+        exitCode = 1;
+        stop();
+      }
     });
     child.once('close', (code, signal) => {
       children.delete(specification.id);
       if (!stopping) {
-        process.stderr.write(`[macmini-runtime] ${specification.id} exited unexpectedly (${signal || code}).\n`);
-        exitCode = Number.isInteger(code) && code !== 0 ? code : 1;
-        stop();
+        if (specification.critical === false) {
+          process.stderr.write(`[macmini-runtime] optional ${specification.id} exited (${signal || code}); core services continue.\n`);
+        } else {
+          process.stderr.write(`[macmini-runtime] ${specification.id} exited unexpectedly (${signal || code}).\n`);
+          exitCode = Number.isInteger(code) && code !== 0 ? code : 1;
+          stop();
+        }
       }
       if (children.size === 0) {
         lock.release();

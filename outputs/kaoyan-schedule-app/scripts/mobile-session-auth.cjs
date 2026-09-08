@@ -5,7 +5,8 @@ const { atomicWriteJson } = require('./runtime-paths.cjs');
 
 const MOBILE_AUTH_SCHEMA_VERSION = 1;
 const SESSION_COOKIE_NAME = '__Host-kaoyan-session';
-const DEFAULT_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
+const DEFAULT_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const MAX_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_FAILURE_KEYS = 512;
 
 class MobileAuthError extends Error {
@@ -77,7 +78,7 @@ function configureMobileAccess(configPath, input = {}) {
   const passwordHash = crypto.scryptSync(password, salt, 32, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
   const sessionTtlSeconds = Math.max(
     60 * 60,
-    Math.min(30 * 24 * 60 * 60, Number(input.sessionTtlSeconds) || previous?.sessionTtlSeconds || DEFAULT_SESSION_TTL_SECONDS),
+    Math.min(MAX_SESSION_TTL_SECONDS, Number(input.sessionTtlSeconds) || previous?.sessionTtlSeconds || DEFAULT_SESSION_TTL_SECONDS),
   );
   const timestamp = new Date().toISOString();
   const config = {
@@ -150,7 +151,7 @@ function createMobileSessionManager(options = {}) {
     return publicMobileAuthStatus(configPath);
   }
 
-  function login(username, password, clientKey = 'unknown') {
+  function login(username, password, clientKey = 'unknown', loginOptions = {}) {
     const config = readMobileAuthConfig(configPath);
     const key = String(clientKey || 'unknown').slice(0, 180);
     const failure = failures.get(key);
@@ -183,19 +184,23 @@ function createMobileSessionManager(options = {}) {
     failures.delete(key);
     globalFailure = { attempts: 0, blockedUntil: 0 };
     const issuedAt = Math.floor(currentTime / 1000);
+    const requestedTtl = Number(loginOptions.sessionTtlSeconds);
+    const sessionTtlSeconds = Number.isFinite(requestedTtl)
+      ? Math.max(60 * 60, Math.min(MAX_SESSION_TTL_SECONDS, Math.round(requestedTtl)))
+      : Math.max(60 * 60, Math.min(MAX_SESSION_TTL_SECONDS, Number(config.sessionTtlSeconds) || DEFAULT_SESSION_TTL_SECONDS));
     const payload = encode(JSON.stringify({
       version: 1,
       username: config.username,
       generation: config.generation,
       issuedAt,
-      expiresAt: issuedAt + config.sessionTtlSeconds,
+      expiresAt: issuedAt + sessionTtlSeconds,
       nonce: crypto.randomBytes(12).toString('base64url'),
     }));
     const token = `${payload}.${sign(config, payload)}`;
     return {
       username: config.username,
-      expiresAt: new Date((issuedAt + config.sessionTtlSeconds) * 1000).toISOString(),
-      cookie: sessionCookie(token, config.sessionTtlSeconds),
+      expiresAt: new Date((issuedAt + sessionTtlSeconds) * 1000).toISOString(),
+      cookie: sessionCookie(token, sessionTtlSeconds),
     };
   }
 

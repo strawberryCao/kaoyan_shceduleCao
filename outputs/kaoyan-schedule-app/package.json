@@ -17,6 +17,12 @@
     "macmini:configure": "node scripts/configure-macmini.cjs",
     "macmini:mobile-access": "node scripts/configure-mobile-access.cjs",
     "macmini:tailscale": "node scripts/configure-tailscale-serve.cjs",
+    "macmini:cloudflare": "node scripts/configure-cloudflare-tunnel.cjs",
+    "macmini:manager": "electron . --macmini-manager",
+    "macmini:manager:service": "node scripts/install-macmini-manager.cjs",
+    "macmini:backup": "node scripts/macmini-backup.cjs",
+    "macmini:backup:scheduler": "node scripts/macmini-backup-scheduler.cjs",
+    "macmini:migrate": "node scripts/macmini-migration-audit.cjs",
     "macmini:setup": "node scripts/setup-macmini.cjs",
     "macmini:smoke": "node scripts/smoke-macmini-runtime.cjs",
     "macmini:serve": "node scripts/macmini-runtime.cjs serve",
@@ -53,6 +59,7 @@
     "electron:dev": "concurrently -k \"vite --config vite.config.mjs --host 127.0.0.1 --port 5173\" \"wait-on http://127.0.0.1:5173 && electron . --note-app\"",
     "desktop:start": "npm run build && electron . --note-app",
     "desktop:build": "npm run build && electron-builder --win --dir",
+    "desktop:build:mac": "npm run build && electron-builder --mac dir",
     "preview": "vite preview --config vite.config.mjs"
   },
   "dependencies": {
@@ -88,11 +95,18 @@
       "dist/**/*",
       "electron/**/*",
       "scripts/note-file-access.cjs",
+      "scripts/macmini-manager-state.cjs",
       "package.json"
     ],
     "asar": true,
     "win": {
       "signAndEditExecutable": false,
+      "target": [
+        "dir"
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
       "target": [
         "dir"
       ]

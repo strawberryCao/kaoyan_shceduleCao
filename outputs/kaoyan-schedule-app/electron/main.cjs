@@ -1,15 +1,19 @@
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, clipboard, dialog, ipcMain, nativeImage, shell, screen } = require('electron');
+const { execFile } = require('node:child_process');
 const fs = require('fs');
 const path = require('path');
 const { resolveNoteImage } = require('../scripts/note-file-access.cjs');
+const { extractTailscaleHttpsUrl, probeGateway, readCloudflareFallback, readLatestBackup } = require('../scripts/macmini-manager-state.cjs');
 
 const isDev = !app.isPackaged;
 const devServerUrl = 'http://127.0.0.1:5173';
 const noteAppFlag = '--note-app';
 const noteAppCloseFlag = '--close-note-app';
+const macminiManagerFlag = '--macmini-manager';
 const materialPreviewArgPrefix = '--material-preview=';
 const materialPreviewRequestRoot = path.join(require('os').tmpdir(), 'kaoyan-material-previews');
 const launchAsNoteAppClose = process.argv.includes(noteAppCloseFlag);
+const launchAsMacminiManager = process.argv.includes(macminiManagerFlag);
 const noteCompactSize = { width: 300, height: 132 };
 const noteRemarkSize = { width: 400, height: 440 };
 const windowStateFile = 'window-state.json';
@@ -28,6 +32,8 @@ let quitAfterNoteClose = false;
 let tray = null;
 let quitting = false;
 let saveBoundsTimer = null;
+let managerRefreshTimer = null;
+let managerState = { checking: true, online: false, tailscaleUrl: '', cloudflareUrl: '', latestBackup: null };
 const materialWindows = new Set();
 const materialWindowDescriptors = new Map();
 const materialSnapTimers = new Map();
@@ -44,7 +50,143 @@ function createTrayIcon() {
       <circle cx="48" cy="32" r="8" fill="#C8924D"/>
     </svg>
   `);
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
+  const icon = nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
+  if (process.platform === 'darwin') icon.setTemplateImage(true);
+  return icon;
+}
+
+function macminiRuntimeRoot() {
+  return String(process.env.KAOYAN_RUNTIME_ROOT || '').trim()
+    || (process.platform === 'darwin'
+      ? '/Library/Application Support/KaoyanStudyCenter'
+      : path.join(app.getPath('userData'), 'macmini-runtime-preview'));
+}
+
+function tailscaleCommand() {
+  const candidates = process.platform === 'darwin'
+    ? ['/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/opt/homebrew/bin/tailscale', '/usr/local/bin/tailscale']
+    : ['tailscale'];
+  return candidates.find((candidate) => candidate === 'tailscale' || fs.existsSync(candidate)) || '';
+}
+
+function readTailscaleUrl() {
+  return new Promise((resolve) => {
+    const command = tailscaleCommand();
+    if (!command) {
+      resolve('');
+      return;
+    }
+    execFile(command, ['serve', 'status', '--json'], { timeout: 3500, windowsHide: true }, (error, stdout) => {
+      resolve(error ? '' : extractTailscaleHttpsUrl(stdout));
+    });
+  });
+}
+
+function showManagerMessage(title, message, type = 'info') {
+  return dialog.showMessageBox({ type, title, message, buttons: ['知道了'], defaultId: 0, noLink: true });
+}
+
+function managerOpen(url, offlineMessage = 'Mac 核心服务暂时没有响应。') {
+  if (!url) {
+    void showManagerMessage('入口尚未就绪', offlineMessage, 'warning');
+    return;
+  }
+  void shell.openExternal(url);
+}
+
+function buildMacminiManagerMenu() {
+  const statusLabel = managerState.checking
+    ? '● 正在检查 Mac 服务…'
+    : managerState.online ? '● Mac 服务正常' : '● Mac 服务需要处理';
+  return Menu.buildFromTemplate([
+    { label: statusLabel, enabled: false },
+    { type: 'separator' },
+    { label: '打开学习系统', click: () => managerState.online ? managerOpen('http://127.0.0.1:5173/?hub=1') : managerOpen('') },
+    { label: '打开任务动态', click: () => managerState.online ? managerOpen('http://127.0.0.1:5173/?activity=1') : managerOpen('') },
+    { type: 'separator' },
+    {
+      label: managerState.tailscaleUrl ? '打开 Tailscale 私有入口' : 'Tailscale 私有入口尚未就绪',
+      enabled: Boolean(managerState.tailscaleUrl),
+      click: () => managerOpen(managerState.tailscaleUrl),
+    },
+    {
+      label: managerState.cloudflareUrl ? '打开 Cloudflare 备用入口' : 'Cloudflare 备用入口尚未启用',
+      enabled: Boolean(managerState.cloudflareUrl),
+      click: () => managerOpen(managerState.cloudflareUrl),
+    },
+    {
+      label: '复制可用访问地址',
+      enabled: Boolean(managerState.tailscaleUrl || managerState.cloudflareUrl),
+      click: () => clipboard.writeText([managerState.tailscaleUrl, managerState.cloudflareUrl].filter(Boolean).join('\n')),
+    },
+    { type: 'separator' },
+    {
+      label: '打开数据与备份目录',
+      click: async () => {
+        const target = macminiRuntimeRoot();
+        if (!fs.existsSync(target)) {
+          await showManagerMessage('数据目录尚未建立', '请先完成 Mac mini 安装向导。', 'warning');
+          return;
+        }
+        const error = await shell.openPath(target);
+        if (error) await showManagerMessage('无法打开目录', error, 'error');
+      },
+    },
+    {
+      label: managerState.latestBackup
+        ? `最近备份：${new Date(managerState.latestBackup.createdAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+        : '尚未发现可校验备份',
+      enabled: false,
+    },
+    { label: '立即重新检查', click: () => void refreshMacminiManagerState(true) },
+    { type: 'separator' },
+    {
+      label: '退出菜单栏管理中心',
+      click: () => {
+        quitting = true;
+        app.quit();
+      },
+    },
+  ]);
+}
+
+function refreshMacminiManagerMenu() {
+  if (!tray) return;
+  tray.setContextMenu(buildMacminiManagerMenu());
+  tray.setToolTip(managerState.online ? '考研学习中心 · Mac 服务正常' : '考研学习中心 · 服务需要处理');
+}
+
+async function refreshMacminiManagerState(showResult = false) {
+  const [gateway, tailscaleUrl] = await Promise.all([probeGateway(), readTailscaleUrl()]);
+  managerState = {
+    checking: false,
+    online: gateway.online,
+    tailscaleUrl,
+    cloudflareUrl: readCloudflareFallback(macminiRuntimeRoot()),
+    latestBackup: readLatestBackup(macminiRuntimeRoot()),
+  };
+  refreshMacminiManagerMenu();
+  if (showResult) {
+    await showManagerMessage(
+      managerState.online ? 'Mac 服务正常' : 'Mac 服务需要处理',
+      managerState.online
+        ? `核心服务已就绪。${managerState.tailscaleUrl ? '\nTailscale 私有入口可用。' : '\nTailscale 地址尚未发现。'}${managerState.cloudflareUrl ? '\nCloudflare 备用入口已配置。' : ''}`
+        : '核心服务暂时没有响应。学习数据不会因此被删除；请检查 Mac 是否已解锁以及核心服务是否启动。',
+      managerState.online ? 'info' : 'warning',
+    );
+  }
+  return managerState;
+}
+
+function ensureMacminiManagerTray() {
+  if (tray) return tray;
+  tray = new Tray(createTrayIcon().resize({ width: 18, height: 18 }));
+  tray.setContextMenu(buildMacminiManagerMenu());
+  tray.setToolTip('考研学习中心 · 正在检查');
+  tray.on('click', () => tray?.popUpContextMenu());
+  void refreshMacminiManagerState();
+  managerRefreshTimer = setInterval(() => void refreshMacminiManagerState(), 30_000);
+  return tray;
 }
 
 function getWindowStatePath() {
@@ -749,6 +891,10 @@ if (!hasSingleInstanceLock) {
       return;
     }
     if (openMaterialPreviewFromArgs(argv)) return;
+    if (launchAsMacminiManager || argv.includes(macminiManagerFlag)) {
+      tray?.popUpContextMenu();
+      return;
+    }
     createNoteWindow();
   });
 
@@ -762,6 +908,12 @@ if (!hasSingleInstanceLock) {
       return;
     }
 
+    if (launchAsMacminiManager) {
+      if (process.platform === 'darwin') app.dock?.hide();
+      ensureMacminiManagerTray();
+      return;
+    }
+
     // Remove any legacy full-desktop auto-start shortcut. Electron now owns
     // only the compact note window; full pages stay in the system browser.
     setAutoLaunch(false);
@@ -769,6 +921,10 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on('activate', () => {
+    if (launchAsMacminiManager) {
+      ensureMacminiManagerTray();
+      return;
+    }
     if (noteWindow && !noteWindow.isDestroyed()) {
       showNoteWindow();
       return;
@@ -777,6 +933,12 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on('before-quit', (event) => {
+    if (launchAsMacminiManager) {
+      clearInterval(managerRefreshTimer);
+      managerRefreshTimer = null;
+      quitting = true;
+      return;
+    }
     if (!quitting && noteWindow && !noteWindow.isDestroyed() && (noteWindowDirty || noteWindowSaving)) {
       event.preventDefault();
       requestAppQuit();

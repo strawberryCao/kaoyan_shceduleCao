@@ -15,6 +15,8 @@ const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 5173;
 const DEFAULT_API_HOST = '127.0.0.1';
 const DEFAULT_API_PORT = 5174;
+const TAILSCALE_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60;
+const CLOUDFLARE_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 const MIME_TYPES = new Map([
   ['.avif', 'image/avif'],
@@ -92,7 +94,15 @@ const ingressClientKey = (request) => {
   return (forwarded || String(request.socket?.remoteAddress || 'unknown')).slice(0, 180);
 };
 
-const handleMobileAuthRoute = async (request, response, requestUrl, manager, origin) => {
+const ingressKindForHostname = (hostname, cloudflareHostname = '') => {
+  const normalized = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  const configuredCloudflare = String(cloudflareHostname || '').trim().toLowerCase().replace(/\.$/, '');
+  if (configuredCloudflare && normalized === configuredCloudflare) return 'cloudflare';
+  if (normalized.endsWith('.ts.net')) return 'tailscale';
+  return 'unknown';
+};
+
+const handleMobileAuthRoute = async (request, response, requestUrl, manager, origin, ingressKind = 'tailscale') => {
   const pathname = requestUrl.pathname;
   if (request.method === 'GET' && pathname === '/api/auth/status') {
     try {
@@ -102,7 +112,7 @@ const handleMobileAuthRoute = async (request, response, requestUrl, manager, ori
         ok: true,
         authenticated: Boolean(session),
         username: session?.username || status.username || '',
-        access: 'macmini-private-session',
+        access: ingressKind === 'cloudflare' ? 'cloudflare-fallback' : 'tailscale-primary',
       });
     } catch (error) {
       if (error?.code !== 'AUTH_NOT_CONFIGURED') throw error;
@@ -113,9 +123,18 @@ const handleMobileAuthRoute = async (request, response, requestUrl, manager, ori
   if (request.method === 'POST' && pathname === '/api/auth/login') {
     if (!origin) throw new MobileAuthError('AUTH_ORIGIN_REQUIRED', '登录请求缺少同源证明。', 403);
     const payload = await readJsonBody(request);
-    const session = manager.login(payload.username, payload.password, ingressClientKey(request));
+    const sessionTtlSeconds = ingressKind === 'cloudflare'
+      ? CLOUDFLARE_SESSION_TTL_SECONDS
+      : TAILSCALE_SESSION_TTL_SECONDS;
+    const session = manager.login(payload.username, payload.password, ingressClientKey(request), { sessionTtlSeconds });
     response.setHeader('Set-Cookie', session.cookie);
-    sendJson(response, 200, { ok: true, authenticated: true, username: session.username, expiresAt: session.expiresAt });
+    sendJson(response, 200, {
+      ok: true,
+      authenticated: true,
+      username: session.username,
+      expiresAt: session.expiresAt,
+      access: ingressKind === 'cloudflare' ? 'cloudflare-fallback' : 'tailscale-primary',
+    });
     return;
   }
   if (request.method === 'POST' && pathname === '/api/auth/logout') {
@@ -292,6 +311,7 @@ const createKaoyanWebServer = (options = {}) => {
   const apiPort = Number(options.apiPort || DEFAULT_API_PORT);
   const allowedHosts = options.allowedHosts || createAllowedHosts(os.networkInterfaces());
   const trustLoopbackIngress = options.trustLoopbackIngress === true;
+  const cloudflareHostname = options.cloudflareHostname || process.env.KAOYAN_CLOUDFLARE_HOSTNAME || '';
   const mobileAuthManager = options.mobileAuthManager || (trustLoopbackIngress
     ? createMobileSessionManager({ configPath: options.mobileAuthConfigPath || process.env.KAOYAN_MOBILE_AUTH_CONFIG_PATH })
     : null);
@@ -302,9 +322,14 @@ const createKaoyanWebServer = (options = {}) => {
     const hostname = hostnameFromHostHeader(requestHost);
     const trustedIngress = trustLoopbackIngress && isLoopbackAddress(request.socket?.remoteAddress);
     const remoteBrowserIngress = trustedIngress && !allowedHosts.has(hostname);
+    const remoteIngressKind = remoteBrowserIngress ? ingressKindForHostname(hostname, cloudflareHostname) : 'local';
     if (remoteBrowserIngress) applySecurityHeaders(response, true);
     if (!allowedHosts.has(hostname) && !trustedIngress) {
       sendText(response, 403, 'Host is not allowed.');
+      return;
+    }
+    if (remoteBrowserIngress && remoteIngressKind === 'unknown') {
+      sendText(response, 403, 'Ingress hostname is not configured.');
       return;
     }
 
@@ -328,7 +353,7 @@ const createKaoyanWebServer = (options = {}) => {
       return;
     }
     if (remoteBrowserIngress && requestUrl.pathname.startsWith('/api/auth/')) {
-      void handleMobileAuthRoute(request, response, requestUrl, mobileAuthManager, origin).catch((error) => {
+      void handleMobileAuthRoute(request, response, requestUrl, mobileAuthManager, origin, remoteIngressKind).catch((error) => {
         if (response.headersSent) {
           response.destroy();
           return;
@@ -434,6 +459,7 @@ const start = () => {
     apiPort,
     trustLoopbackIngress: process.env.KAOYAN_TRUST_LOOPBACK_INGRESS === '1',
     mobileAuthConfigPath: process.env.KAOYAN_MOBILE_AUTH_CONFIG_PATH,
+    cloudflareHostname: process.env.KAOYAN_CLOUDFLARE_HOSTNAME,
   });
   server.listen(port, host, () => {
     process.stdout.write(`Kaoyan production web server: http://127.0.0.1:${port}/\n`);
@@ -448,9 +474,12 @@ const start = () => {
 if (require.main === module) start();
 
 module.exports = {
+  CLOUDFLARE_SESSION_TTL_SECONDS,
   DEFAULT_HOST,
+  TAILSCALE_SESSION_TTL_SECONDS,
   applySecurityHeaders,
   createKaoyanWebServer,
+  ingressKindForHostname,
   parseSingleRange,
   probeNoteService,
 };

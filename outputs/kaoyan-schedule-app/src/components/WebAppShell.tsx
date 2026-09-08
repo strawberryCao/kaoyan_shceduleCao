@@ -13,6 +13,7 @@ import {
   PanelLeftOpen,
   Search,
   Inbox,
+  Library,
 } from 'lucide-react';
 import { IS_CLOUD_RUNTIME } from '../utils/runtime';
 import { navigateApp } from '../utils/appNavigation';
@@ -50,6 +51,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
   const [activity, setActivity] = useState<ActivityTaskSummary>({ failed: 0, needsReview: 0, active: 0 });
   const [captureFeedback, setCaptureFeedback] = useState('');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [remoteConnection, setRemoteConnection] = useState<{ checking: boolean; online: boolean; access: string }>({ checking: true, online: false, access: '' });
   const visibleWorkspaceItems = IS_CLOUD_RUNTIME
     ? workspaceItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
     : workspaceItems;
@@ -78,6 +80,30 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
     const timer = window.setTimeout(() => setCaptureFeedback(''), 3200);
     return () => window.clearTimeout(timer);
   }, [captureFeedback]);
+
+  useEffect(() => {
+    if (!IS_CLOUD_RUNTIME) return undefined;
+    let disposed = false;
+    const refresh = async () => {
+      try {
+        const [readyResponse, authResponse] = await Promise.all([
+          fetch('/readyz', { cache: 'no-store', credentials: 'same-origin' }),
+          fetch('/api/auth/status', { cache: 'no-store', credentials: 'same-origin' }),
+        ]);
+        const auth = await authResponse.json().catch(() => ({})) as { access?: string; authenticated?: boolean };
+        if (authResponse.ok && auth.authenticated === false) {
+          window.location.reload();
+          return;
+        }
+        if (!disposed) setRemoteConnection({ checking: false, online: readyResponse.ok, access: String(auth.access || '') });
+      } catch {
+        if (!disposed) setRemoteConnection((current) => ({ ...current, checking: false, online: false }));
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 30_000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, []);
 
   const openCapture = async () => {
     setCaptureFeedback('正在打开速记…');
@@ -195,6 +221,21 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       </aside>
 
       <div className="web-app-content">{children}</div>
+      {IS_CLOUD_RUNTIME && active === 'hub' && (
+        <button
+          className={`web-app-mobile-connection${remoteConnection.checking ? ' is-checking' : remoteConnection.online ? '' : ' is-offline'}`}
+          type="button"
+          onClick={() => go('?activity=1')}
+          aria-label={remoteConnection.checking ? '正在连接 Mac mini' : remoteConnection.online ? 'Mac mini 已连接，打开任务动态' : 'Mac mini 连接异常，打开任务动态'}
+        >
+          <span aria-hidden="true" />
+          {remoteConnection.checking
+            ? 'Mac · 正在连接'
+            : remoteConnection.online
+            ? remoteConnection.access === 'cloudflare-fallback' ? 'Mac · 备用入口' : 'Mac · 私有直连'
+            : 'Mac · 连接异常'}
+        </button>
+      )}
       {IS_CLOUD_RUNTIME && (
         <button
           aria-label={loggingOut ? '正在退出' : '退出这台设备'}
@@ -217,7 +258,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
           { key: 'canvas', label: '画布', icon: PanelsTopLeft, action: () => go('?notes=1&mode=canvas'), active: active === 'notes' },
           { key: 'capture', label: '捕获', icon: Camera, action: () => void openCapture(), active: false },
           { key: 'review', label: '复习', icon: BookOpenCheck, action: () => go('?panel=learning&view=review'), active: active === 'learning' && learningView === 'review' },
-          { key: 'library', label: '资料', icon: CalendarDays, action: () => go('?panel=learning&view=library'), active: active === 'learning' && learningView !== 'review' },
+          { key: 'library', label: '资料', icon: Library, action: () => go('?panel=learning&view=library'), active: active === 'learning' && learningView !== 'review' },
         ].map((item) => {
           const Icon = item.icon;
           return (

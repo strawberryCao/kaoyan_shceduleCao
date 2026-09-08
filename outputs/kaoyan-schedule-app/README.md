@@ -47,6 +47,18 @@ npm.cmd install
 npm.cmd run dev
 ```
 
+## Mac mini 自托管候选版
+
+Mac mini 专用工作位于 `deploy/macmini-full-migration`。默认入口是 Tailscale 私有 HTTPS，Cloudflare Tunnel 作为明确的备用入口；Mac 保存权威数据并统一执行 AI，Windows 继续保留 Electron 速记与完整本地副本。
+
+```bash
+git switch deploy/macmini-full-migration
+npm ci
+npm run macmini:setup
+```
+
+最后一条默认只显示安装计划。真实安装、隐藏式密钥填写、正式数据只读盘点、备份和实机验收顺序见 [第五阶段手册](docs/macmini-phase-5-runbook.md)。在完成守恒报告和用户再次确认前，脚本不会迁移正式数据或切换权威源。
+
 ## 构建
 
 ```bash

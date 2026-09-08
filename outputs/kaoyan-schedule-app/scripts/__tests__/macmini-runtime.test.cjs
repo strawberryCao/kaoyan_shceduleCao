@@ -32,7 +32,8 @@ test('child services share one managed layout and bind the web gateway to loopba
     nodePath: process.execPath,
     environment: { QWEN_API_KEY: 'must-not-survive', GEMINI_MODEL: 'stale-model' },
   });
-  assert.deepEqual(specs.map((spec) => spec.id), ['note-service', 'web-gateway']);
+  assert.deepEqual(specs.map((spec) => spec.id), ['note-service', 'web-gateway', 'backup-scheduler']);
+  assert.deepEqual(specs.map((spec) => spec.critical), [true, true, false]);
   for (const spec of specs) {
     assert.equal(spec.environment.KAOYAN_RUNTIME_ROOT, runtime.runtimeRoot);
     assert.equal(spec.environment.KAOYAN_NOTES_ROOT, runtime.notesRoot);

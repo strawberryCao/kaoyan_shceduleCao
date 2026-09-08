@@ -97,3 +97,13 @@ test('future mobile auth configuration is rejected without downgrade', (t) => {
   assert.throws(() => configureMobileAccess(configPath, { username: 'student', password: 'new-password-123' }), (error) => error.code === 'AUTH_CONFIG_TOO_NEW');
   assert.equal(JSON.parse(fs.readFileSync(configPath, 'utf8')).schemaVersion, 99);
 });
+
+test('session duration can be shortened for Cloudflare without changing Tailscale credentials', (t) => {
+  const { configPath } = fixture(t);
+  configureMobileAccess(configPath, { username: 'student', password: 'right-password-123' });
+  const manager = createMobileSessionManager({ configPath, now: () => Date.parse('2026-09-08T00:00:00Z') });
+  const tailscale = manager.login('student', 'right-password-123', 'tailnet', { sessionTtlSeconds: 30 * 86400 });
+  const cloudflare = manager.login('student', 'right-password-123', 'fallback', { sessionTtlSeconds: 7 * 86400 });
+  assert.match(tailscale.cookie, /Max-Age=2592000/);
+  assert.match(cloudflare.cookie, /Max-Age=604800/);
+});

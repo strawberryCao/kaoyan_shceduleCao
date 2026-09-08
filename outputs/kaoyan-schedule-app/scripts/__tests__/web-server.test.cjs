@@ -4,7 +4,13 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { DEFAULT_HOST, createKaoyanWebServer } = require('../web-server.cjs');
+const {
+  CLOUDFLARE_SESSION_TTL_SECONDS,
+  DEFAULT_HOST,
+  TAILSCALE_SESSION_TTL_SECONDS,
+  createKaoyanWebServer,
+  ingressKindForHostname,
+} = require('../web-server.cjs');
 const { configureMobileAccess } = require('../mobile-session-auth.cjs');
 
 const listen = (server) => new Promise((resolve, reject) => {
@@ -149,6 +155,14 @@ test('explicit loopback ingress accepts a Tailscale or Cloudflare hostname witho
   assert.equal(response.statusCode, 200);
 });
 
+test('remote ingress classification keeps Tailscale primary and Cloudflare explicit', () => {
+  assert.equal(ingressKindForHostname('study-mac.tailnet.ts.net', 'study.example.com'), 'tailscale');
+  assert.equal(ingressKindForHostname('study.example.com', 'study.example.com'), 'cloudflare');
+  assert.equal(ingressKindForHostname('spoofed.example.com', 'study.example.com'), 'unknown');
+  assert.equal(TAILSCALE_SESSION_TTL_SECONDS, 30 * 86400);
+  assert.equal(CLOUDFLARE_SESSION_TTL_SECONDS, 7 * 86400);
+});
+
 test('remote browser ingress requires a revocable Mac session while local loopback stays frictionless', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-mobile-ingress-'));
   const staticRoot = path.join(root, 'dist');
@@ -199,6 +213,7 @@ test('remote browser ingress requires a revocable Mac session while local loopba
   });
   assert.equal(login.status, 200);
   assert.match(login.headers['set-cookie'][0], /HttpOnly/);
+  assert.match(login.headers['set-cookie'][0], /Max-Age=2592000/);
   const cookie = login.headers['set-cookie'][0].split(';')[0];
   const protectedResponse = await rawRequest(webPort, {
     path: '/api/learning-data', headers: { ...remoteHeaders, cookie },

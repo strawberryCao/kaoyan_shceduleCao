@@ -55,6 +55,12 @@ function buildSetupPlan(options, environment = process.env) {
     `--web-port=${options.webPort}`,
   ];
   const steps = [];
+  steps.push({
+    id: 'cloudflared-cli',
+    command: process.execPath,
+    args: [path.join(PROJECT_ROOT, 'scripts', 'configure-cloudflare-tunnel.cjs'), 'version'],
+    mutatesProduction: false,
+  });
   if (!options.skipVerify) {
     steps.push({ id: 'offline-tests', command: 'npm', args: ['test'], mutatesProduction: false });
     steps.push({ id: 'type-check', command: 'npm', args: ['exec', '--', 'tsc', '--noEmit'], mutatesProduction: false });
@@ -95,6 +101,34 @@ function buildSetupPlan(options, environment = process.env) {
     mutatesProduction: true,
   });
   steps.push({
+    id: 'configure-cloudflare-fallback',
+    command: process.execPath,
+    args: [path.join(PROJECT_ROOT, 'scripts', 'configure-cloudflare-tunnel.cjs'), 'configure', `--runtime-root=${options.runtimeRoot}`, `--web-port=${options.webPort}`],
+    mutatesProduction: true,
+    secretInput: 'interactive-hidden-only',
+    cloudflareAccountMutation: false,
+  });
+  steps.push({
+    id: 'reload-launchdaemon-for-ingress',
+    command: 'sudo',
+    args: [
+      nodePath,
+      path.join(PROJECT_ROOT, 'scripts', 'install-macmini-service.cjs'),
+      'install',
+      `--user=${user}`,
+      `--node=${process.execPath}`,
+      ...common,
+    ],
+    mutatesProduction: true,
+  });
+  steps.push({
+    id: 'install-menu-bar-manager',
+    command: process.execPath,
+    args: [path.join(PROJECT_ROOT, 'scripts', 'install-macmini-manager.cjs'), 'install', `--runtime-root=${options.runtimeRoot}`],
+    mutatesProduction: true,
+    coreServiceDependency: false,
+  });
+  steps.push({
     id: 'doctor',
     command: process.execPath,
     args: [path.join(PROJECT_ROOT, 'scripts', 'macmini-runtime.cjs'), 'doctor', ...common],
@@ -108,6 +142,8 @@ function buildSetupPlan(options, environment = process.env) {
     networkBinding: '127.0.0.1',
     productionDataMigration: false,
     cloudflareDeployment: false,
+    cloudflareFallbackLocalConfiguration: true,
+    menuBarManager: true,
     steps,
   };
 }
@@ -171,7 +207,8 @@ async function main() {
   for (const step of plan.steps) runStep(step);
   await probeReady(options.webPort);
   process.stdout.write(`\nMac mini core service is ready on loopback port ${options.webPort}.\n`);
-  process.stdout.write('Tailscale private HTTPS is configured; Cloudflare Tunnel remains a separate, explicit phase-five action.\n');
+  process.stdout.write('Tailscale private HTTPS、Cloudflare 备用入口和菜单栏管理中心的本机配置已完成。\n');
+  process.stdout.write('Cloudflare 控制台中的 Tunnel route 与 Access 策略仍需按向导提示核对；安装脚本不会静默修改你的 Cloudflare 账户。\n');
 }
 
 if (require.main === module) {
