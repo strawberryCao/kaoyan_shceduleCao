@@ -13,10 +13,11 @@ function patchFile(relativePath, patches) {
   let changed = false;
   for (const patch of patches) {
     let normalized = content.replace(/\r\n/g, '\n');
-    const marker = String(patch.replacementMarker || patch.replacement).replace(/\r\n/g, '\n');
+    const markers = [patch.replacementMarker || patch.replacement, ...(patch.compatibleMarkers || [])]
+      .map((value) => String(value).replace(/\r\n/g, '\n'));
     const search = String(patch.search).replace(/\r\n/g, '\n');
     const replacement = String(patch.replacement).replace(/\r\n/g, '\n');
-    if (normalized.includes(marker)) continue;
+    if (markers.some((marker) => normalized.includes(marker))) continue;
     if (!normalized.includes(search)) {
       throw new Error(`Source invariant anchor was not found in ${relativePath}: ${patch.name}`);
     }
@@ -82,6 +83,7 @@ patchFile('scripts/learning-data-store.cjs', [
     search: "  const inferredFromFile = value.classificationSource !== 'manual'\n    && DEFAULT_SUBJECT_NAMES.has(rawSubject)",
     replacement: "  const inferredFromFile = value.classificationSource !== 'manual'\n    && !isRemoteAssetPath\n    && DEFAULT_SUBJECT_NAMES.has(rawSubject)",
     replacementMarker: "&& !isRemoteAssetPath\n    && DEFAULT_SUBJECT_NAMES.has(rawSubject)",
+    compatibleMarkers: ["&& !isRemoteAssetPath\n    && !isInternalAssetPath\n    && DEFAULT_SUBJECT_NAMES.has(rawSubject)"],
   },
 ]);
 
