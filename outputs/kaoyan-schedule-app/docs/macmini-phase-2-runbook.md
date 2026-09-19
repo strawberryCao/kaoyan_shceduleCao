@@ -61,6 +61,8 @@ npm run macmini:setup -- install
 
 安装器依次执行离线测试、TypeScript 检查、正式构建和临时数据根双进程冒烟；只有写入 `/Library/LaunchDaemons` 时才请求 `sudo`。随后配置向导逐个询问是否启用 Qwen、Gemini、Kimi、DeepSeek，并隐藏 API Key 输入。Qwen、Kimi、DeepSeek 自动使用内置服务地址和模型；Gemini 只额外询问服务提供地址。没有使用的 provider 直接跳过。
 
+安装或重装会校正托管运行目录及其所有中间目录的归属，确保非 root 服务用户可以访问，同时拒绝符号链接和任何越出托管根目录的目标。
+
 如果选择最小真实 API 验证，可能产生少量费用。候选密钥只有在选中的 provider 全部验证成功后才替换正式配置；任一失败都会删除临时文件并保留旧配置。跳过真实验证时，仍会执行密钥、HTTPS Base URL 和模型 ID 的本地格式校验。
 
 克隆目录当前就是服务的 `WorkingDirectory`，安装完成后不要随意移动或删除。安装器在可用时优先记录 `/opt/homebrew/bin/node` 或 `/usr/local/bin/node` 这类稳定入口，避免 Homebrew 小版本目录变化后 plist 失效；特殊环境可在安装前设置 `KAOYAN_NODE_PATH`。不可变 release 切换在后续发布阶段实现。

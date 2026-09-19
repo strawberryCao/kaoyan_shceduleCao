@@ -89,8 +89,10 @@ function lookupIdentity(user) {
   return { uid, gid };
 }
 
-function assignRuntimeOwnership(runtimePaths, uid, gid) {
-  const targets = [
+function runtimeOwnershipTargets(runtimePaths) {
+  const paths = runtimePaths.platform === 'win32' ? path.win32 : path.posix;
+  const runtimeRoot = paths.resolve(runtimePaths.runtimeRoot);
+  const declaredTargets = [
     runtimePaths.runtimeRoot,
     runtimePaths.configRoot,
     runtimePaths.secretsRoot,
@@ -104,10 +106,28 @@ function assignRuntimeOwnership(runtimePaths, uid, gid) {
     runtimePaths.releasesRoot,
     runtimePaths.runtimeConfigPath,
   ];
-  for (const target of new Set(targets)) {
-    const stats = fs.lstatSync(target);
+  const targets = new Set();
+  for (const declaredTarget of declaredTargets) {
+    let target = paths.resolve(declaredTarget);
+    while (true) {
+      const relative = paths.relative(runtimeRoot, target);
+      if (relative === '..' || relative.startsWith(`..${paths.sep}`) || paths.isAbsolute(relative)) {
+        throw new Error(`Refusing an ownership target outside the managed runtime: ${target}`);
+      }
+      targets.add(target);
+      if (target === runtimeRoot) break;
+      target = paths.dirname(target);
+    }
+  }
+  return [...targets];
+}
+
+function assignRuntimeOwnership(runtimePaths, uid, gid, options = {}) {
+  const fsModule = options.fsModule || fs;
+  for (const target of runtimeOwnershipTargets(runtimePaths)) {
+    const stats = fsModule.lstatSync(target);
     if (stats.isSymbolicLink()) throw new Error(`Refusing a symlink in the managed runtime layout: ${target}`);
-    fs.chownSync(target, uid, gid);
+    fsModule.chownSync(target, uid, gid);
   }
 }
 
@@ -256,6 +276,7 @@ module.exports = {
   install,
   lookupIdentity,
   parseArguments,
+  runtimeOwnershipTargets,
   serviceStatus,
   uninstall,
   writeLaunchDaemonPlist,

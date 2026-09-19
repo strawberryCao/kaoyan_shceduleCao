@@ -8,7 +8,11 @@ const {
   validateServiceUser,
 } = require('../macos-launchd.cjs');
 const { resolveRuntimePaths } = require('../runtime-paths.cjs');
-const { parseArguments } = require('../install-macmini-service.cjs');
+const {
+  assignRuntimeOwnership,
+  parseArguments,
+  runtimeOwnershipTargets,
+} = require('../install-macmini-service.cjs');
 
 test('LaunchDaemon runs as a non-root user with loopback services and private umask', () => {
   const runtime = resolveRuntimePaths({
@@ -58,6 +62,30 @@ test('installer defaults to a read-only plan and never accepts a key on the comm
   assert.equal(parsed.command, 'plan');
   assert.equal(parsed.serviceUser, 'study');
   assert.throws(() => parseArguments(['plan', '--api-key=leak'], { SUDO_USER: 'study' }), /Unknown argument/);
+});
+
+test('installer assigns every intermediate managed directory to the service user', () => {
+  const runtime = resolveRuntimePaths({
+    platform: 'darwin',
+    homeDir: '/Users/study',
+    pathImpl: path.posix,
+    env: { KAOYAN_RUNTIME_ROOT: '/Library/Application Support/KaoyanStudyCenter' },
+  });
+  const expectedIntermediate = '/Library/Application Support/KaoyanStudyCenter/data/assets';
+  assert.ok(runtimeOwnershipTargets(runtime).includes(expectedIntermediate));
+
+  const assigned = [];
+  assignRuntimeOwnership(runtime, 501, 20, {
+    fsModule: {
+      lstatSync() { return { isSymbolicLink: () => false }; },
+      chownSync(target, uid, gid) { assigned.push({ target, uid, gid }); },
+    },
+  });
+  assert.deepEqual(assigned.find((entry) => entry.target === expectedIntermediate), {
+    target: expectedIntermediate,
+    uid: 501,
+    gid: 20,
+  });
 });
 
 test('LaunchDaemon rejects privileged, invalid, and duplicate ports before installation', () => {
