@@ -29,6 +29,62 @@ const NOTE_MIME_BY_EXT = new Map([
 ]);
 const IMAGE_MIME_BY_EXT = new Map([...NOTE_MIME_BY_EXT].filter(([, mime]) => mime.startsWith('image/')));
 
+function bufferStartsWith(buffer, signature) {
+  return buffer.length >= signature.length && signature.every((byte, index) => buffer[index] === byte);
+}
+
+function readFileWindow(filePath, position, length) {
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(descriptor, buffer, 0, length, position);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function detectExtensionlessFileType(filePath, size) {
+  const header = readFileWindow(filePath, 0, Math.min(size, 4096));
+  if (bufferStartsWith(header, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return { extension: '.png', mime: 'image/png' };
+  }
+  if (bufferStartsWith(header, [0xff, 0xd8, 0xff])) return { extension: '.jpg', mime: 'image/jpeg' };
+  if (['GIF87a', 'GIF89a'].includes(header.subarray(0, 6).toString('ascii'))) {
+    return { extension: '.gif', mime: 'image/gif' };
+  }
+  if (header.subarray(0, 2).toString('ascii') === 'BM') return { extension: '.bmp', mime: 'image/bmp' };
+  if (header.subarray(0, 4).toString('ascii') === 'RIFF' && header.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return { extension: '.webp', mime: 'image/webp' };
+  }
+  if (header.subarray(0, 5).toString('ascii') === '%PDF-') return { extension: '.pdf', mime: 'application/pdf' };
+  if (bufferStartsWith(header, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) {
+    return { extension: '.doc', mime: 'application/msword' };
+  }
+  if (header.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = header.subarray(8, 12).toString('ascii').toLowerCase();
+    if (['avif', 'avis'].includes(brand)) return { extension: '.avif', mime: 'image/avif' };
+    if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(brand)) {
+      return { extension: '.heic', mime: 'image/heic' };
+    }
+  }
+  if (bufferStartsWith(header, [0x50, 0x4b, 0x03, 0x04])) {
+    const tailLength = Math.min(size, 1024 * 1024);
+    const zipIndex = readFileWindow(filePath, Math.max(0, size - tailLength), tailLength).toString('latin1');
+    if (zipIndex.includes('[Content_Types].xml') && zipIndex.includes('word/')) {
+      return {
+        extension: '.docx',
+        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      };
+    }
+  }
+  const textHeader = header.toString('utf8').replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  if (/^(?:<!doctype\s+html\b|<html\b|<iframe\b)/.test(textHeader)) {
+    return { extension: '.html', mime: 'text/html; charset=utf-8' };
+  }
+  return null;
+}
+
 function isInside(rootPath, candidatePath) {
   const root = path.resolve(rootPath);
   const candidate = path.resolve(candidatePath);
@@ -88,16 +144,20 @@ function resolveNoteFile(notesRoot, requestedPath, options = {}) {
     throw error;
   }
 
-  const extension = path.extname(filePath).toLowerCase();
-  const mime = NOTE_MIME_BY_EXT.get(extension);
-  if (!mime) {
-    const error = new Error('不支持的笔记文件类型');
-    error.code = 'NOTE_FILE_UNSUPPORTED';
-    throw error;
-  }
   if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
     const error = new Error('笔记文件不存在');
     error.code = 'NOTE_FILE_NOT_FOUND';
+    throw error;
+  }
+
+  const stats = fs.statSync(filePath);
+  const pathExtension = path.extname(filePath).toLowerCase();
+  const detected = pathExtension ? null : detectExtensionlessFileType(filePath, stats.size);
+  const extension = pathExtension || detected?.extension || '';
+  const mime = NOTE_MIME_BY_EXT.get(pathExtension) || detected?.mime;
+  if (!mime) {
+    const error = new Error('不支持的笔记文件类型');
+    error.code = 'NOTE_FILE_UNSUPPORTED';
     throw error;
   }
 
