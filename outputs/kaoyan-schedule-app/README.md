@@ -57,6 +57,12 @@ npm ci
 npm run macmini:setup
 ```
 
+没有 Cloudflare 域名时可先使用 Tailscale 私有入口：
+
+```bash
+npm run macmini:setup -- install --skip-cloudflare
+```
+
 最后一条默认只显示安装计划。真实安装、隐藏式密钥填写、正式数据只读盘点、备份和实机验收顺序见 [第五阶段手册](docs/macmini-phase-5-runbook.md)。在完成守恒报告和用户再次确认前，脚本不会迁移正式数据或切换权威源。
 
 ## 构建

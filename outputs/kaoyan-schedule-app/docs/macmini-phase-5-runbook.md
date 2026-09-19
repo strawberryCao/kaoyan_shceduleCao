@@ -29,7 +29,7 @@ npm run macmini:backup
 npm run macmini:migrate
 ```
 
-这些默认命令只展示计划。正式安装前应确认 Mac 是 Apple 芯片、macOS 已更新、FileVault 已开启、Tailscale 已登录、`cloudflared` 已安装，并为运行目录预留足够空间。由于一键安装会配置已确认保留的 Cloudflare 备用入口，还应先在 Cloudflare Zero Trust 控制台创建 remotely-managed Tunnel，准备好备用域名与 Tunnel token；不需要把 token 写入任何文件或命令。
+这些默认命令只展示计划。正式安装前应确认 Mac 是 Apple 芯片、macOS 已更新、FileVault 已开启、Tailscale 已登录，并为运行目录预留足够空间。默认安装还会配置 Cloudflare 备用入口，因此需要 `cloudflared`、remotely-managed Tunnel、备用域名与 Tunnel token；token 不需要写入任何文件或命令。
 
 确认后运行：
 
@@ -38,6 +38,17 @@ npm run macmini:setup -- install
 ```
 
 安装脚本会先确认 `cloudflared` 可用，再运行测试、类型检查、正式构建和临时数据冒烟，然后安装系统级核心服务；随后用不回显输入配置 AI、移动登录和 Cloudflare token，应用 Tailscale Serve，重载核心服务，最后安装登录后出现的菜单栏管理器并运行 doctor。任一入口缺少依赖时会在触碰正式数据前停止并给出错误。
+
+如果目前没有可用于 Published application 的 Cloudflare 域名，可以明确选择仅安装 Tailscale：
+
+```bash
+npm run macmini:setup -- --skip-cloudflare
+npm run macmini:setup -- install --skip-cloudflare
+```
+
+此模式不检查 `cloudflared`、不询问 Tunnel 域名或 token，也不会修改 Cloudflare 本机配置；核心服务、AI、移动登录、Tailscale Serve、备份调度和菜单栏管理器仍会完整安装。Cloudflare 账户中已有的 Tunnel 保持不变，之后可以按 3.2 节单独启用备用入口。
+
+如果曾经运行 Cloudflare 控制台给出的 `service install` 命令，先执行 `sudo cloudflared service uninstall` 删除那套独立的 macOS 后台服务，再在 Tunnel 概览中 Rotate token，使终端历史中的旧 token 失效。该操作不会删除 Cloudflare 账户中的 Tunnel；Tailscale-only 安装也不会重新启动它。
 
 这一步仍然不会迁移正式数据，也不会替用户修改 Cloudflare 账户。
 

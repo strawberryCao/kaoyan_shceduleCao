@@ -21,7 +21,7 @@ test('setup is read-only by default and keeps secret input out of argv', () => {
   assert.equal(plan.steps.find((step) => step.id === 'configure-cloudflare-fallback').secretInput, 'interactive-hidden-only');
   assert.equal(plan.steps.find((step) => step.id === 'configure-cloudflare-fallback').cloudflareAccountMutation, false);
   assert.equal(plan.steps.find((step) => step.id === 'install-menu-bar-manager').coreServiceDependency, false);
-  assert.equal(plan.steps.find((step) => step.id === 'reload-launchdaemon-for-ingress').command, 'sudo');
+  assert.equal(plan.steps.find((step) => step.id === 'reload-launchdaemon-after-configuration').command, 'sudo');
   assert.doesNotMatch(JSON.stringify(plan), /api[-_]?key=/i);
   assert.deepEqual(plan.steps.slice(0, 4).map((step) => step.id), ['cloudflared-cli', 'offline-tests', 'type-check', 'production-build']);
   assert.equal(plan.steps[4].id, 'runtime-smoke');
@@ -33,6 +33,20 @@ test('setup verification can only be skipped explicitly and unknown flags fail c
   const plan = buildSetupPlan(parseArguments(['install', '--skip-verify']), { USER: 'study' });
   assert.equal(plan.steps.some((step) => step.id === 'offline-tests'), false);
   assert.throws(() => parseArguments(['install', '--api-key=leak']), /Unknown argument/);
+});
+
+test('Tailscale-only setup explicitly omits every Cloudflare prerequisite and mutation', () => {
+  const options = parseArguments(['install', '--skip-cloudflare']);
+  const plan = buildSetupPlan(options, { USER: 'study' });
+  assert.equal(options.skipCloudflare, true);
+  assert.equal(plan.tailscaleOnly, true);
+  assert.equal(plan.cloudflareFallbackLocalConfiguration, false);
+  assert.equal(plan.steps.some((step) => step.id === 'cloudflared-cli'), false);
+  assert.equal(plan.steps.some((step) => step.id === 'configure-cloudflare-fallback'), false);
+  assert.equal(plan.steps.some((step) => step.id === 'configure-tailscale-serve'), true);
+  assert.equal(plan.steps.some((step) => step.id === 'install-launchdaemon'), true);
+  assert.equal(plan.steps.some((step) => step.id === 'reload-launchdaemon-after-configuration'), true);
+  assert.doesNotMatch(JSON.stringify(plan), /tunnel token/i);
 });
 
 test('setup can pin an explicitly selected stable Node launcher without putting secrets in arguments', () => {
