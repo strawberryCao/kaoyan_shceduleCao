@@ -18,17 +18,17 @@ const PROVIDER_DEFINITIONS = Object.freeze({
   gemini: Object.freeze({
     label: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-3.5-flash',
   }),
   kimi: Object.freeze({
     label: 'Kimi / Moonshot',
     baseUrl: 'https://api.moonshot.cn/v1',
-    model: 'kimi-k2.6',
+    model: 'kimi-k3,kimi-k2.6,kimi-k2.5',
   }),
   deepseek: Object.freeze({
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: 'deepseek-flash,deepseek-v4-pro',
   }),
 });
 

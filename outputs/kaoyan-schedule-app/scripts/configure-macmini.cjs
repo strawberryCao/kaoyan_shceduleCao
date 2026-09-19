@@ -83,8 +83,12 @@ async function configureProvider(config, id, prompter) {
     : '';
   process.stdout.write(`\n配置 ${definition.label}\n`);
   const apiKey = await prompter.secret('API Key', Boolean(previous.apiKey));
-  const baseUrl = await prompter.text('API Base URL', previous.baseUrl || definition.baseUrl);
-  const models = await prompter.text('模型 ID；多个用英文逗号分隔', existingModels || definition.model);
+  const baseUrl = id === 'gemini'
+    ? await prompter.text('Gemini 服务提供地址', previous.baseUrl || definition.baseUrl)
+    : previous.baseUrl || definition.baseUrl;
+  const models = existingModels || definition.model;
+  if (id !== 'gemini') process.stdout.write(`已采用内置服务地址和模型：${baseUrl}；${models}\n`);
+  else process.stdout.write(`已采用内置模型：${models}\n`);
   return upsertProvider(config, {
     id,
     apiKey: apiKey || previous.apiKey,

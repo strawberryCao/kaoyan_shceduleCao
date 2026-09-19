@@ -71,14 +71,13 @@ test('configuration wizard writes a selected provider only after validation', as
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-wizard-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const runtime = resolveRuntimePaths({ env: { KAOYAN_RUNTIME_ROOT: root } });
-  const textAnswers = ['https://dashscope.aliyuncs.com/compatible-mode/v1', 'qwen3-vl-plus,qwen3-max'];
   const result = await runWizard(runtime, emptyAiConfig(), {
     provider: 'qwen',
     yes: true,
     live: false,
     prompter: {
       async secret() { return 'sk-1234567890abcdef'; },
-      async text() { return textAnswers.shift(); },
+      async text() { throw new Error('Qwen should use built-in endpoint and models'); },
       async confirm() { throw new Error('non-interactive wizard must not prompt for confirmation'); },
     },
   });
@@ -86,7 +85,33 @@ test('configuration wizard writes a selected provider only after validation', as
   assert.deepEqual(result.configured, ['qwen']);
   const stored = readAiConfig(runtime.aiConfigPath);
   assert.equal(stored.providers.qwen.apiKey, 'sk-1234567890abcdef');
-  assert.deepEqual(stored.providers.qwen.models.map((model) => model.id), ['qwen3-vl-plus', 'qwen3-max']);
+  assert.equal(stored.providers.qwen.baseUrl, 'https://dashscope.aliyuncs.com/compatible-mode/v1');
+  assert.deepEqual(stored.providers.qwen.models.map((model) => model.id), ['qwen3-vl-plus']);
+});
+
+test('Gemini only asks for the provider endpoint and otherwise uses built-in models', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-wizard-gemini-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const runtime = resolveRuntimePaths({ env: { KAOYAN_RUNTIME_ROOT: root } });
+  const textPrompts = [];
+  const result = await runWizard(runtime, emptyAiConfig(), {
+    provider: 'gemini',
+    yes: true,
+    live: false,
+    prompter: {
+      async secret() { return 'sk-gemini-1234567890'; },
+      async text(label) {
+        textPrompts.push(label);
+        return 'https://gemini-relay.example/v1';
+      },
+      async confirm() { throw new Error('non-interactive wizard must not prompt for confirmation'); },
+    },
+  });
+  assert.equal(result.saved, true);
+  assert.deepEqual(textPrompts, ['Gemini 服务提供地址']);
+  const stored = readAiConfig(runtime.aiConfigPath);
+  assert.equal(stored.providers.gemini.baseUrl, 'https://gemini-relay.example/v1');
+  assert.deepEqual(stored.providers.gemini.models.map((model) => model.id), ['gemini-3.5-flash']);
 });
 
 test('failed live validation leaves the previous secret configuration untouched', async (t) => {
@@ -106,7 +131,7 @@ test('failed live validation leaves the previous secret configuration untouched'
     live: true,
     prompter: {
       async secret() { return 'sk-replacement-0987654321'; },
-      async text(_label, defaultValue) { return defaultValue; },
+      async text() { throw new Error('Qwen should use built-in endpoint and models'); },
       async confirm() { throw new Error('non-interactive wizard must not prompt for confirmation'); },
     },
     liveTester(_runtime, _provider, options) {
