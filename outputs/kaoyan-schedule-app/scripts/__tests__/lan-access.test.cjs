@@ -515,6 +515,16 @@ test('LAN access needs no device authentication and exposes canvas plus learning
     body: JSON.stringify({ tasks: {} }),
   });
   assert.equal(blockedAiConfigSave.status, 403);
+  const authenticatedAdminHeaders = { ...proxyHeaders, 'X-Kaoyan-Admin-Proxy': '1' };
+  const authenticatedAiConfig = await fetch(`${baseUrl}/ai/config`, { headers: authenticatedAdminHeaders });
+  assert.equal(authenticatedAiConfig.status, 200);
+  assert.doesNotMatch(JSON.stringify(await authenticatedAiConfig.json()), /lan-test-secret-key/);
+  const authenticatedAiConfigSave = await fetch(`${baseUrl}/ai/config`, {
+    method: 'PUT',
+    headers: { ...authenticatedAdminHeaders, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tasks: { note_naming: { temperature: 0.1 } } }),
+  });
+  assert.equal(authenticatedAiConfigSave.status, 200);
   const blockedOrganizer = await fetch(`${baseUrl}/organizer/run`, {
     method: 'POST',
     headers: proxyHeaders,

@@ -1,7 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$nodeCommand = Get-Command node.exe -ErrorAction Stop
+$nodeExecutable = if ($env:KAOYAN_NODE_EXECUTABLE) {
+  [string]$env:KAOYAN_NODE_EXECUTABLE
+} else {
+  (Get-Command node.exe -ErrorAction Stop).Source
+}
 $configuredSyncRoot = if ($env:KAOYAN_SYNC_ROOT) { $env:KAOYAN_SYNC_ROOT } else { 'D:\kaoyandata\NoteFolderSync' }
 $configuredSyncPath = Join-Path $configuredSyncRoot 'config.json'
 $configuredAssistantRoot = if (Test-Path -LiteralPath $configuredSyncPath) {
@@ -99,7 +103,7 @@ function Start-HiddenNodeProcess([string]$ScriptPath, [string]$LogName) {
   $stdoutPath = Join-Path $logRoot "$LogName.out.log"
   $stderrPath = Join-Path $logRoot "$LogName.err.log"
   Start-Process `
-    -FilePath $nodeCommand.Source `
+    -FilePath $nodeExecutable `
     -ArgumentList @($ScriptPath) `
     -WorkingDirectory $projectRoot `
     -RedirectStandardOutput $stdoutPath `
@@ -108,7 +112,11 @@ function Start-HiddenNodeProcess([string]$ScriptPath, [string]$LogName) {
 }
 
 if (-not $replicaConfigured) {
-  Refresh-SyncRuntime
+  try {
+    Refresh-SyncRuntime
+  } catch {
+    Write-Warning "Legacy synchronization refresh was skipped: $($_.Exception.Message)"
+  }
 }
 
 if ($replicaConfigured) {
@@ -124,6 +132,7 @@ if ($replicaConfigured) {
 }
 
 if (-not (Test-ListeningPort 5173)) {
+  $env:KAOYAN_WEB_HOST = '0.0.0.0'
   Start-HiddenNodeProcess (Join-Path $projectRoot 'scripts\web-server.cjs') 'web-server'
 }
 
@@ -137,9 +146,13 @@ if (-not (Wait-HttpEndpoint 'http://127.0.0.1:5173/')) {
   throw 'LAN web service failed its startup health check. See service-logs\web-server.err.log.'
 }
 
-@{
-  checkedAt = [DateTime]::UtcNow.ToString('o')
-  noteService = 'http://127.0.0.1:5174/health'
-  lanService = 'http://0.0.0.0:5173/'
-  healthy = $true
-} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'service-startup-status.json') -Encoding UTF8
+try {
+  @{
+    checkedAt = [DateTime]::UtcNow.ToString('o')
+    noteService = 'http://127.0.0.1:5174/health'
+    lanService = 'http://0.0.0.0:5173/'
+    healthy = $true
+  } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logRoot 'service-startup-status.json') -Encoding UTF8
+} catch {
+  Write-Warning "Service health passed, but the optional status file could not be written: $($_.Exception.Message)"
+}

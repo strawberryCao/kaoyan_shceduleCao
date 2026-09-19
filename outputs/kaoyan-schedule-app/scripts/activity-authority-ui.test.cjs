@@ -30,13 +30,14 @@ test('activity center exposes explicit Mac AI retries and reversible conflict ch
   assert.match(styles, /conflict-choices>button\{[^}]*touch-action:manipulation/);
 });
 
-test('remote shell can log out and never exposes desktop-only routes', () => {
+test('remote shell can log out, keeps desktop routes private, and exposes AI settings only through Tailscale', () => {
   const app = read('src/App.tsx');
   const shell = read('src/components/WebAppShell.tsx');
   const styles = read('src/web-app-shell.css');
 
-  assert.match(app, /IS_CLOUD_RUNTIME && \(isAiConfigMode \|\| isConsoleMode \|\| isWallpaperMode\)/);
-  assert.match(app, /isWallpaperMode && !window\.kaoyanDesktop\?\.isElectron/);
+  assert.match(app, /IS_CLOUD_RUNTIME && \(isConsoleMode \|\| isWallpaperMode \|\| \(isAiConfigMode && !IS_TAILSCALE_RUNTIME\)\)/);
+  assert.doesNotMatch(app, /isWallpaperMode && !window\.kaoyanDesktop\?\.isElectron/);
+  assert.match(shell, /item\.id !== 'ai-config' \|\| IS_TAILSCALE_RUNTIME/);
   assert.match(shell, /window\.kaoyanDesktop\?\.isElectron &&/);
   assert.match(shell, /fetch\('\/api\/auth\/logout'/);
   assert.match(shell, /尚未送达 Mac 的加密速记会保留/);

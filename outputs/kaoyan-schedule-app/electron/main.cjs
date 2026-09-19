@@ -38,6 +38,40 @@ const materialWindows = new Set();
 const materialWindowDescriptors = new Map();
 const materialSnapTimers = new Map();
 
+function resolveWindowsServiceLauncher() {
+  return isDev
+    ? path.resolve(__dirname, '..', 'scripts', 'start-local-services-hidden.ps1')
+    : path.join(process.resourcesPath, 'runtime', 'scripts', 'start-local-services-hidden.ps1');
+}
+
+function ensureWindowsClientServices() {
+  if (process.platform !== 'win32') return;
+  const launcher = resolveWindowsServiceLauncher();
+  if (!fs.existsSync(launcher)) {
+    console.error(`Windows service launcher is missing: ${launcher}`);
+    return;
+  }
+  execFile('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-WindowStyle', 'Hidden',
+    '-ExecutionPolicy', 'Bypass',
+    '-File', launcher,
+  ], {
+    cwd: path.dirname(launcher),
+    windowsHide: true,
+    env: {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1',
+      KAOYAN_NODE_EXECUTABLE: process.execPath,
+    },
+  }, (error, stdout, stderr) => {
+    if (error) console.error(`Windows client services failed to start: ${error.message}`);
+    if (stdout?.trim()) console.log(stdout.trim());
+    if (stderr?.trim()) console.error(stderr.trim());
+  });
+}
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -917,6 +951,7 @@ if (!hasSingleInstanceLock) {
     // Remove any legacy full-desktop auto-start shortcut. Electron now owns
     // only the compact note window; full pages stay in the system browser.
     setAutoLaunch(false);
+    ensureWindowsClientServices();
     if (!openMaterialPreviewFromArgs(process.argv)) createNoteWindow();
   });
 

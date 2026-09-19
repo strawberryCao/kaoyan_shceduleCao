@@ -11,7 +11,8 @@ const {
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_STATIC_ROOT = path.join(PROJECT_ROOT, 'dist');
-const DEFAULT_HOST = '127.0.0.1';
+const defaultHostForPlatform = (platform = process.platform) => platform === 'win32' ? '0.0.0.0' : '127.0.0.1';
+const DEFAULT_HOST = defaultHostForPlatform();
 const DEFAULT_PORT = 5173;
 const DEFAULT_API_HOST = '127.0.0.1';
 const DEFAULT_API_PORT = 5174;
@@ -240,15 +241,17 @@ const serveFile = (request, response, filePath, pathname) => {
   stream.pipe(response);
 };
 
-const proxyApiRequest = (request, response, apiHost, apiPort) => {
+const proxyApiRequest = (request, response, apiHost, apiPort, options = {}) => {
   const requestUrl = new URL(request.url || '/', 'http://127.0.0.1:5173');
   const headers = { ...request.headers };
   delete headers.authorization;
   delete headers.cookie;
   delete headers.host;
+  delete headers['x-kaoyan-admin-proxy'];
   headers.host = `${apiHost}:${apiPort}`;
   headers.origin = 'http://127.0.0.1:5173';
   headers['x-kaoyan-lan-proxy'] = '1';
+  if (options.authenticatedAdmin === true) headers['x-kaoyan-admin-proxy'] = '1';
 
   const upstream = http.request({
     host: apiHost,
@@ -402,14 +405,21 @@ const createKaoyanWebServer = (options = {}) => {
         && !requestUrl.search
         && request.method === 'POST'
         && ['/api/ai/widget', '/api/ai/html-note'].includes(requestUrl.pathname);
-      if (!isLocalAiRequest && !isAllowedLanApiRoute(request.method || 'GET', request.url)) {
+      const isAuthenticatedTailscaleAiConfig = remoteBrowserIngress
+        && remoteIngressKind === 'tailscale'
+        && !requestUrl.search
+        && ['GET', 'PUT'].includes(request.method || 'GET')
+        && requestUrl.pathname === '/api/ai/config';
+      if (!isLocalAiRequest && !isAuthenticatedTailscaleAiConfig && !isAllowedLanApiRoute(request.method || 'GET', request.url)) {
         response.statusCode = 403;
         response.setHeader('Content-Type', 'application/json; charset=utf-8');
         response.setHeader('Cache-Control', 'no-store');
         response.end(JSON.stringify({ ok: false, error: 'Only canvas and learning-data access is available over LAN.' }));
         return;
       }
-      proxyApiRequest(request, response, apiHost, apiPort);
+      proxyApiRequest(request, response, apiHost, apiPort, {
+        authenticatedAdmin: isAuthenticatedTailscaleAiConfig,
+      });
       return;
     }
 
@@ -462,7 +472,7 @@ const start = () => {
     cloudflareHostname: process.env.KAOYAN_CLOUDFLARE_HOSTNAME,
   });
   server.listen(port, host, () => {
-    process.stdout.write(`Kaoyan production web server: http://127.0.0.1:${port}/\n`);
+    process.stdout.write(`Kaoyan production web server: http://${host}:${port}/\n`);
     process.stdout.write(`Kaoyan internal note upstream: http://${DEFAULT_API_HOST}:${apiPort}/\n`);
   });
 
@@ -479,6 +489,7 @@ module.exports = {
   TAILSCALE_SESSION_TTL_SECONDS,
   applySecurityHeaders,
   createKaoyanWebServer,
+  defaultHostForPlatform,
   ingressKindForHostname,
   parseSingleRange,
   probeNoteService,

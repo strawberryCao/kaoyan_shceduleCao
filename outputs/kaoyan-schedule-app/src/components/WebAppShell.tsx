@@ -15,7 +15,7 @@ import {
   Inbox,
   Library,
 } from 'lucide-react';
-import { IS_CLOUD_RUNTIME } from '../utils/runtime';
+import { IS_AUTHENTICATED_REMOTE_RUNTIME, IS_CLOUD_RUNTIME, IS_TAILSCALE_RUNTIME } from '../utils/runtime';
 import { navigateApp } from '../utils/appNavigation';
 import type { ActivityTaskSummary } from '../utils/activityTasks';
 
@@ -53,7 +53,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [remoteConnection, setRemoteConnection] = useState<{ checking: boolean; online: boolean; access: string }>({ checking: true, online: false, access: '' });
   const visibleWorkspaceItems = IS_CLOUD_RUNTIME
-    ? workspaceItems.filter((item) => item.id !== 'console' && item.id !== 'ai-config')
+    ? workspaceItems.filter((item) => item.id !== 'console' && (item.id !== 'ai-config' || IS_TAILSCALE_RUNTIME))
     : workspaceItems;
   const locationParams = new URLSearchParams(window.location.search);
   const learningView = locationParams.has('q') ? 'library' : locationParams.get('view') || 'review';
@@ -82,7 +82,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
   }, [captureFeedback]);
 
   useEffect(() => {
-    if (!IS_CLOUD_RUNTIME) return undefined;
+    if (!IS_AUTHENTICATED_REMOTE_RUNTIME) return undefined;
     let disposed = false;
     const refresh = async () => {
       try {
@@ -200,7 +200,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
               <span>壁纸页</span>
             </button>
           )}
-          {IS_CLOUD_RUNTIME && (
+          {IS_AUTHENTICATED_REMOTE_RUNTIME && (
             <button type="button" onClick={() => void logoutRemoteSession()} disabled={loggingOut} title="退出这台设备">
               <LogOut aria-hidden="true" size={20} />
               <span>{loggingOut ? '正在退出…' : '安全退出'}</span>
@@ -221,7 +221,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
       </aside>
 
       <div className="web-app-content">{children}</div>
-      {IS_CLOUD_RUNTIME && active === 'hub' && (
+      {IS_AUTHENTICATED_REMOTE_RUNTIME && active === 'hub' && (
         <button
           className={`web-app-mobile-connection${remoteConnection.checking ? ' is-checking' : remoteConnection.online ? '' : ' is-offline'}`}
           type="button"
@@ -236,7 +236,7 @@ export function WebAppShell({ active, children }: WebAppShellProps) {
             : 'Mac · 连接异常'}
         </button>
       )}
-      {IS_CLOUD_RUNTIME && (
+      {IS_AUTHENTICATED_REMOTE_RUNTIME && (
         <button
           aria-label={loggingOut ? '正在退出' : '退出这台设备'}
           className="web-app-mobile-logout"

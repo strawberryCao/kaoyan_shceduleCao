@@ -1,7 +1,7 @@
 import { Component, lazy, Suspense, useEffect, useSyncExternalStore, type ErrorInfo, type ReactNode } from 'react';
 import { WebAppShell } from './components/WebAppShell';
 import { getAppLocation, subscribeAppLocation } from './utils/appNavigation';
-import { IS_CLOUD_RUNTIME } from './utils/runtime';
+import { IS_CLOUD_RUNTIME, IS_TAILSCALE_RUNTIME } from './utils/runtime';
 import { prepareRemotePrivateStorage } from './utils/remoteDataPolicy';
 import './wallpaper.css';
 import './notes.css';
@@ -86,11 +86,7 @@ export default function App() {
     return deferred(<LearningRecordWorkspacePreview noteUid={workspaceNoteUid} />, appLocation);
   }
 
-  if (IS_CLOUD_RUNTIME && (isAiConfigMode || isConsoleMode || isWallpaperMode)) {
-    return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
-  }
-
-  if (isWallpaperMode && !window.kaoyanDesktop?.isElectron) {
+  if (IS_CLOUD_RUNTIME && (isConsoleMode || isWallpaperMode || (isAiConfigMode && !IS_TAILSCALE_RUNTIME))) {
     return <WebAppShell active="hub">{deferred(<AppHub />, appLocation)}{palette()}</WebAppShell>;
   }
 

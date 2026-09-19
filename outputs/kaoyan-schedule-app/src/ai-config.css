@@ -215,11 +215,37 @@
 .ai-usage-protection-toggle input { width: 16px; height: 16px; }
 
 .ai-provider-tools > details,
+.ai-provider-managed-note,
 .ai-usage-summary {
   border: 1px solid #e1e5e9;
   border-radius: 14px;
   background: rgba(255,255,255,.86);
   box-shadow: 0 5px 20px rgba(24,33,47,.035);
+}
+
+.ai-provider-managed-note {
+  min-height: 74px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 15px;
+  color: #49645c;
+}
+
+.ai-provider-managed-note > span {
+  display: grid;
+  gap: 5px;
+}
+
+.ai-provider-managed-note strong {
+  color: #354f48;
+  font-size: 12px;
+}
+
+.ai-provider-managed-note small {
+  color: #74847f;
+  font-size: 10px;
+  line-height: 1.55;
 }
 
 .ai-provider-tools > details > summary,

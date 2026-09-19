@@ -36,6 +36,7 @@ import {
   type AiTaskDefinition,
   type AiTaskSettings,
 } from '../utils/aiConfig';
+import { IS_CLOUD_RUNTIME } from '../utils/runtime';
 
 const providerNames: Record<string, string> = {
   qwen: '通义千问',
@@ -491,6 +492,12 @@ export function AiConfigPage() {
           </div>
           <small>这只是一道可配置的费用保险。开机、联网和页面刷新不会自动触发 AI；AI 操作仍必须由你明确点击。</small>
         </div>
+        {IS_CLOUD_RUNTIME ? (
+          <div className="ai-provider-managed-note">
+            <ShieldCheck size={17} />
+            <span><strong>密钥由 Mac 安全管理</strong><small>此页面只调整模型分工和任务参数；API 密钥仍通过 Mac 上的隐藏输入脚本配置。</small></span>
+          </div>
+        ) : (
         <details>
           <summary><ServerCog size={16} /> 接入 DeepSeek（自动分配文本任务）</summary>
           <div>
@@ -522,6 +529,7 @@ export function AiConfigPage() {
             </button>
           </div>
         </details>
+        )}
         <div className="ai-usage-summary" aria-label="AI Token 使用统计">
           <header><CircleGauge size={16} /><span>本机 Token 统计</span><small>从本版本起累计</small></header>
           <div>

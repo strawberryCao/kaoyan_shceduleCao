@@ -51,6 +51,8 @@ npm.cmd run dev
 
 Mac mini 专用工作位于 `deploy/macmini-full-migration`。默认入口是 Tailscale 私有 HTTPS，Cloudflare Tunnel 作为明确的备用入口；Mac 保存权威数据并统一执行 AI，Windows 继续保留 Electron 速记与完整本地副本。
 
+Windows 权威业务数据导出、Mac 隔离验证、可回滚激活及后续同步配对见 `docs/windows-migration-bundle.md`。Windows 的局域网网页入口保留在 `http://Windows局域网IP:5173/`；Mac 的移动端主入口仍使用 Tailscale HTTPS。Mac 的 AI 自动化页面只在登录后的 `https://设备名.ts.net/?aiConfig=1` 开放，Cloudflare 备用入口不开放管理能力。
+
 ```bash
 git switch deploy/macmini-full-migration
 npm ci

@@ -1,6 +1,6 @@
 # Mac mini 第五阶段：迁移预检、双入口、备份与体验收口手册
 
-状态：实现候选版；已在 Windows 开发机和临时数据中验证，尚未在真实 Mac mini、正式数据与真实移动设备上执行
+状态：Mac 基础服务已在真实 Mac mini 安装并通过 doctor；Windows 数据已完成真实规模的只读导出、哈希验证和隔离权威库灌入演练，正式数据切换及 Windows 同步配对尚未执行
 
 目标分支：`deploy/macmini-full-migration`
 
@@ -111,7 +111,7 @@ npm run macmini:migrate -- dry-run \
 4. 同一人工字段冲突进入人工选择；独立字段才自动合并。
 5. 绝对 Windows 路径全部变成稳定 ID 或哈希资源引用。
 
-当前工具只完成盘点和 dry-run 报告，不执行统一导入、不写 Mac 权威库。这是刻意的安全门槛。
+Windows 是本次切换的权威来源时，使用 `docs/windows-migration-bundle.md` 中的两段式工具。Windows 先生成不含密钥的逐字节业务包；Mac 上的 `macmini:migrate:activate -- plan` 只读验证。只有带 `--confirm-windows-authoritative` 的 `sudo ... apply` 才会生成权威 SQLite、同步附件与画布实体、短暂停服并原子交换 `data`。旧 Mac `data` 保留在 `releases/windows-authority-*`，启动或健康检查失败会自动回滚。完成后还必须创建 Windows 设备令牌并执行一次双向同步验收。
 
 ## 5. 备份和恢复门槛
 
@@ -140,13 +140,13 @@ iPhone/iPad 会自动启用 Apple 移动视觉层，关键触控目标至少 44�
 - iPhone/iPad：Tailscale 与 Cloudflare 两条入口、相机、锁屏、Safari 强制结束、弱网续传、44px 触控和无横向溢出。
 - Windows：Electron 小窗口本地先保存、离线连续写入、重启续传、完整副本下行、冲突处理和 AI 只由 Mac 执行。
 - 数据：正式 dry-run 零未解释解析失败，记录和人工字段守恒，附件逐字节哈希一致，并完成隔离恢复。
-- 网络：原始 5173/5174 等服务只监听回环；Tailscale 为默认地址；Cloudflare 明确标记备用且由 Access 与应用登录双层保护。
+- 网络：Mac 的 5173/5174 只监听回环并由 Tailscale/Cloudflare 入口转发；Windows 的 5174 只监听回环，5173 明确监听局域网以保留 iPad 应急入口；Tailscale 仍是移动端默认地址，Cloudflare 明确标记备用且由 Access 与应用登录双层保护。
 
 全部通过后，再进行 30 分钟计划停写、增量导入和最终核对。任何正式导入、权威切换、旧链路停写或删除都需要用户再次明确批准。
 
 ## 8. 当前开发机验证
 
-2026-09-08：431/431 离线测试、TypeScript 类型检查、正式构建和 10/10 Chrome 浏览器流程通过。390×844 的 Apple 移动首页已做截图走查；正式构建仍只有既有的 PDF worker 与 HEIC 低频大资源警告。开发机验证不能替代上述真实设备和正式数据验收。
+2026-09-19：448/448 离线测试、TypeScript 类型检查、正式构建和 Windows Electron 目录打包通过；打包产物已核对包含网页、局域网网关、Windows 副本同步运行时及共享模块。真实 Windows 业务包共 2100 个文件、527,852,210 字节，逐项哈希通过；隔离权威库演练得到 870 个实体、100 个墓碑、409 个同步附件、92 个画布、零冲突。Windows 局域网网关已在 `0.0.0.0:5173` 实测返回健康响应。开发机演练不能替代正式 Mac 切换和跨设备双向写入验收。
 
 ## 9. 平台依据
 

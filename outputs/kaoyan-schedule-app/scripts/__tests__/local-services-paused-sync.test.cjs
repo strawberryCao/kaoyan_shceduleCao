@@ -13,4 +13,7 @@ test('starting LAN services does not run global sync while V13 is paused', () =>
   assert.match(launcher, /\$syncConfig\.persistenceMode -eq 'installed-paused'/);
   assert.match(launcher, /if \(-not \$autoSyncEnabled -or \$syncIsPaused\) \{ return \}/);
   assert.match(launcher, /Start-Process[\s\S]*\$runner/);
+  assert.match(launcher, /try \{\s*Refresh-SyncRuntime\s*\} catch \{/);
+  assert.match(launcher, /Legacy synchronization refresh was skipped/);
+  assert.match(launcher, /Service health passed, but the optional status file could not be written/);
 });

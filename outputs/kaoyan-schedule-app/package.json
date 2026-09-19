@@ -23,6 +23,8 @@
     "macmini:backup": "node scripts/macmini-backup.cjs",
     "macmini:backup:scheduler": "node scripts/macmini-backup-scheduler.cjs",
     "macmini:migrate": "node scripts/macmini-migration-audit.cjs",
+    "macmini:migrate:windows": "node scripts/windows-migration-bundle.cjs",
+    "macmini:migrate:activate": "node scripts/activate-macmini-migration.cjs",
     "macmini:setup": "node scripts/setup-macmini.cjs",
     "macmini:smoke": "node scripts/smoke-macmini-runtime.cjs",
     "macmini:serve": "node scripts/macmini-runtime.cjs serve",
@@ -97,6 +99,26 @@
       "scripts/note-file-access.cjs",
       "scripts/macmini-manager-state.cjs",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist",
+        "to": "runtime/dist"
+      },
+      {
+        "from": "scripts",
+        "to": "runtime/scripts",
+        "filter": [
+          "**/*.cjs",
+          "**/*.ps1",
+          "!__tests__/**",
+          "!**/*.test.cjs"
+        ]
+      },
+      {
+        "from": "shared",
+        "to": "runtime/shared"
+      }
     ],
     "asar": true,
     "win": {

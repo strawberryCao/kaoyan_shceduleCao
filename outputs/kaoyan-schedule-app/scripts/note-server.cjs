@@ -89,6 +89,7 @@ const AI_HTML_EVENTS_BACKUPS = 2;
 const BACKGROUND_JOB_LOG_PATH = path.join(ASSISTANT_ROOT, 'background-jobs.jsonl');
 const NOTE_ENRICHMENT_TIMEOUT_MS = 5 * 60 * 1000;
 const LAN_PROXY_HEADER = 'x-kaoyan-lan-proxy';
+const ADMIN_PROXY_HEADER = 'x-kaoyan-admin-proxy';
 const EXPLICIT_AI_ACTION_HEADER = 'x-kaoyan-ai-action';
 const INTERNAL_SYNC_TOKEN_HEADER = 'x-kaoyan-internal-sync-token';
 const INTERNAL_SYNC_TOKEN = String(process.env.KAOYAN_INTERNAL_SYNC_TOKEN || '');
@@ -738,6 +739,18 @@ function sendRelayJson(res, status, data) {
 
 function isLanProxyRequest(req) {
   return String(req.headers[LAN_PROXY_HEADER] || '') === '1';
+}
+
+function isAuthenticatedAdminProxyRequest(req) {
+  return isLanProxyRequest(req)
+    && String(req.headers[ADMIN_PROXY_HEADER] || '') === '1'
+    && isLoopbackRequest(req);
+}
+
+function isAllowedAuthenticatedAdminProxyRoute(method, pathname, searchParams = new URLSearchParams()) {
+  return searchParams.size === 0
+    && ['GET', 'PUT'].includes(method)
+    && pathname === '/ai/config';
 }
 
 function isAllowedLanProxyRoute(method, pathname, searchParams = new URLSearchParams()) {
@@ -6236,7 +6249,9 @@ const server = http.createServer(async (req, res) => {
     const lanRequestUrl = new URL(req.url || '/', `http://127.0.0.1:${PORT}`);
     const lanPathname = lanRequestUrl.pathname;
     const lanMethod = req.method || 'GET';
-    if (!isAllowedLanProxyRoute(lanMethod, lanPathname, lanRequestUrl.searchParams)) {
+    const authenticatedAdminRequest = isAuthenticatedAdminProxyRequest(req)
+      && isAllowedAuthenticatedAdminProxyRoute(lanMethod, lanPathname, lanRequestUrl.searchParams);
+    if (!authenticatedAdminRequest && !isAllowedLanProxyRoute(lanMethod, lanPathname, lanRequestUrl.searchParams)) {
       sendJson(res, 403, { ok: false, error: 'This endpoint is not available over LAN app access.' });
       return;
     }
@@ -6440,7 +6455,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && pathname === '/ai/config') {
       if (!canControlNoteApp(req)) {
-        sendJson(res, 403, { ok: false, error: 'AI 配置只能在运行服务的 Windows 主机上查看。' });
+        sendJson(res, 403, { ok: false, error: 'AI 配置只能从本机或已认证的 Mac 管理入口查看。' });
         return;
       }
       sendJson(res, 200, getAiConfigurationSnapshot());
@@ -6449,7 +6464,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'PUT' && pathname === '/ai/config') {
       if (!canControlNoteApp(req)) {
-        sendJson(res, 403, { ok: false, error: 'AI 配置只能在运行服务的 Windows 主机上修改。' });
+        sendJson(res, 403, { ok: false, error: 'AI 配置只能从本机或已认证的 Mac 管理入口修改。' });
         return;
       }
       const payload = JSON.parse((await readBody(req, 128 * 1024)) || '{}');

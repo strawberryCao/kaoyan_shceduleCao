@@ -9,6 +9,7 @@ const {
   DEFAULT_HOST,
   TAILSCALE_SESSION_TTL_SECONDS,
   createKaoyanWebServer,
+  defaultHostForPlatform,
   ingressKindForHostname,
 } = require('../web-server.cjs');
 const { configureMobileAccess } = require('../mobile-session-auth.cjs');
@@ -23,7 +24,9 @@ const close = (server) => new Promise((resolve, reject) => {
 });
 
 test('serves production assets with ranges and preserves the LAN API guard', async (t) => {
-  assert.equal(DEFAULT_HOST, '127.0.0.1', 'production startup must default to loopback');
+  assert.equal(defaultHostForPlatform('win32'), '0.0.0.0', 'Windows must keep its LAN fallback');
+  assert.equal(defaultHostForPlatform('darwin'), '127.0.0.1', 'Mac stays behind its authenticated ingress');
+  assert.equal(DEFAULT_HOST, defaultHostForPlatform());
   const staticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-web-server-'));
   fs.writeFileSync(path.join(staticRoot, 'index.html'), '<!doctype html><title>Kaoyan</title>', 'utf8');
   fs.writeFileSync(path.join(staticRoot, 'sample.mp4'), Buffer.from('0123456789', 'ascii'));
@@ -33,6 +36,7 @@ test('serves production assets with ranges and preserves the LAN API guard', asy
     response.end(JSON.stringify({
       path: request.url,
       proxy: request.headers['x-kaoyan-lan-proxy'],
+      admin: request.headers['x-kaoyan-admin-proxy'] || null,
       authorization: request.headers.authorization || null,
       cookie: request.headers.cookie || null,
     }));
@@ -76,12 +80,13 @@ test('serves production assets with ranges and preserves the LAN API guard', asy
   assert.equal(blocked.status, 403);
 
   const proxied = await fetch(`${baseUrl}/api/learning-data`, {
-    headers: { authorization: 'secret', cookie: 'session=secret' },
+    headers: { authorization: 'secret', cookie: 'session=secret', 'x-kaoyan-admin-proxy': '1' },
   });
   assert.equal(proxied.status, 200);
   assert.deepEqual(await proxied.json(), {
     path: '/learning-data',
     proxy: '1',
+    admin: null,
     authorization: null,
     cookie: null,
   });
@@ -92,6 +97,7 @@ test('serves production assets with ranges and preserves the LAN API guard', asy
   assert.equal(sync.status, 200);
   assert.deepEqual(await sync.json(), {
     path: '/sync/v1/status',
+    admin: null,
     authorization: 'Bearer device-secret',
     cookie: null,
   });
@@ -172,7 +178,11 @@ test('remote browser ingress requires a revocable Mac session while local loopba
   configureMobileAccess(authPath, { username: 'student', password: 'mobile-password-123' });
   const apiServer = http.createServer((request, response) => {
     response.setHeader('Content-Type', 'application/json');
-    response.end(JSON.stringify({ path: request.url, cookie: request.headers.cookie || null }));
+    response.end(JSON.stringify({
+      path: request.url,
+      cookie: request.headers.cookie || null,
+      ...(request.headers['x-kaoyan-admin-proxy'] ? { admin: request.headers['x-kaoyan-admin-proxy'] } : {}),
+    }));
   });
   const apiPort = await listen(apiServer);
   const webServer = createKaoyanWebServer({
@@ -181,6 +191,7 @@ test('remote browser ingress requires a revocable Mac session while local loopba
     allowedHosts: new Set(['127.0.0.1']),
     trustLoopbackIngress: true,
     mobileAuthConfigPath: authPath,
+    cloudflareHostname: 'study.example.com',
   });
   const webPort = await listen(webServer);
   t.after(async () => {
@@ -220,6 +231,17 @@ test('remote browser ingress requires a revocable Mac session while local loopba
   });
   assert.equal(protectedResponse.status, 200);
   assert.deepEqual(protectedResponse.json(), { path: '/learning-data', cookie: null });
+
+  const aiConfig = await rawRequest(webPort, {
+    path: '/api/ai/config', headers: { ...remoteHeaders, cookie },
+  });
+  assert.equal(aiConfig.status, 200);
+  assert.deepEqual(aiConfig.json(), { path: '/ai/config', cookie: null, admin: '1' });
+
+  const cloudflareAiConfig = await rawRequest(webPort, {
+    path: '/api/ai/config', headers: { host: 'study.example.com', cookie },
+  });
+  assert.equal(cloudflareAiConfig.status, 403);
 
   const logoutWithoutOrigin = await rawRequest(webPort, {
     method: 'POST', path: '/api/auth/logout', headers: { ...remoteHeaders, cookie },
