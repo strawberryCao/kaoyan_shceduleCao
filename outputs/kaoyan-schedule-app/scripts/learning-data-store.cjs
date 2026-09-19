@@ -303,7 +303,10 @@ function normalizeAutoNote(value) {
   const normalizedFilePath = filePath.split(String.fromCharCode(92)).join('/').toLowerCase();
   const isRemoteAssetPath = normalizedFilePath.startsWith('github://data/assets/')
     || normalizedFilePath.startsWith('data/assets/')
-    || normalizedFilePath.startsWith('r2://note-assets/');
+    || normalizedFilePath.startsWith('r2://note-assets/')
+    || normalizedFilePath.startsWith('asset://')
+    || normalizedFilePath.includes('/.sync-assets/')
+    || normalizedFilePath.includes('/assets/sha256/');
   const isInternalAssetPath = normalizedFilePath.includes('/.assets/')
     || normalizedFilePath.includes('/.materials/');
   const storedSubject = asString(value.subject, '默认文件夹');
@@ -973,6 +976,7 @@ function createLearningDataStore(options = {}) {
       cardIds,
 
       sourceType: metadata.sourceType ?? enrichment.sourceType ?? existingNote?.sourceType,
+      pendingAiOrganization: enrichment.pendingAiOrganization ?? metadata.pendingAiOrganization ?? existingNote?.pendingAiOrganization ?? false,
       sourceBatchId: metadata.sourceBatchId ?? enrichment.sourceBatchId ?? existingNote?.sourceBatchId,
       sourceSplitIndex: metadata.sourceSplitIndex ?? enrichment.sourceSplitIndex ?? existingNote?.sourceSplitIndex,
       attachments: syncedAttachments,

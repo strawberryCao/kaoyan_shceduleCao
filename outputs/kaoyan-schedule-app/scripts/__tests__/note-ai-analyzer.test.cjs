@@ -10,7 +10,19 @@ const {
   compactTaxonomy,
   createNoteAiAnalyzer,
   detectStrongIntentHints,
+  imagePathToDataUrl,
 } = require('../note-ai-analyzer.cjs');
+
+test('AI reads synchronized extensionless images by signature, not hash filename', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-ai-hash-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'a'.repeat(64));
+  const bytes = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+  fs.writeFileSync(file, bytes);
+  assert.equal(imagePathToDataUrl(file), `data:image/png;base64,${bytes.toString('base64')}`);
+  fs.writeFileSync(file, '<html>not an image</html>');
+  assert.throws(() => imagePathToDataUrl(file), { code: 'NOTE_IMAGE_UNSUPPORTED' });
+});
 const { parseRemark } = require('../remark-parser.cjs');
 
 function makeImageFixture(t, extension = '.png') {

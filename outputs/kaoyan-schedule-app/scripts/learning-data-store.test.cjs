@@ -17,6 +17,20 @@ function makeFixture(t) {
   return createLearningDataStore({ assistantRoot: root, now, timeZone: 'Asia/Shanghai' });
 }
 
+test('synchronized hash folders never become subjects and AI intent survives sync', (t) => {
+  const store = makeFixture(t);
+  for (const filePath of ['C:/notes/.sync-assets/sha256/ff/2a/' + 'a'.repeat(64), '/runtime/data/assets/sha256/ff/2a/' + 'a'.repeat(64)]) {
+    let snapshot = store.syncNote({ noteUid: 'pending-image', createdAt: '2026-07-17T04:00:00.000Z', subject: '默认文件夹', title: '正在识别题目内容', filePath, learning: { pendingAiOrganization: true, classificationSource: 'ai', knowledgePath: [] } });
+    const note = snapshot.days['2026-07-17'].autoNotes[0];
+    assert.equal(note.subject, '默认文件夹');
+    assert.deepEqual(note.knowledgePath, []);
+    assert.equal(note.classificationSource, 'ai');
+    assert.equal(note.pendingAiOrganization, true);
+    snapshot = store.syncNote({ noteUid: 'pending-image', learning: { pendingAiOrganization: false } });
+    assert.equal(snapshot.days['2026-07-17'].autoNotes[0].pendingAiOrganization, false);
+  }
+});
+
 test('returns an empty versioned snapshot before the first write', (t) => {
   const store = makeFixture(t);
   assert.deepEqual(store.getSnapshot(), {

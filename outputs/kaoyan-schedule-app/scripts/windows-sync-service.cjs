@@ -64,6 +64,7 @@ async function run(options = {}) {
   const statusPath = path.join(runtime.runRoot, 'windows-sync-status.json');
   let stopped = false;
   let failures = 0;
+  let reconcileAfterStart = true;
   const stop = () => { stopped = true; };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -71,7 +72,8 @@ async function run(options = {}) {
     do {
       try {
         const result = await client.syncOnce();
-        const materialized = materializer.reconcile();
+        const materialized = materializer.reconcile(3, reconcileAfterStart);
+        reconcileAfterStart = false;
         const materializedCanvas = canvasMaterializer.reconcile();
         const uiNotified = await notifyLocalNoteService({
           learningChanged: materialized.changed === true,

@@ -25,6 +25,22 @@ test('only resolves supported images inside the notes root', (t) => {
   assert.throws(() => resolveNoteImage(root, path.join(root, '..', 'outside.png')), { code: 'NOTE_PATH_FORBIDDEN' });
 });
 
+test('Mac authority hash assets are readable only with an explicit scoped root', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'authority-file-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const notesRoot = path.join(root, 'notes');
+  const assetsRoot = path.join(root, 'assets', 'sha256');
+  const file = path.join(assetsRoot, 'aa', 'bb', 'a'.repeat(64));
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(notesRoot);
+  fs.writeFileSync(file, Buffer.from('89504e470d0a1a0a00000000', 'hex'));
+  assert.throws(() => resolveNoteFile(notesRoot, file), { code: 'NOTE_PATH_FORBIDDEN' });
+  assert.equal(resolveNoteFile(notesRoot, file, { assetsRoot }).mime, 'image/png');
+  const other = path.join(assetsRoot, 'secret.png');
+  fs.writeFileSync(other, 'secret');
+  assert.throws(() => resolveNoteFile(notesRoot, other, { assetsRoot }), { code: 'NOTE_PATH_FORBIDDEN' });
+});
+
 test('resolves a hash-addressed V2 asset without exposing its repository path', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'note-file-asset-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

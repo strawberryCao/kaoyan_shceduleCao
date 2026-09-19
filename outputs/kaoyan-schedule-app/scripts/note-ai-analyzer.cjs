@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { resolveNoteImage } = require('./note-file-access.cjs');
 const { createAiRouter } = require('./ai-router.cjs');
 const {
   AI_SUPPORTED_SUBJECTS,
@@ -210,6 +211,10 @@ function inferLearningTypePath(value, subject, questionType, intent) {
 
 function mimeTypeForPath(imagePath) {
   const ext = path.extname(imagePath).toLowerCase();
+  if (!ext) {
+    try { return resolveNoteImage(path.dirname(path.resolve(imagePath)), imagePath).mime; }
+    catch { return 'application/octet-stream'; }
+  }
   const mimeTypes = new Map([
     ['.jpg', 'image/jpeg'],
     ['.jpeg', 'image/jpeg'],

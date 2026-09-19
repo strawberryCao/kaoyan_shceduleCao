@@ -137,6 +137,12 @@ function resolveNoteFile(notesRoot, requestedPath, options = {}) {
   } else {
     allowedRoot = path.resolve(notesRoot);
     filePath = path.resolve(requestedPath);
+    if (options.assetsRoot && isInside(path.resolve(options.assetsRoot), filePath)) {
+      const relative = path.relative(path.resolve(options.assetsRoot), filePath).replaceAll('\\', '/');
+      if (/^[a-f0-9]{2}\/[a-f0-9]{2}\/[a-f0-9]{64}$/i.test(relative)) {
+        allowedRoot = path.resolve(options.assetsRoot);
+      }
+    }
   }
   if (!isInside(allowedRoot, filePath)) {
     const error = new Error('不允许访问笔记目录以外的文件');
@@ -151,6 +157,11 @@ function resolveNoteFile(notesRoot, requestedPath, options = {}) {
   }
 
   const stats = fs.statSync(filePath);
+  if (!isInside(fs.realpathSync(allowedRoot), fs.realpathSync(filePath))) {
+    const error = new Error('不允许访问笔记目录以外的文件');
+    error.code = 'NOTE_PATH_FORBIDDEN';
+    throw error;
+  }
   const pathExtension = path.extname(filePath).toLowerCase();
   const detected = pathExtension ? null : detectExtensionlessFileType(filePath, stats.size);
   const extension = pathExtension || detected?.extension || '';

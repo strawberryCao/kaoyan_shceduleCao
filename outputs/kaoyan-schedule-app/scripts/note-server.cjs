@@ -260,6 +260,7 @@ materializeAuthorityChanges = (receipts = [], assetArrived = false) => {
   return { learning, canvas };
 };
 authorityCanvasMaterializer?.reconcile();
+authorityLearningMaterializer?.reconcile();
 const canvasEventClients = new Set();
 const layoutEventClients = new Set();
 const learningEventClients = new Set();
@@ -1333,7 +1334,7 @@ function resolveLearningNoteImage(note) {
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     try {
-      const resolved = resolveNoteFile(NOTES_ROOT, candidate);
+      const resolved = resolveNoteFile(NOTES_ROOT, candidate, { assetsRoot: RUNTIME_PATHS.assetsRoot });
       if (String(resolved.mime || '').startsWith('image/')) return resolved;
     } catch (error) {
       lastError = error;
@@ -2786,10 +2787,13 @@ function promoteLearningOnlyImage(note, image, analysis, subject) {
   const sourcePath = path.resolve(image.filePath);
   const notesRelativePath = path.relative(path.resolve(NOTES_ROOT), sourcePath);
   if (notesRelativePath.startsWith('..') || path.isAbsolute(notesRelativePath)) {
+    // Immutable authority blobs keep their hash path; only display metadata changes.
+    const filename = `${sanitizeSegment(analysis.title || note.title, '图片笔记', 42)}${image.extension || '.png'}`;
     return {
       filePath: note.filePath,
-      fileName: note.fileName,
-      attachments: Array.isArray(note.attachments) ? note.attachments : [],
+      fileName: filename,
+      attachments: Array.isArray(note.attachments) ? note.attachments.map((attachment, index) =>
+        index === 0 ? { ...attachment, name: filename } : attachment) : [],
       rollback: () => undefined,
     };
   }
@@ -6423,7 +6427,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'GET' && pathname === '/note-file') {
-      const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'));
+      const file = resolveNoteFile(NOTES_ROOT, requestUrl.searchParams.get('path'), { assetsRoot: RUNTIME_PATHS.assetsRoot });
       const stat = fs.statSync(file.filePath);
       const fileName = path.basename(file.filePath);
       const preview = requestUrl.searchParams.get('preview') === '1';

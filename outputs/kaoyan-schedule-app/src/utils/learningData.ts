@@ -449,7 +449,10 @@ const normalizeAutoNote = (value: unknown): LearningAutoNote | null => {
   const normalizedFilePath = filePath.split(String.fromCharCode(92)).join('/').toLowerCase();
   const isRemoteAssetPath = normalizedFilePath.startsWith('github://data/assets/')
     || normalizedFilePath.startsWith('data/assets/')
-    || normalizedFilePath.startsWith('r2://note-assets/');
+    || normalizedFilePath.startsWith('r2://note-assets/')
+    || normalizedFilePath.startsWith('asset://')
+    || normalizedFilePath.includes('/.sync-assets/')
+    || normalizedFilePath.includes('/assets/sha256/');
   const storedSubject = typeof value.subject === 'string' ? value.subject : '默认文件夹';
   const storedSubjectKey = storedSubject.trim().toLowerCase();
   const rawSubject = storedSubjectKey === 'assets' || storedSubjectKey === '.assets'
