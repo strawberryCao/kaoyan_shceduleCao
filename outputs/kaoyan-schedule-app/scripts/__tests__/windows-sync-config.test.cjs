@@ -5,6 +5,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { parseArguments } = require('../configure-windows-sync.cjs');
 const { resolveRuntimePaths } = require('../runtime-paths.cjs');
+const { createSyncClient } = require('../sync-client.cjs');
 const {
   configPaths,
   publicWindowsSyncStatus,
@@ -75,4 +76,27 @@ test('unsafe endpoints and command-line token input fail before replacing a good
     token: originalToken,
   }), (error) => error.code === 'WINDOWS_SYNC_CONFIG_TOO_NEW');
   assert.equal(JSON.parse(fs.readFileSync(configPaths(runtime).configPath, 'utf8')).schemaVersion, 99);
+});
+
+test('credential validation reads only the lightweight authority status and never downloads history or assets', async () => {
+  const requests = [];
+  const client = createSyncClient({
+    replica: {
+      deviceId: 'windows-main',
+      listPending() { throw new Error('validation must not inspect the outbox'); },
+      getRemoteCursor() { throw new Error('validation must not pull events'); },
+    },
+    baseUrl: 'https://minicao.example.ts.net',
+    token: `ksc_sync_${'d'.repeat(43)}`,
+    async fetchImpl(url) {
+      requests.push(String(url));
+      return new Response(JSON.stringify({ ok: true, deviceId: 'windows-main', entityCount: 870, assetCount: 409 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const result = await client.verifyConnection();
+  assert.equal(result.entityCount, 870);
+  assert.deepEqual(requests, ['https://minicao.example.ts.net/sync/v1/status']);
 });

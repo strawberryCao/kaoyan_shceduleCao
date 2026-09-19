@@ -119,16 +119,23 @@ function createSyncClient(options) {
     return { pulled, downloaded, cursor };
   }
 
-  async function syncOnce() {
+  async function verifyConnection() {
     const statusResponse = await request('/sync/v1/status');
     const remote = await responseJson(statusResponse);
-    if (remote.deviceId !== replica.deviceId) throw new SyncTransportError('SYNC_DEVICE_MISMATCH', 'Authority token belongs to another replica.');
+    if (remote.deviceId !== replica.deviceId) {
+      throw new SyncTransportError('SYNC_DEVICE_MISMATCH', 'Authority token belongs to another replica.');
+    }
+    return remote;
+  }
+
+  async function syncOnce() {
+    const remote = await verifyConnection();
     const receipts = await pushPending();
     const pull = await pullEvents();
     return { ok: true, pushed: receipts.length, ...pull, replica: replica.status() };
   }
 
-  return { downloadAsset, pullEvents, pushPending, syncOnce, uploadAsset };
+  return { downloadAsset, pullEvents, pushPending, syncOnce, uploadAsset, verifyConnection };
 }
 
 module.exports = { SyncTransportError, createSyncClient, normalizeBaseUrl };

@@ -1,12 +1,9 @@
 #!/usr/bin/env node
 
-const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { createPrompter } = require('./configure-macmini.cjs');
 const { provisionRuntimeLayout, resolveRuntimePaths } = require('./runtime-paths.cjs');
 const { createSyncClient } = require('./sync-client.cjs');
-const { createWindowsReplicaStore } = require('./windows-replica-store.cjs');
 const { publicWindowsSyncStatus, writeWindowsSyncConfig } = require('./windows-sync-config.cjs');
 
 function parseArguments(argv = process.argv.slice(2)) {
@@ -21,19 +18,13 @@ function parseArguments(argv = process.argv.slice(2)) {
 }
 
 async function verifyCandidate(runtimePaths, candidate) {
-  const validationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-windows-sync-validation-'));
-  const replica = createWindowsReplicaStore({
-    databasePath: path.join(validationRoot, 'windows-replica-validation.sqlite'),
-    assetsRoot: path.join(validationRoot, 'assets'),
-    deviceId: candidate.deviceId,
+  void runtimePaths;
+  const client = createSyncClient({
+    replica: { deviceId: candidate.deviceId },
+    baseUrl: candidate.baseUrl,
+    token: candidate.token,
   });
-  try {
-    const client = createSyncClient({ replica, baseUrl: candidate.baseUrl, token: candidate.token });
-    return await client.syncOnce();
-  } finally {
-    replica.close();
-    fs.rmSync(validationRoot, { recursive: true, force: true });
-  }
+  return client.verifyConnection();
 }
 
 async function main(argv = process.argv.slice(2)) {
