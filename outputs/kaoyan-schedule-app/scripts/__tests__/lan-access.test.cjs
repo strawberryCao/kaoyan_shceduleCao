@@ -5,6 +5,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { resolveRuntimePaths } = require('../runtime-paths.cjs');
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 const serverScript = path.join(projectRoot, 'scripts', 'note-server.cjs');
@@ -89,10 +90,16 @@ async function openCanvasEvents(baseUrl) {
 
 test('LAN access needs no device authentication and exposes canvas plus learning CRUD routes only', { timeout: 15_000 }, async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-lan-access-'));
-  const assistantRoot = path.join(tempRoot, 'assistant');
-  const notesRoot = path.join(tempRoot, 'notes');
+  const runtime = resolveRuntimePaths({
+    env: { KAOYAN_RUNTIME_LAYOUT: 'managed', KAOYAN_RUNTIME_ROOT: path.join(tempRoot, 'runtime') },
+    homeDir: tempRoot,
+  });
+  const assistantRoot = runtime.assistantRoot;
+  const notesRoot = runtime.notesRoot;
+  fs.mkdirSync(path.dirname(runtime.aiConfigPath), { recursive: true });
   fs.mkdirSync(assistantRoot, { recursive: true });
-  fs.writeFileSync(path.join(assistantRoot, 'ai-providers.json'), JSON.stringify({
+  fs.mkdirSync(notesRoot, { recursive: true });
+  fs.writeFileSync(runtime.aiConfigPath, JSON.stringify({
     providers: {
       gemini: { apiKey: 'lan-test-secret-key', model: 'gemini-test-model' },
     },
@@ -104,9 +111,12 @@ test('LAN access needs no device authentication and exposes canvas plus learning
     cwd: projectRoot,
     env: {
       ...process.env,
+      KAOYAN_RUNTIME_LAYOUT: 'managed',
+      KAOYAN_RUNTIME_ROOT: runtime.runtimeRoot,
       KAOYAN_NOTE_PORT: String(port),
       KAOYAN_NOTES_ROOT: notesRoot,
       KAOYAN_ASSISTANT_ROOT: assistantRoot,
+      KAOYAN_AI_CONFIG_PATH: runtime.aiConfigPath,
       QWEN_API_KEY: '',
       DASHSCOPE_API_KEY: '',
       GEMINI_API_KEY: '',
@@ -157,7 +167,7 @@ test('LAN access needs no device authentication and exposes canvas plus learning
   assert.equal(savedAiConfig.tasks.note_enrichment.options.maxCards, 1);
   assert.equal(savedAiConfig.usageProtection.enabled, false);
   assert.equal(savedAiConfig.usageProtection.dailyRequestLimit, 750);
-  const storedAiConfig = JSON.parse(fs.readFileSync(path.join(assistantRoot, 'ai-providers.json'), 'utf8'));
+  const storedAiConfig = JSON.parse(fs.readFileSync(runtime.aiConfigPath, 'utf8'));
   assert.deepEqual(storedAiConfig.tasks, savedAiConfig.tasks);
   assert.deepEqual(storedAiConfig.usageProtection, { enabled: false, dailyRequestLimit: 750 });
   assert.equal(storedAiConfig.providers.gemini.apiKey, 'lan-test-secret-key');

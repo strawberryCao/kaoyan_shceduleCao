@@ -53,7 +53,6 @@ test('the real Windows note and sync processes converge with Mac in one cycle', 
 
   const windowsRoot = path.join(root, 'windows');
   const runtime = resolveRuntimePaths({
-    platform: 'win32',
     env: { KAOYAN_RUNTIME_LAYOUT: 'managed', KAOYAN_RUNTIME_ROOT: windowsRoot },
     homeDir: windowsRoot,
   });
@@ -129,7 +128,9 @@ test('the real Windows note and sync processes converge with Mac in one cycle', 
     internalSyncToken,
     notePort,
   });
-  assert.equal(authority.getEntity('learning-note', 'windows-created-note').document.remark, '先落本机，再交给 Mac');
+  const synchronizedNote = authority.getEntity('learning-note', 'windows-created-note');
+  assert.ok(synchronizedNote, `Windows-role note did not reach Mac authority. Note service stderr:\n${stderr}`);
+  assert.equal(synchronizedNote.document.remark, '先落本机，再交给 Mac');
   const status = await (await fetch(`${noteBaseUrl}/replica/status`)).json();
   assert.equal(status.pending, 0);
   assert.equal(status.acknowledged, 1);
